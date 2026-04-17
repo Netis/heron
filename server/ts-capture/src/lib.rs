@@ -15,6 +15,7 @@
 
 mod cloud_probe;
 mod factory;
+pub mod heartbeat;
 mod packet;
 mod pcap_file;
 mod pcap_live;

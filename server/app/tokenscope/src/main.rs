@@ -140,7 +140,6 @@ async fn main() {
                 interface: interface.clone(),
                 bpf_filter: args.bpf_filter.clone(),
                 snaplen: args.snaplen,
-                heartbeat_interval_ms: 1000,
                 stream_id: None,
             }],
             ..PipelineDef::default()

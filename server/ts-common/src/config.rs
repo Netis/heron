@@ -150,10 +150,6 @@ pub enum CaptureSourceConfig {
         bpf_filter: Option<String>,
         #[serde(default = "default_snaplen")]
         snaplen: u32,
-        /// How often to emit a heartbeat when the interface is idle (ms).
-        /// `0` disables heartbeat emission.
-        #[serde(default = "default_pcap_heartbeat_ms")]
-        heartbeat_interval_ms: u64,
         #[serde(default)]
         stream_id: Option<String>,
     },
@@ -204,10 +200,6 @@ fn default_interface() -> String {
 
 fn default_snaplen() -> u32 {
     65535
-}
-
-fn default_pcap_heartbeat_ms() -> u64 {
-    1000
 }
 
 fn default_cloud_probe_endpoint() -> String {
@@ -628,7 +620,6 @@ mod phase2_tests {
             interface: "eth1".to_string(),
             bpf_filter: None,
             snaplen: 65535,
-            heartbeat_interval_ms: 1000,
             stream_id: None,
         };
         assert_eq!(pcap.resolved_stream_id(), Some("eth1".to_string()));

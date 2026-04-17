@@ -12,7 +12,6 @@ pub fn build_source(config: &CaptureSourceConfig) -> crate::Result<Box<dyn Captu
             interface,
             bpf_filter,
             snaplen,
-            heartbeat_interval_ms,
             stream_id,
         } => {
             let sid = stream_id.clone().unwrap_or_else(|| interface.clone());
@@ -20,7 +19,6 @@ pub fn build_source(config: &CaptureSourceConfig) -> crate::Result<Box<dyn Captu
                 interface.clone(),
                 bpf_filter.clone(),
                 *snaplen,
-                *heartbeat_interval_ms,
                 sid,
             )))
         }
@@ -60,7 +58,6 @@ mod tests {
             interface: "lo0".to_string(),
             bpf_filter: None,
             snaplen: 65535,
-            heartbeat_interval_ms: 1000,
             stream_id: None,
         };
         assert!(build_source(&config).is_ok());

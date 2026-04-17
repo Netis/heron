@@ -29,7 +29,6 @@
 # interface = "eth0"
 # bpf_filter = "tcp port 8080"
 # snaplen = 65535
-# heartbeat_interval_ms = 1000
 #
 # [[pipeline.sources]]
 # type = "cloud-probe"

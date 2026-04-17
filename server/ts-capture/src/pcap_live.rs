@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -12,6 +12,7 @@ use ts_common::throttle::ThrottledWarn;
 const ERR_WARN_THROTTLE: Duration = Duration::from_secs(5);
 const ERR_BACKOFF: Duration = Duration::from_millis(50);
 
+use crate::heartbeat::{HEARTBEAT_INTERVAL_US, SAFETY_MARGIN_US};
 use crate::packet::RawPacket;
 use crate::routing::RoutingSender;
 use crate::source::CaptureSource;
@@ -21,15 +22,22 @@ use crate::source::CaptureSource;
 /// Runs `next_packet()` on a blocking thread with a read timeout so the loop
 /// can detect channel closure and cancellation (graceful shutdown).
 ///
-/// Synthesizes sentinel heartbeat packets via [`RawPacket::heartbeat`] during
-/// traffic idle so downstream stages driven by packet timestamps (TCP
-/// cleanup, turn sweep, metrics window close) can still make progress.
-/// `heartbeat_interval_ms = 0` disables emission.
+/// Synthesizes sentinel heartbeat packets via [`RawPacket::heartbeat`] on a
+/// fixed 1 s cadence so downstream stages driven by packet timestamps (TCP
+/// cleanup, turn sweep, metrics window close) keep advancing. A single
+/// `last_hb_ts` tracks the most-recent HB / baseline time; both triggers
+/// below read and update it:
+/// * real-packet path — when `pkt.ts - last_hb_ts >= HEARTBEAT_INTERVAL_US`,
+///   stamp the HB with the real packet's kernel timestamp (monotonic).
+/// * idle-fallback — on read timeout, when `wall_clock_us() - last_hb_ts
+///   >= HEARTBEAT_INTERVAL_US`, stamp the HB with `wall_clock_us() -
+///   SAFETY_MARGIN_US`, clamped above `last_hb_ts`, so an imminent real
+///   packet cannot race ahead. pcap kernel timestamps and `wall_clock_us`
+///   share `CLOCK_REALTIME`, so the comparison is meaningful.
 pub struct PcapLiveSource {
     interface: String,
     bpf_filter: Option<String>,
     snaplen: u32,
-    heartbeat_interval_ms: u64,
     stream_id: String,
 }
 
@@ -38,14 +46,12 @@ impl PcapLiveSource {
         interface: String,
         bpf_filter: Option<String>,
         snaplen: u32,
-        heartbeat_interval_ms: u64,
         stream_id: String,
     ) -> Self {
         Self {
             interface,
             bpf_filter,
             snaplen,
-            heartbeat_interval_ms,
             stream_id,
         }
     }
@@ -62,7 +68,6 @@ impl CaptureSource for PcapLiveSource {
         let interface = self.interface.clone();
         let bpf_filter = self.bpf_filter.clone();
         let snaplen = self.snaplen;
-        let heartbeat_interval_ms = self.heartbeat_interval_ms;
         let stream_id = self.stream_id.clone();
 
         let result = tokio::task::spawn_blocking(move || -> crate::Result<()> {
@@ -87,16 +92,15 @@ impl CaptureSource for PcapLiveSource {
 
             let link_type = cap.get_datalink().0 as u32;
             tracing::info!(
-                "pcap-live: capturing on {} (link_type={}, snaplen={}, heartbeat_ms={})",
+                "pcap-live: capturing on {} (link_type={}, snaplen={})",
                 interface,
                 link_type,
                 snaplen,
-                heartbeat_interval_ms,
             );
 
             let mut count: u64 = 0;
             let mut last_dropped: u64 = 0;
-            let mut last_heartbeat: Instant = Instant::now();
+            let mut last_hb_ts: i64 = 0;
             let mut err_throttle = ThrottledWarn::new(ERR_WARN_THROTTLE);
 
             // Sample pcap stats and update the dropped-packets metric.
@@ -136,13 +140,28 @@ impl CaptureSource for PcapLiveSource {
                             stream_id: stream_id.clone(),
                         };
 
+                        // Packet-driven heartbeat: if event-time has advanced a
+                        // full interval since the last HB, emit one stamped at
+                        // the real packet's kernel timestamp. This keeps
+                        // metric/turn windows closing during long SSE streams.
+                        if last_hb_ts == 0 {
+                            last_hb_ts = raw.timestamp_us;
+                        } else if raw.timestamp_us - last_hb_ts >= HEARTBEAT_INTERVAL_US {
+                            let hb = RawPacket::heartbeat(raw.timestamp_us, stream_id.clone());
+                            if tx.blocking_send(hb).is_err() {
+                                tracing::debug!("pcap-live: channel closed, stopping");
+                                break;
+                            }
+                            metrics.counter(Metric::CaptureHeartbeatsEmitted).inc();
+                            last_hb_ts = raw.timestamp_us;
+                        }
+
                         if tx.blocking_send(raw).is_err() {
                             tracing::debug!("pcap-live: channel closed, stopping");
                             break;
                         }
 
                         count += 1;
-                        last_heartbeat = Instant::now();
                         metrics.counter(Metric::CapturePacketsReceived).inc();
                     }
                     Err(pcap::Error::TimeoutExpired) => {
@@ -154,17 +173,24 @@ impl CaptureSource for PcapLiveSource {
                             break;
                         }
 
-                        if heartbeat_interval_ms > 0
-                            && last_heartbeat.elapsed().as_millis()
-                                >= heartbeat_interval_ms as u128
-                        {
-                            let hb = RawPacket::heartbeat(wall_clock_us(), stream_id.clone());
-                            if tx.blocking_send(hb).is_err() {
-                                tracing::debug!("pcap-live: channel closed, stopping");
-                                break;
+                        // Idle fallback: if a full interval of wall time has
+                        // elapsed since the last HB / baseline, emit one.
+                        // Guard `last_hb_ts > 0` keeps us silent on an
+                        // interface that has never seen a packet. Stamp the
+                        // HB slightly in the past and clamp above
+                        // `last_hb_ts` for strict monotonicity.
+                        if last_hb_ts > 0 {
+                            let wall_us = wall_clock_us();
+                            if wall_us - last_hb_ts >= HEARTBEAT_INTERVAL_US {
+                                let hb_ts = (wall_us - SAFETY_MARGIN_US).max(last_hb_ts + 1);
+                                let hb = RawPacket::heartbeat(hb_ts, stream_id.clone());
+                                if tx.blocking_send(hb).is_err() {
+                                    tracing::debug!("pcap-live: channel closed, stopping");
+                                    break;
+                                }
+                                metrics.counter(Metric::CaptureHeartbeatsEmitted).inc();
+                                last_hb_ts = hb_ts;
                             }
-                            metrics.counter(Metric::CaptureHeartbeatsEmitted).inc();
-                            last_heartbeat = Instant::now();
                         }
 
                         continue;

@@ -18,6 +18,7 @@ use zeromq::{PullSocket, Socket, SocketRecv, ZmqMessage};
 use ts_common::internal_metrics::{Metric, MetricsWorker};
 use ts_common::throttle::ThrottledWarn;
 
+use crate::heartbeat::HeartbeatTracker;
 use crate::packet::RawPacket;
 use crate::routing::RoutingSender;
 use crate::source::CaptureSource;
@@ -168,6 +169,7 @@ impl CaptureSource for CloudProbeSource {
         let mut hb_count: u64 = 0;
         let mut batch_err_throttle = ThrottledWarn::new(WARN_THROTTLE);
         let mut recv_err_throttle = ThrottledWarn::new(WARN_THROTTLE);
+        let mut tracker = HeartbeatTracker::new();
 
         loop {
             tokio::select! {
@@ -187,6 +189,27 @@ impl CaptureSource for CloudProbeSource {
                                     for mut pkt in pkts {
                                         pkt.stream_id = uuid.clone();
                                         let is_hb = pkt.is_heartbeat();
+
+                                        // Synthesize per-uuid HB if interval
+                                        // elapsed. Forwarded *before* the real
+                                        // packet so the sequence stays time-
+                                        // ordered downstream.
+                                        if let Some(hb) = tracker.on_packet(&pkt) {
+                                            if tx.send(hb).await.is_err() {
+                                                tracing::debug!(
+                                                    "cloud-probe: channel closed, stopping"
+                                                );
+                                                log_summary(
+                                                    &endpoint, batch_count, pkt_count, hb_count,
+                                                );
+                                                return Ok(());
+                                            }
+                                            metrics
+                                                .counter(Metric::CaptureHeartbeatsEmitted)
+                                                .inc();
+                                            hb_count += 1;
+                                        }
+
                                         if tx.send(pkt).await.is_err() {
                                             tracing::debug!(
                                                 "cloud-probe: channel closed, stopping"
@@ -385,6 +408,28 @@ mod tests {
         bytes.extend_from_slice(&[0u8; 5]);
         let err = parse_batch(&bytes).unwrap_err();
         assert!(matches!(err, BatchError::Truncated { .. }));
+    }
+
+    #[test]
+    fn tracker_synthesizes_hb_for_cloud_probe_uuid() {
+        use crate::heartbeat::{HeartbeatTracker, HEARTBEAT_INTERVAL_US};
+
+        let mut t = HeartbeatTracker::new();
+        let mut p = RawPacket {
+            timestamp_us: 1_000_000,
+            caplen: 14,
+            wirelen: 14,
+            link_type: LINKTYPE_ETHERNET,
+            data: Bytes::from_static(&[
+                0xAA, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x00,
+            ]),
+            stream_id: "u1".to_string(),
+        };
+        assert!(t.on_packet(&p).is_none());
+        p.timestamp_us += HEARTBEAT_INTERVAL_US;
+        let hb = t.on_packet(&p).expect("interval reached → HB");
+        assert!(hb.is_heartbeat());
+        assert_eq!(hb.stream_id, "u1");
     }
 
     #[test]
