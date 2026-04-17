@@ -1,5 +1,14 @@
 # CLAUDE.md
 
+## Core Principles
+
+1. **Occam's Razor** — 如无必要，勿增实体. Prefer simple solutions; don't add abstractions until needed.
+2. **Code Quality** — Modular, single source of truth, explicit over clever, types as documentation.
+3. **Documentation** — CLAUDE.md is the entry point (keep concise). Commands over prose. Update docs with code.
+4. **Project Structure** — `justfile` as command runner, `scripts/` for complex logic, `project.yaml` for metadata.
+
+These apply to every artifact in this repo — code, docs, and CLAUDE.md itself.
+
 ## Project Overview
 
 TokenScope is an LLM API performance monitoring system that analyzes network traffic to measure and diagnose LLM inference performance. Deployed on the **LLM provider's server side** (post-TLS termination, plaintext HTTP), it serves ops, dev, and business teams.
@@ -8,9 +17,9 @@ TokenScope is an LLM API performance monitoring system that analyzes network tra
 - Local NIC capture via libpcap
 - Remote packet ingestion via ZMQ from [cloud-probe](https://github.com/Netis/cloud-probe)
 
-**Supported LLM providers:** OpenAI, Anthropic, Azure OpenAI, local deployments (vLLM/Ollama, OpenAI-compatible)
+**Supported LLM providers:** OpenAI, Anthropic, Azure OpenAI, Gemini, local deployments (vLLM/Ollama, OpenAI-compatible)
 
-**Key metrics:** TTFB, TPOT (time per output token), E2E latency, token throughput (tokens/s), error rates, concurrency
+**Key metrics:** TTFB, E2E latency, throughput (tokens/s), error rates, concurrency
 
 ## Tech Stack
 
@@ -22,7 +31,7 @@ TokenScope is an LLM API performance monitoring system that analyzes network tra
 - **ZMQ:** zeromq ([zmq.rs](https://github.com/zeromq/zmq.rs), pure Rust)
 - **HTTP parsing:** httparse (zero-copy)
 - **Serialization:** serde + serde_json
-- **Storage:** sqlx (SQLite / PostgreSQL), clickhouse-rs (ClickHouse) — pluggable backend via trait
+- **Storage:** duckdb-rs (DuckDB), sqlx (PostgreSQL), clickhouse-rs (ClickHouse) — pluggable backend via trait
 - **Config:** config crate (TOML)
 - **Logging:** tracing + tracing-subscriber
 - **CLI:** clap
@@ -33,6 +42,10 @@ TokenScope is an LLM API performance monitoring system that analyzes network tra
 - shadcn/ui + Tailwind CSS
 - Bun + Vite
 - React Router
+- TanStack Query (server state: API caching, polling, retry)
+- Zustand (client state: UI state, filters, preferences)
+
+**Styling rule:** Always use Tailwind CSS utility classes. Never write raw CSS except in `index.css` for Tailwind directives and CSS variable definitions.
 
 ## Repository Structure
 
@@ -44,41 +57,34 @@ TokenScope/
 │   ├── Cargo.toml               # workspace root + workspace.package + workspace.dependencies
 │   ├── ts-common/               # Shared config, error types
 │   ├── ts-capture/              # libpcap + cloud-probe ZMQ receiver → RawPacket
-│   ├── ts-protocol/             # net (L2-L4) + http (HTTP/SSE) parsing → HttpExchange
-│   ├── ts-llm/                  # Provider registry + extractors + LoopTracker → LlmRequest
+│   ├── ts-protocol/             # net (L2-L4) + http (HTTP/SSE) parsing
+│   ├── ts-llm/                  # Provider detection + extractors → LlmCall
+│   ├── ts-turn/                 # Client profiles + state machine → LlmTurn
 │   ├── ts-metrics/              # Sliding-window aggregation → LlmMetric
-│   ├── ts-storage/              # StorageBackend trait + SQLite/PG/ClickHouse + write buffer
+│   ├── ts-storage/              # StorageBackend trait + DuckDB/PG/ClickHouse + write buffer
 │   ├── ts-api/                  # Axum REST API + WebSocket
 │   ├── app/
 │   │   └── tokenscope/          # Binary entry crate
 │   └── config/
 │       └── default.toml
-├── web/                         # React frontend (Bun + Vite)
+├── console/                     # React frontend (Bun + Vite)
 ├── deploy/                      # Dockerfiles, docker-compose (future)
 └── scripts/                     # Dev/build helper scripts
 ```
 
-Pipeline: capture → protocol (link-layer + TCP reassembly + HTTP/SSE parsing) → llm (provider extraction + LoopTracker) → metrics (aggregation) + storage (DB write). Each stage connected by tokio mpsc channels.
+Pipeline: capture → flow dispatcher (hash by flow key) → N parallel workers (protocol + llm) → turn tracker + metrics (aggregation) + storage (DB write). Flow sharding ensures same-connection packets stay in one worker. See architecture.md for details.
 
-See [docs/design/architecture.md](docs/design/architecture.md) for detailed design decisions.
+See [docs/design/01-architecture.md](docs/design/01-architecture.md) for detailed design decisions.
+See [docs/design/04-turn.md](docs/design/04-turn.md) for Turn (agent interaction) tracking design.
 
 ## Storage
 
-Three entities: `llm_loops` (agent loop), `llm_requests` (per-call detail + full body), `llm_metrics` (pre-aggregated time-series). Relation: `llm_loops 1─N llm_requests`. Pluggable backends:
+Three entities: `llm_turns` (agent turn), `llm_calls` (per-call detail + full body), `llm_metrics` (pre-aggregated time-series). Relation: `llm_turns 1─N llm_calls`. Pluggable backends:
 
 | Backend | Use case |
 |---------|----------|
-| SQLite | Single-node, POC, edge |
+| DuckDB | Default, single-node, dev, edge (embedded, single-file) |
 | PostgreSQL | Mid-scale production (+ TimescaleDB optional) |
 | ClickHouse | Large-scale, high-throughput columnar analytics |
 
-See [docs/design/schema.md](docs/design/schema.md) for full schema design.
-
-## Frontend Pages
-
-- Dashboard — cluster-level realtime overview
-- Model Analysis — compare TTFB/TPOT/throughput across models
-- Tenant Analysis — per-API-key usage and performance
-- Request List — filterable detail table
-- Request Detail — waterfall chart + token flow curve
-- Settings — runtime configuration
+See [docs/design/07-schema.md](docs/design/07-schema.md) for full schema design.

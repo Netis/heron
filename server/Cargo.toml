@@ -1,0 +1,59 @@
+[workspace]
+members = ["ts-*", "app/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Config
+config = { version = "0.15", features = ["toml"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time", "fmt"] }
+time = { version = "0.3", features = ["formatting", "macros"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+thiserror = "2"
+
+# Packet capture
+pcap = "2"
+bytes = "1"
+async-trait = "0.1"
+zeromq = { version = "0.4", default-features = false, features = ["tokio-runtime", "tcp-transport"] }
+
+# Protocol parsing
+httparse = "1"
+uuid = { version = "1", features = ["v7"] }
+bytemuck = { version = "1", features = ["derive"] }
+
+# Internal crates
+ts-common = { path = "ts-common" }
+ts-capture = { path = "ts-capture" }
+ts-protocol = { path = "ts-protocol" }
+ts-llm = { path = "ts-llm" }
+ts-turn = { path = "ts-turn" }
+ts-metrics = { path = "ts-metrics" }
+ts-storage = { path = "ts-storage" }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+rust-embed = "8"
+mime_guess = "2"
+duckdb = { version = "1", features = ["bundled"] }
+chrono = "0.4"
+tdigest = "0.2"
+ts-api = { path = "ts-api" }

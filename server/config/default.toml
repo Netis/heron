@@ -1,0 +1,94 @@
+# TokenScope default configuration
+
+# ---------------------------------------------------------------------------
+# Pipelines
+#
+# Each [[pipeline]] is an independent processing pipeline with its own worker
+# pool. Sources nested under a pipeline share its workers. Multiple pipelines
+# provide resource isolation (e.g., separate shard counts for local capture
+# vs. cloud-probe ingestion).
+#
+# CLI flags (--pcap-file, -i) OVERRIDE all config pipelines: when present,
+# a single "cli" pipeline with default parameters is used.
+# ---------------------------------------------------------------------------
+# [[pipeline]]
+# name = "local"
+# dispatcher_count = 1
+# flow_shard_count = 4
+#
+# [pipeline.turn]
+# idle_timeout_secs = 600
+# sweep_interval_secs = 10
+# shard_count = 1
+#
+# [pipeline.metrics]
+# shard_count = 1
+#
+# [[pipeline.sources]]
+# type = "pcap"
+# interface = "eth0"
+# bpf_filter = "tcp port 8080"
+# snaplen = 65535
+# heartbeat_interval_ms = 1000
+#
+# [[pipeline.sources]]
+# type = "cloud-probe"
+# endpoint = "tcp://0.0.0.0:5555"
+# recv_hwm = 1000
+#
+# [[pipeline.sources]]
+# type = "pcap-file"
+# path = "/data/captures/llm-traffic.pcap"
+# realtime = false
+
+# Bounded channel capacities between pipeline stages. All default to 4096.
+# Override per-pipeline under [[pipeline]].
+# [pipeline.queues]
+# raw = 4096
+# parsed_packet = 4096
+# flow_event = 4096
+# turn_event = 4096
+# metrics_event = 4096
+# call_sink = 4096
+# turn_sink = 4096
+# metric_sink = 4096
+
+# ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+[storage]
+backend = "duckdb"
+
+[storage.duckdb]
+path = "data/tokenscope.duckdb"
+
+# Storage sink batching
+[storage.sink]
+batch_size = 1000
+flush_interval_ms = 1000
+
+# Data retention (disabled by default).
+# [storage.retention]
+# enabled = false
+# check_interval_secs = 3600
+# calls = 7
+# turns = 30
+# [storage.retention.metrics]
+# "10s" = 1
+# "1m"  = 7
+# "5m"  = 30
+# "1h"  = 365
+
+# ---------------------------------------------------------------------------
+# Internal metrics (pipeline self-monitoring)
+# ---------------------------------------------------------------------------
+[internal_metrics]
+enabled = true
+interval_secs = 10
+
+# ---------------------------------------------------------------------------
+# API server
+# ---------------------------------------------------------------------------
+[api]
+listen = "0.0.0.0"
+port = 3000

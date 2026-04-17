@@ -1,0 +1,51 @@
+# Project Configuration
+name: TokenScope
+description: LLM API performance monitoring via network traffic analysis (Rust backend + React SPA)
+
+git:
+  url: git@github.com:Netis/TokenScope.git
+  default_branch: main
+
+version:
+  file: VERSION
+  changelog: CHANGELOG.md
+  sync_files: []
+
+# Polyglot project — no single canonical type fits. Rust is primary (server
+# is the shipped artifact with embedded console). `code_review.languages`
+# below declares both sides so /dev-review covers the full surface.
+type: rust
+runtime: cargo
+
+language:
+  docs: English
+  ai: Any
+
+code_review:
+  pre_check: just build
+  languages:
+    - id: rs
+      name: Rust
+      skill: dev-review:rs
+      paths: [server/]
+      quality_cmd: cd server && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+    - id: ts
+      name: TypeScript
+      skill: dev-review:ts
+      paths: [console/src/]
+      quality_cmd: cd console && bun run lint && bunx tsc --noEmit
+
+bug:
+  dir: docs/bug
+  readme: docs/bug/README.md
+  ai_dir: docs/bug/.ai
+
+research:
+  dir: docs/research
+  readme: docs/research/README.md
+
+design:
+  dir: docs/design
+
+plan:
+  dir: docs/superpowers/plans

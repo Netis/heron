@@ -1,0 +1,98 @@
+# TokenScope justfile
+# Router pattern: recipes dispatch to scripts/routers/shared/*.sh
+# Run `just help` for the menu, or `just <router>` for per-router detail.
+
+set shell := ["bash", "-cu"]
+
+project := "TokenScope"
+version := `cat VERSION 2>/dev/null || echo "dev"`
+
+# Default: show help
+default:
+    @just help
+
+# Show top-level help with popular commands
+help:
+    @echo ""
+    @echo "📡 {{project}} v{{version}} — LLM API performance monitor"
+    @echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    @echo ""
+    @echo "🚀 Development"
+    @echo "   just dev server        Run backend (config/default.toml)"
+    @echo "   just dev console       Run Vite dev server"
+    @echo "   just dev setup         Install cargo + bun deps"
+    @echo ""
+    @echo "📦 Build"
+    @echo "   just build all         Single binary with embedded console"
+    @echo "   just build server      Rust release build"
+    @echo "   just build console     Frontend production bundle"
+    @echo ""
+    @echo "✅ Quality"
+    @echo "   just quality all       Format + lint + typecheck (Rust & TS)"
+    @echo "   just quality rs        Rust only (fmt + clippy + check)"
+    @echo "   just quality ts        TypeScript only (lint + tsc)"
+    @echo ""
+    @echo "🧪 Testing"
+    @echo "   just test all          Run cargo test (all crates)"
+    @echo "   just test crate <name> Test a single workspace crate"
+    @echo ""
+    @echo "🌲 Worktrees"
+    @echo "   just wt add <name>     Create worktree + feature branch"
+    @echo "   just wt list           List worktrees"
+    @echo "   just wt merge <name>   Cherry-pick back to current branch"
+    @echo ""
+    @echo "🖥️  Demo (TokenScope on remote host, port 3000)"
+    @echo "   just demo ping       Test SSH to demo server"
+    @echo "   just demo deploy     Build + upload + restart + open"
+    @echo "   just demo status     TokenScope process status"
+    @echo "   just demo log        Tail TokenScope log"
+    @echo "   (add --no-open to deploy to skip opening the browser)"
+    @echo ""
+    @echo "🔭 Tools"
+    @echo "   just loc               Lines of code dashboard"
+    @echo ""
+    @echo "⚡ Meta"
+    @echo "   just version           Show version"
+    @echo "   just bump <kind>       Bump VERSION + sync Cargo.toml/package.json"
+    @echo "   just <router>          Detail help (e.g. 'just build')"
+    @echo ""
+
+# Show version
+version:
+    @echo "{{project}} v{{version}}"
+
+# =============================================================================
+# Routers — `just <name>` (no args) prints that router's detail help.
+# =============================================================================
+
+# Build (console, server, or full binary)
+build *args:
+    @bash scripts/routers/shared/build.sh {{args}}
+
+# Development (run server/console, setup, clean)
+dev *args:
+    @bash scripts/routers/shared/dev.sh {{args}}
+
+# Code quality (format, lint, typecheck)
+quality *args:
+    @bash scripts/routers/shared/quality.sh {{args}}
+
+# Testing (cargo test, bun test, per-crate)
+test *args:
+    @bash scripts/routers/shared/test.sh {{args}}
+
+# Worktree management (add, list, merge, remove)
+wt *args:
+    @bash scripts/routers/shared/wt.sh {{args}}
+
+# Version bump (VERSION is SSOT; syncs Cargo.toml + package.json)
+bump *args:
+    @bash scripts/routers/shared/bump.sh {{args}}
+
+# Lines of code dashboard
+loc *args:
+    @bash scripts/routers/shared/loc.sh {{args}}
+
+# Demo — SSH/setup + cross-compile + deploy TokenScope (port 3000)
+demo *args:
+    @bash scripts/routers/shared/demo.sh {{args}}

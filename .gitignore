@@ -1,0 +1,48 @@
+# Rust
+/server/target/
+**/*.rs.bk
+
+# Node / Bun (React frontend)
+/console/node_modules/
+/console/dist/
+/console/.vite/
+/console/bun.lock
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+.obsidian/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# DuckDB local data
+*.duckdb
+*.duckdb.wal
+
+# Test pcap fixtures (large; not checked in)
+/testdata/pcaps/*.pcap
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+
+# Demo server live config (seeded from default.toml, maintained per-env)
+/server/config/demo.toml
+
+.playwright-mcp/
+.claude/settings.local.json
+.claude/worktrees/
+.superpowers
+.worktrees/
+
