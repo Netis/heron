@@ -69,8 +69,8 @@ pub fn spawn_turn_stage(
                             }
                         }
                     }
-                    TurnShardInput::Heartbeat { ts, .. } => {
-                        for ev in tracker.advance_time(ts) {
+                    TurnShardInput::Heartbeat { ts, stream_id } => {
+                        for ev in tracker.advance_time(ts, &stream_id) {
                             let TurnEvent::Completed(t) = ev;
                             if turns_tx.send(t).await.is_err() {
                                 break 'main "downstream_closed";
