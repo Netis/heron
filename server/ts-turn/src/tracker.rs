@@ -198,6 +198,12 @@ impl TurnTracker {
     /// Ingest one completed LlmCall. The call must have been pre-identified
     /// by the upstream stage; `identity` carries the extracted session/turn ids.
     /// Returns TurnEvents in emission order. Does NOT mutate `call`.
+    ///
+    /// Dispatches to one of two state-machine implementations based on
+    /// whether the profile produced an explicit turn_id hint:
+    /// - `ingest_explicit`: client/protocol annotates each call with a turn_id.
+    /// - `ingest_implicit`: turn boundaries inferred from finish_reason and
+    ///    user-start signals; turn_id generated locally.
     pub fn ingest(
         &mut self,
         call: &LlmCall,
@@ -209,7 +215,11 @@ impl TurnTracker {
                 .unwrap_or(call.request_time),
         );
         self.metrics.counter(Metric::TurnCallsIngested).inc();
-        let profile = match self.registry.find_by_name(identity.profile_name) {
+
+        // Clone the Arc to detach `profile`'s lifetime from `&self.registry`,
+        // so the dispatched private methods can take `&mut self`.
+        let registry = Arc::clone(&self.registry);
+        let profile = match registry.find_by_name(identity.profile_name) {
             Some(p) => p,
             None => return Vec::new(),
         };
@@ -222,110 +232,139 @@ impl TurnTracker {
             return Vec::new();
         }
 
+        match identity.turn_id_hint.clone() {
+            Some(turn_id) => self.ingest_explicit(call, identity, profile, turn_id),
+            None => self.ingest_implicit(call, identity, profile),
+        }
+    }
+
+    /// Explicit turn_id path (currently codex-cli via X-Codex-Turn-Metadata).
+    /// The turn_id is authoritative: a new turn_id closes the previous turn,
+    /// and `profile.is_turn_terminal` lets a turn close immediately within
+    /// the same turn_id when the response carries no pending tool calls.
+    fn ingest_explicit(
+        &mut self,
+        call: &LlmCall,
+        identity: &ts_llm::model::CallIdentity,
+        profile: &dyn ClientProfile,
+        turn_id: String,
+    ) -> Vec<TurnEvent> {
         let mut events = Vec::new();
-        let explicit_turn = identity.turn_id_hint.clone();
         let subagent = profile.subagent(call);
         let is_subagent = subagent.is_some();
         let stream_id = call.stream_id.clone();
         let session_id = identity.session_id.clone();
 
-        // --- Explicit turn_id path (Codex) ---
-        if let Some(turn_id) = explicit_turn {
-            let key = TurnKey {
-                stream_id: stream_id.clone(),
-                session_id: session_id.clone(),
-                turn_id: turn_id.clone(),
-            };
+        let key = TurnKey {
+            stream_id: stream_id.clone(),
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+        };
 
-            let stale_keys: Vec<TurnKey> = self
-                .active
-                .keys()
-                .filter(|k| {
-                    k.stream_id == stream_id && k.session_id == session_id && k.turn_id != turn_id
-                })
-                .cloned()
-                .collect();
-            for sk in stale_keys {
-                if let Some(at) = self.active.remove(&sk) {
-                    events.push(TurnEvent::Completed(at.finalize(TurnStatus::Incomplete)));
-                    self.metrics.counter(Metric::TurnsCompleted).inc();
-                }
+        let stale_keys: Vec<TurnKey> = self
+            .active
+            .keys()
+            .filter(|k| {
+                k.stream_id == stream_id && k.session_id == session_id && k.turn_id != turn_id
+            })
+            .cloned()
+            .collect();
+        for sk in stale_keys {
+            if let Some(at) = self.active.remove(&sk) {
+                events.push(TurnEvent::Completed(at.finalize(TurnStatus::Incomplete)));
+                self.metrics.counter(Metric::TurnsCompleted).inc();
             }
-
-            let is_new = !self.active.contains_key(&key);
-            let (initial_user_input_preview, initial_user_call_id) = if is_new {
-                match profile.extract_user_input(call) {
-                    Some(text) => (
-                        Some(truncate_preview(&text, USER_INPUT_PREVIEW_CHARS)),
-                        Some(call.id.clone()),
-                    ),
-                    None => (None, None),
-                }
-            } else {
-                (None, None)
-            };
-            let at = self
-                .active
-                .entry(key.clone())
-                .or_insert_with(|| ActiveTurn {
-                    key: key.clone(),
-                    tenant_id: call.tenant_id.clone(),
-                    provider: call.provider.to_string(),
-                    client_kind: profile.name().to_string(),
-                    start_time_us: call.request_time,
-                    last_activity_us: call.request_time,
-                    call_count: 0,
-                    call_ids: Vec::new(),
-                    models_used: Vec::new(),
-                    subagents_used: Vec::new(),
-                    total_input_tokens: 0,
-                    total_output_tokens: 0,
-                    total_cache_read_input_tokens: 0,
-                    total_cache_creation_input_tokens: 0,
-                    last_finish_reason: None,
-                    user_input_preview: initial_user_input_preview,
-                    user_call_id: initial_user_call_id,
-                    final_answer_preview: None,
-                    final_call_id: None,
-                });
-            if is_new {
-                events.push(TurnEvent::Started {
-                    key: key.clone(),
-                    start_time_us: at.start_time_us,
-                });
-            }
-            at.merge(profile, call, subagent);
-            events.push(TurnEvent::CallAdded {
-                key: key.clone(),
-                call_id: call.id.clone(),
-                sequence: at.call_count - 1,
-            });
-
-            // Explicit-path immediate close: ask the profile whether this
-            // call terminates the agent turn. For Codex this inspects
-            // response.output for any *_call item that would force another
-            // API roundtrip; absence ⇒ final answer, close now. Sub-agent
-            // calls never close the parent turn. Falling through still
-            // leaves (1) new turn_id arrival and (2) idle-timeout sweep as
-            // backstops.
-            if !is_subagent && profile.is_turn_terminal(call) {
-                if let Some(at) = self.active.remove(&key) {
-                    let status = match at.last_finish_reason {
-                        Some(FinishReason::Complete) => TurnStatus::Complete,
-                        Some(FinishReason::Length) => TurnStatus::Length,
-                        Some(FinishReason::Cancelled) => TurnStatus::Cancelled,
-                        Some(FinishReason::Error) => TurnStatus::Failed,
-                        _ => TurnStatus::Incomplete,
-                    };
-                    events.push(TurnEvent::Completed(at.finalize(status)));
-                    self.metrics.counter(Metric::TurnsCompleted).inc();
-                }
-            }
-
-            return events;
         }
 
-        // --- Implicit path (Anthropic) ---
+        let is_new = !self.active.contains_key(&key);
+        let (initial_user_input_preview, initial_user_call_id) = if is_new {
+            match profile.extract_user_input(call) {
+                Some(text) => (
+                    Some(truncate_preview(&text, USER_INPUT_PREVIEW_CHARS)),
+                    Some(call.id.clone()),
+                ),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+        let at = self
+            .active
+            .entry(key.clone())
+            .or_insert_with(|| ActiveTurn {
+                key: key.clone(),
+                tenant_id: call.tenant_id.clone(),
+                provider: call.provider.to_string(),
+                client_kind: profile.name().to_string(),
+                start_time_us: call.request_time,
+                last_activity_us: call.request_time,
+                call_count: 0,
+                call_ids: Vec::new(),
+                models_used: Vec::new(),
+                subagents_used: Vec::new(),
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_cache_read_input_tokens: 0,
+                total_cache_creation_input_tokens: 0,
+                last_finish_reason: None,
+                user_input_preview: initial_user_input_preview,
+                user_call_id: initial_user_call_id,
+                final_answer_preview: None,
+                final_call_id: None,
+            });
+        if is_new {
+            events.push(TurnEvent::Started {
+                key: key.clone(),
+                start_time_us: at.start_time_us,
+            });
+        }
+        at.merge(profile, call, subagent);
+        events.push(TurnEvent::CallAdded {
+            key: key.clone(),
+            call_id: call.id.clone(),
+            sequence: at.call_count - 1,
+        });
+
+        // Explicit-path immediate close: ask the profile whether this
+        // call terminates the agent turn. For Codex this inspects
+        // response.output for any *_call item that would force another
+        // API roundtrip; absence ⇒ final answer, close now. Sub-agent
+        // calls never close the parent turn. Falling through still
+        // leaves (1) new turn_id arrival and (2) idle-timeout sweep as
+        // backstops.
+        if !is_subagent && profile.is_turn_terminal(call) {
+            if let Some(at) = self.active.remove(&key) {
+                let status = match at.last_finish_reason {
+                    Some(FinishReason::Complete) => TurnStatus::Complete,
+                    Some(FinishReason::Length) => TurnStatus::Length,
+                    Some(FinishReason::Cancelled) => TurnStatus::Cancelled,
+                    Some(FinishReason::Error) => TurnStatus::Failed,
+                    _ => TurnStatus::Incomplete,
+                };
+                events.push(TurnEvent::Completed(at.finalize(status)));
+                self.metrics.counter(Metric::TurnsCompleted).inc();
+            }
+        }
+
+        events
+    }
+
+    /// Implicit path (currently anthropic/claude-cli). No per-call turn
+    /// annotation — turn boundaries are inferred: a new turn opens when the
+    /// previous one reached a terminal finish_reason or when a new
+    /// user-initiated call arrives. Turn IDs are generated locally (UUIDv7).
+    fn ingest_implicit(
+        &mut self,
+        call: &LlmCall,
+        identity: &ts_llm::model::CallIdentity,
+        profile: &dyn ClientProfile,
+    ) -> Vec<TurnEvent> {
+        let mut events = Vec::new();
+        let subagent = profile.subagent(call);
+        let is_subagent = subagent.is_some();
+        let stream_id = call.stream_id.clone();
+        let session_id = identity.session_id.clone();
+
         let is_user_start = profile.is_user_turn_start(call).unwrap_or(false);
 
         let existing_key: Option<TurnKey> = self
