@@ -42,14 +42,17 @@ impl FlowDispatcher {
     }
 
     async fn dispatch_packet(&self, raw: &RawPacket) -> bool {
-        let parsed = match de::decode(&raw.data, raw.link_type, raw.timestamp_us, raw.stream_id.clone()) {
+        let parsed = match de::decode(
+            &raw.data,
+            raw.link_type,
+            raw.timestamp_us,
+            raw.stream_id.clone(),
+        ) {
             Some(p) => p,
             None => return true, // Non-TCP packet, skip.
         };
 
-        self.metrics
-            .counter(Metric::DispatcherPacketsRouted)
-            .inc();
+        self.metrics.counter(Metric::DispatcherPacketsRouted).inc();
 
         let worker_idx = (parsed.flow_key.shard_hash() as usize) % self.worker_txs.len();
         self.worker_txs[worker_idx]
@@ -64,7 +67,13 @@ impl FlowDispatcher {
     /// acceptable.
     fn broadcast_heartbeat(&self, ts: i64, stream_id: String) {
         for tx in &self.worker_txs {
-            if tx.try_send(WorkerInput::Heartbeat { ts, stream_id: stream_id.clone() }).is_err() {
+            if tx
+                .try_send(WorkerInput::Heartbeat {
+                    ts,
+                    stream_id: stream_id.clone(),
+                })
+                .is_err()
+            {
                 self.metrics
                     .counter(Metric::DispatcherHeartbeatsDropped)
                     .inc();

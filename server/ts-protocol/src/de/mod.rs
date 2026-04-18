@@ -47,7 +47,12 @@ pub(crate) use try_skip;
 ///
 /// Returns `None` if the packet cannot be decoded (unsupported link type,
 /// non-TCP, truncated, etc.).
-pub fn decode(data: &[u8], link_type: u32, timestamp_us: i64, stream_id: String) -> Option<ParsedPacket> {
+pub fn decode(
+    data: &[u8],
+    link_type: u32,
+    timestamp_us: i64,
+    stream_id: String,
+) -> Option<ParsedPacket> {
     let mut buf = PacketBuf::new(data);
 
     let ether_type = decode_l2(&mut buf, link_type).ok()?;
@@ -157,7 +162,8 @@ mod tests {
         pkt.extend_from_slice(&tcp);
         pkt.extend_from_slice(payload);
 
-        let result = decode(&pkt, LINKTYPE_ETHERNET, 1234567890, String::new()).expect("should decode");
+        let result =
+            decode(&pkt, LINKTYPE_ETHERNET, 1234567890, String::new()).expect("should decode");
 
         assert_eq!(result.src_ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
         assert_eq!(result.dst_ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));

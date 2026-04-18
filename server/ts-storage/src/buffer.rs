@@ -119,14 +119,18 @@ impl<T: Send + 'static> WriteBuffer<T> {
             Ok(()) => {
                 let flush_ms = start.elapsed().as_millis() as u64;
                 debug!(entity, batch_len, trigger, flush_ms, "flushed");
-                if let Some(ref m) = self.metrics { m.flushed.add(batch_len as u64); }
+                if let Some(ref m) = self.metrics {
+                    m.flushed.add(batch_len as u64);
+                }
             }
             Err(e) => {
                 // No generic retry here: Vec<T> isn't Clone in general, and
                 // cloning a batch on every flush to enable retry would
                 // double-allocate the hot path. Callers should make the
                 // backend itself idempotent/durable if needed.
-                if let Some(ref m) = self.metrics { m.errors.inc(); }
+                if let Some(ref m) = self.metrics {
+                    m.errors.inc();
+                }
                 if let Some(suppressed) = self.err_throttle.tick() {
                     if suppressed > 0 {
                         error!(

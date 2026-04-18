@@ -61,7 +61,7 @@ pub struct LlmTurn {
     pub total_output_tokens: u64,
     pub total_cache_read_input_tokens: u64,
     pub total_cache_creation_input_tokens: u64,
-    pub total_cost_usd: Option<f64>,    // None when pricing unknown
+    pub total_cost_usd: Option<f64>, // None when pricing unknown
 
     pub status: TurnStatus,
     pub final_finish_reason: Option<String>, // FinishReason.to_string() of last call

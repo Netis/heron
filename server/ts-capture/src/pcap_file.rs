@@ -122,10 +122,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_pcap_file_not_found_returns_error() {
-        let source = PcapFileSource::new(PathBuf::from("/nonexistent/test.pcap"), "test".to_string());
+        let source =
+            PcapFileSource::new(PathBuf::from("/nonexistent/test.pcap"), "test".to_string());
         let (tx, _rx) = mpsc::channel(16);
         let cancel = CancellationToken::new();
-        let result = Box::new(source).run(RoutingSender::single(tx), test_metrics(), cancel).await;
+        let result = Box::new(source)
+            .run(RoutingSender::single(tx), test_metrics(), cancel)
+            .await;
         assert!(result.is_err(), "should return error for missing file");
     }
 
@@ -155,7 +158,9 @@ mod tests {
         let source = PcapFileSource::new(path, "test".to_string());
         let (tx, _rx) = mpsc::channel(16);
         let cancel = CancellationToken::new();
-        let result = Box::new(source).run(RoutingSender::single(tx), test_metrics(), cancel).await;
+        let result = Box::new(source)
+            .run(RoutingSender::single(tx), test_metrics(), cancel)
+            .await;
         assert!(
             result.is_err(),
             "truncated pcap should return error, not Ok"
@@ -197,7 +202,9 @@ mod tests {
 
         let source = PcapFileSource::new(path, "test".to_string());
         let cancel = CancellationToken::new();
-        let result = Box::new(source).run(RoutingSender::single(tx), test_metrics(), cancel).await;
+        let result = Box::new(source)
+            .run(RoutingSender::single(tx), test_metrics(), cancel)
+            .await;
         assert!(result.is_ok(), "should return Ok when channel is closed");
     }
 
@@ -212,7 +219,9 @@ mod tests {
         cancel.cancel(); // Pre-cancel
 
         let source = PcapFileSource::new(path, "test".to_string());
-        let result = Box::new(source).run(RoutingSender::single(tx), test_metrics(), cancel).await;
+        let result = Box::new(source)
+            .run(RoutingSender::single(tx), test_metrics(), cancel)
+            .await;
         assert!(result.is_ok(), "should return Ok when pre-cancelled");
     }
 
@@ -225,7 +234,9 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let cancel = CancellationToken::new();
         let source = PcapFileSource::new(path, "test".to_string());
-        let result = Box::new(source).run(RoutingSender::single(tx), test_metrics(), cancel).await;
+        let result = Box::new(source)
+            .run(RoutingSender::single(tx), test_metrics(), cancel)
+            .await;
         assert!(result.is_ok(), "should return Ok on normal EOF");
 
         // Drain channel and count packets.

@@ -893,7 +893,6 @@ impl StorageBackend for DuckDbBackend {
         let query = query.clone();
 
         tokio::task::spawn_blocking(move || {
-
             let start_ts = us_to_timestamp(query.time_range.start_us);
             let end_ts = us_to_timestamp(query.time_range.end_us);
 
@@ -910,21 +909,38 @@ impl StorageBackend for DuckDbBackend {
                      ORDER BY timestamp, {group_by}"
                 );
 
-                let mut stmt = conn.prepare(&sql)
-                    .map_err(|e| AppError::Storage(format!("failed to prepare timeseries query: {e}")))?;
+                let mut stmt = conn.prepare(&sql).map_err(|e| {
+                    AppError::Storage(format!("failed to prepare timeseries query: {e}"))
+                })?;
 
                 let mut rows = Vec::new();
-                let mut query_rows = stmt.query(duckdb::params![query.granularity, start_ts, end_ts])
-                    .map_err(|e| AppError::Storage(format!("failed to execute timeseries query: {e}")))?;
-                while let Some(row) = query_rows.next().map_err(|e| AppError::Storage(format!("row error: {e}")))? {
-                    let ts: i64 = row.get(0).map_err(|e| AppError::Storage(format!("ts read error: {e}")))?;
-                    let group: String = row.get(1).map_err(|e| AppError::Storage(format!("group read error: {e}")))?;
+                let mut query_rows = stmt
+                    .query(duckdb::params![query.granularity, start_ts, end_ts])
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to execute timeseries query: {e}"))
+                    })?;
+                while let Some(row) = query_rows
+                    .next()
+                    .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+                {
+                    let ts: i64 = row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("ts read error: {e}")))?;
+                    let group: String = row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("group read error: {e}")))?;
                     let mut values = Vec::new();
                     for i in 0..query.fields.len() {
-                        let v: Option<f64> = row.get(2 + i).map_err(|e| AppError::Storage(format!("field read error: {e}")))?;
+                        let v: Option<f64> = row
+                            .get(2 + i)
+                            .map_err(|e| AppError::Storage(format!("field read error: {e}")))?;
                         values.push(v);
                     }
-                    rows.push(MetricsTimeseriesRow { timestamp: ts, group: Some(group), values });
+                    rows.push(MetricsTimeseriesRow {
+                        timestamp: ts,
+                        group: Some(group),
+                        values,
+                    });
                 }
                 rows
             } else {
@@ -941,20 +957,35 @@ impl StorageBackend for DuckDbBackend {
                      ORDER BY timestamp"
                 );
 
-                let mut stmt = conn.prepare(&sql)
-                    .map_err(|e| AppError::Storage(format!("failed to prepare timeseries query: {e}")))?;
+                let mut stmt = conn.prepare(&sql).map_err(|e| {
+                    AppError::Storage(format!("failed to prepare timeseries query: {e}"))
+                })?;
 
                 let mut rows = Vec::new();
-                let mut query_rows = stmt.query(duckdb::params![query.granularity, start_ts, end_ts])
-                    .map_err(|e| AppError::Storage(format!("failed to execute timeseries query: {e}")))?;
-                while let Some(row) = query_rows.next().map_err(|e| AppError::Storage(format!("row error: {e}")))? {
-                    let ts: i64 = row.get(0).map_err(|e| AppError::Storage(format!("ts read error: {e}")))?;
+                let mut query_rows = stmt
+                    .query(duckdb::params![query.granularity, start_ts, end_ts])
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to execute timeseries query: {e}"))
+                    })?;
+                while let Some(row) = query_rows
+                    .next()
+                    .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+                {
+                    let ts: i64 = row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("ts read error: {e}")))?;
                     let mut values = Vec::new();
                     for i in 0..query.fields.len() {
-                        let v: Option<f64> = row.get(1 + i).map_err(|e| AppError::Storage(format!("field read error: {e}")))?;
+                        let v: Option<f64> = row
+                            .get(1 + i)
+                            .map_err(|e| AppError::Storage(format!("field read error: {e}")))?;
                         values.push(v);
                     }
-                    rows.push(MetricsTimeseriesRow { timestamp: ts, group: None, values });
+                    rows.push(MetricsTimeseriesRow {
+                        timestamp: ts,
+                        group: None,
+                        values,
+                    });
                 }
                 rows
             };
@@ -2444,10 +2475,7 @@ mod tests {
         stream1.ttfb_p50 = Some(200.0);
         stream1.error_count = 3;
 
-        backend
-            .write_metrics(vec![stream0, stream1])
-            .await
-            .unwrap();
+        backend.write_metrics(vec![stream0, stream1]).await.unwrap();
 
         let query = MetricsTimeseriesQuery {
             time_range: TimeRange {

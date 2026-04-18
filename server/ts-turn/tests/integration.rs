@@ -97,7 +97,9 @@ async fn run_pcap_sharded(
         let tx = raw_tx.clone();
         let cancel = cancel.clone();
         async move {
-            let _ = Box::new(source).run(RoutingSender::single(tx), source_metrics, cancel).await;
+            let _ = Box::new(source)
+                .run(RoutingSender::single(tx), source_metrics, cancel)
+                .await;
         }
     });
     drop(raw_tx);

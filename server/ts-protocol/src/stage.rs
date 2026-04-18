@@ -123,7 +123,11 @@ pub fn spawn_protocol_stage(
                     tracing::debug!(shard, "protocol worker stopping: upstream EOF");
                 }
                 r => {
-                    tracing::warn!(shard, reason = r, "protocol worker stopping: downstream closed");
+                    tracing::warn!(
+                        shard,
+                        reason = r,
+                        "protocol worker stopping: downstream closed"
+                    );
                 }
             }
         }));

@@ -74,14 +74,23 @@ pub fn spawn_storage_sink_stage(
                     tracing::debug!("storage calls_unwrap stopping: upstream EOF");
                 }
                 r => {
-                    tracing::warn!(reason = r, "storage calls_unwrap stopping: downstream closed");
+                    tracing::warn!(
+                        reason = r,
+                        "storage calls_unwrap stopping: downstream closed"
+                    );
                 }
             }
         })
     };
 
     let calls_storage = backend.clone();
-    let calls_buffer = WriteBuffer::new("calls", owned_rx, config.batch_size, flush_interval, Some(buf_metrics.clone()));
+    let calls_buffer = WriteBuffer::new(
+        "calls",
+        owned_rx,
+        config.batch_size,
+        flush_interval,
+        Some(buf_metrics.clone()),
+    );
     let calls_task = tokio::spawn(async move {
         calls_buffer
             .run(move |batch| {
@@ -92,7 +101,13 @@ pub fn spawn_storage_sink_stage(
     });
 
     let turns_storage = backend.clone();
-    let turns_buffer = WriteBuffer::new("turns", turns_rx, config.batch_size, flush_interval, Some(buf_metrics.clone()));
+    let turns_buffer = WriteBuffer::new(
+        "turns",
+        turns_rx,
+        config.batch_size,
+        flush_interval,
+        Some(buf_metrics.clone()),
+    );
     let turns_task = tokio::spawn(async move {
         turns_buffer
             .run(move |batch| {
@@ -103,7 +118,13 @@ pub fn spawn_storage_sink_stage(
     });
 
     let metrics_storage = backend.clone();
-    let metrics_buffer = WriteBuffer::new("metrics", metrics_rx, config.batch_size, flush_interval, Some(buf_metrics));
+    let metrics_buffer = WriteBuffer::new(
+        "metrics",
+        metrics_rx,
+        config.batch_size,
+        flush_interval,
+        Some(buf_metrics),
+    );
     let metrics_task = tokio::spawn(async move {
         metrics_buffer
             .run(move |batch| {
@@ -252,13 +273,23 @@ mod tests {
             flush_interval_ms: 50,
         };
         let mut metrics_sys = MetricsSystem::new();
-        let storage_metrics = metrics_sys.register_worker("storage_sink", &[
-            Metric::StorageRecordsBuffered,
-            Metric::StorageRecordsFlushed,
-            Metric::StorageFlushErrors,
-        ]);
+        let storage_metrics = metrics_sys.register_worker(
+            "storage_sink",
+            &[
+                Metric::StorageRecordsBuffered,
+                Metric::StorageRecordsFlushed,
+                Metric::StorageFlushErrors,
+            ],
+        );
         let _svc = metrics_sys.start();
-        let handle = spawn_storage_sink_stage(cfg, calls_rx, turns_rx, metrics_rx, backend, storage_metrics);
+        let handle = spawn_storage_sink_stage(
+            cfg,
+            calls_rx,
+            turns_rx,
+            metrics_rx,
+            backend,
+            storage_metrics,
+        );
 
         for i in 0..3 {
             calls_tx.send(Arc::new(dummy_call(i))).await.unwrap();

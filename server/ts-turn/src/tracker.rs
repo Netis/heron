@@ -172,7 +172,11 @@ pub struct TurnTracker {
 }
 
 impl TurnTracker {
-    pub fn new(registry: Arc<ProfileRegistry>, config: TrackerConfig, metrics: MetricsWorker) -> Self {
+    pub fn new(
+        registry: Arc<ProfileRegistry>,
+        config: TrackerConfig,
+        metrics: MetricsWorker,
+    ) -> Self {
         Self {
             registry,
             config,
@@ -236,7 +240,9 @@ impl TurnTracker {
             let stale_keys: Vec<TurnKey> = self
                 .active
                 .keys()
-                .filter(|k| k.stream_id == stream_id && k.session_id == session_id && k.turn_id != turn_id)
+                .filter(|k| {
+                    k.stream_id == stream_id && k.session_id == session_id && k.turn_id != turn_id
+                })
                 .cloned()
                 .collect();
             for sk in stale_keys {
@@ -531,12 +537,15 @@ mod tests {
     fn test_metrics() -> MetricsWorker {
         use ts_common::internal_metrics::MetricsSystem;
         let mut sys = MetricsSystem::new();
-        let w = sys.register_worker("test", &[
-            Metric::TurnCallsIngested,
-            Metric::TurnCallsAuxiliary,
-            Metric::TurnsCompleted,
-            Metric::TurnsTimedOut,
-        ]);
+        let w = sys.register_worker(
+            "test",
+            &[
+                Metric::TurnCallsIngested,
+                Metric::TurnCallsAuxiliary,
+                Metric::TurnsCompleted,
+                Metric::TurnsTimedOut,
+            ],
+        );
         let _svc = sys.start();
         w
     }
@@ -556,10 +565,17 @@ mod tests {
         }
     }
 
-    fn codex_call(session: &str, turn: &str, body_input_type: &str, finish: FinishReason) -> LlmCall {
+    fn codex_call(
+        session: &str,
+        turn: &str,
+        body_input_type: &str,
+        finish: FinishReason,
+    ) -> LlmCall {
         let meta = format!(r#"{{"session_id":"{session}","turn_id":"{turn}"}}"#);
         let body = match body_input_type {
-            "message" => r#"{"input":[{"type":"message","role":"user","content":"hi"}]}"#.to_string(),
+            "message" => {
+                r#"{"input":[{"type":"message","role":"user","content":"hi"}]}"#.to_string()
+            }
             other => format!(r#"{{"input":[{{"type":"{other}"}}]}}"#),
         };
         LlmCall {
@@ -636,13 +652,21 @@ mod tests {
 
     #[test]
     fn tracker_starts_empty() {
-        let t = TurnTracker::new(Arc::new(ProfileRegistry::new()), TrackerConfig::default(), test_metrics());
+        let t = TurnTracker::new(
+            Arc::new(ProfileRegistry::new()),
+            TrackerConfig::default(),
+            test_metrics(),
+        );
         assert_eq!(t.active_count(), 0);
     }
 
     #[test]
     fn flush_all_on_empty_tracker_returns_no_events() {
-        let mut t = TurnTracker::new(Arc::new(ProfileRegistry::new()), TrackerConfig::default(), test_metrics());
+        let mut t = TurnTracker::new(
+            Arc::new(ProfileRegistry::new()),
+            TrackerConfig::default(),
+            test_metrics(),
+        );
         assert!(t.flush_all().is_empty());
     }
 
@@ -736,7 +760,10 @@ mod tests {
             })
             .expect("turn should be completed");
 
-        assert_eq!(turn.user_input_preview.as_deref(), Some("plan the refactor"));
+        assert_eq!(
+            turn.user_input_preview.as_deref(),
+            Some("plan the refactor")
+        );
         assert_eq!(turn.user_call_id.as_deref(), Some(&c1.id[..]));
         assert_eq!(
             turn.final_answer_preview.as_deref(),
@@ -1047,9 +1074,8 @@ mod tests {
 
         // tools:[] → ClaudeCliProfile::is_auxiliary returns true.
         let mut call = anthropic_call("S", 1_000_000, "text", FinishReason::Complete);
-        call.request_body = Some(
-            r#"{"messages":[{"role":"user","content":"generate title"}],"tools":[]}"#.into(),
-        );
+        call.request_body =
+            Some(r#"{"messages":[{"role":"user","content":"generate title"}],"tools":[]}"#.into());
         let identity = CallIdentity {
             profile_name: "claude-cli",
             client_kind: "claude-cli".into(),
@@ -1090,9 +1116,9 @@ mod tests {
         let id = identity_for(&c, "claude-cli");
         let events = t.ingest(&c, &id);
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, TurnEvent::Completed(tr) if tr.status == TurnStatus::Complete)),
+            events.iter().any(
+                |e| matches!(e, TurnEvent::Completed(tr) if tr.status == TurnStatus::Complete)
+            ),
             "single user-initiated Complete call should close turn immediately"
         );
         assert_eq!(t.active_count(), 0);
@@ -1162,9 +1188,9 @@ mod tests {
         let id = identity_for(&c, "codex-cli");
         let events = t.ingest(&c, &id);
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, TurnEvent::Completed(tr) if tr.status == TurnStatus::Complete)),
+            events.iter().any(
+                |e| matches!(e, TurnEvent::Completed(tr) if tr.status == TurnStatus::Complete)
+            ),
             "terminal-output codex call should close turn immediately as Complete"
         );
         assert_eq!(t.active_count(), 0);
@@ -1210,9 +1236,9 @@ mod tests {
         // Advance time past idle timeout (last_activity = complete_time = 2_000_000)
         let swept = t.advance_time(c.complete_time.unwrap() + 2_000);
         assert!(
-            swept
-                .iter()
-                .any(|e| matches!(e, TurnEvent::Completed(tr) if tr.status == TurnStatus::Complete)),
+            swept.iter().any(
+                |e| matches!(e, TurnEvent::Completed(tr) if tr.status == TurnStatus::Complete)
+            ),
             "sweep should infer Complete from last_finish_reason"
         );
         assert_eq!(t.active_count(), 0);

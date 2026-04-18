@@ -290,13 +290,16 @@ mod tests {
     fn test_metrics() -> MetricsWorker {
         use ts_common::internal_metrics::MetricsSystem;
         let mut sys = MetricsSystem::new();
-        let w = sys.register_worker("test", &[
-            Metric::LlmRequestsDetected,
-            Metric::LlmRequestsIgnored,
-            Metric::LlmCallsCompleted,
-            Metric::LlmResponsesOrphaned,
-            Metric::LlmPendingExpired,
-        ]);
+        let w = sys.register_worker(
+            "test",
+            &[
+                Metric::LlmRequestsDetected,
+                Metric::LlmRequestsIgnored,
+                Metric::LlmCallsCompleted,
+                Metric::LlmResponsesOrphaned,
+                Metric::LlmPendingExpired,
+            ],
+        );
         let _svc = sys.start();
         w
     }
@@ -606,12 +609,21 @@ mod tests {
         assert_eq!(proc.pending_count(), 1);
 
         // Heartbeat well inside the timeout window — nothing should evict.
-        let events = proc.process(ProtocolEvent::Heartbeat { ts: 2_000_000, stream_id: String::new() });
-        assert!(matches!(events.as_slice(), [LlmEvent::Heartbeat { ts: 2_000_000, .. }]));
+        let events = proc.process(ProtocolEvent::Heartbeat {
+            ts: 2_000_000,
+            stream_id: String::new(),
+        });
+        assert!(matches!(
+            events.as_slice(),
+            [LlmEvent::Heartbeat { ts: 2_000_000, .. }]
+        ));
         assert_eq!(proc.pending_count(), 1);
 
         // Heartbeat past the 600s timeout — pending must be evicted.
-        let events = proc.process(ProtocolEvent::Heartbeat { ts: 1_000_000 + PENDING_STALE_TIMEOUT_US + 1, stream_id: String::new() });
+        let events = proc.process(ProtocolEvent::Heartbeat {
+            ts: 1_000_000 + PENDING_STALE_TIMEOUT_US + 1,
+            stream_id: String::new(),
+        });
         assert!(matches!(events.as_slice(), [LlmEvent::Heartbeat { .. }]));
         assert_eq!(proc.pending_count(), 0);
     }

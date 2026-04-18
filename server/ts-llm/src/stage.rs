@@ -83,19 +83,21 @@ pub fn spawn_llm_stage(
                     match llm_event {
                         LlmEvent::Heartbeat { ts, ref stream_id } => {
                             for tx in metrics_txs.iter() {
-                                let _ = tx.try_send(LlmEvent::Heartbeat { ts, stream_id: stream_id.clone() });
+                                let _ = tx.try_send(LlmEvent::Heartbeat {
+                                    ts,
+                                    stream_id: stream_id.clone(),
+                                });
                             }
                             for tx in turn_txs.iter() {
-                                let _ = tx.try_send(TurnShardInput::Heartbeat { ts, stream_id: stream_id.clone() });
+                                let _ = tx.try_send(TurnShardInput::Heartbeat {
+                                    ts,
+                                    stream_id: stream_id.clone(),
+                                });
                             }
                         }
                         other => {
                             let metrics_idx = metrics_shard_index(&other, metrics_txs.len());
-                            if metrics_txs[metrics_idx]
-                                .send(other.clone())
-                                .await
-                                .is_err()
-                            {
+                            if metrics_txs[metrics_idx].send(other.clone()).await.is_err() {
                                 break 'main "downstream_closed_metrics";
                             }
                             if let LlmEvent::Complete { call, identity } = other {
@@ -108,13 +110,13 @@ pub fn spawn_llm_stage(
                                     break 'main "downstream_closed_calls";
                                 }
                                 if let Some(id) = identity {
-                                    let idx = turn_shard_index(&call.stream_id, &id.session_id, turn_txs.len());
+                                    let idx = turn_shard_index(
+                                        &call.stream_id,
+                                        &id.session_id,
+                                        turn_txs.len(),
+                                    );
                                     let ic = IdentifiedCall { call, identity: id };
-                                    if turn_txs[idx]
-                                        .send(TurnShardInput::Call(ic))
-                                        .await
-                                        .is_err()
-                                    {
+                                    if turn_txs[idx].send(TurnShardInput::Call(ic)).await.is_err() {
                                         break 'main "downstream_closed_turn";
                                     }
                                 }

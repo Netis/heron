@@ -197,10 +197,7 @@ impl Pipeline {
             let parsed_weaks: Vec<WeakSender<WorkerInput>> =
                 parsed_txs.iter().map(|tx| tx.downgrade()).collect();
             let (event_txs, event_rxs) =
-                make_shard_channels::<ts_protocol::model::ProtocolEvent>(
-                    flow_shards,
-                    q.flow_event,
-                );
+                make_shard_channels::<ts_protocol::model::ProtocolEvent>(flow_shards, q.flow_event);
             let event_weaks: Vec<WeakSender<ts_protocol::model::ProtocolEvent>> =
                 event_txs.iter().map(|tx| tx.downgrade()).collect();
             let (turn_shard_txs, turn_shard_rxs) =
@@ -221,8 +218,7 @@ impl Pipeline {
             for i in 0..dispatcher_count {
                 let (dtx, drx) = mpsc::channel::<RawPacket>(q.raw);
                 disp_txs.push(dtx);
-                let worker_txs_clone: Vec<_> =
-                    parsed_txs.iter().map(|tx| tx.clone()).collect();
+                let worker_txs_clone: Vec<_> = parsed_txs.iter().map(|tx| tx.clone()).collect();
                 let worker_name = if dispatcher_count > 1 {
                     format!("dispatcher.{i}")
                 } else {

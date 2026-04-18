@@ -21,7 +21,10 @@ pub struct RoutingSender {
 impl RoutingSender {
     /// Create a new routing sender. Panics if `txs` is empty.
     pub fn new(txs: Vec<mpsc::Sender<RawPacket>>) -> Self {
-        assert!(!txs.is_empty(), "RoutingSender requires at least one channel");
+        assert!(
+            !txs.is_empty(),
+            "RoutingSender requires at least one channel"
+        );
         Self { txs }
     }
 
@@ -31,19 +34,13 @@ impl RoutingSender {
     }
 
     /// Send a packet, routing by `stream_id` hash.
-    pub async fn send(
-        &self,
-        pkt: RawPacket,
-    ) -> Result<(), mpsc::error::SendError<RawPacket>> {
+    pub async fn send(&self, pkt: RawPacket) -> Result<(), mpsc::error::SendError<RawPacket>> {
         let tx = &self.txs[self.index(&pkt.stream_id)];
         tx.send(pkt).await
     }
 
     /// Blocking variant for use inside `spawn_blocking` tasks (pcap sources).
-    pub fn blocking_send(
-        &self,
-        pkt: RawPacket,
-    ) -> Result<(), mpsc::error::SendError<RawPacket>> {
+    pub fn blocking_send(&self, pkt: RawPacket) -> Result<(), mpsc::error::SendError<RawPacket>> {
         let tx = &self.txs[self.index(&pkt.stream_id)];
         tx.blocking_send(pkt)
     }

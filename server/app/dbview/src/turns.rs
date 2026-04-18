@@ -228,7 +228,10 @@ fn load_call_bodies(conn: &Connection, call_id: &str) -> Option<CallBodies> {
     .ok()
 }
 
-enum ExtractKind { User, Assistant }
+enum ExtractKind {
+    User,
+    Assistant,
+}
 
 fn extract_with_profile(
     client_kind: &str,
@@ -322,7 +325,9 @@ fn print_detail(conn: &Connection, d: &TurnDetail, calls: &[ChildCall]) {
         }),
         None => None,
     };
-    let display_user = full_user_input.as_deref().or(d.user_input_preview.as_deref());
+    let display_user = full_user_input
+        .as_deref()
+        .or(d.user_input_preview.as_deref());
     if let Some(s) = display_user {
         let header = match (&full_user_input, d.user_call_id.as_deref()) {
             (Some(_), Some(id)) => format!("  User Input (full, call={id}):"),
@@ -336,11 +341,18 @@ fn print_detail(conn: &Connection, d: &TurnDetail, calls: &[ChildCall]) {
     }
     let full_final_answer = match d.final_call_id.as_deref() {
         Some(cid) => load_call_bodies(conn, cid).and_then(|b| {
-            extract_with_profile(&d.client_kind, None, b.response_body, ExtractKind::Assistant)
+            extract_with_profile(
+                &d.client_kind,
+                None,
+                b.response_body,
+                ExtractKind::Assistant,
+            )
         }),
         None => None,
     };
-    let display_final = full_final_answer.as_deref().or(d.final_answer_preview.as_deref());
+    let display_final = full_final_answer
+        .as_deref()
+        .or(d.final_answer_preview.as_deref());
     if let Some(s) = display_final {
         let header = match (&full_final_answer, d.final_call_id.as_deref()) {
             (Some(_), Some(id)) => format!("  Final Answer (full, call={id}):"),

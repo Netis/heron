@@ -38,7 +38,9 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, ApiError> {
         match axum::extract::Path::<T>::from_request_parts(parts, state).await {
             Ok(axum::extract::Path(v)) => Ok(Path(v)),
-            Err(e) => Err(ApiError::InvalidParam(format!("invalid path parameter: {e}"))),
+            Err(e) => Err(ApiError::InvalidParam(format!(
+                "invalid path parameter: {e}"
+            ))),
         }
     }
 }
@@ -150,4 +152,3 @@ mod tests {
         assert_eq!(v["message"], "ok");
     }
 }
-

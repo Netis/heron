@@ -13,7 +13,13 @@ pub struct FlowKey {
 }
 
 impl FlowKey {
-    pub fn new(stream_id: String, src_ip: IpAddr, src_port: u16, dst_ip: IpAddr, dst_port: u16) -> Self {
+    pub fn new(
+        stream_id: String,
+        src_ip: IpAddr,
+        src_port: u16,
+        dst_ip: IpAddr,
+        dst_port: u16,
+    ) -> Self {
         let a = (src_ip, src_port);
         let b = (dst_ip, dst_port);
         if (src_ip, src_port) <= (dst_ip, dst_port) {

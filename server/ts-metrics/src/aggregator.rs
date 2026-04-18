@@ -212,7 +212,11 @@ impl MetricsAggregator {
             let expired_keys: Vec<_> = self
                 .buckets
                 .keys()
-                .filter(|k| k.stream_id == stream_id && k.granularity_idx == gi && k.window_start_us < current_window)
+                .filter(|k| {
+                    k.stream_id == stream_id
+                        && k.granularity_idx == gi
+                        && k.window_start_us < current_window
+                })
                 .cloned()
                 .collect();
 
@@ -244,7 +248,12 @@ fn window_start(timestamp_us: i64, window_secs: i64) -> i64 {
 }
 
 /// Generate the 4 dimension keys for a single event.
-fn dimension_keys(stream_id: &str, provider: &str, model: &str, server_ip: &str) -> [DimensionKey; 4] {
+fn dimension_keys(
+    stream_id: &str,
+    provider: &str,
+    model: &str,
+    server_ip: &str,
+) -> [DimensionKey; 4] {
     [
         DimensionKey {
             stream_id: stream_id.to_string(),
@@ -283,10 +292,10 @@ mod tests {
     fn test_metrics() -> MetricsWorker {
         use ts_common::internal_metrics::MetricsSystem;
         let mut sys = MetricsSystem::new();
-        let w = sys.register_worker("test", &[
-            Metric::MetricsEventsReceived,
-            Metric::MetricsWindowsFlushed,
-        ]);
+        let w = sys.register_worker(
+            "test",
+            &[Metric::MetricsEventsReceived, Metric::MetricsWindowsFlushed],
+        );
         let _svc = sys.start();
         w
     }
@@ -482,7 +491,12 @@ mod tests {
         })
     }
 
-    fn make_complete_with_stream(request_time: i64, complete_time: i64, model: &str, sid: &str) -> LlmEvent {
+    fn make_complete_with_stream(
+        request_time: i64,
+        complete_time: i64,
+        model: &str,
+        sid: &str,
+    ) -> LlmEvent {
         LlmEvent::Complete {
             call: Arc::new(LlmCall {
                 stream_id: sid.to_string(),
@@ -531,14 +545,20 @@ mod tests {
         agg.process(&make_start_with_stream(t1, "gpt-4", true, "s0"));
         let s0_flushed = agg.process(&make_complete_with_stream(t1, t1 + 500_000, "gpt-4", "s0"));
 
-        let s0_10s: Vec<_> = s0_flushed.iter().filter(|m| m.granularity == "10s" && m.stream_id == "s0").collect();
+        let s0_10s: Vec<_> = s0_flushed
+            .iter()
+            .filter(|m| m.granularity == "10s" && m.stream_id == "s0")
+            .collect();
         assert_eq!(s0_10s.len(), 4, "s0 should flush 4 dims for t0");
 
         // Stream "s1" still at t0 — its window must NOT be flushed by s0's watermark.
         agg.process(&make_start_with_stream(t0, "gpt-4", true, "s1"));
         let s1_flushed = agg.process(&make_complete_with_stream(t0, t0 + 500_000, "gpt-4", "s1"));
         assert_eq!(
-            s1_flushed.iter().filter(|m| m.stream_id == "s1" && m.granularity == "10s").count(),
+            s1_flushed
+                .iter()
+                .filter(|m| m.stream_id == "s1" && m.granularity == "10s")
+                .count(),
             0,
             "s1 window should not flush yet"
         );

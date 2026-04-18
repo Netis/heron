@@ -65,7 +65,10 @@ impl HeartbeatTracker {
         }
 
         *slot = pkt.timestamp_us;
-        Some(RawPacket::heartbeat(pkt.timestamp_us, pkt.stream_id.clone()))
+        Some(RawPacket::heartbeat(
+            pkt.timestamp_us,
+            pkt.stream_id.clone(),
+        ))
     }
 }
 

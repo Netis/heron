@@ -146,10 +146,16 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
                         if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                             input_tokens = Some(it as u32);
                         }
-                        if let Some(cr) = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()) {
+                        if let Some(cr) = usage
+                            .get("cache_read_input_tokens")
+                            .and_then(|v| v.as_u64())
+                        {
                             cache_read_input_tokens = Some(cr as u32);
                         }
-                        if let Some(cc) = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()) {
+                        if let Some(cc) = usage
+                            .get("cache_creation_input_tokens")
+                            .and_then(|v| v.as_u64())
+                        {
                             cache_creation_input_tokens = Some(cc as u32);
                         }
                     }
@@ -171,10 +177,16 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
                     if let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
                         output_tokens = Some(ot as u32);
                     }
-                    if let Some(cr) = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()) {
+                    if let Some(cr) = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_u64())
+                    {
                         cache_read_input_tokens = Some(cr as u32);
                     }
-                    if let Some(cc) = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()) {
+                    if let Some(cc) = usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_u64())
+                    {
                         cache_creation_input_tokens = Some(cc as u32);
                     }
                 }

@@ -31,10 +31,7 @@ pub fn spawn_metrics_stage(
         let metrics_tx = metrics_tx.clone();
         let worker_metrics = metrics_sys.register_worker(
             &format!("metrics.{i}"),
-            &[
-                Metric::MetricsEventsReceived,
-                Metric::MetricsWindowsFlushed,
-            ],
+            &[Metric::MetricsEventsReceived, Metric::MetricsWindowsFlushed],
         );
         handles.push(tokio::spawn(async move {
             let shard = i;
@@ -59,7 +56,11 @@ pub fn spawn_metrics_stage(
                     tracing::debug!(shard, "metrics worker stopping: upstream EOF");
                 }
                 r => {
-                    tracing::warn!(shard, reason = r, "metrics worker stopping: downstream closed");
+                    tracing::warn!(
+                        shard,
+                        reason = r,
+                        "metrics worker stopping: downstream closed"
+                    );
                 }
             }
         }));

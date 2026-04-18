@@ -221,13 +221,15 @@ async fn main() {
         }
     }
 
-    if !effective_pipelines.is_empty() && effective_pipelines.iter().any(|d| !d.sources.is_empty()) {
+    if !effective_pipelines.is_empty() && effective_pipelines.iter().any(|d| !d.sources.is_empty())
+    {
         // One MetricsSystem per pipeline — the dispatcher/protocol stages
         // register workers against `per_pipeline_metrics[i]` inside
         // `Pipeline::build`, and we start one reporter per system below so
         // log lines are tagged per-pipeline and never merge across pipelines.
-        let mut per_pipeline_metrics: Vec<MetricsSystem> =
-            (0..effective_pipelines.len()).map(|_| MetricsSystem::new()).collect();
+        let mut per_pipeline_metrics: Vec<MetricsSystem> = (0..effective_pipelines.len())
+            .map(|_| MetricsSystem::new())
+            .collect();
 
         // Pre-register capture metrics for each pipeline's sources.
         let capture_metrics: Vec<Vec<_>> = effective_pipelines
@@ -306,11 +308,17 @@ async fn main() {
             .zip(pipeline_sources.into_iter())
             .zip(capture_metrics.into_iter())
         {
-            for ((j, source_cfg), metrics) in source_cfgs.iter().enumerate().zip(source_metrics.into_iter()) {
+            for ((j, source_cfg), metrics) in source_cfgs
+                .iter()
+                .enumerate()
+                .zip(source_metrics.into_iter())
+            {
                 let source = match ts_capture::build_source(source_cfg) {
                     Ok(s) => s,
                     Err(e) => {
-                        tracing::error!("failed to build source [{j}] in pipeline '{pipeline_name}': {e}");
+                        tracing::error!(
+                            "failed to build source [{j}] in pipeline '{pipeline_name}': {e}"
+                        );
                         std::process::exit(1);
                     }
                 };

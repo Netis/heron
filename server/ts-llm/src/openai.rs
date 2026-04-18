@@ -179,7 +179,8 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
                         if let Some(tt) = usage.get("total_tokens").and_then(|v| v.as_u64()) {
                             total_tokens = Some(tt as u32);
                         }
-                        if let Some(cr) = usage.get("prompt_tokens_details")
+                        if let Some(cr) = usage
+                            .get("prompt_tokens_details")
                             .and_then(|d| d.get("cached_tokens"))
                             .and_then(|v| v.as_u64())
                         {
@@ -260,7 +261,8 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
                         if let Some(tt) = usage.get("total_tokens").and_then(|v| v.as_u64()) {
                             total_tokens = Some(tt as u32);
                         }
-                        if let Some(cr) = usage.get("prompt_tokens_details")
+                        if let Some(cr) = usage
+                            .get("prompt_tokens_details")
                             .and_then(|d| d.get("cached_tokens"))
                             .and_then(|v| v.as_u64())
                         {

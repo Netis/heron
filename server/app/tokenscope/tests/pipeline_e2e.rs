@@ -84,8 +84,9 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
         .collect();
 
     // One MetricsSystem per pipeline.
-    let mut per_pipeline_metrics: Vec<MetricsSystem> =
-        (0..pipeline_defs.len()).map(|_| MetricsSystem::new()).collect();
+    let mut per_pipeline_metrics: Vec<MetricsSystem> = (0..pipeline_defs.len())
+        .map(|_| MetricsSystem::new())
+        .collect();
 
     // Register capture metrics for each pipeline's single source.
     let capture_metrics: Vec<_> = per_pipeline_metrics
@@ -117,7 +118,10 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
         storage.clone(),
         &mut per_pipeline_metrics,
     );
-    let _metrics_svcs: Vec<_> = per_pipeline_metrics.into_iter().map(|s| s.start()).collect();
+    let _metrics_svcs: Vec<_> = per_pipeline_metrics
+        .into_iter()
+        .map(|s| s.start())
+        .collect();
 
     // Each pcap source owns its pipeline's RawPacket sender; dropping it on
     // source exit cascades EOF through that pipeline.
@@ -271,11 +275,8 @@ async fn claude_cli_pcap_populates_all_three_tables() {
 ///   land in the shared sink.
 #[tokio::test]
 async fn two_pcaps_isolated_but_metrics_merged() {
-    let Some((_tmp, db_path)) = run_pipeline_multi(&[
-        "claude-cli-messages.pcap",
-        "codex-cli-messages-multi.pcap",
-    ])
-    .await
+    let Some((_tmp, db_path)) =
+        run_pipeline_multi(&["claude-cli-messages.pcap", "codex-cli-messages-multi.pcap"]).await
     else {
         eprintln!("skip: one or both two-pcap fixtures not present");
         return;

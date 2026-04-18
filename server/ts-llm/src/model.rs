@@ -365,7 +365,8 @@ impl fmt::Display for LlmCall {
                     .map(|t| t.to_string())
                     .unwrap_or_else(|| "-".into()),
             )?;
-            if self.cache_read_input_tokens.is_some() || self.cache_creation_input_tokens.is_some() {
+            if self.cache_read_input_tokens.is_some() || self.cache_creation_input_tokens.is_some()
+            {
                 write!(
                     f,
                     " cache_read={} cache_create={}",

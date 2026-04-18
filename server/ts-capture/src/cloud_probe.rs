@@ -345,8 +345,8 @@ mod tests {
     #[test]
     fn parse_batch_returns_uuid() {
         let uuid_bytes: [u8; 16] = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f, 0x10,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10,
         ];
         let mut bytes = Vec::with_capacity(BATCH_HDR_LEN);
         bytes.extend_from_slice(&2u16.to_be_bytes());
@@ -420,9 +420,7 @@ mod tests {
             caplen: 14,
             wirelen: 14,
             link_type: LINKTYPE_ETHERNET,
-            data: Bytes::from_static(&[
-                0xAA, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x00,
-            ]),
+            data: Bytes::from_static(&[0xAA, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x00]),
             stream_id: "u1".to_string(),
         };
         assert!(t.on_packet(&p).is_none());
@@ -497,7 +495,11 @@ mod tests {
             let source = Box::new(CloudProbeSource::new(endpoint.clone(), 100));
             let metrics = test_metrics();
             let cancel_clone = cancel.clone();
-            let handle = tokio::spawn(async move { source.run(RoutingSender::single(tx), metrics, cancel_clone).await });
+            let handle = tokio::spawn(async move {
+                source
+                    .run(RoutingSender::single(tx), metrics, cancel_clone)
+                    .await
+            });
 
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -541,7 +543,11 @@ mod tests {
             let source = Box::new(CloudProbeSource::new(endpoint.clone(), 100));
             let metrics = test_metrics();
             let cancel_clone = cancel.clone();
-            let handle = tokio::spawn(async move { source.run(RoutingSender::single(tx), metrics, cancel_clone).await });
+            let handle = tokio::spawn(async move {
+                source
+                    .run(RoutingSender::single(tx), metrics, cancel_clone)
+                    .await
+            });
 
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 

@@ -88,10 +88,7 @@ impl RawAppConfig {
         let pipelines = match self.pipeline {
             Some(RawPipeline::Array(defs)) => defs,
             Some(RawPipeline::Single(cfg)) => {
-                let sources = self
-                    .capture
-                    .map(|c| c.sources)
-                    .unwrap_or_default();
+                let sources = self.capture.map(|c| c.sources).unwrap_or_default();
                 vec![PipelineDef {
                     name: default_pipeline_name(),
                     dispatcher_count: cfg.dispatcher_count,
@@ -103,10 +100,7 @@ impl RawAppConfig {
                 }]
             }
             None => {
-                let sources = self
-                    .capture
-                    .map(|c| c.sources)
-                    .unwrap_or_default();
+                let sources = self.capture.map(|c| c.sources).unwrap_or_default();
                 if sources.is_empty() {
                     Vec::new()
                 } else {

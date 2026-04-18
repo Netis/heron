@@ -22,7 +22,9 @@ pub fn build_source(config: &CaptureSourceConfig) -> crate::Result<Box<dyn Captu
                 sid,
             )))
         }
-        CaptureSourceConfig::PcapFile { path, stream_id, .. } => {
+        CaptureSourceConfig::PcapFile {
+            path, stream_id, ..
+        } => {
             let sid = stream_id.clone().unwrap_or_else(|| {
                 std::path::Path::new(path)
                     .file_stem()
@@ -32,9 +34,9 @@ pub fn build_source(config: &CaptureSourceConfig) -> crate::Result<Box<dyn Captu
             });
             Ok(Box::new(PcapFileSource::new(path.into(), sid)))
         }
-        CaptureSourceConfig::CloudProbe { endpoint, recv_hwm } => Ok(Box::new(
-            CloudProbeSource::new(endpoint.clone(), *recv_hwm),
-        )),
+        CaptureSourceConfig::CloudProbe { endpoint, recv_hwm } => {
+            Ok(Box::new(CloudProbeSource::new(endpoint.clone(), *recv_hwm)))
+        }
     }
 }
 
