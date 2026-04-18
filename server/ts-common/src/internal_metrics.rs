@@ -160,6 +160,10 @@ define_metrics! {
     TurnCallsAuxiliary       => { kind: Counter, group: Turn, short: "calls_aux"      },
     TurnsCompleted           => { kind: Counter, group: Turn, short: "completed"      },
     TurnsTimedOut            => { kind: Counter, group: Turn, short: "timed_out"      },
+    TurnReorderOrphan        => { kind: Counter, group: Turn, short: "orphan"         },
+    TurnFinalizedByGrace     => { kind: Counter, group: Turn, short: "fin_grace"      },
+    TurnFinalizedByIdle      => { kind: Counter, group: Turn, short: "fin_idle"       },
+    TurnDiscardedNoUserStart => { kind: Counter, group: Turn, short: "no_user_start"  },
 
     // -- Metrics aggregation --
     MetricsEventsReceived    => { kind: Counter, group: Metrics, short: "events_recv"    },

@@ -32,7 +32,6 @@ pub fn spawn_turn_stage(
     let mut handles = Vec::with_capacity(shard_rxs.len());
     for (i, mut rx) in shard_rxs.into_iter().enumerate() {
         let turns_tx = turns_tx.clone();
-        let tracker_cfg = tracker_cfg.clone();
         let registry = registry.clone();
         let worker_metrics = metrics_sys.register_worker(
             &format!("turn.{i}"),
@@ -41,6 +40,10 @@ pub fn spawn_turn_stage(
                 Metric::TurnCallsAuxiliary,
                 Metric::TurnsCompleted,
                 Metric::TurnsTimedOut,
+                Metric::TurnReorderOrphan,
+                Metric::TurnFinalizedByGrace,
+                Metric::TurnFinalizedByIdle,
+                Metric::TurnDiscardedNoUserStart,
             ],
         );
         handles.push(tokio::spawn(async move {
@@ -53,27 +56,24 @@ pub fn spawn_turn_stage(
                 };
                 match input {
                     TurnShardInput::Call(identified) => {
-                        for ev in tracker.ingest(&identified.call, &identified.identity) {
-                            if let TurnEvent::Completed(t) = ev {
-                                if turns_tx.send(t).await.is_err() {
-                                    break 'main "downstream_closed";
-                                }
+                        for ev in tracker.ingest(identified) {
+                            let TurnEvent::Completed(t) = ev;
+                            if turns_tx.send(t).await.is_err() {
+                                break 'main "downstream_closed";
                             }
                         }
                         for ev in tracker.sweep() {
-                            if let TurnEvent::Completed(t) = ev {
-                                if turns_tx.send(t).await.is_err() {
-                                    break 'main "downstream_closed";
-                                }
+                            let TurnEvent::Completed(t) = ev;
+                            if turns_tx.send(t).await.is_err() {
+                                break 'main "downstream_closed";
                             }
                         }
                     }
                     TurnShardInput::Heartbeat { ts, .. } => {
                         for ev in tracker.advance_time(ts) {
-                            if let TurnEvent::Completed(t) = ev {
-                                if turns_tx.send(t).await.is_err() {
-                                    break 'main "downstream_closed";
-                                }
+                            let TurnEvent::Completed(t) = ev;
+                            if turns_tx.send(t).await.is_err() {
+                                break 'main "downstream_closed";
                             }
                         }
                     }
@@ -84,9 +84,8 @@ pub fn spawn_turn_stage(
                     // Only drain remaining turns when the upstream closed cleanly.
                     // If downstream is already gone, flush has nowhere to go.
                     for ev in tracker.flush_all() {
-                        if let TurnEvent::Completed(t) = ev {
-                            let _ = turns_tx.send(t).await;
-                        }
+                        let TurnEvent::Completed(t) = ev;
+                        let _ = turns_tx.send(t).await;
                     }
                     tracing::debug!(shard, "turn worker stopping: upstream EOF");
                 }

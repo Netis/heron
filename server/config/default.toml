@@ -19,6 +19,7 @@
 # [pipeline.turn]
 # idle_timeout_secs = 600
 # sweep_interval_secs = 10
+# grace_ms = 1000          # buffer-finalize fan-in jitter window (see docs/design/04b)
 # shard_count = 1
 #
 # [pipeline.metrics]

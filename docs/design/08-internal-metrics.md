@@ -14,8 +14,31 @@ Self-monitoring module for diagnosing pipeline bottlenecks. Each processing stag
 | **worker::net** | packets_parsed, tcp_flows_active, tcp_flows_completed |
 | **worker::http** | requests_parsed, responses_parsed, sse_events_parsed |
 | **worker::llm** | calls_extracted, calls_failed |
+| **worker::turn** | calls_ingested, calls_aux, completed, timed_out, orphan, fin_grace, fin_idle, no_user_start |
 | **metrics::aggregator** | events_received (CallStart + CallEnd), windows_flushed |
 | **storage::buffer** | records_buffered, records_flushed, flush_errors |
+
+### `worker::turn` operator notes
+
+The turn shard's buffer-and-finalize machinery (see `04-turn.md` and
+`04b-turn-reorder-proposal.md`) emits these counters per shard:
+
+| Short name | Semantics | What rising values usually mean |
+|---|---|---|
+| `calls_ingested` | Calls accepted into a SessionBuffer (or routed past it) | Should track `worker::llm::calls_extracted` minus aux |
+| `calls_aux` | Auxiliary one-shots skipped (e.g. claude-cli session-title) | Steady-state baseline; no action needed |
+| `completed` | Turns finalized and emitted downstream | Healthy throughput signal |
+| `fin_grace` | Subset of `completed` closed via grace expiry (terminal observed) | Normal path; expect this to dominate |
+| `fin_idle` | Subset of `completed` closed via idle timeout (no terminal observed) | Truncated capture, missing terminal predicate, or client crash. If `fin_idle` ≳ `fin_grace`, investigate profiles or capture window |
+| `timed_out` | Same event as `fin_idle`, kept for back-compat dashboards | (Mirror of `fin_idle`) |
+| `orphan` | Late call dropped at the buffer entry guard (request_time < high-water) | Severe fan-in jitter, broken sharding (same session crossing shards), or replay-with-time-skew |
+| `no_user_start` | Partition discarded because no call carried `is_user_turn_start = Some(true)` | Lost capture window at session boundary; orphan sub-agent traffic; profile mis-classifying user-start. Small steady rate is normal during traffic ramp-up |
+
+**Tuning `grace_ms`** (config: `[pipeline.turn] grace_ms`, default 1000): the
+grace window is the only added per-call latency in the steady-state path. If
+`orphan` rises in correlation with multi-connection sessions, raise `grace_ms`.
+If turn-emit latency in dashboards is too high, lower it — but verify that
+`no_user_start` and `orphan` don't climb in response.
 
 Each counter is an `AtomicU64`, incremented in the hot path with zero allocation.
 

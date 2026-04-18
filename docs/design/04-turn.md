@@ -13,9 +13,17 @@ This design is implemented by the `ts-turn` crate (see `server/ts-turn/`).
   `ClientProfile` impl in `server/ts-turn/src/profiles/`.
 - Currently supported clients: `claude-cli` (Anthropic), `codex_cli_rs` /
   `codex-tui` (OpenAI Responses).
-- Turn boundaries: explicit terminal signal (stop_reason, status) OR new
-  user-turn start (`messages[-1]` / `input[-1]` inspection) OR idle timeout
-  (default 600 s, packet-time-driven).
+- **Assembly model:** buffer-and-finalize. Each `(stream_id, session_id)` owns
+  a `SessionBuffer` keyed by `request_time`. When a main-agent terminal call
+  arrives, a small grace window (`grace_ms`, default 1000) starts; on grace
+  expiry the buffer is partitioned at each terminal and one `LlmTurn` is
+  emitted per partition. This tolerates arbitrary intra-shard arrival order
+  (fan-in jitter, multi-connection sessions, parallel sub-agents). See
+  `04b-turn-reorder-proposal.md` for the full algorithm and rationale.
+- Turn boundaries: profile-defined terminal predicate (`is_turn_terminal` /
+  definitive `finish_reason`) OR idle timeout (default 600 s, packet-time
+  driven). Partitions without `is_user_turn_start = Some(true)` are dropped
+  (counted as `TurnDiscardedNoUserStart`).
 
 ## Hierarchy
 
@@ -53,12 +61,14 @@ Based on analysis of real traffic captures from Claude Code (Anthropic) and Code
 - `X-Claude-Code-Session-Id: <uuid>` — same across all calls in a session, used to correlate calls across connections
 
 **Turn association strategy:**
-1. Group by `X-Claude-Code-Session-Id` (if present)
-2. Within a session, use `finish_reason` state machine:
-   - New request + no active turn → start new turn (generate `turn_id`)
-   - Response with `tool_use` → turn continues
-   - Response with `end_turn` → turn ends, next request starts new turn
-3. Without session header → fall back to per-connection grouping (may miss cross-connection turns)
+1. Group by `X-Claude-Code-Session-Id` into a `(stream_id, session_id)` buffer.
+2. A request whose body's last user message is a `text` block flags
+   `is_user_turn_start = Some(true)` (continuation `tool_result` blocks flag
+   `Some(false)`); the user-start flag is what makes a partition emittable.
+3. A response with `stop_reason = end_turn` (`FinishReason::Complete` /
+   `Length`) is the main-agent terminal that starts the buffer's grace clock.
+4. Without the session header → calls bucket as `(stream_id, "")` — they'll
+   still group by stream, but cross-connection same-session calls won't merge.
 
 ### OpenAI Responses API (Codex) — capture3.pcap, capture5.pcap
 
@@ -82,10 +92,13 @@ Based on analysis of real traffic captures from Claude Code (Anthropic) and Code
 - Body field `turn_id` — unique per turn
 
 **Turn association strategy:**
-1. Extract `turn_id` from `X-Codex-Turn-Metadata` header or request body → direct grouping (no state machine needed)
-2. Without turn header → fall back to finish_reason analysis:
-   - Response with only `function_call` outputs → turn continues
-   - Response with `message` output → turn complete
+1. Extract `session_id` (header/body) and `turn_id` (header) and bucket by
+   `(stream_id, session_id)`. `turn_id` is recorded as `turn_id_hint` but
+   does NOT drive turn boundaries on its own — Codex's `status` is always
+   `completed` and `finish_reason = Complete` only means "API call succeeded."
+2. The main-agent terminal predicate is `profile.is_turn_terminal`, which
+   inspects `response.output` for a terminal `message` item with no pending
+   `function_call`. Pending function calls keep the buffer open.
 
 ### OpenAI Chat Completions API
 
@@ -100,11 +113,11 @@ Each provider's extractor is responsible for:
 1. Extracting `session_id` and `turn_id` from headers/body (if available)
 2. Normalizing `finish_reason` to indicate whether the turn continues or ends
 
-| Provider | session_id source | turn_id source | Turn boundary |
-|----------|------------------|----------------|---------------|
-| Anthropic | `X-Claude-Code-Session-Id` header | Generated (not in protocol) | `stop_reason` state machine |
-| OpenAI Responses | `session_id` in body/header | `turn_id` in `X-Codex-Turn-Metadata` | Explicit `turn_id` grouping |
-| OpenAI Chat | `Authorization` token prefix | Generated (not in protocol) | `finish_reason` state machine |
+| Provider | session_id source | turn_id_hint source | Main-agent terminal predicate |
+|----------|------------------|---------------------|-------------------------------|
+| Anthropic | `X-Claude-Code-Session-Id` header | None (UUIDv7 minted at finalize) | `finish_reason ∈ {Complete, Length}` |
+| OpenAI Responses | `session_id` in body/header | `turn_id` in `X-Codex-Turn-Metadata` | `is_turn_terminal` (terminal `message` item, no pending function calls) |
+| OpenAI Chat | `Authorization` token prefix | None (UUIDv7 minted at finalize) | `finish_reason ∈ {Complete, Length}` |
 
 ## FinishReason Normalization
 
@@ -118,32 +131,71 @@ The `FinishReason` enum serves as a unified turn-continuation signal:
 | `Error` | Generation error | (HTTP error) | (HTTP error) | `status: "failed"` |
 | `Cancelled` | User cancelled | (connection close) | `finish_reason: "content_filter"` | `status: "cancelled"` |
 
-## Turn State Machine (Generic Fallback)
+## Buffer-and-Finalize Assembly
 
-When no explicit `turn_id` is available, use this state machine per session (or per connection if no session header):
+Each `(stream_id, session_id)` owns a `SessionBuffer` of pending calls
+ordered by `request_time`. The tracker is a passive state container driven by
+`ingest`, `advance_time`, `sweep`, `flush_all` — all timing is virtual
+(packet/heartbeat), not wall clock.
 
 ```
-                    ┌──────────────────────────────┐
-                    │                              │
-                    ▼                              │
-  Idle ──[request]──▶ InTurn ──[resp: ToolUse]─────┘
-                        │
-                        ├──[resp: Complete]──▶ Idle  (emit Turn)
-                        ├──[resp: Length]────▶ Idle  (emit incomplete Turn)
-                        ├──[resp: Error]────▶ InTurn (keep open, client may retry)
-                        ├──[HTTP 4xx/5xx]───▶ InTurn (keep open, client may retry)
-                        └──[timeout]────────▶ Idle  (emit incomplete Turn)
+ingest(IdentifiedCall):
+  - bump virtual_now to call's last activity
+  - orphan guard: drop if request_time < buffer's last_finalized_request_time
+  - append to pending[request_time]
+  - if call is a main-agent terminal and no terminal was already pending,
+    start the grace clock at virtual_now
+  - flush any buffer whose grace window expired
+
+flush (grace expired):
+  - sort pending by request_time
+  - for each main-agent terminal whose own grace has expired:
+      - partition: take every pending call with request_time ≤ terminal_ts
+      - if partition contains a user-turn-start call → emit one LlmTurn
+        else → drop the partition (TurnDiscardedNoUserStart)
+      - record terminal_ts as last_finalized_request_time
+  - reseat grace clock to the next pending terminal's arrival, or clear
+
+sweep (idle timeout):
+  - drain any session whose newest pending call is older than idle_timeout
+    AND which has no main-agent terminal — emit Incomplete (or discard).
+
+flush_all (EOF):
+  - force grace open and run finalize, then drain any non-terminal tail.
 ```
 
-On turn start, generate a `turn_id` using: `turn-{timestamp_us}-{random_suffix}`.
+Key properties:
+
+- **Order-independent:** turn fields (`final_call_id`, `user_call_id`,
+  `end_time_us`, etc.) derive from the sorted partition, not from arrival
+  order. A late `is_user_turn_start` call lands in the right turn.
+- **Sub-agent isolation:** sub-agent calls never trigger main-agent grace,
+  and their assistant text never appears in the parent's `final_answer_preview`.
+- **Per-terminal grace:** when two terminals are pending, each gets its own
+  grace window measured from its own `arrived_at_us`. A second terminal that
+  arrives later doesn't get rushed because the first one already finalized.
+- **Orphan guard:** a call older than the buffer's high-water mark is dropped
+  and counted (`TurnReorderOrphan`) instead of opening a phantom turn.
+- **Memory:** drained buffers idle past `2 × idle_timeout_us` are GC'd.
+
+`turn_id` is generated as a UUIDv7 at finalize time (monotonic by emission).
+
+## Failure Modes (operator-visible counters)
+
+| Counter | Meaning | What to look at if rising |
+|---|---|---|
+| `worker::turn::orphan` | Late call dropped at entry guard | Cross-shard hashing bug, severe fan-in jitter, replay-with-time-skew |
+| `worker::turn::no_user_start` | Partition discarded for lack of user-start call | Lost capture window at session boundary; orphan sub-agent traffic; profile mis-classifying user-start |
+| `worker::turn::fin_idle` | Turn closed by idle timeout, not by terminal call | Truncated capture, client crash, missing terminal signal in profile |
+| `worker::turn::fin_grace` | Turn closed normally via grace expiry | Healthy steady-state path; ratio vs `fin_idle` is the health signal |
 
 ## Edge Cases
 
 1. **Cross-connection turns (Anthropic):** Same session sends calls over different TCP connections. Must group by `session_id`, not by TCP connection (client_ip:client_port).
 
-2. **No finish_reason (truncated capture):** SSE stream cut off before `message_delta`. Keep turn open; close on timeout or EOF with status "incomplete."
+2. **No finish_reason (truncated capture):** SSE stream cut off before `message_delta`. The call sits in the buffer; the buffer falls through to the idle sweep and emits `Incomplete` (or discards if no user-start landed).
 
-3. **HTTP errors mid-turn:** 4xx/5xx response doesn't end the turn — the client may retry. Keep turn open.
+3. **HTTP errors mid-turn:** `Error` and `Cancelled` are excluded from `is_main_terminal`, so they don't trigger grace. The call stays buffered; a retry with the same session joins the same partition. Without a retry, idle sweep finalizes as `Incomplete`.
 
 4. **Multiple turns on same connection (Anthropic):** capture4 shows 2 turns on 1 connection. The `end_turn` response marks the boundary; the next request starts a new turn.
 
@@ -153,18 +205,27 @@ On turn start, generate a `turn_id` using: `turn-{timestamp_us}-{random_suffix}`
 
 ## Data Model
 
-Each `LlmCall` carries:
-- `session_id: Option<String>` — from client headers, for session-level grouping
-- `turn_id: Option<String>` — explicit (from client headers) or generated (from state machine)
-- `turn_index: Option<u32>` — sequence number within the turn (0, 1, 2, ...)
-- `finish_reason: Option<FinishReason>` — normalized turn-continuation signal
+`LlmCall` is provider-shaped raw data. Turn association data lives in
+`CallIdentity`, attached by `ts-llm/src/stage.rs` before the call enters the
+turn shard:
 
-The Turn itself is an aggregation (computed from grouped LlmCalls):
-- `turn_id: String`
-- `session_id: Option<String>`
-- `call_count: u32`
-- `total_input_tokens: u32`
-- `total_output_tokens: u32`
-- `start_time: Timestamp`
-- `end_time: Timestamp`
-- `status: TurnStatus` — Complete, Incomplete, InProgress
+- `profile_name: &'static str` — selects the `ClientProfile` impl
+- `client_kind: String` — denormalized for storage (e.g. `claude-cli`)
+- `session_id: String` — extracted by the profile
+- `turn_id_hint: Option<String>` — set by Codex; informational only
+
+`LlmCall.finish_reason: Option<FinishReason>` carries the normalized
+terminal signal (see table above).
+
+The aggregated `LlmTurn` (see `ts-turn/src/model.rs`) is built at finalize
+time from the sorted partition:
+
+- `turn_id: String` (UUIDv7), `session_id`, `stream_id`, `client_kind`,
+  `provider`, `tenant_id`
+- `start_time_us`, `end_time_us`, `duration_ms`, `call_count`, `call_ids`
+- `models_used`, `subagents_used`
+- `total_input_tokens`, `total_output_tokens`,
+  `total_cache_read_input_tokens`, `total_cache_creation_input_tokens`
+- `status: TurnStatus` — Complete / Length / Cancelled / Failed / Incomplete
+- `final_finish_reason`, `user_input_preview`, `user_call_id`,
+  `final_answer_preview`, `final_call_id`

@@ -420,6 +420,11 @@ pub struct TurnConfig {
     pub idle_timeout_secs: u64,
     #[serde(default = "default_sweep_interval_secs")]
     pub sweep_interval_secs: u64,
+    /// Buffer-and-finalize grace window: how long a buffered terminal call
+    /// waits for fan-in jitter before its turn is partitioned and emitted.
+    /// See `docs/design/04b-turn-reorder-proposal.md` §6.3.
+    #[serde(default = "default_grace_ms")]
+    pub grace_ms: u64,
     #[serde(default = "default_turn_shard_count")]
     pub shard_count: usize,
 }
@@ -429,6 +434,7 @@ impl Default for TurnConfig {
         Self {
             idle_timeout_secs: default_idle_timeout_secs(),
             sweep_interval_secs: default_sweep_interval_secs(),
+            grace_ms: default_grace_ms(),
             shard_count: default_turn_shard_count(),
         }
     }
@@ -440,6 +446,10 @@ fn default_idle_timeout_secs() -> u64 {
 
 fn default_sweep_interval_secs() -> u64 {
     10
+}
+
+fn default_grace_ms() -> u64 {
+    1000
 }
 
 fn default_turn_shard_count() -> usize {

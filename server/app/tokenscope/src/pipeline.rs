@@ -187,6 +187,7 @@ impl Pipeline {
             let tracker_cfg = TrackerConfig {
                 idle_timeout_us: (def.turn.idle_timeout_secs as i64) * 1_000_000,
                 sweep_interval_us: (def.turn.sweep_interval_secs as i64) * 1_000_000,
+                grace_us: (def.turn.grace_ms as i64) * 1_000,
             };
 
             let (parsed_txs, parsed_rxs) =

@@ -25,8 +25,9 @@ fn fixture(name: &str) -> Option<PathBuf> {
     }
 }
 
-async fn run_pcap_sharded(
+async fn run_pcap_full_sharded(
     name: &str,
+    flow_shards: usize,
     turn_shards: usize,
     metrics_shards: usize,
 ) -> Option<Vec<ts_turn::LlmTurn>> {
@@ -43,8 +44,24 @@ async fn run_pcap_sharded(
 
     let queue_size = 4096usize;
     let (raw_tx, raw_rx) = mpsc::channel::<ts_capture::RawPacket>(queue_size);
-    let (parsed_tx, parsed_rx) = mpsc::channel::<ts_protocol::WorkerInput>(queue_size);
-    let (event_tx, event_rx) = mpsc::channel(queue_size);
+
+    // Per-flow-shard parsed/event channels. The dispatcher hashes by 5-tuple
+    // and routes to a single parsed_tx; the protocol+llm stages each spawn
+    // one worker per shard. Same-session calls riding on different TCP
+    // connections land on different llm workers and reach the turn shard
+    // out of order — exactly the reorder scenario buffer-and-finalize fixes.
+    let mut parsed_txs = Vec::with_capacity(flow_shards);
+    let mut parsed_rxs = Vec::with_capacity(flow_shards);
+    let mut event_txs = Vec::with_capacity(flow_shards);
+    let mut event_rxs = Vec::with_capacity(flow_shards);
+    for _ in 0..flow_shards {
+        let (ptx, prx) = mpsc::channel::<ts_protocol::WorkerInput>(queue_size);
+        parsed_txs.push(ptx);
+        parsed_rxs.push(prx);
+        let (etx, erx) = mpsc::channel(queue_size);
+        event_txs.push(etx);
+        event_rxs.push(erx);
+    }
 
     let mut turn_shard_txs = Vec::with_capacity(turn_shards);
     let mut turn_shard_rxs = Vec::with_capacity(turn_shards);
@@ -66,12 +83,12 @@ async fn run_pcap_sharded(
     let (turns_tx, mut turns_rx) = mpsc::channel::<ts_turn::LlmTurn>(queue_size);
     let (m_out_tx, mut m_out_rx) = mpsc::channel::<ts_metrics::model::LlmMetric>(queue_size);
 
-    spawn_flow_dispatcher(raw_rx, vec![parsed_tx], "dispatcher", &mut metrics_sys);
-    spawn_protocol_stage(vec![parsed_rx], vec![event_tx], &mut metrics_sys);
+    spawn_flow_dispatcher(raw_rx, parsed_txs, "dispatcher", &mut metrics_sys);
+    spawn_protocol_stage(parsed_rxs, event_txs, &mut metrics_sys);
 
     let registry = Arc::new(ts_llm::profiles::build_default_registry());
     ts_llm::spawn_llm_stage(
-        vec![event_rx],
+        event_rxs,
         turn_shard_txs,
         metrics_shard_txs,
         calls_tx,
@@ -116,6 +133,14 @@ async fn run_pcap_sharded(
     let _ = calls_drain.await;
     let _ = metrics_drain.await;
     Some(finalized)
+}
+
+async fn run_pcap_sharded(
+    name: &str,
+    turn_shards: usize,
+    metrics_shards: usize,
+) -> Option<Vec<ts_turn::LlmTurn>> {
+    run_pcap_full_sharded(name, 1, turn_shards, metrics_shards).await
 }
 
 async fn run_pcap(name: &str) -> Option<Vec<ts_turn::LlmTurn>> {
@@ -270,6 +295,64 @@ async fn codex_cli_messages_multi_pcap_shard_parity() {
         single_keys, multi_keys,
         "turn sets must match across shard counts"
     );
+}
+
+/// End-to-end reorder validation. Runs codex-cli-messages-multi.pcap
+/// through the pipeline at flow_shards ∈ {1, 2, 4, 8}, holding turn_shards
+/// at 1 so all calls converge into a single tracker. Higher flow_shards
+/// fan the same session's calls (across multiple TCP connections) onto
+/// independent llm workers, which feed the turn shard out of order — the
+/// canonical scenario the buffer-and-finalize design is meant to handle.
+///
+/// Asserts: every configuration produces exactly 2 codex turns with the
+/// same (session_id, call_count, status) tuples.
+#[tokio::test]
+async fn codex_cli_messages_multi_flow_shard_reorder_parity() {
+    let Some(baseline) = run_pcap_full_sharded("codex-cli-messages-multi.pcap", 1, 1, 1).await
+    else {
+        eprintln!("skip: fixture not present");
+        return;
+    };
+    let baseline_openai: Vec<_> = baseline
+        .iter()
+        .filter(|t| t.provider == "openai-responses")
+        .collect();
+    assert_eq!(
+        baseline_openai.len(),
+        2,
+        "baseline (flow=1) must yield 2 codex turns, got {}",
+        baseline_openai.len()
+    );
+    let baseline_keys: std::collections::BTreeSet<_> = baseline_openai
+        .iter()
+        .map(|t| (t.session_id.clone(), t.call_count, t.status.to_string()))
+        .collect();
+    eprintln!("flow_shards=1 baseline: {baseline_keys:?}");
+
+    for flow_shards in [2usize, 4, 8] {
+        let turns = run_pcap_full_sharded("codex-cli-messages-multi.pcap", flow_shards, 1, 1)
+            .await
+            .expect("fixture present");
+        let openai: Vec<_> = turns
+            .iter()
+            .filter(|t| t.provider == "openai-responses")
+            .collect();
+        let keys: std::collections::BTreeSet<_> = openai
+            .iter()
+            .map(|t| (t.session_id.clone(), t.call_count, t.status.to_string()))
+            .collect();
+        eprintln!("flow_shards={flow_shards}: {keys:?}");
+        assert_eq!(
+            openai.len(),
+            2,
+            "flow_shards={flow_shards} must still yield 2 codex turns, got {}",
+            openai.len()
+        );
+        assert_eq!(
+            keys, baseline_keys,
+            "flow_shards={flow_shards}: turn (session, call_count, status) set must match baseline"
+        );
+    }
 }
 
 #[tokio::test]
