@@ -29,30 +29,10 @@ const P = {
 export function useToolbarUrlSync() {
   const [searchParams, setSearchParams] = useSearchParams()
   const skipUrlUpdate = useRef(false)
-  const initialized = useRef(false)
 
   // ── URL → Store (on mount & on searchParams change from popstate) ──
   useEffect(() => {
     const urlPreset = searchParams.get(P.preset)
-
-    // If URL has no toolbar params at all (fresh visit), push store defaults to URL
-    if (!initialized.current && !urlPreset) {
-      initialized.current = true
-      // Write current store state to URL
-      const state = useToolbarStore.getState()
-      const params = storeToParams(state)
-      setSearchParams(
-        (prev) => {
-          const p = new URLSearchParams(prev)
-          for (const [k, v] of params) p.set(k, v)
-          return p
-        },
-        { replace: true },
-      )
-      return
-    }
-
-    initialized.current = true
 
     // Parse URL params into a store hydration patch
     const hydratePatch: Parameters<ReturnType<typeof useToolbarStore.getState>["_hydrate"]>[0] = {}
@@ -97,7 +77,7 @@ export function useToolbarUrlSync() {
       // to ensure the next real store change isn't swallowed.
       queueMicrotask(() => { skipUrlUpdate.current = false })
     }
-  }, [searchParams, setSearchParams])
+  }, [searchParams])
 
   // ── Store → URL (on store change) ──
   useEffect(() => {

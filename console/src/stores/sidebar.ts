@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import { persist } from "zustand/middleware"
 
 interface SidebarState {
   expanded: boolean
@@ -6,8 +7,13 @@ interface SidebarState {
   setExpanded: (expanded: boolean) => void
 }
 
-export const useSidebarStore = create<SidebarState>((set) => ({
-  expanded: false,
-  toggle: () => set((s) => ({ expanded: !s.expanded })),
-  setExpanded: (expanded) => set({ expanded }),
-}))
+export const useSidebarStore = create<SidebarState>()(
+  persist(
+    (set) => ({
+      expanded: false,
+      toggle: () => set((s) => ({ expanded: !s.expanded })),
+      setExpanded: (expanded) => set({ expanded }),
+    }),
+    { name: "tokenscope-sidebar" },
+  ),
+)
