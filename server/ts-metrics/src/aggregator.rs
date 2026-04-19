@@ -431,7 +431,8 @@ mod tests {
             .expect("finest dim present");
         assert_eq!(finest.request_count, 1);
         assert_eq!(finest.total_input_tokens, 100);
-        assert!(finest.ttfb_avg.is_some());
+        assert_eq!(finest.ttfb_count, 1);
+        assert!(finest.ttfb_sum > 0.0);
         assert_eq!(finest.finish_complete_count, 1);
     }
 
@@ -458,7 +459,8 @@ mod tests {
             .expect("start row for t0");
         assert_eq!(start_row.request_count, 1);
         assert_eq!(start_row.total_input_tokens, 0);
-        assert!(start_row.ttfb_avg.is_none());
+        assert_eq!(start_row.ttfb_count, 0);
+        assert_eq!(start_row.ttfb_sum, 0.0);
 
         // Complete returns late.
         all.extend(agg.process(&make_complete(t0, t0 + 35_000_000, "gpt-4")));
@@ -482,7 +484,8 @@ mod tests {
             .expect("late complete row");
         assert_eq!(late.request_count, 0, "late complete row has zero traffic");
         assert_eq!(late.total_input_tokens, 100);
-        assert!(late.ttfb_avg.is_some());
+        assert_eq!(late.ttfb_count, 1);
+        assert!(late.ttfb_sum > 0.0);
     }
 
     #[test]

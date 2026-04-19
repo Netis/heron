@@ -30,14 +30,20 @@ pub struct LlmMetric {
     pub request_count: u64,
     pub stream_count: u64,
     pub non_stream_count: u64,
-    pub concurrency_avg: f64,
+    /// Running sum of per-call concurrency samples in this slice.
+    /// Paired with `concurrency_sample_count` so the query layer can compute
+    /// `SUM(concurrency_sum) / SUM(concurrency_sample_count)` as a true
+    /// average across any set of rows.
+    pub concurrency_sum: u64,
+    pub concurrency_sample_count: u64,
     pub concurrency_max: u32,
 
-    // Tokens
+    // Tokens. `total_input_tokens` pairs with `input_token_count` for
+    // query-time avg; same pattern for output tokens.
     pub total_input_tokens: u64,
+    pub input_token_count: u64,
     pub total_output_tokens: u64,
-    pub input_tokens_avg: Option<f64>,
-    pub output_tokens_avg: Option<f64>,
+    pub output_token_count: u64,
     pub total_cache_read_input_tokens: u64,
     pub total_cache_creation_input_tokens: u64,
 
@@ -54,23 +60,72 @@ pub struct LlmMetric {
     pub finish_error_count: u64,
     pub finish_cancelled_count: u64,
 
-    // TTFB distribution (milliseconds)
-    pub ttfb_avg: Option<f64>,
+    // TTFB distribution (milliseconds).
+    //
+    // `*_sum` and `*_count` give exact averages under query-time SUM; the
+    // per-row `*_p50/p95/p99` are t-digest estimates over *this row's slice
+    // only*, re-weighted by `*_count` across rows at query time (an
+    // approximation until sum+count is extended with serialized t-digest
+    // bytes in a follow-up schema change).
+    pub ttfb_sum: f64,
+    pub ttfb_count: u64,
     pub ttfb_p50: Option<f64>,
     pub ttfb_p95: Option<f64>,
     pub ttfb_p99: Option<f64>,
 
     // E2E latency distribution (milliseconds)
-    pub e2e_avg: Option<f64>,
+    pub e2e_sum: f64,
+    pub e2e_count: u64,
     pub e2e_p50: Option<f64>,
     pub e2e_p95: Option<f64>,
     pub e2e_p99: Option<f64>,
 
     // TPOT distribution (ms/token) — streaming requests only
-    pub tpot_avg: Option<f64>,
+    pub tpot_sum: f64,
+    pub tpot_count: u64,
     pub tpot_p50: Option<f64>,
     pub tpot_p95: Option<f64>,
     pub tpot_p99: Option<f64>,
+}
+
+fn safe_avg(sum: f64, count: u64) -> Option<f64> {
+    if count == 0 {
+        None
+    } else {
+        Some(sum / count as f64)
+    }
+}
+
+impl LlmMetric {
+    /// Per-row average derived from `*_sum / *_count`. Useful for single-row
+    /// views; query layer computes aggregated averages via SUM() separately.
+    pub fn concurrency_avg(&self) -> f64 {
+        if self.concurrency_sample_count == 0 {
+            0.0
+        } else {
+            self.concurrency_sum as f64 / self.concurrency_sample_count as f64
+        }
+    }
+
+    pub fn input_tokens_avg(&self) -> Option<f64> {
+        safe_avg(self.total_input_tokens as f64, self.input_token_count)
+    }
+
+    pub fn output_tokens_avg(&self) -> Option<f64> {
+        safe_avg(self.total_output_tokens as f64, self.output_token_count)
+    }
+
+    pub fn ttfb_avg(&self) -> Option<f64> {
+        safe_avg(self.ttfb_sum, self.ttfb_count)
+    }
+
+    pub fn e2e_avg(&self) -> Option<f64> {
+        safe_avg(self.e2e_sum, self.e2e_count)
+    }
+
+    pub fn tpot_avg(&self) -> Option<f64> {
+        safe_avg(self.tpot_sum, self.tpot_count)
+    }
 }
 
 /// Format a timestamp (microseconds) as a simple datetime string.
@@ -111,7 +166,7 @@ impl fmt::Display for LlmMetric {
             self.error_4xx_count,
             self.error_429_count,
             self.error_5xx_count,
-            self.concurrency_avg,
+            self.concurrency_avg(),
             self.concurrency_max,
         )?;
         writeln!(
@@ -130,7 +185,7 @@ impl fmt::Display for LlmMetric {
         writeln!(
             f,
             "  ttfb: avg={} p50={} p95={} p99={}",
-            fmt_opt(self.ttfb_avg, "ms"),
+            fmt_opt(self.ttfb_avg(), "ms"),
             fmt_opt(self.ttfb_p50, "ms"),
             fmt_opt(self.ttfb_p95, "ms"),
             fmt_opt(self.ttfb_p99, "ms"),
@@ -138,7 +193,7 @@ impl fmt::Display for LlmMetric {
         writeln!(
             f,
             "  e2e:  avg={} p50={} p95={} p99={}",
-            fmt_opt(self.e2e_avg, "ms"),
+            fmt_opt(self.e2e_avg(), "ms"),
             fmt_opt(self.e2e_p50, "ms"),
             fmt_opt(self.e2e_p95, "ms"),
             fmt_opt(self.e2e_p99, "ms"),
@@ -146,7 +201,7 @@ impl fmt::Display for LlmMetric {
         write!(
             f,
             "  tpot: avg={} p50={} p95={} p99={}",
-            fmt_opt(self.tpot_avg, "ms/t"),
+            fmt_opt(self.tpot_avg(), "ms/t"),
             fmt_opt(self.tpot_p50, "ms/t"),
             fmt_opt(self.tpot_p95, "ms/t"),
             fmt_opt(self.tpot_p99, "ms/t"),

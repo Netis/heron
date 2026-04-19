@@ -191,12 +191,13 @@ CREATE TABLE IF NOT EXISTS llm_metrics (
     request_count       UBIGINT NOT NULL,
     stream_count        UBIGINT NOT NULL,
     non_stream_count    UBIGINT NOT NULL,
-    concurrency_avg     DOUBLE NOT NULL,
-    concurrency_max     UINTEGER NOT NULL,
+    concurrency_sum          UBIGINT NOT NULL,
+    concurrency_sample_count UBIGINT NOT NULL,
+    concurrency_max          UINTEGER NOT NULL,
     total_input_tokens  UBIGINT NOT NULL,
+    input_token_count   UBIGINT NOT NULL,
     total_output_tokens UBIGINT NOT NULL,
-    input_tokens_avg    DOUBLE,
-    output_tokens_avg   DOUBLE,
+    output_token_count  UBIGINT NOT NULL,
     total_cache_read_input_tokens    UBIGINT NOT NULL,
     total_cache_creation_input_tokens UBIGINT NOT NULL,
     error_count         UBIGINT NOT NULL,
@@ -208,15 +209,18 @@ CREATE TABLE IF NOT EXISTS llm_metrics (
     finish_tool_use_count  UBIGINT NOT NULL,
     finish_error_count     UBIGINT NOT NULL,
     finish_cancelled_count UBIGINT NOT NULL,
-    ttfb_avg            DOUBLE,
+    ttfb_sum            DOUBLE NOT NULL,
+    ttfb_count          UBIGINT NOT NULL,
     ttfb_p50            DOUBLE,
     ttfb_p95            DOUBLE,
     ttfb_p99            DOUBLE,
-    e2e_avg             DOUBLE,
+    e2e_sum             DOUBLE NOT NULL,
+    e2e_count           UBIGINT NOT NULL,
     e2e_p50             DOUBLE,
     e2e_p95             DOUBLE,
     e2e_p99             DOUBLE,
-    tpot_avg            DOUBLE,
+    tpot_sum            DOUBLE NOT NULL,
+    tpot_count          UBIGINT NOT NULL,
     tpot_p50            DOUBLE,
     tpot_p95            DOUBLE,
     tpot_p99            DOUBLE
@@ -352,15 +356,22 @@ fn extract_full_text(
     }
 }
 
-/// All valid numeric metric field names from llm_metrics (excludes dimension/key columns).
+/// All valid numeric metric field names accepted by `query_metrics_timeseries`.
+/// Virtual `*_avg` fields resolve to `SUM(*_sum) / SUM(*_count)` at query time;
+/// the raw `*_sum` / `*_count` fields are also accepted for callers that want
+/// to do their own aggregation.
 const VALID_METRIC_FIELDS: &[&str] = &[
     "request_count",
     "stream_count",
     "non_stream_count",
     "concurrency_avg",
+    "concurrency_sum",
+    "concurrency_sample_count",
     "concurrency_max",
     "total_input_tokens",
+    "input_token_count",
     "total_output_tokens",
+    "output_token_count",
     "input_tokens_avg",
     "output_tokens_avg",
     "total_cache_read_input_tokens",
@@ -375,37 +386,53 @@ const VALID_METRIC_FIELDS: &[&str] = &[
     "finish_error_count",
     "finish_cancelled_count",
     "ttfb_avg",
+    "ttfb_sum",
+    "ttfb_count",
     "ttfb_p50",
     "ttfb_p95",
     "ttfb_p99",
     "e2e_avg",
+    "e2e_sum",
+    "e2e_count",
     "e2e_p50",
     "e2e_p95",
     "e2e_p99",
     "tpot_avg",
+    "tpot_sum",
+    "tpot_count",
     "tpot_p50",
     "tpot_p95",
     "tpot_p99",
 ];
 
 /// Build the per-field SQL expressions used by `query_metrics_timeseries`.
-/// Counts / totals use `SUM`, averages and percentiles collapse via a
-/// weighted average by the appropriate weight (`request_count` for most,
-/// `stream_count` for TPOT). Used by both the grouped and the
-/// ungrouped branches so `(ts, dim)` rows produced by independent per-stream
-/// aggregators merge identically regardless of whether the caller asked for
-/// a `group_by`.
+///
+/// * Additive fields (counts, totals, `*_sum`, `*_count`) → plain `SUM`.
+/// * Averages (`*_avg`) → exact ratio `SUM(*_sum) / SUM(*_count)`, derived
+///   from the additive sum+count pair so multi-row aggregation (slow-response
+///   windows, cross-stream merging) stays correct.
+/// * Per-row percentiles (`*_p50/p95/p99`) → weighted average by the matching
+///   `*_count` (number of samples contributing to the row's digest). This is
+///   an approximation until serialized t-digest bytes land; weighting by the
+///   count field (rather than `request_count`) keeps slow-response rows with
+///   `request_count=0` from falsely collapsing the result to zero.
 fn build_field_exprs(fields: &[String]) -> Vec<String> {
     fields
         .iter()
         .map(|f| {
             if SUM_FIELDS.contains(&f.as_str()) {
                 format!("CAST(SUM({f}) AS DOUBLE)")
-            } else if f == "concurrency_avg" {
-                "CASE WHEN SUM(request_count) > 0 THEN SUM(concurrency_avg * request_count) / SUM(request_count) ELSE NULL END".to_string()
-            } else if f.ends_with("_avg") || f.ends_with("_p50") || f.ends_with("_p95") || f.ends_with("_p99") {
-                let weight = if f.starts_with("tpot") { "stream_count" } else { "request_count" };
-                format!("CASE WHEN SUM({weight}) > 0 THEN SUM({f} * {weight}) / SUM({weight}) ELSE NULL END")
+            } else if let Some((sum_col, count_col)) = avg_pair(f) {
+                format!(
+                    "CASE WHEN SUM({count_col}) > 0 \
+                     THEN SUM({sum_col}) / SUM({count_col}) ELSE NULL END"
+                )
+            } else if f.ends_with("_p50") || f.ends_with("_p95") || f.ends_with("_p99") {
+                let weight = percentile_weight(f);
+                format!(
+                    "CASE WHEN SUM({weight}) > 0 \
+                     THEN SUM({f} * {weight}) / SUM({weight}) ELSE NULL END"
+                )
             } else {
                 format!("CAST(SUM({f}) AS DOUBLE)")
             }
@@ -413,14 +440,45 @@ fn build_field_exprs(fields: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Map `*_avg` virtual field → `(sum_column, count_column)` pair in the
+/// physical schema. `None` for fields that are not averages.
+fn avg_pair(f: &str) -> Option<(&'static str, &'static str)> {
+    match f {
+        "concurrency_avg" => Some(("concurrency_sum", "concurrency_sample_count")),
+        "input_tokens_avg" => Some(("total_input_tokens", "input_token_count")),
+        "output_tokens_avg" => Some(("total_output_tokens", "output_token_count")),
+        "ttfb_avg" => Some(("ttfb_sum", "ttfb_count")),
+        "e2e_avg" => Some(("e2e_sum", "e2e_count")),
+        "tpot_avg" => Some(("tpot_sum", "tpot_count")),
+        _ => None,
+    }
+}
+
+/// Weight column for percentile weighted-avg aggregation.
+fn percentile_weight(field: &str) -> &'static str {
+    if field.starts_with("ttfb") {
+        "ttfb_count"
+    } else if field.starts_with("e2e") {
+        "e2e_count"
+    } else if field.starts_with("tpot") {
+        "tpot_count"
+    } else {
+        "request_count"
+    }
+}
+
 /// Fields that represent counts or totals (use SUM when aggregating across groups).
 const SUM_FIELDS: &[&str] = &[
     "request_count",
     "stream_count",
     "non_stream_count",
+    "concurrency_sum",
+    "concurrency_sample_count",
     "concurrency_max",
     "total_input_tokens",
+    "input_token_count",
     "total_output_tokens",
+    "output_token_count",
     "total_cache_read_input_tokens",
     "total_cache_creation_input_tokens",
     "error_count",
@@ -432,6 +490,12 @@ const SUM_FIELDS: &[&str] = &[
     "finish_tool_use_count",
     "finish_error_count",
     "finish_cancelled_count",
+    "ttfb_sum",
+    "ttfb_count",
+    "e2e_sum",
+    "e2e_count",
+    "tpot_sum",
+    "tpot_count",
 ];
 
 /// Build a WHERE clause segment for dimension filters (ungrouped queries).
@@ -783,12 +847,13 @@ impl StorageBackend for DuckDbBackend {
                         m.request_count,
                         m.stream_count,
                         m.non_stream_count,
-                        m.concurrency_avg,
+                        m.concurrency_sum,
+                        m.concurrency_sample_count,
                         m.concurrency_max,
                         m.total_input_tokens,
+                        m.input_token_count,
                         m.total_output_tokens,
-                        m.input_tokens_avg,
-                        m.output_tokens_avg,
+                        m.output_token_count,
                         m.total_cache_read_input_tokens,
                         m.total_cache_creation_input_tokens,
                         m.error_count,
@@ -800,15 +865,18 @@ impl StorageBackend for DuckDbBackend {
                         m.finish_tool_use_count,
                         m.finish_error_count,
                         m.finish_cancelled_count,
-                        m.ttfb_avg,
+                        m.ttfb_sum,
+                        m.ttfb_count,
                         m.ttfb_p50,
                         m.ttfb_p95,
                         m.ttfb_p99,
-                        m.e2e_avg,
+                        m.e2e_sum,
+                        m.e2e_count,
                         m.e2e_p50,
                         m.e2e_p95,
                         m.e2e_p99,
-                        m.tpot_avg,
+                        m.tpot_sum,
+                        m.tpot_count,
                         m.tpot_p50,
                         m.tpot_p95,
                         m.tpot_p99,
@@ -1016,15 +1084,12 @@ impl StorageBackend for DuckDbBackend {
                     COALESCE(SUM(error_5xx_count), 0),
                     COALESCE(SUM(total_input_tokens), 0),
                     COALESCE(SUM(total_output_tokens), 0),
-                    CASE WHEN SUM(request_count) > 0
-                         THEN SUM(ttfb_avg * request_count) / SUM(request_count)
-                         ELSE NULL END,
-                    CASE WHEN SUM(request_count) > 0
-                         THEN SUM(e2e_avg * request_count) / SUM(request_count)
-                         ELSE NULL END,
-                    CASE WHEN SUM(stream_count) > 0
-                         THEN SUM(tpot_avg * stream_count) / SUM(stream_count)
-                         ELSE NULL END
+                    CASE WHEN SUM(ttfb_count) > 0
+                         THEN SUM(ttfb_sum) / SUM(ttfb_count) ELSE NULL END,
+                    CASE WHEN SUM(e2e_count) > 0
+                         THEN SUM(e2e_sum) / SUM(e2e_count) ELSE NULL END,
+                    CASE WHEN SUM(tpot_count) > 0
+                         THEN SUM(tpot_sum) / SUM(tpot_count) ELSE NULL END
                 FROM llm_metrics
                 WHERE provider = '*' AND model = '*' AND server_ip = '*'
                   AND granularity = '10s'
@@ -1110,20 +1175,20 @@ impl StorageBackend for DuckDbBackend {
                         COALESCE(SUM(error_5xx_count), 0) AS error_5xx_count,
                         COALESCE(SUM(total_input_tokens), 0) AS total_input_tokens,
                         COALESCE(SUM(total_output_tokens), 0) AS total_output_tokens,
-                        CASE WHEN SUM(request_count) > 0
-                             THEN SUM(ttfb_avg * request_count) / SUM(request_count)
+                        CASE WHEN SUM(ttfb_count) > 0
+                             THEN SUM(ttfb_sum) / SUM(ttfb_count)
                              ELSE NULL END AS ttfb_avg,
-                        CASE WHEN SUM(request_count) > 0
-                             THEN SUM(ttfb_p95 * request_count) / SUM(request_count)
+                        CASE WHEN SUM(ttfb_count) > 0
+                             THEN SUM(ttfb_p95 * ttfb_count) / SUM(ttfb_count)
                              ELSE NULL END AS ttfb_p95,
-                        CASE WHEN SUM(request_count) > 0
-                             THEN SUM(e2e_avg * request_count) / SUM(request_count)
+                        CASE WHEN SUM(e2e_count) > 0
+                             THEN SUM(e2e_sum) / SUM(e2e_count)
                              ELSE NULL END AS e2e_avg,
-                        CASE WHEN SUM(request_count) > 0
-                             THEN SUM(e2e_p95 * request_count) / SUM(request_count)
+                        CASE WHEN SUM(e2e_count) > 0
+                             THEN SUM(e2e_p95 * e2e_count) / SUM(e2e_count)
                              ELSE NULL END AS e2e_p95,
-                        CASE WHEN SUM(stream_count) > 0
-                             THEN SUM(tpot_avg * stream_count) / SUM(stream_count)
+                        CASE WHEN SUM(tpot_count) > 0
+                             THEN SUM(tpot_sum) / SUM(tpot_count)
                              ELSE NULL END AS tpot_avg
                     FROM llm_metrics
                     WHERE provider != '*' AND model != '*' AND server_ip = '*'
@@ -2151,12 +2216,14 @@ mod tests {
             request_count: 42,
             stream_count: 30,
             non_stream_count: 12,
-            concurrency_avg: 3.5,
+            // concurrency avg 3.5 → sum 147 across 42 samples.
+            concurrency_sum: 147,
+            concurrency_sample_count: 42,
             concurrency_max: 8,
             total_input_tokens: 10000,
+            input_token_count: 42,
             total_output_tokens: 5000,
-            input_tokens_avg: Some(238.1),
-            output_tokens_avg: Some(119.0),
+            output_token_count: 42,
             total_cache_read_input_tokens: 0,
             total_cache_creation_input_tokens: 0,
             error_count: 2,
@@ -2168,15 +2235,21 @@ mod tests {
             finish_tool_use_count: 2,
             finish_error_count: 1,
             finish_cancelled_count: 1,
-            ttfb_avg: Some(150.0),
+            // ttfb_avg 150 × 42 = 6300.
+            ttfb_sum: 6300.0,
+            ttfb_count: 42,
             ttfb_p50: Some(120.0),
             ttfb_p95: Some(350.0),
             ttfb_p99: Some(500.0),
-            e2e_avg: Some(1200.0),
+            // e2e_avg 1200 × 42 = 50400.
+            e2e_sum: 50_400.0,
+            e2e_count: 42,
             e2e_p50: Some(1000.0),
             e2e_p95: Some(2500.0),
             e2e_p99: Some(4000.0),
-            tpot_avg: Some(22.2),
+            // tpot_avg 22.2 × 30 streaming = 666.
+            tpot_sum: 666.0,
+            tpot_count: 30,
             tpot_p50: Some(23.8),
             tpot_p95: Some(12.5),
             tpot_p99: Some(8.3),
@@ -2229,7 +2302,7 @@ mod tests {
         let conn = backend.test_conn().lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT output_tokens_avg, tpot_avg, \
+                "SELECT total_output_tokens, output_token_count, tpot_sum, tpot_count, \
                  finish_complete_count, finish_length_count, finish_tool_use_count, \
                  finish_error_count, finish_cancelled_count \
                  FROM llm_metrics",
@@ -2238,23 +2311,28 @@ mod tests {
         let row = stmt
             .query_row([], |row| {
                 Ok((
-                    row.get::<_, Option<f64>>(0)?,
-                    row.get::<_, Option<f64>>(1)?,
-                    row.get::<_, u64>(2)?,
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, f64>(2)?,
                     row.get::<_, u64>(3)?,
                     row.get::<_, u64>(4)?,
                     row.get::<_, u64>(5)?,
                     row.get::<_, u64>(6)?,
+                    row.get::<_, u64>(7)?,
+                    row.get::<_, u64>(8)?,
                 ))
             })
             .unwrap();
-        assert_eq!(row.0, Some(119.0));
-        assert_eq!(row.1, Some(22.2));
-        assert_eq!(row.2, 35);
-        assert_eq!(row.3, 3);
-        assert_eq!(row.4, 2);
-        assert_eq!(row.5, 1);
-        assert_eq!(row.6, 1);
+        assert_eq!(row.0, 5000);
+        assert_eq!(row.1, 42);
+        // tpot_sum 666 / tpot_count 30 = 22.2
+        assert!((row.2 - 666.0).abs() < 1e-6);
+        assert_eq!(row.3, 30);
+        assert_eq!(row.4, 35);
+        assert_eq!(row.5, 3);
+        assert_eq!(row.6, 2);
+        assert_eq!(row.7, 1);
+        assert_eq!(row.8, 1);
     }
 
     // ===== Task 3: query_distinct_* tests =====
@@ -2461,6 +2539,7 @@ mod tests {
         stream0.model = "*".into();
         stream0.server_ip = "*".into();
         stream0.request_count = 10;
+        stream0.ttfb_count = 10;
         stream0.ttfb_p50 = Some(100.0);
         stream0.error_count = 1;
 
@@ -2472,6 +2551,7 @@ mod tests {
         stream1.model = "*".into();
         stream1.server_ip = "*".into();
         stream1.request_count = 30;
+        stream1.ttfb_count = 30;
         stream1.ttfb_p50 = Some(200.0);
         stream1.error_count = 3;
 
@@ -2500,7 +2580,7 @@ mod tests {
             rows.len()
         );
         assert_eq!(rows[0].values[0], Some(40.0), "request_count SUM = 10 + 30");
-        // weighted avg by request_count: (100*10 + 200*30) / 40 = 175
+        // weighted avg by ttfb_count: (100*10 + 200*30) / 40 = 175
         let p50 = rows[0].values[1].unwrap();
         assert!((p50 - 175.0).abs() < 0.01, "weighted p50 ≈ 175, got {p50}");
         assert_eq!(rows[0].values[2], Some(4.0), "error_count SUM = 1 + 3");
@@ -2574,9 +2654,14 @@ mod tests {
         m1.error_5xx_count = 2;
         m1.total_input_tokens = 10_000;
         m1.total_output_tokens = 5_000;
-        m1.ttfb_avg = Some(100.0);
-        m1.e2e_avg = Some(500.0);
-        m1.tpot_avg = Some(40.0);
+        // ttfb avg 100 over 100 samples → sum 10_000
+        m1.ttfb_sum = 10_000.0;
+        m1.ttfb_count = 100;
+        m1.e2e_sum = 50_000.0;
+        m1.e2e_count = 100;
+        // tpot avg 40 over 80 streaming samples → sum 3200
+        m1.tpot_sum = 3_200.0;
+        m1.tpot_count = 80;
 
         let mut m2 = sample_metric();
         m2.timestamp_us = ts2;
@@ -2592,9 +2677,14 @@ mod tests {
         m2.error_5xx_count = 4;
         m2.total_input_tokens = 20_000;
         m2.total_output_tokens = 10_000;
-        m2.ttfb_avg = Some(200.0);
-        m2.e2e_avg = Some(1000.0);
-        m2.tpot_avg = Some(60.0);
+        // ttfb avg 200 over 200 samples → sum 40_000
+        m2.ttfb_sum = 40_000.0;
+        m2.ttfb_count = 200;
+        m2.e2e_sum = 200_000.0;
+        m2.e2e_count = 200;
+        // tpot avg 60 over 160 streaming samples → sum 9600
+        m2.tpot_sum = 9_600.0;
+        m2.tpot_count = 160;
 
         backend.write_metrics(vec![m1, m2]).await.unwrap();
 
@@ -2614,13 +2704,13 @@ mod tests {
         assert_eq!(summary.error_5xx_count, 6);
         assert_eq!(summary.total_input_tokens, 30_000);
         assert_eq!(summary.total_output_tokens, 15_000);
-        // Weighted avg: (100*100 + 200*200) / 300 = (10000 + 40000) / 300 = 166.666...
+        // Exact avg via sum+count: (10000 + 40000) / 300 = 166.666...
         let ttfb_avg = summary.ttfb_avg.unwrap();
         assert!(
             (ttfb_avg - 500.0 / 3.0).abs() < 0.01,
             "expected ~166.67, got {ttfb_avg}"
         );
-        // tpot weighted by stream_count: (80*40 + 160*60) / 240 = (3200 + 9600) / 240 = 53.33
+        // tpot exact avg: (3200 + 9600) / 240 = 53.33
         let tpot_avg = summary.tpot_avg.unwrap();
         assert!(
             (tpot_avg - 160.0 / 3.0).abs() < 0.01,
@@ -2645,11 +2735,16 @@ mod tests {
         m_gpt4.server_ip = "*".to_string();
         m_gpt4.request_count = 100;
         m_gpt4.stream_count = 80;
-        m_gpt4.ttfb_avg = Some(150.0);
+        // ttfb avg 150 over 100 → sum 15000
+        m_gpt4.ttfb_sum = 15_000.0;
+        m_gpt4.ttfb_count = 100;
         m_gpt4.ttfb_p95 = Some(400.0);
-        m_gpt4.e2e_avg = Some(1000.0);
+        m_gpt4.e2e_sum = 100_000.0;
+        m_gpt4.e2e_count = 100;
         m_gpt4.e2e_p95 = Some(3000.0);
-        m_gpt4.tpot_avg = Some(20.0);
+        // tpot avg 20 over 80 → sum 1600
+        m_gpt4.tpot_sum = 1_600.0;
+        m_gpt4.tpot_count = 80;
 
         let mut m_claude = sample_metric();
         m_claude.timestamp_us = ts;
@@ -2659,11 +2754,16 @@ mod tests {
         m_claude.server_ip = "*".to_string();
         m_claude.request_count = 200;
         m_claude.stream_count = 150;
-        m_claude.ttfb_avg = Some(120.0);
+        // ttfb avg 120 over 200 → sum 24000
+        m_claude.ttfb_sum = 24_000.0;
+        m_claude.ttfb_count = 200;
         m_claude.ttfb_p95 = Some(300.0);
-        m_claude.e2e_avg = Some(800.0);
+        m_claude.e2e_sum = 160_000.0;
+        m_claude.e2e_count = 200;
         m_claude.e2e_p95 = Some(2000.0);
-        m_claude.tpot_avg = Some(22.0);
+        // tpot avg 22 over 150 → sum 3300
+        m_claude.tpot_sum = 3_300.0;
+        m_claude.tpot_count = 150;
 
         backend.write_metrics(vec![m_gpt4, m_claude]).await.unwrap();
 
@@ -3291,12 +3391,13 @@ mod concurrent_tests {
             request_count: 1,
             stream_count: 0,
             non_stream_count: 1,
-            concurrency_avg: 1.0,
+            concurrency_sum: 1,
+            concurrency_sample_count: 1,
             concurrency_max: 1,
             total_input_tokens: 10,
+            input_token_count: 1,
             total_output_tokens: 5,
-            input_tokens_avg: None,
-            output_tokens_avg: None,
+            output_token_count: 1,
             total_cache_read_input_tokens: 0,
             total_cache_creation_input_tokens: 0,
             error_count: 0,
@@ -3308,15 +3409,18 @@ mod concurrent_tests {
             finish_tool_use_count: 0,
             finish_error_count: 0,
             finish_cancelled_count: 0,
-            ttfb_avg: None,
+            ttfb_sum: 0.0,
+            ttfb_count: 0,
             ttfb_p50: None,
             ttfb_p95: None,
             ttfb_p99: None,
-            e2e_avg: None,
+            e2e_sum: 0.0,
+            e2e_count: 0,
             e2e_p50: None,
             e2e_p95: None,
             e2e_p99: None,
-            tpot_avg: None,
+            tpot_sum: 0.0,
+            tpot_count: 0,
             tpot_p50: None,
             tpot_p95: None,
             tpot_p99: None,
@@ -3470,12 +3574,13 @@ mod retention_tests {
             request_count: 1,
             stream_count: 0,
             non_stream_count: 1,
-            concurrency_avg: 1.0,
+            concurrency_sum: 1,
+            concurrency_sample_count: 1,
             concurrency_max: 1,
             total_input_tokens: 10,
+            input_token_count: 1,
             total_output_tokens: 5,
-            input_tokens_avg: None,
-            output_tokens_avg: None,
+            output_token_count: 1,
             total_cache_read_input_tokens: 0,
             total_cache_creation_input_tokens: 0,
             error_count: 0,
@@ -3487,15 +3592,18 @@ mod retention_tests {
             finish_tool_use_count: 0,
             finish_error_count: 0,
             finish_cancelled_count: 0,
-            ttfb_avg: None,
+            ttfb_sum: 0.0,
+            ttfb_count: 0,
             ttfb_p50: None,
             ttfb_p95: None,
             ttfb_p99: None,
-            e2e_avg: None,
+            e2e_sum: 0.0,
+            e2e_count: 0,
             e2e_p50: None,
             e2e_p95: None,
             e2e_p99: None,
-            tpot_avg: None,
+            tpot_sum: 0.0,
+            tpot_count: 0,
             tpot_p50: None,
             tpot_p95: None,
             tpot_p99: None,

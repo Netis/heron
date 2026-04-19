@@ -2,97 +2,121 @@
 
 ## Overview
 
-The `ts-metrics` crate receives `CallStart` events and `LlmCall` records from the pipeline, aggregates them by time window and dimension combination, and outputs `LlmMetric` records for storage. `CallStart` enables precise realtime concurrency tracking. It is pure computation with no DB dependency.
+The `ts-metrics` crate receives `LlmEvent` values from the pipeline, aggregates them by time window and dimension combination, and emits `LlmMetric` rows for storage. It is pure computation with no DB dependency.
+
+## Event Inputs
+
+The aggregator consumes three kinds of `LlmEvent`:
+
+- **`Start`** — emitted when request headers are parsed. Carries `stream_id`, timestamp, `provider`, `model`, `is_stream`, `server_ip`. Writes Start-side fields (traffic counts, concurrency sample) into the bucket.
+- **`Complete`** — emitted when the full LLM call has been assembled. Carries the full `LlmCall`. Writes Complete-side fields (tokens, errors, finish reason, TTFB / E2E / TPOT samples) into the bucket.
+- **`Heartbeat`** — synthetic event-time advance, broadcast from capture to every shard. Does not write data; only advances the per-stream watermark so the drain cadence fires on idle streams.
 
 ## Aggregation Model
 
 ```
-CallStart stream ──┐
-                    ├──▶ MetricsAggregator ──▶ Vec<LlmMetric> ──▶ storage
-LlmCall stream   ──┘
+LlmEvent::Start     ──┐
+LlmEvent::Complete  ──┼──▶ MetricsAggregator ──▶ Vec<LlmMetric> ──▶ storage
+LlmEvent::Heartbeat ──┘
 ```
 
-For each incoming event:
-- `CallStart`: update concurrency counter (+1)
-- `LlmCall`: update concurrency counter (-1), update counters + sketches in dimension buckets
-- On window close: flush `LlmMetric` records and reset
+For each `(stream_id, granularity, window_start(request_time), dim)` key the aggregator owns one `WindowBucket`. Both Start and Complete for the same call key by `window_start(request_time)`, so a late Complete always lands in the same window as its originating Start — the口径 is strictly request-time.
+
+## Drain Cadence (not watermark close)
+
+Buckets do not close the instant the watermark crosses `window_end`. Each `(stream, granularity)` pair owns a **drain anchor** (`last_flush_ts`) that is initialized on the first bucket write to `window_start(ts, gran)`. On every processed event the aggregator checks, for each granularity: if `watermark - last_flush_ts ≥ gran.window_secs` (event-time), every non-empty bucket for that `(stream, gran)` is flushed and removed, and the anchor advances to the current watermark.
+
+Two consequences:
+
+- **No start-vs-complete window-split.** Fast responses (Start + Complete within the same cadence slice) produce **one** merged row per `(window, dim)`. Start-side and Complete-side fields are written into the same bucket because they are disjoint field sets.
+- **Late Complete never lost.** A response arriving after its window has already been drained opens a fresh bucket at the same `window_start(request_time)`, carrying only Complete-side fields. It is emitted at the next cadence as an additional row; query-time SUM reassembles the full window.
+
+First-drain alignment via the `window_start` anchor prevents a single early event from emitting a one-sample row the moment it arrives mid-window.
 
 ## Dimensions
 
-Each record is aggregated into multiple dimension combinations:
+Each record is aggregated into four dimension combinations:
 
 - `(provider, model, server_ip)` — finest pre-aggregated level
 - `(provider, model, *)` — per-model across all servers
 - `(*, *, server_ip)` — per-server across all models
 - `(*, *, *)` — global, for overview dashboards
 
-`*` means "all". Additional dimensions (tenant_id, etc.) will be added as they are validated with real traffic. Until then, per-tenant analysis queries the `llm_calls` detail table directly.
+`*` means "all". Per-tenant analysis queries the `llm_calls` detail table directly for now.
 
 ## Time Windows
 
-Multiple granularities run in parallel:
+Multiple granularities run in parallel, each with its own cadence:
 
-| Granularity | Use case | Flush interval |
-|-------------|----------|----------------|
-| 10s | Realtime dashboard | every 10s |
-| 1m | Recent trends | every 1m |
-| 5m | Mid-term trends | every 5m |
-| 1h | Historical analysis | every 1h |
+| Granularity | Use case | Drain cadence (event-time) |
+|-------------|----------|----------------------------|
+| 10s | Realtime dashboard | 10s |
+| 1m  | Recent trends | 60s |
+| 5m  | Mid-term trends | 300s |
+| 1h  | Historical analysis | 3600s |
+
+Per-granularity cadence keeps row counts bounded: in the fast-response steady state each `(window, dim)` emits exactly one row (same as before the refactor); slow responses that straddle a cadence boundary add one extra row per crossed cadence.
 
 ## Per-Window State
 
-For each (granularity × dimension combination), the aggregator maintains:
-
 ```rust
-struct WindowBucket {
-    // Traffic
+pub struct WindowBucket {
+    // Start-side (from LlmEvent::Start + concurrency sampling)
     request_count: u64,
     stream_count: u64,
     non_stream_count: u64,
-
-    // Concurrency (sampled per second)
-    concurrency_samples: Vec<u32>,   // per-second snapshots
+    concurrency_sum: u64,          // Σ samples, for exact avg via SUM() at query time
+    concurrency_sample_count: u64,
     concurrency_max: u32,
 
-    // Tokens
+    // Complete-side (from LlmEvent::Complete)
     total_input_tokens: u64,
+    input_token_count: u64,
     total_output_tokens: u64,
-    input_tokens_sketch: TDigest,
+    output_token_count: u64,
+    total_cache_read_input_tokens: u64,
+    total_cache_creation_input_tokens: u64,
 
-    // Errors
     error_count: u64,
     error_4xx_count: u64,
     error_429_count: u64,
     error_5xx_count: u64,
 
-    // Performance sketches
-    ttfb_sketch: TDigest,
-    e2e_sketch: TDigest,
+    finish_complete_count: u64,
+    finish_length_count: u64,
+    finish_tool_use_count: u64,
+    finish_error_count: u64,
+    finish_cancelled_count: u64,
 
+    // Latency: exact running sum+count + t-digest for per-row percentiles
+    ttfb: DistributionDigest,  // sum, count, p50/p95/p99
+    e2e:  DistributionDigest,
+    tpot: DistributionDigest,  // streaming only
 }
 ```
 
-On window close, each bucket is flushed to an `LlmMetric` record with computed percentiles (avg/p50/p95/p99), then the bucket is reset.
+`DistributionDigest` tracks `sum` and `count` exactly (untouched by digest compaction) so query-time `SUM(ttfb_sum) / SUM(ttfb_count)` produces an exact average over any multi-row aggregation. Percentiles are per-row t-digest estimates over that row's slice; cross-row aggregation is a weighted average by the row's `*_count` (approximate until the schema adopts serialized t-digest bytes).
 
 ## Concurrency Tracking
 
-Concurrency cannot be derived from request counts — it requires tracking overlapping request lifespans.
+Concurrency requires overlapping-request counting, not a post-hoc derivation.
 
-The aggregator receives two types of events from `ts-llm`:
-- **CallStart**: emitted when request headers are parsed and provider/model identified (carries timestamp, provider, model, is_stream)
-- **CallEnd (LlmCall)**: the completed call record
+- On `Start`: aggregator increments the per-`DimensionKey` concurrency counter; the bucket writes the current value into `concurrency_sum / concurrency_sample_count` and updates `concurrency_max`.
+- On `Complete`: the per-`DimensionKey` counter is decremented (floored at 0). No sample is recorded for the Complete side.
 
-On `CallStart` → counter +1 (per dimension bucket). On `CallEnd` → counter -1. Per-second snapshot within the window.
+Per-row avg is `concurrency_sum / concurrency_sample_count`; cross-row avg is `SUM(concurrency_sum) / SUM(concurrency_sample_count)`. `concurrency_max` uses `MAX()` across rows.
 
-This enables per-dimension concurrency tracking (e.g. concurrent requests per model) from the moment a request arrives, not just after it completes.
+## Per-Stream Watermark
 
-On window close:
-- `concurrency_avg` = mean of per-second samples
-- `concurrency_max` = max of per-second samples
+`latest_ts[stream_id]` tracks the maximum event-time seen for that stream. Advanced by:
+
+- `Start.timestamp_us`
+- `Complete.complete_time.unwrap_or(request_time)`
+- `Heartbeat.ts`
+
+A busy stream advances its own watermark without needing heartbeats; heartbeats only matter for streams that would otherwise be idle between events. One stream's watermark never advances another's — session isolation across streams is preserved.
 
 ## Derivable Metrics (not stored)
-
-These are computed at query time from stored fields:
 
 | Metric | Derivation |
 |--------|-----------|
@@ -101,6 +125,7 @@ These are computed at query time from stored fields:
 | Error rate | `error_count / request_count` |
 | 429 rate | `error_429_count / request_count` |
 | Throughput (tokens/s) | `total_output_tokens / window_seconds` |
+| Cache hit ratio | `total_cache_read_input_tokens / total_input_tokens` |
 
 ## File Structure
 
@@ -109,8 +134,8 @@ ts-metrics/
 ├── Cargo.toml
 └── src/
     ├── lib.rs
-    ├── aggregator.rs       # MetricsAggregator — window management + flush
-    ├── bucket.rs           # WindowBucket — per-window counters + sketches
-    ├── concurrency.rs      # ConcurrencyTracker — request overlap counting
-    └── model.rs            # LlmMetric output type
+    ├── aggregator.rs      # MetricsAggregator — per-stream watermark, cadence drain
+    ├── bucket.rs          # WindowBucket + DistributionDigest
+    ├── stage.rs           # Tokio-task wiring (one aggregator per shard)
+    └── model.rs           # LlmMetric + derived avg accessors
 ```

@@ -5,13 +5,19 @@ use crate::model::LlmMetric;
 
 const BUFFER_CAPACITY: usize = 500;
 
-/// Streaming-friendly approximate percentile tracker backed by t-digest.
+/// Streaming percentile tracker backed by t-digest plus exact running
+/// `sum` / `count`.
 ///
-/// Values are buffered locally and batch-merged into the digest when the buffer
-/// reaches `BUFFER_CAPACITY` or when a query (`avg` / `quantile`) is requested.
+/// Values are buffered locally and batch-merged into the digest when the
+/// buffer reaches `BUFFER_CAPACITY` or when `quantile()` is called. `sum`
+/// and `count` are tracked exactly so query-time SUM over multiple rows
+/// yields a true average; the digest's own mean is not used (it drifts
+/// once values are compacted).
 struct DistributionDigest {
     digest: TDigest,
     buffer: Vec<f64>,
+    sum: f64,
+    count: u64,
 }
 
 impl DistributionDigest {
@@ -19,11 +25,15 @@ impl DistributionDigest {
         Self {
             digest: TDigest::new_with_size(100),
             buffer: Vec::new(),
+            sum: 0.0,
+            count: 0,
         }
     }
 
     fn add(&mut self, value: f64) {
         self.buffer.push(value);
+        self.sum += value;
+        self.count += 1;
         if self.buffer.len() >= BUFFER_CAPACITY {
             self.compact();
         }
@@ -38,19 +48,15 @@ impl DistributionDigest {
     }
 
     fn count(&self) -> u64 {
-        self.digest.count() as u64 + self.buffer.len() as u64
+        self.count
     }
 
-    fn avg(&mut self) -> Option<f64> {
-        if self.count() == 0 {
-            return None;
-        }
-        self.compact();
-        Some(self.digest.mean())
+    fn sum(&self) -> f64 {
+        self.sum
     }
 
     fn quantile(&mut self, q: f64) -> Option<f64> {
-        if self.count() == 0 {
+        if self.count == 0 {
             return None;
         }
         self.compact();
@@ -68,7 +74,8 @@ pub struct WindowBucket {
     pub request_count: u64,
     pub stream_count: u64,
     pub non_stream_count: u64,
-    concurrency_samples: Vec<u32>,
+    concurrency_sum: u64,
+    concurrency_sample_count: u64,
     concurrency_max: u32,
 
     // Complete-side: populated by on_call_complete.
@@ -107,7 +114,8 @@ impl WindowBucket {
             request_count: 0,
             stream_count: 0,
             non_stream_count: 0,
-            concurrency_samples: Vec::new(),
+            concurrency_sum: 0,
+            concurrency_sample_count: 0,
             concurrency_max: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
@@ -143,7 +151,8 @@ impl WindowBucket {
 
     /// Record a concurrency sample (called by the aggregator).
     pub fn sample_concurrency(&mut self, current: u32) {
-        self.concurrency_samples.push(current);
+        self.concurrency_sum += current as u64;
+        self.concurrency_sample_count += 1;
         if current > self.concurrency_max {
             self.concurrency_max = current;
         }
@@ -230,13 +239,6 @@ impl WindowBucket {
         model: String,
         server_ip: String,
     ) -> LlmMetric {
-        let concurrency_avg = if self.concurrency_samples.is_empty() {
-            0.0
-        } else {
-            let sum: u64 = self.concurrency_samples.iter().map(|&v| v as u64).sum();
-            sum as f64 / self.concurrency_samples.len() as f64
-        };
-
         LlmMetric {
             timestamp_us,
             stream_id: stream_id.to_string(),
@@ -247,20 +249,13 @@ impl WindowBucket {
             request_count: self.request_count,
             stream_count: self.stream_count,
             non_stream_count: self.non_stream_count,
-            concurrency_avg,
+            concurrency_sum: self.concurrency_sum,
+            concurrency_sample_count: self.concurrency_sample_count,
             concurrency_max: self.concurrency_max,
             total_input_tokens: self.total_input_tokens,
+            input_token_count: self.input_token_count,
             total_output_tokens: self.total_output_tokens,
-            input_tokens_avg: if self.input_token_count > 0 {
-                Some(self.total_input_tokens as f64 / self.input_token_count as f64)
-            } else {
-                None
-            },
-            output_tokens_avg: if self.output_token_count > 0 {
-                Some(self.total_output_tokens as f64 / self.output_token_count as f64)
-            } else {
-                None
-            },
+            output_token_count: self.output_token_count,
             total_cache_read_input_tokens: self.total_cache_read_input_tokens,
             total_cache_creation_input_tokens: self.total_cache_creation_input_tokens,
             error_count: self.error_count,
@@ -272,15 +267,18 @@ impl WindowBucket {
             finish_tool_use_count: self.finish_tool_use_count,
             finish_error_count: self.finish_error_count,
             finish_cancelled_count: self.finish_cancelled_count,
-            ttfb_avg: self.ttfb.avg(),
+            ttfb_sum: self.ttfb.sum(),
+            ttfb_count: self.ttfb.count(),
             ttfb_p50: self.ttfb.quantile(0.5),
             ttfb_p95: self.ttfb.quantile(0.95),
             ttfb_p99: self.ttfb.quantile(0.99),
-            e2e_avg: self.e2e.avg(),
+            e2e_sum: self.e2e.sum(),
+            e2e_count: self.e2e.count(),
             e2e_p50: self.e2e.quantile(0.5),
             e2e_p95: self.e2e.quantile(0.95),
             e2e_p99: self.e2e.quantile(0.99),
-            tpot_avg: self.tpot.avg(),
+            tpot_sum: self.tpot.sum(),
+            tpot_count: self.tpot.count(),
             tpot_p50: self.tpot.quantile(0.5),
             tpot_p95: self.tpot.quantile(0.95),
             tpot_p99: self.tpot.quantile(0.99),
@@ -298,7 +296,7 @@ mod tests {
     fn digest_empty() {
         let mut d = DistributionDigest::new();
         assert_eq!(d.count(), 0);
-        assert_eq!(d.avg(), None);
+        assert_eq!(d.sum(), 0.0);
         assert_eq!(d.quantile(0.5), None);
     }
 
@@ -307,7 +305,7 @@ mod tests {
         let mut d = DistributionDigest::new();
         d.add(42.0);
         assert_eq!(d.count(), 1);
-        assert_eq!(d.avg(), Some(42.0));
+        assert_eq!(d.sum(), 42.0);
         assert_eq!(d.quantile(0.5), Some(42.0));
     }
 
@@ -318,8 +316,8 @@ mod tests {
             d.add(v);
         }
         assert_eq!(d.count(), 5);
-        let avg = d.avg().unwrap();
-        assert!((avg - 30.0).abs() < 0.01);
+        // Exact sum (not digest mean).
+        assert!((d.sum() - 150.0).abs() < 1e-9);
         let p50 = d.quantile(0.5).unwrap();
         assert!((p50 - 30.0).abs() < 5.0);
     }
@@ -332,8 +330,8 @@ mod tests {
         }
         assert_eq!(d.count(), 600);
         assert_eq!(d.buffer.len(), 100);
-        let avg = d.avg().unwrap();
-        assert!((avg - 299.5).abs() < 1.0);
+        // Sum of 0..600 = 179700, exact — digest compaction doesn't touch it.
+        assert_eq!(d.sum(), 179_700.0);
     }
 
     fn test_call() -> LlmCall {
@@ -382,13 +380,14 @@ mod tests {
     }
 
     #[test]
-    fn sample_concurrency_tracks_max() {
+    fn sample_concurrency_tracks_sum_and_max() {
         let mut b = WindowBucket::new();
         b.sample_concurrency(3);
         b.sample_concurrency(5);
         b.sample_concurrency(2);
         assert_eq!(b.concurrency_max, 5);
-        assert_eq!(b.concurrency_samples.len(), 3);
+        assert_eq!(b.concurrency_sample_count, 3);
+        assert_eq!(b.concurrency_sum, 10);
     }
 
     #[test]
@@ -400,8 +399,8 @@ mod tests {
         call.complete_time = Some(3_000_000);
         call.is_stream = true;
         b.on_call_complete(&call);
-        let tpot = b.tpot.avg().unwrap();
-        assert!((tpot - 20.0).abs() < 0.01);
+        let tpot_avg = b.tpot.sum() / b.tpot.count() as f64;
+        assert!((tpot_avg - 20.0).abs() < 0.01);
 
         let mut b2 = WindowBucket::new();
         let mut call2 = call.clone();
@@ -447,20 +446,29 @@ mod tests {
         assert_eq!(m.request_count, 1);
         assert_eq!(m.stream_count, 1);
         assert_eq!(m.concurrency_max, 1);
+        assert_eq!(m.concurrency_sample_count, 1);
+        assert_eq!(m.concurrency_sum, 1);
         // Complete-side
         assert_eq!(m.total_input_tokens, 100);
+        assert_eq!(m.input_token_count, 1);
         assert_eq!(m.total_output_tokens, 50);
-        assert!(m.ttfb_avg.is_some());
-        assert!(m.e2e_avg.is_some());
-        assert!(m.tpot_avg.is_some());
+        assert_eq!(m.output_token_count, 1);
+        assert_eq!(m.ttfb_count, 1);
+        assert!(m.ttfb_sum > 0.0);
+        assert_eq!(m.e2e_count, 1);
+        assert_eq!(m.tpot_count, 1);
         assert_eq!(m.finish_complete_count, 1);
+        // Per-row averages derived from sum/count.
+        assert!(m.ttfb_avg().is_some());
+        assert!(m.e2e_avg().is_some());
+        assert!(m.tpot_avg().is_some());
     }
 
     #[test]
     fn flush_complete_only_leaves_start_side_zeroed() {
         // Late-arriving Complete that opens a fresh bucket (previous drain
         // removed the Start-side row). Start-side stays at zero so
-        // `SUM(request_count)` across phases counts traffic exactly once.
+        // `SUM(request_count)` across rows counts traffic exactly once.
         let mut b = WindowBucket::new();
         b.on_call_complete(&test_call());
         let m = b.flush(
@@ -474,8 +482,12 @@ mod tests {
         assert_eq!(m.request_count, 0);
         assert_eq!(m.stream_count, 0);
         assert_eq!(m.concurrency_max, 0);
-        assert!(m.ttfb_avg.is_some());
+        assert_eq!(m.concurrency_sample_count, 0);
+        // Complete-side populated — sum/count pair carries latency across SUM.
+        assert_eq!(m.ttfb_count, 1);
+        assert!(m.ttfb_sum > 0.0);
         assert_eq!(m.total_input_tokens, 100);
+        assert_eq!(m.input_token_count, 1);
     }
 
     #[test]

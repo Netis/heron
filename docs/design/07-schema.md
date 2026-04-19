@@ -84,10 +84,12 @@ Indexes:
 
 Pre-aggregated metrics by time window + dimension combination. Frontend dashboards query this table exclusively for trend charts and overview panels — never the detail tables.
 
+**Multi-row per key.** The aggregator drains each bucket on a fixed per-granularity cadence (see `05-metrics.md`). A fast response emits **one** row per `(timestamp, stream_id, granularity, provider, model, server_ip)` key; a slow response whose Complete arrives after its bucket was already drained opens a fresh bucket for the same window and emits an **additional** row at the next cadence. The key is therefore a row-identity marker, **not** a unique primary key — queries always use `GROUP BY timestamp [+ dim]` with `SUM()` to collapse multiple slices into the window total. Every average-style field is stored as a `(sum, count)` pair to make this collapse exact.
+
 ```
 llm_metrics
-├── Primary Key (composite)
-│   ├── timestamp: timestamp         # Aggregation window start
+├── Row Key (composite; NOT unique — see note above)
+│   ├── timestamp: timestamp         # Aggregation window start (from request_time)
 │   ├── stream_id: u32               # Per-source dimension (see below)
 │   ├── granularity: string          # 10s / 1m / 5m / 1h
 │   ├── provider: string             # Dimension value, '*' = all
@@ -98,16 +100,17 @@ llm_metrics
 │   ├── request_count: u64
 │   ├── stream_count: u64            # Streaming requests
 │   ├── non_stream_count: u64
-│   ├── concurrency_avg: f64         # Average concurrent requests in window
-│   └── concurrency_max: u32         # Peak concurrent requests in window
+│   ├── concurrency_sum: u64         # Σ per-call concurrency samples
+│   ├── concurrency_sample_count: u64
+│   └── concurrency_max: u32         # Peak concurrent requests in row's slice
 │
 ├── Tokens
 │   ├── total_input_tokens: u64
+│   ├── input_token_count: u64       # Pair with total_input_tokens for avg
 │   ├── total_output_tokens: u64
-│   ├── input_tokens_avg: f64?       # Avg input tokens per request
-│   ├── output_tokens_avg: f64?      # Avg output tokens per request
-│   ├── total_cache_read_input_tokens: u64    # Sum of cache_read_input_tokens
-│   └── total_cache_creation_input_tokens: u64 # Sum of cache_creation_input_tokens
+│   ├── output_token_count: u64
+│   ├── total_cache_read_input_tokens: u64
+│   └── total_cache_creation_input_tokens: u64
 │
 ├── Errors
 │   ├── error_count: u64             # All errors (status_code >= 400)
@@ -122,20 +125,23 @@ llm_metrics
 │   ├── finish_error_count: u64      # Generation error
 │   └── finish_cancelled_count: u64  # Client cancelled
 │
-├── TTFB Distribution
-│   ├── ttfb_avg: f64?
-│   ├── ttfb_p50: f64?
+├── TTFB Distribution (milliseconds)
+│   ├── ttfb_sum: f64                # Σ TTFB samples (exact)
+│   ├── ttfb_count: u64              # # TTFB samples (exact)
+│   ├── ttfb_p50: f64?               # Per-row t-digest estimate over this slice
 │   ├── ttfb_p95: f64?
 │   └── ttfb_p99: f64?
 │
-├── E2E Latency Distribution
-│   ├── e2e_avg: f64?
+├── E2E Latency Distribution (milliseconds)
+│   ├── e2e_sum: f64
+│   ├── e2e_count: u64
 │   ├── e2e_p50: f64?
 │   ├── e2e_p95: f64?
 │   └── e2e_p99: f64?
 │
 ├── TPOT Distribution (streaming only, ms/token)
-│   ├── tpot_avg: f64?               # Avg ms per output token
+│   ├── tpot_sum: f64
+│   ├── tpot_count: u64
 │   ├── tpot_p50: f64?
 │   ├── tpot_p95: f64?
 │   └── tpot_p99: f64?
@@ -147,12 +153,17 @@ Indexes:
 
 ### Design Notes
 
-- **`stream_id`**: Per-capture-source dimension so each stream keeps an independent event-time watermark — without it, clock skew between sources (cloud-probe vs. local pcap) would re-open already-flushed windows and emit duplicate rows. Rows that share `(timestamp, granularity, provider, model, server_ip)` but differ by `stream_id` are merged at query time via `GROUP BY timestamp` + SUM for counts and weighted average (weighted by `request_count`, or `stream_count` for TPOT) for averages/percentiles. Today `stream_id` equals the 0-based index of the capture source in `[[capture.sources]]`; the pipeline-to-stream mapping may decouple later (e.g. fan-out or merged streams), so API/frontend treat `stream_id` as internal and never filter on it.
+- **`stream_id`**: Per-capture-source dimension so each stream keeps an independent event-time watermark — without it, clock skew between sources (cloud-probe vs. local pcap) would re-open already-flushed windows and emit duplicate rows. Today `stream_id` equals the 0-based index of the capture source in `[[capture.sources]]`; the pipeline-to-stream mapping may decouple later (e.g. fan-out or merged streams), so API/frontend treat `stream_id` as internal and never filter on it.
+- **Query-time aggregation.** Rows that share `(timestamp, granularity, provider, model, server_ip)` — whether they differ by `stream_id` or are multiple drain slices of the same stream — are merged by `GROUP BY timestamp [+ dim]`:
+  - Plain counters / totals → `SUM()`.
+  - Averages → `SUM(*_sum) / SUM(*_count)` (exact).
+  - `concurrency_max` → `MAX()`.
+  - Percentiles → `SUM(*_p* * *_count) / SUM(*_count)` (approximation — weighting by the matching `*_count` keeps slow-response rows with `request_count=0` from collapsing the result to zero, but it is not equivalent to merging the underlying t-digests. Serialized t-digest bytes is the planned long-term fix.)
 - **Aggregation levels**: finest `(provider, model, server_ip)` for drilldown, global `(*, *, *)` for overview. Additional dimensions (tenant_id, etc.) will be added as they are validated with real traffic.
 - **Other dimension analysis**: query `llm_calls` detail table with GROUP BY for dimensions not yet in pre-aggregation.
-- **Percentiles**: Computed at aggregation time using t-digest or DDSketch approximation, then stored as plain values.
-- **Multi-granularity**: Fine-grained (10s) for realtime dashboards, coarse (1h) for historical trends.
-- **Concurrency**: Measured by maintaining a counter (+1 on request arrival, -1 on completion), sampled per second within the window.
+- **`*_sum / *_count` instead of `*_avg`**: averages are not additive across rows; storing the exact sum and count lets the query layer SUM over any set of rows (multi-stream, multi-drain-slice) and divide to get a correct average. The per-row percentiles (`*_p*`) are t-digest estimates over that row's slice only — single-row views can read them directly.
+- **Multi-granularity**: Fine-grained (10s) for realtime dashboards, coarse (1h) for historical trends. Each granularity has its own drain cadence equal to its window size, so steady-state row count per granularity matches the number of windows covered.
+- **Concurrency**: Per-`DimensionKey` counter (+1 on `Start`, -1 on `Complete`); every Start writes the current value as a sample. Cross-row avg via the `sum / count` pair; peak via `MAX(concurrency_max)`.
 - **Derivable metrics** (computed at query time, not stored): QPS (`request_count / window_seconds`), success rate (`1 - error_count / request_count`), aggregate throughput in tokens/s (`total_output_tokens / window_seconds`), cache hit ratio (`total_cache_read_input_tokens / total_input_tokens`).
 
 ---
