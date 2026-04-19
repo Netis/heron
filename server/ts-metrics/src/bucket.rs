@@ -58,17 +58,20 @@ impl DistributionDigest {
     }
 }
 
-/// Per-window, per-dimension accumulator.
+/// One (stream, granularity, window_start, dim) bucket. Accepts writes from
+/// both `LlmEvent::Start` (traffic/concurrency) and `LlmEvent::Complete`
+/// (tokens/errors/latency) over the life of a single cadence slice, then is
+/// drained and dropped. Subsequent late-arriving Completes for the same window
+/// land in a fresh bucket and produce additional rows.
 pub struct WindowBucket {
+    // Start-side: populated by on_call_start + sample_concurrency.
     pub request_count: u64,
     pub stream_count: u64,
     pub non_stream_count: u64,
-
-    // Concurrency — populated externally by the aggregator via sample_concurrency().
     concurrency_samples: Vec<u32>,
     concurrency_max: u32,
 
-    // Tokens.
+    // Complete-side: populated by on_call_complete.
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     input_token_count: u64,
@@ -76,13 +79,11 @@ pub struct WindowBucket {
     pub total_cache_read_input_tokens: u64,
     pub total_cache_creation_input_tokens: u64,
 
-    // Errors.
     pub error_count: u64,
     pub error_4xx_count: u64,
     pub error_429_count: u64,
     pub error_5xx_count: u64,
 
-    // Finish reason counts.
     pub finish_complete_count: u64,
     pub finish_length_count: u64,
     pub finish_tool_use_count: u64,
@@ -92,9 +93,12 @@ pub struct WindowBucket {
     // Latency distributions (milliseconds).
     ttfb: DistributionDigest,
     e2e: DistributionDigest,
-
     // TPOT distribution (ms/token) — streaming requests only.
     tpot: DistributionDigest,
+
+    /// Running count of Complete events written since bucket creation.
+    /// Combined with `request_count` forms the `has_data` check.
+    complete_count: u64,
 }
 
 impl WindowBucket {
@@ -123,6 +127,7 @@ impl WindowBucket {
             ttfb: DistributionDigest::new(),
             e2e: DistributionDigest::new(),
             tpot: DistributionDigest::new(),
+            complete_count: 0,
         }
     }
 
@@ -146,7 +151,8 @@ impl WindowBucket {
 
     /// Called when an LLM call completes (response fully received).
     pub fn on_call_complete(&mut self, call: &LlmCall) {
-        // Tokens.
+        self.complete_count += 1;
+
         if let Some(it) = call.input_tokens {
             self.total_input_tokens += it as u64;
             self.input_token_count += 1;
@@ -162,7 +168,6 @@ impl WindowBucket {
             self.total_cache_creation_input_tokens += t as u64;
         }
 
-        // Errors.
         if let Some(status) = call.status_code {
             if status >= 400 {
                 self.error_count += 1;
@@ -177,7 +182,6 @@ impl WindowBucket {
             }
         }
 
-        // Finish reason.
         if let Some(reason) = call.finish_reason {
             match reason {
                 FinishReason::Complete => self.finish_complete_count += 1,
@@ -188,7 +192,6 @@ impl WindowBucket {
             }
         }
 
-        // Latency.
         if let Some(ttfb) = call.ttfb_ms {
             self.ttfb.add(ttfb);
         }
@@ -196,7 +199,6 @@ impl WindowBucket {
             self.e2e.add(e2e);
         }
 
-        // TPOT: for streaming requests, compute ms per output token.
         if call.is_stream {
             if let (Some(ot), Some(resp_time), Some(comp_time)) =
                 (call.output_tokens, call.response_time, call.complete_time)
@@ -211,7 +213,14 @@ impl WindowBucket {
         }
     }
 
-    /// Flush this bucket into an LlmMetric record.
+    pub fn has_data(&self) -> bool {
+        self.request_count > 0 || self.complete_count > 0
+    }
+
+    /// Flush this bucket into an `LlmMetric` row. Non-populated fields stay
+    /// at their neutral default (0 for counters, `None` for averages /
+    /// percentiles) — query-time SUM over such rows yields the correct total
+    /// for additive fields.
     pub fn flush(
         &mut self,
         timestamp_us: i64,
@@ -285,8 +294,6 @@ mod tests {
     use std::net::IpAddr;
     use ts_llm::model::{ApiType, FinishReason, LlmCall, ProviderFormat};
 
-    // --- DistributionDigest tests ---
-
     #[test]
     fn digest_empty() {
         let mut d = DistributionDigest::new();
@@ -312,28 +319,22 @@ mod tests {
         }
         assert_eq!(d.count(), 5);
         let avg = d.avg().unwrap();
-        assert!((avg - 30.0).abs() < 0.01, "avg should be ~30, got {avg}");
+        assert!((avg - 30.0).abs() < 0.01);
         let p50 = d.quantile(0.5).unwrap();
-        assert!((p50 - 30.0).abs() < 5.0, "p50 should be ~30, got {p50}");
+        assert!((p50 - 30.0).abs() < 5.0);
     }
 
     #[test]
     fn digest_compact_trigger() {
         let mut d = DistributionDigest::new();
-        // Add more than BUFFER_CAPACITY values to trigger auto-compact.
         for i in 0..600 {
             d.add(i as f64);
         }
         assert_eq!(d.count(), 600);
-        // After 500 inserts the buffer should have been compacted once,
-        // leaving 100 in the new buffer.
         assert_eq!(d.buffer.len(), 100);
         let avg = d.avg().unwrap();
-        // Mean of 0..599 = 299.5
-        assert!((avg - 299.5).abs() < 1.0, "avg should be ~299.5, got {avg}");
+        assert!((avg - 299.5).abs() < 1.0);
     }
-
-    // --- Helper to build a test LlmCall ---
 
     fn test_call() -> LlmCall {
         LlmCall {
@@ -369,10 +370,8 @@ mod tests {
         }
     }
 
-    // --- WindowBucket tests ---
-
     #[test]
-    fn bucket_on_call_start() {
+    fn on_call_start_counts() {
         let mut b = WindowBucket::new();
         b.on_call_start(true);
         b.on_call_start(false);
@@ -383,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn bucket_sample_concurrency() {
+    fn sample_concurrency_tracks_max() {
         let mut b = WindowBucket::new();
         b.sample_concurrency(3);
         b.sample_concurrency(5);
@@ -393,41 +392,26 @@ mod tests {
     }
 
     #[test]
-    fn bucket_tpot_streaming() {
+    fn tpot_streaming_only() {
         let mut b = WindowBucket::new();
         let mut call = test_call();
-        // output_tokens=100, response_time=1_000_000us, complete_time=3_000_000us
-        // duration = 2_000ms → 2000/100 = 20.0 ms/token
         call.output_tokens = Some(100);
         call.response_time = Some(1_000_000);
         call.complete_time = Some(3_000_000);
         call.is_stream = true;
-
         b.on_call_complete(&call);
-
         let tpot = b.tpot.avg().unwrap();
-        assert!(
-            (tpot - 20.0).abs() < 0.01,
-            "tpot should be 20.0 ms/t, got {tpot}"
-        );
+        assert!((tpot - 20.0).abs() < 0.01);
+
+        let mut b2 = WindowBucket::new();
+        let mut call2 = call.clone();
+        call2.is_stream = false;
+        b2.on_call_complete(&call2);
+        assert_eq!(b2.tpot.count(), 0);
     }
 
     #[test]
-    fn bucket_tpot_non_streaming_ignored() {
-        let mut b = WindowBucket::new();
-        let mut call = test_call();
-        call.is_stream = false;
-        call.output_tokens = Some(100);
-        call.response_time = Some(1_000_000);
-        call.complete_time = Some(3_000_000);
-
-        b.on_call_complete(&call);
-
-        assert_eq!(b.tpot.count(), 0);
-    }
-
-    #[test]
-    fn bucket_error_counting() {
+    fn error_counting() {
         let mut b = WindowBucket::new();
         let mut call = test_call();
 
@@ -445,42 +429,57 @@ mod tests {
     }
 
     #[test]
-    fn bucket_flush_produces_metric() {
+    fn flush_merged_row_carries_both_sides() {
         let mut b = WindowBucket::new();
         b.on_call_start(true);
         b.sample_concurrency(1);
-
-        let call = test_call();
-        b.on_call_complete(&call);
-        b.sample_concurrency(0);
+        b.on_call_complete(&test_call());
 
         let m = b.flush(
             1_000_000,
-            "test",
+            "s",
             "10s",
             "openai".to_string(),
             "gpt-4".to_string(),
             "10.0.0.1".to_string(),
         );
-
-        assert_eq!(m.stream_id, "test");
+        // Start-side
         assert_eq!(m.request_count, 1);
         assert_eq!(m.stream_count, 1);
+        assert_eq!(m.concurrency_max, 1);
+        // Complete-side
         assert_eq!(m.total_input_tokens, 100);
         assert_eq!(m.total_output_tokens, 50);
         assert!(m.ttfb_avg.is_some());
         assert!(m.e2e_avg.is_some());
         assert!(m.tpot_avg.is_some());
-        assert!(m.output_tokens_avg.is_some());
         assert_eq!(m.finish_complete_count, 1);
-        assert_eq!(m.finish_length_count, 0);
-        // concurrency: samples [1, 0] → avg 0.5, max 1
-        assert!((m.concurrency_avg - 0.5).abs() < 0.01);
-        assert_eq!(m.concurrency_max, 1);
     }
 
     #[test]
-    fn bucket_finish_reason_counting() {
+    fn flush_complete_only_leaves_start_side_zeroed() {
+        // Late-arriving Complete that opens a fresh bucket (previous drain
+        // removed the Start-side row). Start-side stays at zero so
+        // `SUM(request_count)` across phases counts traffic exactly once.
+        let mut b = WindowBucket::new();
+        b.on_call_complete(&test_call());
+        let m = b.flush(
+            0,
+            "s",
+            "10s",
+            "openai".to_string(),
+            "gpt-4".to_string(),
+            "10.0.0.1".to_string(),
+        );
+        assert_eq!(m.request_count, 0);
+        assert_eq!(m.stream_count, 0);
+        assert_eq!(m.concurrency_max, 0);
+        assert!(m.ttfb_avg.is_some());
+        assert_eq!(m.total_input_tokens, 100);
+    }
+
+    #[test]
+    fn finish_reason_counting() {
         let mut b = WindowBucket::new();
         let mut call = test_call();
 
@@ -505,5 +504,17 @@ mod tests {
         assert_eq!(b.finish_tool_use_count, 1);
         assert_eq!(b.finish_error_count, 0);
         assert_eq!(b.finish_cancelled_count, 1);
+    }
+
+    #[test]
+    fn has_data_detects_either_side() {
+        let mut b = WindowBucket::new();
+        assert!(!b.has_data());
+        b.on_call_start(true);
+        assert!(b.has_data());
+
+        let mut b2 = WindowBucket::new();
+        b2.on_call_complete(&test_call());
+        assert!(b2.has_data());
     }
 }

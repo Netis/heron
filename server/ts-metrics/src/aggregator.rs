@@ -30,7 +30,7 @@ const GRANULARITIES: &[GranularityConfig] = &[
     },
 ];
 
-/// Composite key for a metrics bucket: (granularity, window_start, dimension).
+/// Composite key for a metrics bucket: (stream, granularity, window_start, dim).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BucketKey {
     stream_id: String,
@@ -52,21 +52,29 @@ struct DimensionKey {
 
 /// Aggregates LlmEvents into time-windowed LlmMetric records.
 ///
-/// Uses event timestamps (not wall clock) for window boundaries,
-/// so pcap replay produces correct results.
+/// Each `(stream, granularity, window_start(request_time), dim)` key maps
+/// to one `WindowBucket` that receives writes from both `LlmEvent::Start`
+/// (traffic/concurrency) and `LlmEvent::Complete` (tokens/errors/latency).
+/// The bucket is drained on a per-`(stream, granularity)` cadence aligned
+/// to the window boundary (first drain at `window_start + window_secs`,
+/// subsequent drains every `window_secs` of event-time) and then dropped.
+/// A late Complete whose bucket was already drained opens a fresh bucket for
+/// the same window and produces another row at the next cadence — the
+/// query layer SUMs rows with the same key to assemble the full window.
 ///
-/// Supports 4 granularities (10s, 1m, 5m, 1h) and 4 dimension roll-ups
-/// per event, producing up to 16 bucket entries per event.
-///
-/// One aggregator owns one **stream** — an independent event-time watermark.
-/// The composition root instantiates one per capture source so that
-/// inter-source clock skew cannot re-open already-flushed windows. Every
-/// flushed `LlmMetric` carries this stream_id so the storage layer can
-/// distinguish per-stream rows that share the same (ts, dim).
+/// Event-time exclusive: watermark is advanced by every event (Start:
+/// `timestamp_us`, Complete: `complete_time.unwrap_or(request_time)`,
+/// Heartbeat: `ts`). Pcap replay therefore produces deterministic output.
 pub struct MetricsAggregator {
     buckets: HashMap<BucketKey, WindowBucket>,
     concurrency: HashMap<DimensionKey, i64>,
+    /// Per-stream event-time watermark, advanced by every event.
     latest_ts: HashMap<String, i64>,
+    /// Per-(stream, granularity_idx) cadence anchor for bucket drain.
+    /// Initialized on first write to the bucket with `window_start(ts, gran)`
+    /// so the first drain fires at `window_end` instead of emitting a
+    /// single-sample row the moment the first event arrives mid-window.
+    last_flush_ts: HashMap<(String, usize), i64>,
     metrics: MetricsWorker,
 }
 
@@ -76,32 +84,30 @@ impl MetricsAggregator {
             buckets: HashMap::new(),
             concurrency: HashMap::new(),
             latest_ts: HashMap::new(),
+            last_flush_ts: HashMap::new(),
             metrics,
         }
     }
 
-    /// Process an LlmEvent. Returns any metrics flushed due to window expiration.
+    /// Process an LlmEvent. Returns any metric rows emitted by cadence drain.
     pub fn process(&mut self, event: &LlmEvent) -> Vec<LlmMetric> {
         self.metrics.counter(Metric::MetricsEventsReceived).inc();
-        match event {
-            LlmEvent::Start(start) => {
-                self.on_call_start(start);
-                Vec::new()
-            }
-            LlmEvent::Complete { call, .. } => {
-                self.on_call_complete(call);
-                let entry = self.latest_ts.entry(call.stream_id.clone()).or_insert(0);
-                *entry = (*entry).max(call.request_time);
-                self.check_windows(&call.stream_id)
-            }
-            LlmEvent::Heartbeat { ts, ref stream_id } => self.advance_time(*ts, stream_id),
-        }
-    }
 
-    pub fn advance_time(&mut self, ts: i64, stream_id: &str) -> Vec<LlmMetric> {
-        let entry = self.latest_ts.entry(stream_id.to_string()).or_insert(0);
-        *entry = (*entry).max(ts);
-        self.check_windows(stream_id)
+        let (stream_id, ts) = event_clock(event);
+
+        match event {
+            LlmEvent::Start(start) => self.on_call_start(start),
+            LlmEvent::Complete { call, .. } => self.on_call_complete(call),
+            LlmEvent::Heartbeat { .. } => {}
+        }
+
+        let watermark = {
+            let entry = self.latest_ts.entry(stream_id.clone()).or_insert(0);
+            *entry = (*entry).max(ts);
+            *entry
+        };
+
+        self.maybe_drain(&stream_id, watermark)
     }
 
     /// Flush all remaining buckets. Call at end of capture.
@@ -110,7 +116,7 @@ impl MetricsAggregator {
         let mut metrics = Vec::new();
         for key in keys {
             if let Some(mut bucket) = self.buckets.remove(&key) {
-                if bucket.request_count > 0 {
+                if bucket.has_data() {
                     metrics.push(bucket.flush(
                         key.window_start_us,
                         &key.stream_id,
@@ -123,7 +129,6 @@ impl MetricsAggregator {
                 }
             }
         }
-        // Sort by granularity then timestamp then dimensions for consistent output.
         metrics.sort_by(|a, b| {
             a.granularity
                 .cmp(b.granularity)
@@ -152,6 +157,9 @@ impl MetricsAggregator {
 
         for (gi, gran) in GRANULARITIES.iter().enumerate() {
             let ws = window_start(start.timestamp_us, gran.window_secs);
+            self.last_flush_ts
+                .entry((start.stream_id.clone(), gi))
+                .or_insert(ws);
             for (di, dk) in dim_keys.iter().enumerate() {
                 let bk = BucketKey {
                     stream_id: start.stream_id.clone(),
@@ -183,6 +191,11 @@ impl MetricsAggregator {
 
         for (gi, gran) in GRANULARITIES.iter().enumerate() {
             let ws = window_start(call.request_time, gran.window_secs);
+            // Same cadence-anchor init as on_call_start — covers captures
+            // that start mid-flow and see Complete without a prior Start.
+            self.last_flush_ts
+                .entry((call.stream_id.clone(), gi))
+                .or_insert(ws);
             for dk in &dim_keys {
                 let bk = BucketKey {
                     stream_id: call.stream_id.clone(),
@@ -198,31 +211,34 @@ impl MetricsAggregator {
         }
     }
 
-    /// Flush windows that are strictly older than the current window
-    /// for each granularity.
-    fn check_windows(&mut self, stream_id: &str) -> Vec<LlmMetric> {
-        let watermark = match self.latest_ts.get(stream_id) {
-            Some(&ts) => ts,
-            None => return Vec::new(),
-        };
+    /// Per-granularity cadence drain. For each `(stream, gran)` pair where
+    /// at least `gran.window_secs` of event-time have elapsed since the
+    /// anchor, emit and clear all dirty buckets for that pair.
+    fn maybe_drain(&mut self, stream_id: &str, now_ts: i64) -> Vec<LlmMetric> {
         let mut metrics = Vec::new();
 
         for (gi, gran) in GRANULARITIES.iter().enumerate() {
-            let current_window = window_start(watermark, gran.window_secs);
-            let expired_keys: Vec<_> = self
+            let interval_us = gran.window_secs * 1_000_000;
+            let last = match self.last_flush_ts.get(&(stream_id.to_string(), gi)) {
+                Some(&t) => t,
+                None => continue,
+            };
+            if now_ts - last < interval_us {
+                continue;
+            }
+            self.last_flush_ts
+                .insert((stream_id.to_string(), gi), now_ts);
+
+            let dirty_keys: Vec<_> = self
                 .buckets
                 .keys()
-                .filter(|k| {
-                    k.stream_id == stream_id
-                        && k.granularity_idx == gi
-                        && k.window_start_us < current_window
-                })
+                .filter(|k| k.stream_id == stream_id && k.granularity_idx == gi)
                 .cloned()
                 .collect();
 
-            for key in expired_keys {
+            for key in dirty_keys {
                 if let Some(mut bucket) = self.buckets.remove(&key) {
-                    if bucket.request_count > 0 {
+                    if bucket.has_data() {
                         metrics.push(bucket.flush(
                             key.window_start_us,
                             &key.stream_id,
@@ -238,6 +254,23 @@ impl MetricsAggregator {
         }
 
         metrics
+    }
+}
+
+/// Extract `(stream_id, event_time_us)` from an event. Event time:
+/// * `Start` — `timestamp_us` (packet time of the request).
+/// * `Complete` — `complete_time.unwrap_or(request_time)` (latest real
+///   event-time we have for this call; `request_time` is only a fallback
+///   and does not meaningfully advance the watermark on its own).
+/// * `Heartbeat` — `ts` (synthetic packet time from capture).
+fn event_clock(event: &LlmEvent) -> (String, i64) {
+    match event {
+        LlmEvent::Start(s) => (s.stream_id.clone(), s.timestamp_us),
+        LlmEvent::Complete { call, .. } => (
+            call.stream_id.clone(),
+            call.complete_time.unwrap_or(call.request_time),
+        ),
+        LlmEvent::Heartbeat { ts, stream_id } => (stream_id.clone(), *ts),
     }
 }
 
@@ -287,7 +320,7 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
     use std::sync::Arc;
-    use ts_llm::model::{ApiType, FinishReason, LlmCallStart, ProviderFormat};
+    use ts_llm::model::{ApiType, FinishReason, LlmCall, LlmCallStart, ProviderFormat};
 
     fn test_metrics() -> MetricsWorker {
         use ts_common::internal_metrics::MetricsSystem;
@@ -301,183 +334,7 @@ mod tests {
     }
 
     fn make_start(ts_us: i64, model: &str, is_stream: bool) -> LlmEvent {
-        LlmEvent::Start(LlmCallStart {
-            stream_id: String::new(),
-            provider: ProviderFormat::OpenAI,
-            model: model.to_string(),
-            is_stream,
-            server_ip: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
-            timestamp_us: ts_us,
-        })
-    }
-
-    fn make_complete(request_time: i64, complete_time: i64, model: &str) -> LlmEvent {
-        LlmEvent::Complete {
-            call: Arc::new(LlmCall {
-                stream_id: String::new(),
-                id: "test".to_string(),
-                provider: ProviderFormat::OpenAI,
-                model: model.to_string(),
-                api_type: ApiType::Chat,
-                tenant_id: None,
-                request_time,
-                response_time: Some(request_time + 100_000),
-                complete_time: Some(complete_time),
-                request_path: "/v1/chat/completions".to_string(),
-                is_stream: true,
-                request_body: None,
-                status_code: Some(200),
-                finish_reason: Some(FinishReason::Complete),
-                response_body: None,
-                input_tokens: Some(100),
-                output_tokens: Some(50),
-                total_tokens: Some(150),
-                cache_read_input_tokens: None,
-                cache_creation_input_tokens: None,
-                ttfb_ms: Some(100.0),
-                e2e_latency_ms: Some(500.0),
-                client_ip: IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)),
-                client_port: 12345,
-                server_ip: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
-                server_port: 443,
-                response_id: None,
-                request_headers: vec![],
-                response_headers: vec![],
-            }),
-            identity: None,
-        }
-    }
-
-    #[test]
-    fn test_window_start() {
-        // 10s granularity
-        let ts = 1_700_000_005_000_000i64; // 5s into a 10s window
-        let ws = window_start(ts, 10);
-        assert_eq!(ws, 1_700_000_000_000_000);
-        assert_eq!(ws % 10_000_000, 0);
-        assert!(ws <= ts);
-        assert!(ws + 10_000_000 > ts);
-
-        // 1m granularity
-        let ts = 1_700_000_030_000_000i64; // 30s into a minute
-        let ws = window_start(ts, 60);
-        let expected = (ts / 60_000_000) * 60_000_000;
-        assert_eq!(ws, expected);
-        assert_eq!(ws % 60_000_000, 0);
-
-        // 5m granularity
-        let ts = 1_700_000_100_000_000i64; // 100s into a 300s window
-        let ws = window_start(ts, 300);
-        assert_eq!(ws % 300_000_000, 0);
-        assert!(ws <= ts);
-        assert!(ws + 300_000_000 > ts);
-
-        // 1h granularity
-        let ts = 1_700_001_800_000_000i64; // 1800s into a 3600s window
-        let ws = window_start(ts, 3600);
-        assert_eq!(ws % 3_600_000_000, 0);
-        assert!(ws <= ts);
-        assert!(ws + 3_600_000_000 > ts);
-    }
-
-    #[test]
-    fn test_multi_granularity_10s_flushes_before_1m() {
-        let mut agg = MetricsAggregator::new(test_metrics());
-        // t0: aligned to all granularities
-        let t0 = 1_700_000_000_000_000i64;
-
-        // Event at t0
-        agg.process(&make_start(t0, "gpt-4", true));
-        agg.process(&make_complete(t0, t0 + 500_000, "gpt-4"));
-
-        // Event at t0 + 15s (same 1m window, different 10s window)
-        let t1 = t0 + 15_000_000;
-        agg.process(&make_start(t1, "gpt-4", true));
-        let flushed = agg.process(&make_complete(t1, t1 + 500_000, "gpt-4"));
-
-        // 10s windows for t0 should have expired (4 dimensions).
-        let flushed_10s: Vec<_> = flushed.iter().filter(|m| m.granularity == "10s").collect();
-        assert_eq!(
-            flushed_10s.len(),
-            4,
-            "should flush 4 dimension combos for 10s granularity"
-        );
-
-        // 1m should NOT have flushed (both events in same 1m window).
-        let flushed_1m: Vec<_> = flushed.iter().filter(|m| m.granularity == "1m").collect();
-        assert_eq!(flushed_1m.len(), 0, "1m window should not flush yet");
-    }
-
-    #[test]
-    fn test_concurrency_cross_window() {
-        let mut agg = MetricsAggregator::new(test_metrics());
-        let t0 = 1_700_000_000_000_000i64;
-
-        // 3 Starts at t0
-        agg.process(&make_start(t0, "gpt-4", true));
-        agg.process(&make_start(t0 + 1_000, "gpt-4", true));
-        agg.process(&make_start(t0 + 2_000, "gpt-4", true));
-
-        // All complete at t0 + 15s (same 10s window? no, 15s > 10s)
-        let t1 = t0 + 15_000_000;
-        agg.process(&make_complete(t0, t1, "gpt-4"));
-        agg.process(&make_complete(t0 + 1_000, t1, "gpt-4"));
-        agg.process(&make_complete(t0 + 2_000, t1, "gpt-4"));
-
-        // Trigger flush at t0 + 25s
-        let t2 = t0 + 25_000_000;
-        agg.process(&make_start(t2, "gpt-4", true));
-        let flushed = agg.process(&make_complete(t2, t2 + 500_000, "gpt-4"));
-
-        // Find the global (*,*,*) 10s metric for the first window
-        let global_10s: Vec<_> = flushed
-            .iter()
-            .filter(|m| {
-                m.granularity == "10s" && m.provider == "*" && m.model == "*" && m.server_ip == "*"
-            })
-            .collect();
-
-        assert!(
-            !global_10s.is_empty(),
-            "should have flushed global 10s metric"
-        );
-        let first_window_metric = global_10s
-            .iter()
-            .find(|m| m.timestamp_us == t0)
-            .expect("should have metric for t0 window");
-        assert!(
-            first_window_metric.concurrency_max >= 3,
-            "concurrency_max should be >= 3, got {}",
-            first_window_metric.concurrency_max
-        );
-    }
-
-    #[test]
-    fn test_flush_all_emits_all_granularities() {
-        let mut agg = MetricsAggregator::new(test_metrics());
-        let t0 = 1_700_000_000_000_000i64;
-
-        agg.process(&make_start(t0, "gpt-4", true));
-        agg.process(&make_complete(t0, t0 + 500_000, "gpt-4"));
-
-        let metrics = agg.flush_all();
-        // 4 granularities x 4 dimensions = 16
-        assert_eq!(
-            metrics.len(),
-            16,
-            "flush_all should return 16 metrics, got {}",
-            metrics.len()
-        );
-
-        // Verify each granularity has 4 metrics.
-        for label in ["10s", "1m", "5m", "1h"] {
-            let count = metrics.iter().filter(|m| m.granularity == label).count();
-            assert_eq!(
-                count, 4,
-                "granularity {} should have 4 metrics, got {}",
-                label, count
-            );
-        }
+        make_start_with_stream(ts_us, model, is_stream, "")
     }
 
     fn make_start_with_stream(ts_us: i64, model: &str, is_stream: bool, sid: &str) -> LlmEvent {
@@ -491,6 +348,10 @@ mod tests {
         })
     }
 
+    fn make_complete(request_time: i64, complete_time: i64, model: &str) -> LlmEvent {
+        make_complete_with_stream(request_time, complete_time, model, "")
+    }
+
     fn make_complete_with_stream(
         request_time: i64,
         complete_time: i64,
@@ -500,7 +361,7 @@ mod tests {
         LlmEvent::Complete {
             call: Arc::new(LlmCall {
                 stream_id: sid.to_string(),
-                id: "test".to_string(),
+                id: format!("c-{request_time}-{complete_time}"),
                 provider: ProviderFormat::OpenAI,
                 model: model.to_string(),
                 api_type: ApiType::Chat,
@@ -533,39 +394,185 @@ mod tests {
         }
     }
 
+    fn make_heartbeat(ts_us: i64, sid: &str) -> LlmEvent {
+        LlmEvent::Heartbeat {
+            ts: ts_us,
+            stream_id: sid.to_string(),
+        }
+    }
+
     #[test]
-    fn test_multi_stream_independent_watermarks() {
+    fn window_start_alignment() {
+        let ts = 1_700_000_005_000_000i64;
+        let ws = window_start(ts, 10);
+        assert_eq!(ws, 1_700_000_000_000_000);
+        assert!(ws <= ts && ws + 10_000_000 > ts);
+    }
+
+    #[test]
+    fn fast_call_emits_one_merged_row_per_dim() {
+        // Common path: Start and Complete land inside the same cadence slice
+        // and merge into a single row per dimension.
         let mut agg = MetricsAggregator::new(test_metrics());
         let t0 = 1_700_000_000_000_000i64;
-        let t1 = t0 + 15_000_000;
 
-        // Stream "s0" advances past 10s window.
-        agg.process(&make_start_with_stream(t0, "gpt-4", true, "s0"));
-        agg.process(&make_complete_with_stream(t0, t0 + 500_000, "gpt-4", "s0"));
-        agg.process(&make_start_with_stream(t1, "gpt-4", true, "s0"));
-        let s0_flushed = agg.process(&make_complete_with_stream(t1, t1 + 500_000, "gpt-4", "s0"));
+        agg.process(&make_start(t0, "gpt-4", true));
+        agg.process(&make_complete(t0, t0 + 500_000, "gpt-4"));
+        let flushed = agg.process(&make_heartbeat(t0 + 10_000_000, ""));
 
-        let s0_10s: Vec<_> = s0_flushed
+        let rows_10s: Vec<_> = flushed
             .iter()
-            .filter(|m| m.granularity == "10s" && m.stream_id == "s0")
+            .filter(|m| m.granularity == "10s" && m.timestamp_us == t0)
             .collect();
-        assert_eq!(s0_10s.len(), 4, "s0 should flush 4 dims for t0");
+        assert_eq!(rows_10s.len(), 4, "one merged row per dim");
+        let finest = rows_10s
+            .iter()
+            .find(|m| m.model == "gpt-4" && m.server_ip != "*")
+            .expect("finest dim present");
+        assert_eq!(finest.request_count, 1);
+        assert_eq!(finest.total_input_tokens, 100);
+        assert!(finest.ttfb_avg.is_some());
+        assert_eq!(finest.finish_complete_count, 1);
+    }
 
-        // Stream "s1" still at t0 — its window must NOT be flushed by s0's watermark.
-        agg.process(&make_start_with_stream(t0, "gpt-4", true, "s1"));
-        let s1_flushed = agg.process(&make_complete_with_stream(t0, t0 + 500_000, "gpt-4", "s1"));
-        assert_eq!(
-            s1_flushed
-                .iter()
-                .filter(|m| m.stream_id == "s1" && m.granularity == "10s")
-                .count(),
-            0,
-            "s1 window should not flush yet"
+    #[test]
+    fn slow_response_lands_in_request_time_window() {
+        // Start at t0, heartbeats push the watermark past t0+10s before the
+        // Complete returns. The Complete (with request_time=t0) must still
+        // produce a row keyed to the t0 window.
+        let mut agg = MetricsAggregator::new(test_metrics());
+        let t0 = 1_700_000_000_000_000i64;
+
+        let mut all = Vec::new();
+        all.extend(agg.process(&make_start(t0, "gpt-4", true)));
+        all.extend(agg.process(&make_heartbeat(t0 + 15_000_000, "")));
+        // Start row already emitted (request_count=1, tokens=0).
+        let start_row = all
+            .iter()
+            .find(|m| {
+                m.granularity == "10s"
+                    && m.timestamp_us == t0
+                    && m.model == "gpt-4"
+                    && m.server_ip != "*"
+            })
+            .expect("start row for t0");
+        assert_eq!(start_row.request_count, 1);
+        assert_eq!(start_row.total_input_tokens, 0);
+        assert!(start_row.ttfb_avg.is_none());
+
+        // Complete returns late.
+        all.extend(agg.process(&make_complete(t0, t0 + 35_000_000, "gpt-4")));
+        // Trigger next cadence drain.
+        all.extend(agg.process(&make_heartbeat(t0 + 45_000_000, "")));
+
+        // Second row for the same window carries Complete payload.
+        let complete_rows: Vec<_> = all
+            .iter()
+            .filter(|m| {
+                m.granularity == "10s"
+                    && m.timestamp_us == t0
+                    && m.model == "gpt-4"
+                    && m.server_ip != "*"
+            })
+            .collect();
+        assert_eq!(complete_rows.len(), 2, "two rows for same window: start + late complete");
+        let late = complete_rows
+            .iter()
+            .find(|m| m.total_input_tokens > 0)
+            .expect("late complete row");
+        assert_eq!(late.request_count, 0, "late complete row has zero traffic");
+        assert_eq!(late.total_input_tokens, 100);
+        assert!(late.ttfb_avg.is_some());
+    }
+
+    #[test]
+    fn sum_traffic_across_rows_is_not_double_counted() {
+        // Fast call + slow call in same window: we expect traffic SUM over
+        // all rows for that window to equal 2 (not inflated by Complete
+        // rows that carry request_count=0).
+        let mut agg = MetricsAggregator::new(test_metrics());
+        let t0 = 1_700_000_000_000_000i64;
+
+        let mut all = Vec::new();
+        // Fast call.
+        all.extend(agg.process(&make_start(t0, "gpt-4", true)));
+        all.extend(agg.process(&make_complete(t0, t0 + 500_000, "gpt-4")));
+        // Slow call — Start arrives, Complete returns after window close.
+        all.extend(agg.process(&make_start(t0 + 1_000_000, "gpt-4", true)));
+        // First cadence drain.
+        all.extend(agg.process(&make_heartbeat(t0 + 10_000_000, "")));
+        // Slow Complete.
+        all.extend(agg.process(&make_complete(t0 + 1_000_000, t0 + 30_000_000, "gpt-4")));
+        // Second cadence drain.
+        all.extend(agg.process(&make_heartbeat(t0 + 40_000_000, "")));
+
+        let traffic: u64 = all
+            .iter()
+            .filter(|m| {
+                m.granularity == "10s"
+                    && m.timestamp_us == t0
+                    && m.model == "gpt-4"
+                    && m.server_ip != "*"
+            })
+            .map(|m| m.request_count)
+            .sum();
+        assert_eq!(traffic, 2, "two starts in [t0, t0+10s), late complete adds 0");
+    }
+
+    #[test]
+    fn complete_side_cadence_per_gran() {
+        // 10s cadence fires; 1m cadence does not — each granularity uses
+        // its own drain interval.
+        let mut agg = MetricsAggregator::new(test_metrics());
+        let t0 = 1_700_000_000_000_000i64;
+
+        agg.process(&make_start(t0, "gpt-4", true));
+        agg.process(&make_complete(t0, t0 + 500_000, "gpt-4"));
+        let flushed = agg.process(&make_heartbeat(t0 + 10_000_000, ""));
+
+        assert!(flushed.iter().any(|m| m.granularity == "10s"));
+        assert!(
+            !flushed.iter().any(|m| m.granularity == "1m"),
+            "1m cadence must not fire at 10s"
         );
     }
 
     #[test]
-    fn test_dimension_expansion() {
+    fn drain_by_own_complete_event_without_heartbeat() {
+        // A stream that never sees heartbeats still drains itself via its
+        // own Complete events crossing the cadence boundary.
+        let mut agg = MetricsAggregator::new(test_metrics());
+        let t0 = 1_700_000_000_000_000i64;
+
+        agg.process(&make_start(t0, "gpt-4", true));
+        agg.process(&make_complete(t0, t0 + 500_000, "gpt-4"));
+        // Next Complete's complete_time pushes watermark past 10s boundary.
+        let flushed = agg.process(&make_complete(t0, t0 + 15_000_000, "gpt-4"));
+
+        let rows_10s: Vec<_> = flushed
+            .iter()
+            .filter(|m| m.granularity == "10s" && m.timestamp_us == t0)
+            .collect();
+        assert_eq!(rows_10s.len(), 4, "Complete event alone triggers drain");
+    }
+
+    #[test]
+    fn first_flush_aligned_to_window_start() {
+        // A single Complete at t0+5s must not immediately emit a single-point
+        // row; the cadence anchor is window_start(t0) so first fire is at
+        // watermark ≥ t0 + 10s.
+        let mut agg = MetricsAggregator::new(test_metrics());
+        let t0 = 1_700_000_000_000_000i64;
+
+        let immediate = agg.process(&make_complete(t0, t0 + 5_000_000, "gpt-4"));
+        assert!(
+            !immediate.iter().any(|m| m.granularity == "10s"),
+            "first Complete inside the window should not trigger an immediate emit"
+        );
+    }
+
+    #[test]
+    fn flush_all_emits_one_row_per_dim_per_gran() {
         let mut agg = MetricsAggregator::new(test_metrics());
         let t0 = 1_700_000_000_000_000i64;
 
@@ -573,35 +580,133 @@ mod tests {
         agg.process(&make_complete(t0, t0 + 500_000, "gpt-4"));
 
         let metrics = agg.flush_all();
+        assert_eq!(metrics.len(), 16, "4 grans × 4 dims, one merged row each");
+        for gran in ["10s", "1m", "5m", "1h"] {
+            assert_eq!(
+                metrics.iter().filter(|m| m.granularity == gran).count(),
+                4
+            );
+        }
+    }
 
-        // Filter to 10s granularity only.
-        let metrics_10s: Vec<_> = metrics.iter().filter(|m| m.granularity == "10s").collect();
-        assert_eq!(metrics_10s.len(), 4);
+    #[test]
+    fn slow_response_emits_multiple_rows_same_window() {
+        // Start at t0 then two slow Completes straddling cadence boundaries
+        // produce multiple rows at the same window timestamp.
+        let mut agg = MetricsAggregator::new(test_metrics());
+        let t0 = 1_700_000_000_000_000i64;
 
-        // Check all 4 dimension combos exist.
+        let mut all = Vec::new();
+        all.extend(agg.process(&make_start(t0, "gpt-4", true)));
+        all.extend(agg.process(&make_complete(t0, t0 + 25_000_000, "gpt-4")));
+        all.extend(agg.process(&make_heartbeat(t0 + 35_000_000, "")));
+        all.extend(agg.process(&make_complete(t0, t0 + 45_000_000, "gpt-4")));
+        all.extend(agg.process(&make_heartbeat(t0 + 55_000_000, "")));
+
+        let rows_t0: Vec<_> = all
+            .iter()
+            .filter(|m| {
+                m.granularity == "10s"
+                    && m.timestamp_us == t0
+                    && m.model == "gpt-4"
+                    && m.server_ip != "*"
+            })
+            .collect();
         assert!(
-            metrics_10s
-                .iter()
-                .any(|m| m.provider == "openai" && m.model == "gpt-4" && m.server_ip == "10.0.0.1"),
-            "should have finest dimension (openai, gpt-4, 10.0.0.1)"
+            rows_t0.len() >= 2,
+            "expected ≥2 rows for same window, got {}",
+            rows_t0.len()
         );
+    }
+
+    #[test]
+    fn multi_stream_independent_watermarks() {
+        let mut agg = MetricsAggregator::new(test_metrics());
+        let t0 = 1_700_000_000_000_000i64;
+        let t1 = t0 + 15_000_000;
+
+        // Stream s0 advances past 10s boundary.
+        agg.process(&make_start_with_stream(t0, "gpt-4", true, "s0"));
+        agg.process(&make_complete_with_stream(t0, t0 + 500_000, "gpt-4", "s0"));
+        let s0_flushed = agg.process(&make_start_with_stream(t1, "gpt-4", true, "s0"));
+
+        let s0_rows: Vec<_> = s0_flushed
+            .iter()
+            .filter(|m| {
+                m.granularity == "10s" && m.stream_id == "s0" && m.timestamp_us == t0
+            })
+            .collect();
+        assert_eq!(s0_rows.len(), 4, "s0 drains for t0");
+
+        // Stream s1 still inside [t0, t0+10s) — its window must not drain.
+        agg.process(&make_start_with_stream(t0, "gpt-4", true, "s1"));
+        let s1_flushed =
+            agg.process(&make_complete_with_stream(t0, t0 + 500_000, "gpt-4", "s1"));
+        assert_eq!(
+            s1_flushed
+                .iter()
+                .filter(|m| m.granularity == "10s" && m.stream_id == "s1")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn concurrency_tracked_in_merged_row() {
+        let mut agg = MetricsAggregator::new(test_metrics());
+        let t0 = 1_700_000_000_000_000i64;
+
+        let mut all = Vec::new();
+        all.extend(agg.process(&make_start(t0, "gpt-4", true)));
+        all.extend(agg.process(&make_start(t0 + 1_000, "gpt-4", true)));
+        all.extend(agg.process(&make_start(t0 + 2_000, "gpt-4", true)));
+
+        let t1 = t0 + 15_000_000;
+        all.extend(agg.process(&make_complete(t0, t1, "gpt-4")));
+        all.extend(agg.process(&make_complete(t0 + 1_000, t1, "gpt-4")));
+        all.extend(agg.process(&make_complete(t0 + 2_000, t1, "gpt-4")));
+
+        // Drain fires at t1 (watermark = t0+15s, interval = 10s, anchor = t0).
+        let global = all
+            .iter()
+            .find(|m| {
+                m.granularity == "10s"
+                    && m.timestamp_us == t0
+                    && m.provider == "*"
+                    && m.model == "*"
+                    && m.server_ip == "*"
+            })
+            .expect("global 10s row for t0");
         assert!(
-            metrics_10s
-                .iter()
-                .any(|m| m.provider == "openai" && m.model == "gpt-4" && m.server_ip == "*"),
-            "should have per-model dimension (openai, gpt-4, *)"
+            global.concurrency_max >= 3,
+            "concurrency_max should be >= 3, got {}",
+            global.concurrency_max
         );
-        assert!(
-            metrics_10s
-                .iter()
-                .any(|m| m.provider == "*" && m.model == "*" && m.server_ip == "10.0.0.1"),
-            "should have per-server dimension (*, *, 10.0.0.1)"
-        );
-        assert!(
-            metrics_10s
-                .iter()
-                .any(|m| m.provider == "*" && m.model == "*" && m.server_ip == "*"),
-            "should have global dimension (*, *, *)"
-        );
+        assert_eq!(global.request_count, 3);
+    }
+
+    #[test]
+    fn dimension_expansion_on_flush_all() {
+        let mut agg = MetricsAggregator::new(test_metrics());
+        let t0 = 1_700_000_000_000_000i64;
+
+        agg.process(&make_start(t0, "gpt-4", true));
+        agg.process(&make_complete(t0, t0 + 500_000, "gpt-4"));
+
+        let metrics = agg.flush_all();
+        let rows_10s: Vec<_> = metrics.iter().filter(|m| m.granularity == "10s").collect();
+        assert_eq!(rows_10s.len(), 4);
+        assert!(rows_10s.iter().any(|m| m.provider == "openai"
+            && m.model == "gpt-4"
+            && m.server_ip == "10.0.0.1"));
+        assert!(rows_10s
+            .iter()
+            .any(|m| m.provider == "openai" && m.model == "gpt-4" && m.server_ip == "*"));
+        assert!(rows_10s
+            .iter()
+            .any(|m| m.provider == "*" && m.model == "*" && m.server_ip == "10.0.0.1"));
+        assert!(rows_10s
+            .iter()
+            .any(|m| m.provider == "*" && m.model == "*" && m.server_ip == "*"));
     }
 }

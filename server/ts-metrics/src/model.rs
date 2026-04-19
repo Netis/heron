@@ -1,9 +1,18 @@
 use std::fmt;
 
 /// A pre-aggregated metrics record for one time window + dimension combination.
+///
+/// The aggregator drains each `(stream, granularity, window_start, dims)`
+/// bucket on a fixed per-granularity cadence. One call typically produces
+/// one row; a call whose response straddles cadence boundaries produces
+/// multiple rows against the same key (each carrying the increment observed
+/// within that cadence slice). Query layers SUM rows across the key to
+/// assemble the full window.
 #[derive(Debug, Clone)]
 pub struct LlmMetric {
-    /// Window start timestamp (microseconds since epoch).
+    /// Window start timestamp (microseconds since epoch). Always derived from
+    /// the call's `request_time` so late-arriving Complete data lands in the
+    /// same window as the originating Start.
     pub timestamp_us: i64,
     /// Per-source dimension: one stream == one independent aggregator. Today
     /// corresponds 1:1 with a configured capture source index, but the metrics

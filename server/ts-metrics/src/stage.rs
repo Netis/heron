@@ -151,7 +151,8 @@ mod tests {
         while let Some(m) = mrx.recv().await {
             metrics.push(m);
         }
-        // flush_all emits 4 granularities × 4 dimensions = 16 metrics for one call.
+        // flush_all emits 4 granularities × 4 dimensions = 16 merged rows
+        // for one call.
         assert_eq!(metrics.len(), 16);
     }
 
