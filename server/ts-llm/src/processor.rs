@@ -70,7 +70,7 @@ impl LlmProcessor {
                 None => Vec::new(),
             },
             ProtocolEvent::Heartbeat { ts, stream_id } => {
-                self.cleanup_stale(ts, PENDING_STALE_TIMEOUT_US);
+                self.cleanup_stale(&stream_id, ts, PENDING_STALE_TIMEOUT_US);
                 vec![LlmEvent::Heartbeat { ts, stream_id }]
             }
         }
@@ -254,11 +254,16 @@ impl LlmProcessor {
         })
     }
 
-    /// Remove pending calls older than `timeout_us` microseconds.
-    /// Returns the number of expired entries removed.
-    pub fn cleanup_stale(&mut self, now_us: i64, timeout_us: i64) -> usize {
+    /// Remove pending calls on `stream_id` older than `timeout_us` µs.
+    /// Pending calls on other streams are not inspected — each stream's
+    /// own heartbeat (or packet timestamp) is the only thing that should
+    /// advance its cleanup clock. Returns the number of entries removed.
+    pub fn cleanup_stale(&mut self, stream_id: &str, now_us: i64, timeout_us: i64) -> usize {
         let before = self.pending.len();
         self.pending.retain(|flow_key, pending| {
+            if flow_key.stream_id != stream_id {
+                return true;
+            }
             let age = now_us - pending.request.timestamp_us;
             if age > timeout_us {
                 warn!(
@@ -601,14 +606,60 @@ mod tests {
         assert_eq!(proc.pending_count(), 1);
 
         // Not stale yet (request was at 1_000_000 us = 1s)
-        let expired = proc.cleanup_stale(2_000_000, 5_000_000); // now=2s, timeout=5s
+        let expired = proc.cleanup_stale("", 2_000_000, 5_000_000); // now=2s, timeout=5s
         assert_eq!(expired, 0);
         assert_eq!(proc.pending_count(), 1);
 
         // Now stale (request was at 1s, now=7s, timeout=5s)
-        let expired = proc.cleanup_stale(7_000_000, 5_000_000);
+        let expired = proc.cleanup_stale("", 7_000_000, 5_000_000);
         assert_eq!(expired, 1);
         assert_eq!(proc.pending_count(), 0);
+    }
+
+    #[test]
+    fn cleanup_stale_is_per_stream() {
+        use crate::model::LlmEvent;
+        use serde_json::json;
+        let mut proc = LlmProcessor::new(providers(), empty_registry(), test_metrics());
+
+        let body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
+
+        // Pending on stream-a (request at t=1s).
+        let mut req_a = openai_chat_request(&body);
+        req_a.flow_key = FlowKey::new(
+            "stream-a".into(),
+            "10.0.0.1".parse::<IpAddr>().unwrap(),
+            5000,
+            "10.0.0.2".parse::<IpAddr>().unwrap(),
+            8080,
+        );
+        proc.process(ProtocolEvent::HttpRequest(req_a));
+
+        // Pending on stream-b (request at t=1s).
+        let mut req_b = openai_chat_request(&body);
+        req_b.flow_key = FlowKey::new(
+            "stream-b".into(),
+            "10.0.0.1".parse::<IpAddr>().unwrap(),
+            5001,
+            "10.0.0.2".parse::<IpAddr>().unwrap(),
+            8080,
+        );
+        proc.process(ProtocolEvent::HttpRequest(req_b));
+        assert_eq!(proc.pending_count(), 2);
+
+        // Stream-a HB well past the stale timeout. Must evict only stream-a's
+        // pending entry; stream-b's pending (same absolute age, different
+        // stream) must survive because stream-b's own clock has not advanced.
+        let events = proc.process(ProtocolEvent::Heartbeat {
+            ts: 1_000_000 + PENDING_STALE_TIMEOUT_US + 1,
+            stream_id: "stream-a".into(),
+        });
+        assert!(matches!(events.as_slice(), [LlmEvent::Heartbeat { .. }]));
+        assert_eq!(
+            proc.pending_count(),
+            1,
+            "only stream-a pending must be evicted"
+        );
     }
 
     #[test]
