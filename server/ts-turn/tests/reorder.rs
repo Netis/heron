@@ -1,8 +1,8 @@
 //! Reorder / watermark regressions for `TurnTracker`.
 //!
 //! - Cases A–F cover the out-of-order arrival scenarios catalogued in
-//!   `docs/design/04b-turn-reorder-proposal.md` §1. They started life as
-//!   failing reproductions and are now green under buffer-and-finalize.
+//!   `docs/design/04-turn.md` ("Motivation"). They started life as failing
+//!   reproductions and are now green under buffer-and-finalize.
 //! - Cases F1–F3 guard the two-clock split (per-stream event-time watermark
 //!   + wall-clock grace) against the three collapse modes it replaces.
 //! - `finalize_by_grace_counter_does_not_double_count_*` pins the fix that

@@ -18,8 +18,7 @@ This design is implemented by the `ts-turn` crate (see `server/ts-turn/`).
   arrives, a small grace window (`grace_ms`, default 1000) starts; on grace
   expiry the buffer is partitioned at each terminal and one `LlmTurn` is
   emitted per partition. This tolerates arbitrary intra-shard arrival order
-  (fan-in jitter, multi-connection sessions, parallel sub-agents). See
-  `04b-turn-reorder-proposal.md` for the full algorithm and rationale.
+  (fan-in jitter, multi-connection sessions, parallel sub-agents).
 - Turn boundaries: profile-defined terminal predicate (`is_turn_terminal` /
   definitive `finish_reason`) OR idle timeout (default 600 s, packet-time
   driven). Partitions without `is_user_turn_start = Some(true)` are dropped
@@ -131,77 +130,284 @@ The `FinishReason` enum serves as a unified turn-continuation signal:
 | `Error` | Generation error | (HTTP error) | (HTTP error) | `status: "failed"` |
 | `Cancelled` | User cancelled | (connection close) | `finish_reason: "content_filter"` | `status: "cancelled"` |
 
-## Buffer-and-Finalize Assembly
+## Assembly Model: Buffer-and-Finalize
 
-Each `(stream_id, session_id)` owns a `SessionBuffer` of pending calls
-ordered by `request_time`. The tracker is a passive state container driven by
-`ingest`, `advance_time`, `sweep`, `flush_all` — all timing is virtual
-(packet/heartbeat), not wall clock.
+### Motivation
+
+The turn-stage shard receives `LlmCall`s from multiple llm-stage workers via
+multi-producer `mpsc` — merge order is non-deterministic. Same-session calls
+can ride on different TCP connections (multi-window CLIs, sub-agent
+parallelism, HTTP keep-alive churn), so different llm-stage workers process
+them concurrently with different latencies. Sub-agent calls dispatched in
+parallel finish out of start-order. A naive "assume calls arrive in
+`request_time` order" tracker fails with: late `is_user_start` splits a turn
+into two; late `ToolUse` reverts a Complete-state turn back to open;
+post-finalize stragglers create phantom turns; close decisions depending on
+user-start being first to arrive.
+
+### Design properties
+
+**Goals**
+- Correct turn assembly under arbitrary intra-shard arrival order.
+- No per-call latency cost beyond a small grace period after main-agent terminal.
+- Profile-agnostic mechanism: new profiles only need to declare their two
+  semantic predicates (`is_main_terminal`, `is_user_turn_start`).
+- All ingestion paths share the same buffer/finalize machinery — no
+  parallel state machines.
+
+**Non-goals**
+- Cross-shard ordering. Shards are isolated by `hash(stream, session)`; we
+  only fix intra-shard order.
+- Wall-clock-driven timeouts. All timing remains driven by `virtual_now_us`
+  (packet-time / heartbeat) so pcap replay still works.
+- Bounding worst-case finalize latency for turns that never see a terminal
+  signal — those fall through to `idle_timeout_us` (sweep).
+
+### One-line intuition
+
+> Buffer all calls per `(stream, session)`. When a main-agent terminal call
+> appears, start a small per-session grace timer. On grace expiry, sort the
+> buffer by `request_time` and emit one or more turns by partitioning at
+> each terminal call.
+
+The grace covers fan-in / processing jitter only — by causal logic, the
+client cannot have issued a turn-terminal call until all in-flight
+sub-calls for that turn are physically on the wire.
+
+### Data structures
+
+```rust
+/// One pending call inside a SessionBuffer. arrived_at_us lets
+/// multi-terminal flushes evaluate each terminal's grace against
+/// when that terminal landed (not when the first one did).
+struct BufferedCall {
+    ic: IdentifiedCall,
+    arrived_at_us: i64,
+    is_terminal: bool,  // cached is_main_terminal(profile, call)
+}
+
+/// Per (stream_id, session_id) buffer.
+struct SessionBuffer {
+    /// Calls awaiting finalize, keyed and ordered by request_time.
+    /// Vec handles request_time ties (rare but i64 µs is not collision-free).
+    pending: BTreeMap<i64, Vec<BufferedCall>>,
+
+    /// arrived_at_us of the earliest pending terminal call. Grace window
+    /// expires at grace_started_at_us + grace_us. None ⇒ no terminal pending.
+    grace_started_at_us: Option<i64>,
+
+    /// High-water mark: largest request_time already emitted as part
+    /// of a finalized turn. New arrivals below this are orphans.
+    last_finalized_request_time: Option<i64>,
+}
+
+pub struct TurnTracker {
+    registry: Arc<ProfileRegistry>,
+    config: TrackerConfig,
+    virtual_now_us: i64,
+    last_sweep_us: i64,
+    metrics: MetricsWorker,
+    buffers: HashMap<(String, String), SessionBuffer>,
+}
+```
+
+`TrackerConfig` exposes `idle_timeout_us`, `sweep_interval_us`, and
+`grace_us`. `TurnEvent` collapses to a single `Completed` variant — there
+is no in-progress turn state, so `Started` / `CallAdded` are unnecessary.
+
+### ingest(IdentifiedCall)
 
 ```
-ingest(IdentifiedCall):
-  - bump virtual_now to call's last activity
-  - orphan guard: drop if request_time < buffer's last_finalized_request_time
-  - append to pending[request_time]
-  - if call is a main-agent terminal and no terminal was already pending,
-    start the grace clock at virtual_now
-  - flush any buffer whose grace window expired
-
-flush (grace expired):
-  - sort pending by request_time
-  - for each main-agent terminal whose own grace has expired:
-      - partition: take every pending call with request_time ≤ terminal_ts
-      - if partition contains a user-turn-start call → emit one LlmTurn
-        else → drop the partition (TurnDiscardedNoUserStart)
-      - record terminal_ts as last_finalized_request_time
-  - reseat grace clock to the next pending terminal's arrival, or clear
-
-sweep (idle timeout):
-  - drain any session whose newest pending call is older than idle_timeout
-    AND which has no main-agent terminal — emit Incomplete (or discard).
-
-flush_all (EOF):
-  - force grace open and run finalize, then drain any non-terminal tail.
+1. virtual_now_us = max(virtual_now_us, call.complete_time
+                                        .or(response_time)
+                                        .unwrap_or(request_time))
+2. profile = registry.find_by_name(identity.profile_name)
+   if None: return flush_ready_buffers()
+3. if profile.is_auxiliary(call): return flush_ready_buffers()    # aux never enters buffer
+4. buf = buffers.entry((stream_id, session_id)).or_default()
+5. Orphan guard: if request_time < buf.last_finalized_request_time
+                 → drop (TurnReorderOrphan++) and flush
+6. is_terminal = is_main_terminal(profile, call)
+7. buf.pending[request_time].push(BufferedCall {
+       ic, arrived_at_us = virtual_now_us, is_terminal
+   })
+8. if is_terminal && buf.grace_started_at_us.is_none():
+       buf.grace_started_at_us = Some(virtual_now_us)
+9. return flush_ready_buffers()
 ```
 
-Key properties:
+### flush_ready_buffers
 
-- **Order-independent:** turn fields (`final_call_id`, `user_call_id`,
-  `end_time_us`, etc.) derive from the sorted partition, not from arrival
-  order. A late `is_user_turn_start` call lands in the right turn.
-- **Sub-agent isolation:** sub-agent calls never trigger main-agent grace,
-  and their assistant text never appears in the parent's `final_answer_preview`.
-- **Per-terminal grace:** when two terminals are pending, each gets its own
-  grace window measured from its own `arrived_at_us`. A second terminal that
-  arrives later doesn't get rushed because the first one already finalized.
-- **Orphan guard:** a call older than the buffer's high-water mark is dropped
-  and counted (`TurnReorderOrphan`) instead of opening a phantom turn.
-- **Memory:** drained buffers idle past `2 × idle_timeout_us` are GC'd.
+```
+for (key, buf) in buffers.iter_mut():
+    if buf.grace_started_at_us is Some(started)
+       AND virtual_now_us ≥ started + grace_us:
+           events.extend(finalize_session(profile_for(key), buf,
+                                          virtual_now_us, grace_us))
+return events
+```
+
+`profile_for(key)` re-resolves the profile from any pending call in the
+buffer (`profile_name` lives on every `IdentifiedCall.identity`).
+
+### finalize_session (grace expired)
+
+Emit one turn per pending main-agent terminal, in arrival order, but stop
+early if the *next* pending terminal hasn't yet had its own grace window
+elapse. `buf.grace_started_at_us` is rewritten on each iteration to point at
+the next-pending terminal's `arrived_at_us` (or `None` if none remain).
+
+```
+loop:
+    sorted = all pending calls in request_time order
+    if sorted.is_empty():
+        buf.grace_started_at_us = None; break
+
+    terminal_idx = sorted.iter().position(|bc| bc.is_terminal)
+    match terminal_idx:
+        None:
+            buf.grace_started_at_us = None; break
+        Some(idx):
+            front_arrived = sorted[idx].arrived_at_us
+            if virtual_now_us < front_arrived + grace_us:
+                buf.grace_started_at_us = Some(front_arrived)   # reseat
+                break
+
+            terminal_ts = sorted[idx].request_time
+            # Partition: everything with request_time ≤ terminal_ts → this turn.
+            turn_calls, rest = split at first call with request_time > terminal_ts
+
+            # Discard rule: need at least one is_user_turn_start = Some(true)
+            if turn_calls.has_user_start():
+                events.push(TurnEvent::Completed(build_turn(profile, turn_calls)))
+                Counter TurnFinalizedByGrace++
+            else:
+                Counter TurnDiscardedNoUserStart++
+
+            buf.last_finalized_request_time = Some(terminal_ts)
+            buf.pending = rest
+            # loop: check next terminal's own grace
+```
+
+Two consequences:
+
+- A late terminal that arrives *after* an earlier terminal's grace fires
+  triggers its own grace window on its own arrival timestamp. No turn is
+  finalized "early."
+- A non-terminal sub-call between two terminals (by `request_time`) joins
+  the *earlier* turn — the client cannot have started turn N+1 until turn
+  N's terminal call was issued.
+
+### is_main_terminal
+
+```rust
+fn is_main_terminal(profile: &dyn ClientProfile, call: &LlmCall) -> bool {
+    if profile.subagent(call).is_some() { return false; }   // sub-agent never terminates parent
+    if profile.is_turn_terminal(call) { return true; }      // explicit (Codex: response.output)
+    matches!(call.finish_reason, Some(FinishReason::Complete | FinishReason::Length))
+}
+```
+
+`Error` / `Cancelled` are deliberately excluded. The client may retry within
+the same logical turn — the call stays buffered; either a retry's real
+Complete joins the partition, or the idle sweep emits Incomplete.
+
+### build_turn(profile, calls)
+
+Pure function over a sorted, complete call list — no order-dependent merge.
+
+- `start_time_us = calls[0].request_time`
+- `end_time_us = calls.last().last_activity()` (max of complete/response/request)
+- `call_count`, `call_ids`, token sums: folds over `calls`
+- `models_used`, `subagents_used`: ordered-unique fold
+- `user_input_preview` / `user_call_id`: first call where
+  `profile.extract_user_input(call)` is some (prefer `is_user_turn_start`-tagged)
+- `final_answer_preview` / `final_call_id`: last MAIN-AGENT call (sub-agent
+  text never leaks here) via `profile.extract_assistant_text`
+- `final_finish_reason`: last main-agent call's `finish_reason`
+- `status`: derived from the final main-agent finish_reason (Complete →
+  Complete, Length → Length, etc.; Incomplete on the idle path)
+
+### advance_time / sweep / flush_all
+
+```
+advance_time(ts):
+    virtual_now_us = max(virtual_now_us, ts)
+    flush_ready_buffers() + sweep()
+
+sweep() (idle fallback, same sweep_interval_us throttle):
+    for each buffer where pending non-empty AND no main-agent terminal
+       AND newest pending older than idle_timeout_us:
+          drain all
+          if any is_user_turn_start → emit Incomplete turn (TurnFinalizedByIdle++)
+          else → drop (TurnDiscardedNoUserStart++)
+          update last_finalized_request_time to largest drained request_time
+
+flush_all() (EOF):
+    per-session: partition by terminals as in finalize_session (discard rule applies).
+    Any remainder without a terminal → sweep-style: Incomplete if user-start, else drop.
+```
+
+Virtual-time-only: all timeouts driven by `virtual_now_us` (packet-time /
+heartbeat), never wall clock. pcap replay works end-to-end without
+special-casing.
+
+### Buffer lifecycle / GC
+
+After successful finalize, if `pending.is_empty()` AND
+`last_finalized_request_time + 2 · idle_timeout < virtual_now`, the
+`SessionBuffer` entry is dropped. (Loses orphan detection for that session,
+but that's well past plausible reorder.)
 
 `turn_id` is generated as a UUIDv7 at finalize time (monotonic by emission).
+
+## Configuration
+
+| Field | Default | Notes |
+|---|---|---|
+| `grace_us` | 1_000_000 (1 s) | Covers fan-in / processing jitter. Tunable; counters below tell us if we need more. |
+| `idle_timeout_us` | 600_000_000 (600 s) | Fallback for turns that never see a terminal signal. |
+| `sweep_interval_us` | 10_000_000 (10 s) | How often the idle sweep runs. |
+
+`tokenscope.toml`:
+
+```toml
+[turn]
+grace_ms = 1000
+idle_timeout_s = 600
+sweep_interval_s = 10
+```
 
 ## Failure Modes (operator-visible counters)
 
 | Counter | Meaning | What to look at if rising |
 |---|---|---|
-| `worker::turn::orphan` | Late call dropped at entry guard | Cross-shard hashing bug, severe fan-in jitter, replay-with-time-skew |
-| `worker::turn::no_user_start` | Partition discarded for lack of user-start call | Lost capture window at session boundary; orphan sub-agent traffic; profile mis-classifying user-start |
-| `worker::turn::fin_idle` | Turn closed by idle timeout, not by terminal call | Truncated capture, client crash, missing terminal signal in profile |
-| `worker::turn::fin_grace` | Turn closed normally via grace expiry | Healthy steady-state path; ratio vs `fin_idle` is the health signal |
+| `worker::turn::orphan` (`TurnReorderOrphan`) | Late call dropped at entry guard | Cross-shard hashing bug, severe fan-in jitter, replay-with-time-skew |
+| `worker::turn::no_user_start` (`TurnDiscardedNoUserStart`) | Partition discarded for lack of user-start call | Lost capture window at session boundary; orphan sub-agent traffic; profile mis-classifying user-start |
+| `worker::turn::fin_idle` (`TurnFinalizedByIdle`) | Turn closed by idle timeout, not by terminal call | Truncated capture, client crash, missing terminal signal in profile |
+| `worker::turn::fin_grace` (`TurnFinalizedByGrace`) | Turn closed normally via grace expiry | Healthy steady-state path; ratio vs `fin_idle` is the health signal |
 
 ## Edge Cases
 
-1. **Cross-connection turns (Anthropic):** Same session sends calls over different TCP connections. Must group by `session_id`, not by TCP connection (client_ip:client_port).
-
-2. **No finish_reason (truncated capture):** SSE stream cut off before `message_delta`. The call sits in the buffer; the buffer falls through to the idle sweep and emits `Incomplete` (or discards if no user-start landed).
-
-3. **HTTP errors mid-turn:** `Error` and `Cancelled` are excluded from `is_main_terminal`, so they don't trigger grace. The call stays buffered; a retry with the same session joins the same partition. Without a retry, idle sweep finalizes as `Incomplete`.
-
-4. **Multiple turns on same connection (Anthropic):** capture4 shows 2 turns on 1 connection. The `end_turn` response marks the boundary; the next request starts a new turn.
-
-5. **No client headers (generic clients):** Without `X-Claude-Code-Session-Id` or `X-Codex-Turn-Metadata`, fall back to per-connection + finish_reason. Accept that cross-connection turns won't be detected.
-
-6. **Parallel calls within a turn:** Some agents may fire multiple LLM calls concurrently (e.g., OpenAI Codex review running parallel sub-agents). These share the same `turn_id` and should all be grouped.
+| # | Case | Handling |
+|---|---|---|
+| 1 | Cross-connection turns (Anthropic) | Group by `(stream_id, session_id)`, not by TCP 4-tuple |
+| 2 | No finish_reason (truncated capture) | Call stays in buffer; idle sweep emits `Incomplete` (or discards) |
+| 3 | HTTP errors mid-turn | `Error`/`Cancelled` excluded from `is_main_terminal`; retry joins the same partition, else idle → Incomplete |
+| 4 | Multiple turns on same connection (Anthropic) | capture4 shows 2 turns on 1 connection — `end_turn` marks boundary, next request starts next turn |
+| 5 | No client headers (generic clients) | Fall back to `(stream_id, "")` + finish_reason. Cross-connection same-session won't merge. |
+| 6 | Parallel calls within a turn | All share the same buffer; sort-then-partition is order-independent |
+| 7 | Sub-agent Complete before main-agent terminal | Sub-agent excluded from `is_main_terminal`; grace not started; no spurious finalize |
+| 8 | Sub-agent assistant text leaking to parent | `build_turn` picks final-call from main-agent only |
+| 9 | Single-call Error retry | `Error` excluded from `is_main_terminal`; buffer retained until real Complete or idle sweep |
+| 10 | Two terminals pending at flush time | `finalize_session` loops; each terminal's grace checked against own `arrived_at_us` |
+| 11 | Late call after finalize (orphan) | Entry-guard drop via `last_finalized_request_time`, counted via `TurnReorderOrphan` |
+| 12 | No terminal ever | Idle sweep emits Incomplete (or discards if no user-start) |
+| 13 | pcap replay (no heartbeats) | Last buffered batch waits for the next call to advance `virtual_now`, or for EOF `flush_all` |
+| 14 | Buffer memory growth (long-lived idle sessions) | GC after `2 · idle_timeout` past last finalize |
+| 15 | Empty session_id from profile | `(stream, "")` key; not special-cased |
+| 16 | Codex new turn_id arrives mid-grace of old turn_id | Same buffer; old's terminal triggers grace; finalize old at grace; new turn_id calls remain for their own terminal |
+| 17 | Continuation/sub-agent calls without user-start in their partition | Discarded at finalize/sweep/flush; `TurnDiscardedNoUserStart` |
 
 ## Data Model
 
@@ -229,3 +435,12 @@ time from the sorted partition:
 - `status: TurnStatus` — Complete / Length / Cancelled / Failed / Incomplete
 - `final_finish_reason`, `user_input_preview`, `user_call_id`,
   `final_answer_preview`, `final_call_id`
+
+## Design Rationale
+
+- **Per-terminal grace.** Each `BufferedCall` records its own `arrived_at_us`. When two terminals are pending, each gets its own grace window measured from its own arrival — a second terminal arriving later doesn't get rushed because the first one already finalized.
+- **Order-independent turn fields.** All fields (`final_call_id`, `user_call_id`, `end_time_us`, etc.) derive from the sorted partition, not from arrival order. A late `is_user_turn_start` call lands in the right turn. Eliminates the order-dependent merge overwrite bug entirely.
+- **Sub-agent isolation.** Sub-agent calls never trigger main-agent grace, and their assistant text never appears in the parent's `final_answer_preview`.
+- **No new profile methods.** Uses only existing predicates (`subagent`, `is_turn_terminal`, `is_user_turn_start`, `extract_user_input`, `extract_assistant_text`, `is_auxiliary`). New profiles slot in without changing the trait.
+- **No-user-start partitions discarded.** A finalized partition with zero `is_user_turn_start = Some(true)` calls is dropped, not emitted. Covers stray continuations, sub-agent leftovers from missing parents, and late stragglers that get past the orphan check but represent no real turn.
+- **Cross-stream independence.** `(stream_id, session_id)` is the buffer key; same `session_id` under different `stream_id` is treated as independent sessions by design. Clients don't share sessions across streams.

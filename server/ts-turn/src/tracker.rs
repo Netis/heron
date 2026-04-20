@@ -1,4 +1,4 @@
-//! Buffer-and-finalize turn tracker. See `docs/design/04b-turn-reorder-proposal.md`.
+//! Buffer-and-finalize turn tracker. See `docs/design/04-turn.md`.
 //!
 //! Each `(stream_id, session_id)` owns a `SessionBuffer` that holds calls
 //! sorted by `request_time` until a main-agent terminal call appears and its

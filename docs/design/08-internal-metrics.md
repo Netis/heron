@@ -20,8 +20,8 @@ Self-monitoring module for diagnosing pipeline bottlenecks. Each processing stag
 
 ### `worker::turn` operator notes
 
-The turn shard's buffer-and-finalize machinery (see `04-turn.md` and
-`04b-turn-reorder-proposal.md`) emits these counters per shard:
+The turn shard's buffer-and-finalize machinery (see `04-turn.md`) emits
+these counters per shard:
 
 | Short name | Semantics | What rising values usually mean |
 |---|---|---|

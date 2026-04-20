@@ -422,7 +422,7 @@ pub struct TurnConfig {
     pub sweep_interval_secs: u64,
     /// Buffer-and-finalize grace window: how long a buffered terminal call
     /// waits for fan-in jitter before its turn is partitioned and emitted.
-    /// See `docs/design/04b-turn-reorder-proposal.md` §6.3.
+    /// See `docs/design/04-turn.md` ("finalize_session").
     #[serde(default = "default_grace_ms")]
     pub grace_ms: u64,
     #[serde(default = "default_turn_shard_count")]
