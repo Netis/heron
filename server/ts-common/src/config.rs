@@ -34,6 +34,8 @@ pub struct PipelineDef {
     #[serde(default)]
     pub metrics: MetricsConfig,
     #[serde(default)]
+    pub pcap_dump: PcapDumpConfig,
+    #[serde(default)]
     pub sources: Vec<CaptureSourceConfig>,
 }
 
@@ -46,6 +48,7 @@ impl Default for PipelineDef {
             queues: QueueConfig::default(),
             turn: TurnConfig::default(),
             metrics: MetricsConfig::default(),
+            pcap_dump: PcapDumpConfig::default(),
             sources: Vec::new(),
         }
     }
@@ -96,6 +99,7 @@ impl RawAppConfig {
                     queues: cfg.queues,
                     turn: cfg.turn,
                     metrics: cfg.metrics,
+                    pcap_dump: cfg.pcap_dump,
                     sources,
                 }]
             }
@@ -216,6 +220,8 @@ pub struct PipelineConfig {
     pub turn: TurnConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub pcap_dump: PcapDumpConfig,
 }
 
 impl Default for PipelineConfig {
@@ -226,6 +232,7 @@ impl Default for PipelineConfig {
             queues: QueueConfig::default(),
             turn: TurnConfig::default(),
             metrics: MetricsConfig::default(),
+            pcap_dump: PcapDumpConfig::default(),
         }
     }
 }
@@ -474,6 +481,39 @@ fn default_metrics_shard_count() -> usize {
     1
 }
 
+/// Per-pipeline packet dump. When enabled, every non-heartbeat `RawPacket`
+/// captured by this pipeline's sources is written to a pcap file, grouped
+/// by `stream_id` — one file per stream, lazily created on first packet.
+/// Files are Wireshark-openable classic pcap with the stream's observed
+/// link type. Off by default.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PcapDumpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_pcap_dump_dir")]
+    pub dir: String,
+    #[serde(default = "default_pcap_dump_template")]
+    pub filename_template: String,
+}
+
+impl Default for PcapDumpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: default_pcap_dump_dir(),
+            filename_template: default_pcap_dump_template(),
+        }
+    }
+}
+
+fn default_pcap_dump_dir() -> String {
+    "data/dumps".to_string()
+}
+
+fn default_pcap_dump_template() -> String {
+    "{stream_id}.pcap".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct StorageSinkConfig {
     #[serde(default = "default_sink_batch_size")]
@@ -716,5 +756,46 @@ mod phase2_tests {
     fn empty_config_yields_no_pipelines() {
         let cfg = AppConfig::from_toml("");
         assert!(cfg.pipelines.is_empty());
+    }
+
+    #[test]
+    fn pcap_dump_disabled_by_default() {
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        assert!(!cfg.pipelines[0].pcap_dump.enabled);
+        assert_eq!(cfg.pipelines[0].pcap_dump.dir, "data/dumps");
+        assert_eq!(
+            cfg.pipelines[0].pcap_dump.filename_template,
+            "{stream_id}.pcap"
+        );
+    }
+
+    #[test]
+    fn pcap_dump_parses_full_block() {
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+
+            [pipeline.pcap_dump]
+            enabled = true
+            dir = "/tmp/dumps"
+            filename_template = "{stream_id}_x.pcap"
+
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let d = &cfg.pipelines[0].pcap_dump;
+        assert!(d.enabled);
+        assert_eq!(d.dir, "/tmp/dumps");
+        assert_eq!(d.filename_template, "{stream_id}_x.pcap");
     }
 }

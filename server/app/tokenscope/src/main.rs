@@ -249,10 +249,22 @@ async fn main() {
                                 Metric::CaptureBatchesReceived,
                                 Metric::CaptureBatchesDropped,
                                 Metric::CaptureSourceErrors,
+                                Metric::CaptureDumpErrors,
                             ],
                         )
                     })
                     .collect::<Vec<_>>()
+            })
+            .collect();
+
+        // Resolve per-pipeline packet-dump configs once; `None` when the
+        // pipeline has `pcap_dump.enabled = false` (the default).
+        let pipeline_dump_cfgs: Vec<Option<ts_capture::PacketDumperConfig>> = effective_pipelines
+            .iter()
+            .map(|def| {
+                def.pcap_dump
+                    .enabled
+                    .then(|| ts_capture::PacketDumperConfig::from_config(&def.pcap_dump))
             })
             .collect();
 
@@ -303,17 +315,19 @@ async fn main() {
         // Spawn capture sources — each pipeline may have N sources that
         // fan-in to a single raw-packet channel.
         let mut capture_tasks: JoinSet<()> = JoinSet::new();
-        for (((pipeline_name, routing_tx), source_cfgs), source_metrics) in pipeline_txs
-            .into_iter()
-            .zip(pipeline_sources.into_iter())
-            .zip(capture_metrics.into_iter())
+        for ((((pipeline_name, routing_tx), source_cfgs), source_metrics), dump_cfg) in
+            pipeline_txs
+                .into_iter()
+                .zip(pipeline_sources.into_iter())
+                .zip(capture_metrics.into_iter())
+                .zip(pipeline_dump_cfgs.into_iter())
         {
             for ((j, source_cfg), metrics) in source_cfgs
                 .iter()
                 .enumerate()
                 .zip(source_metrics.into_iter())
             {
-                let source = match ts_capture::build_source(source_cfg) {
+                let source = match ts_capture::build_source(source_cfg, dump_cfg.clone()) {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::error!(

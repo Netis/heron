@@ -135,6 +135,7 @@ define_metrics! {
     CaptureBatchesDropped    => { kind: Counter, group: Capture,  short: "batches_drop"    },
     CaptureHeartbeatsEmitted => { kind: Counter, group: Capture,  short: "hb_emit"         },
     CaptureSourceErrors      => { kind: Counter, group: Capture,  short: "src_errors"      },
+    CaptureDumpErrors        => { kind: Counter, group: Capture,  short: "dump_errors"     },
 
     // -- Protocol (dispatcher + flow workers) --
     DispatcherPacketsRouted      => { kind: Counter, group: Protocol, short: "dispatched"     },

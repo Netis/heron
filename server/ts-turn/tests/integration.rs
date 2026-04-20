@@ -111,7 +111,7 @@ async fn run_pcap_full_sharded(
 
     let _metrics_svc = metrics_sys.start();
 
-    let source = PcapFileSource::new(path, "test".to_string());
+    let source = PcapFileSource::new(path, "test".to_string(), None);
     let cancel = tokio_util::sync::CancellationToken::new();
     let src_task = tokio::spawn({
         let tx = raw_tx.clone();

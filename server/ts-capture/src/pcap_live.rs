@@ -14,6 +14,7 @@ const ERR_BACKOFF: Duration = Duration::from_millis(50);
 
 use crate::heartbeat::{HEARTBEAT_INTERVAL_US, SAFETY_MARGIN_US};
 use crate::packet::RawPacket;
+use crate::pcap_dump::{PacketDumper, PacketDumperConfig};
 use crate::routing::RoutingSender;
 use crate::source::CaptureSource;
 
@@ -39,6 +40,7 @@ pub struct PcapLiveSource {
     bpf_filter: Option<String>,
     snaplen: u32,
     stream_id: String,
+    dump_cfg: Option<PacketDumperConfig>,
 }
 
 impl PcapLiveSource {
@@ -47,12 +49,14 @@ impl PcapLiveSource {
         bpf_filter: Option<String>,
         snaplen: u32,
         stream_id: String,
+        dump_cfg: Option<PacketDumperConfig>,
     ) -> Self {
         Self {
             interface,
             bpf_filter,
             snaplen,
             stream_id,
+            dump_cfg,
         }
     }
 }
@@ -69,8 +73,20 @@ impl CaptureSource for PcapLiveSource {
         let bpf_filter = self.bpf_filter.clone();
         let snaplen = self.snaplen;
         let stream_id = self.stream_id.clone();
+        let dump_cfg = self.dump_cfg.clone();
+        let dumper_metrics = metrics.clone();
 
         let result = tokio::task::spawn_blocking(move || -> crate::Result<()> {
+            // Best-effort: open the packet dumper if configured. A failure to
+            // create the output directory logs + disables dumping for this
+            // source; capture itself continues.
+            let mut dumper = dump_cfg.and_then(|c| match PacketDumper::new(c, dumper_metrics) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    tracing::warn!("pcap-live: packet dump disabled: {e}");
+                    None
+                }
+            });
             // Find the device by name.
             let device = Device::list()?
                 .into_iter()
@@ -154,6 +170,10 @@ impl CaptureSource for PcapLiveSource {
                             }
                             metrics.counter(Metric::CaptureHeartbeatsEmitted).inc();
                             last_hb_ts = raw.timestamp_us;
+                        }
+
+                        if let Some(d) = dumper.as_mut() {
+                            d.write(&raw);
                         }
 
                         if tx.blocking_send(raw).is_err() {

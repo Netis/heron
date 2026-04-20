@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 ts-common.workspace = true
 pcap.workspace = true
+libc.workspace = true
 bytes.workspace = true
 async-trait.workspace = true
 zeromq.workspace = true

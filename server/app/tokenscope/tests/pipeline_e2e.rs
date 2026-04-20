@@ -139,7 +139,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let source = Box::new(PcapFileSource::new(path, stream_id));
+            let source = Box::new(PcapFileSource::new(path, stream_id, None));
             let _ = source.run(tx, metrics, cancel).await;
         }));
     }

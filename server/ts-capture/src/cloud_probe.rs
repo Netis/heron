@@ -20,6 +20,7 @@ use ts_common::throttle::ThrottledWarn;
 
 use crate::heartbeat::HeartbeatTracker;
 use crate::packet::RawPacket;
+use crate::pcap_dump::{PacketDumper, PacketDumperConfig};
 use crate::routing::RoutingSender;
 use crate::source::CaptureSource;
 
@@ -134,11 +135,16 @@ fn read_u32_be(bytes: &[u8], offset: usize) -> u32 {
 pub struct CloudProbeSource {
     endpoint: String,
     recv_hwm: i32,
+    dump_cfg: Option<PacketDumperConfig>,
 }
 
 impl CloudProbeSource {
-    pub fn new(endpoint: String, recv_hwm: i32) -> Self {
-        Self { endpoint, recv_hwm }
+    pub fn new(endpoint: String, recv_hwm: i32, dump_cfg: Option<PacketDumperConfig>) -> Self {
+        Self {
+            endpoint,
+            recv_hwm,
+            dump_cfg,
+        }
     }
 }
 
@@ -152,6 +158,18 @@ impl CaptureSource for CloudProbeSource {
     ) -> crate::Result<()> {
         let endpoint = self.endpoint.clone();
         let recv_hwm = self.recv_hwm;
+
+        // Best-effort dumper setup; failure here only disables dumping.
+        let mut dumper = self
+            .dump_cfg
+            .clone()
+            .and_then(|c| match PacketDumper::new(c, metrics.clone()) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    tracing::warn!("cloud-probe: packet dump disabled: {e}");
+                    None
+                }
+            });
 
         // zmq.rs 0.4 does not expose RCVHWM as a socket option; backpressure
         // flows naturally through the downstream mpsc channel instead. We
@@ -208,6 +226,10 @@ impl CaptureSource for CloudProbeSource {
                                                 .counter(Metric::CaptureHeartbeatsEmitted)
                                                 .inc();
                                             hb_count += 1;
+                                        }
+
+                                        if let Some(d) = dumper.as_mut() {
+                                            d.write(&pkt);
                                         }
 
                                         if tx.send(pkt).await.is_err() {
@@ -492,7 +514,7 @@ mod tests {
             let (tx, mut rx) = mpsc::channel(16);
             let cancel = CancellationToken::new();
 
-            let source = Box::new(CloudProbeSource::new(endpoint.clone(), 100));
+            let source = Box::new(CloudProbeSource::new(endpoint.clone(), 100, None));
             let metrics = test_metrics();
             let cancel_clone = cancel.clone();
             let handle = tokio::spawn(async move {
@@ -540,7 +562,7 @@ mod tests {
             let (tx, mut rx) = mpsc::channel(16);
             let cancel = CancellationToken::new();
 
-            let source = Box::new(CloudProbeSource::new(endpoint.clone(), 100));
+            let source = Box::new(CloudProbeSource::new(endpoint.clone(), 100, None));
             let metrics = test_metrics();
             let cancel_clone = cancel.clone();
             let handle = tokio::spawn(async move {

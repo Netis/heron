@@ -9,6 +9,7 @@ use tracing;
 use ts_common::internal_metrics::{Metric, MetricsWorker};
 
 use crate::packet::RawPacket;
+use crate::pcap_dump::{PacketDumper, PacketDumperConfig};
 use crate::routing::RoutingSender;
 use crate::source::CaptureSource;
 
@@ -16,11 +17,16 @@ use crate::source::CaptureSource;
 pub struct PcapFileSource {
     path: PathBuf,
     stream_id: String,
+    dump_cfg: Option<PacketDumperConfig>,
 }
 
 impl PcapFileSource {
-    pub fn new(path: PathBuf, stream_id: String) -> Self {
-        Self { path, stream_id }
+    pub fn new(path: PathBuf, stream_id: String, dump_cfg: Option<PacketDumperConfig>) -> Self {
+        Self {
+            path,
+            stream_id,
+            dump_cfg,
+        }
     }
 }
 
@@ -34,9 +40,18 @@ impl CaptureSource for PcapFileSource {
     ) -> crate::Result<()> {
         let path = self.path.clone();
         let stream_id = self.stream_id.clone();
+        let dump_cfg = self.dump_cfg.clone();
+        let dumper_metrics = metrics.clone();
 
         // Run pcap reading on a blocking thread since next_packet() is blocking.
         let result = tokio::task::spawn_blocking(move || -> crate::Result<()> {
+            let mut dumper = dump_cfg.and_then(|c| match PacketDumper::new(c, dumper_metrics) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    tracing::warn!("pcap-file: packet dump disabled: {e}");
+                    None
+                }
+            });
             let mut cap = Capture::from_file(&path)?;
             let link_type = cap.get_datalink().0 as u32;
 
@@ -66,6 +81,10 @@ impl CaptureSource for PcapFileSource {
                             data: Bytes::copy_from_slice(packet.data),
                             stream_id: stream_id.clone(),
                         };
+
+                        if let Some(d) = dumper.as_mut() {
+                            d.write(&raw);
+                        }
 
                         // If the receiver is gone, stop reading.
                         if tx.blocking_send(raw).is_err() {
@@ -123,7 +142,7 @@ mod tests {
     #[tokio::test]
     async fn test_pcap_file_not_found_returns_error() {
         let source =
-            PcapFileSource::new(PathBuf::from("/nonexistent/test.pcap"), "test".to_string());
+            PcapFileSource::new(PathBuf::from("/nonexistent/test.pcap"), "test".to_string(), None);
         let (tx, _rx) = mpsc::channel(16);
         let cancel = CancellationToken::new();
         let result = Box::new(source)
@@ -155,7 +174,7 @@ mod tests {
         let path = dir.path().join("truncated.pcap");
         std::fs::write(&path, &data).unwrap();
 
-        let source = PcapFileSource::new(path, "test".to_string());
+        let source = PcapFileSource::new(path, "test".to_string(), None);
         let (tx, _rx) = mpsc::channel(16);
         let cancel = CancellationToken::new();
         let result = Box::new(source)
@@ -200,7 +219,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(1);
         drop(rx);
 
-        let source = PcapFileSource::new(path, "test".to_string());
+        let source = PcapFileSource::new(path, "test".to_string(), None);
         let cancel = CancellationToken::new();
         let result = Box::new(source)
             .run(RoutingSender::single(tx), test_metrics(), cancel)
@@ -218,7 +237,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel(); // Pre-cancel
 
-        let source = PcapFileSource::new(path, "test".to_string());
+        let source = PcapFileSource::new(path, "test".to_string(), None);
         let result = Box::new(source)
             .run(RoutingSender::single(tx), test_metrics(), cancel)
             .await;
@@ -233,7 +252,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(16);
         let cancel = CancellationToken::new();
-        let source = PcapFileSource::new(path, "test".to_string());
+        let source = PcapFileSource::new(path, "test".to_string(), None);
         let result = Box::new(source)
             .run(RoutingSender::single(tx), test_metrics(), cancel)
             .await;

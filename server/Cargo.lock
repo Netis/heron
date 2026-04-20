@@ -2998,6 +2998,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "libc",
  "pcap",
  "tempfile",
  "thiserror 2.0.18",
