@@ -23,10 +23,12 @@ use ts_protocol::model::ProtocolEvent;
 use crate::model::{IdentifiedCall, LlmCall, LlmEvent, TurnShardInput};
 use crate::processor::LlmProcessor;
 use crate::profile::ProfileRegistry;
+use crate::provider_registry::ProviderRegistry;
 
 /// Spawn N parallel LLM-extraction tasks, one per input receiver. Each task
-/// owns its own `LlmProcessor` (sharing the `ProfileRegistry` via `Arc`) and
-/// fans out each produced event to up to three downstream destinations:
+/// owns its own `LlmProcessor` (sharing the `ProviderRegistry` and
+/// `ProfileRegistry` via `Arc`) and fans out each produced event to up to
+/// three downstream destinations:
 ///
 /// * Every `LlmEvent` (Start and Complete) → one metrics shard, chosen by
 ///   `hash(provider, model, server_ip) % metrics_shard_txs.len()`.
@@ -39,6 +41,7 @@ pub fn spawn_llm_stage(
     turn_shard_txs: Vec<mpsc::Sender<TurnShardInput>>,
     metrics_shard_txs: Vec<mpsc::Sender<LlmEvent>>,
     calls_tx: mpsc::Sender<Arc<LlmCall>>,
+    providers: Arc<ProviderRegistry>,
     registry: Arc<ProfileRegistry>,
     metrics_sys: &mut MetricsSystem,
 ) -> Vec<JoinHandle<()>> {
@@ -55,6 +58,7 @@ pub fn spawn_llm_stage(
 
     let mut handles = Vec::with_capacity(event_rxs.len());
     for (i, mut rx) in event_rxs.into_iter().enumerate() {
+        let providers = providers.clone();
         let reg = registry.clone();
         let turn_txs = turn_shard_txs.clone();
         let metrics_txs = metrics_shard_txs.clone();
@@ -73,7 +77,7 @@ pub fn spawn_llm_stage(
         );
         handles.push(tokio::spawn(async move {
             let shard = i;
-            let mut processor = LlmProcessor::new(reg, worker_metrics.clone());
+            let mut processor = LlmProcessor::new(providers, reg, worker_metrics.clone());
             let reason = 'main: loop {
                 let event = match rx.recv().await {
                     Some(e) => e,
@@ -147,16 +151,10 @@ fn turn_shard_index(stream_id: &str, session_id: &str, n: usize) -> usize {
 
 fn metrics_shard_index(event: &LlmEvent, n: usize) -> usize {
     let (provider, model, server_ip) = match event {
-        LlmEvent::Start(s) => (
-            s.provider.to_string(),
-            s.model.clone(),
-            s.server_ip.to_string(),
-        ),
-        LlmEvent::Complete { call, .. } => (
-            call.provider.to_string(),
-            call.model.clone(),
-            call.server_ip.to_string(),
-        ),
+        LlmEvent::Start(s) => (s.provider, s.model.as_str(), s.server_ip),
+        LlmEvent::Complete { call, .. } => {
+            (call.provider, call.model.as_str(), call.server_ip)
+        }
         LlmEvent::Heartbeat { .. } => {
             unreachable!("metrics_shard_index called with Heartbeat event")
         }
@@ -177,8 +175,10 @@ mod tests {
     use ts_protocol::model::{HttpRequestData, HttpResponseData, ProtocolEvent};
     use ts_protocol::net::FlowKey;
 
-    use crate::model::{LlmCall, ProviderFormat, TurnShardInput};
+    use crate::model::{LlmCall, TurnShardInput};
     use crate::profiles::build_default_registry;
+    use crate::provider_names as pn;
+    use crate::providers::build_default_provider_registry;
     use ts_common::internal_metrics::MetricsSystem;
 
     fn flow_key(port: u16) -> FlowKey {
@@ -288,6 +288,7 @@ mod tests {
             vec![turn_tx],
             vec![metrics_tx],
             calls_tx,
+            Arc::new(build_default_provider_registry()),
             Arc::new(build_default_registry()),
             &mut metrics_sys,
         );
@@ -321,7 +322,7 @@ mod tests {
             .recv()
             .await
             .expect("calls_tx should receive identified call");
-        assert_eq!(call.provider, ProviderFormat::Anthropic);
+        assert_eq!(call.provider, pn::ANTHROPIC);
 
         let mut start = false;
         let mut complete = false;
@@ -353,6 +354,7 @@ mod tests {
             vec![turn_tx],
             vec![metrics_tx],
             calls_tx,
+            Arc::new(build_default_provider_registry()),
             Arc::new(build_default_registry()),
             &mut metrics_sys,
         );
@@ -373,7 +375,7 @@ mod tests {
         drop(event_tx);
 
         let call = calls_rx.recv().await.expect("calls_tx should receive");
-        assert_eq!(call.provider, ProviderFormat::OpenAI);
+        assert_eq!(call.provider, pn::OPENAI);
 
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(50), turn_rx.recv())
@@ -410,6 +412,7 @@ mod tests {
             turn_txs,
             vec![metrics_tx],
             calls_tx,
+            Arc::new(build_default_provider_registry()),
             Arc::new(build_default_registry()),
             &mut metrics_sys,
         );

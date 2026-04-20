@@ -46,7 +46,7 @@ pub struct LlmTurn {
     pub turn_id: String,
     pub session_id: String,
     pub tenant_id: Option<String>,
-    pub provider: String,    // ProviderFormat.to_string()
+    pub provider: String,    // copied from LlmCall.provider
     pub client_kind: String, // "claude-cli" / "codex-cli" / ...
 
     pub start_time_us: i64, // first call's request_time
@@ -104,6 +104,7 @@ impl fmt::Display for LlmTurn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ts_llm::provider_names as pn;
 
     #[test]
     fn turn_key_equality_and_hash() {
@@ -136,7 +137,7 @@ mod tests {
             turn_id: "t1".into(),
             session_id: "s1".into(),
             tenant_id: None,
-            provider: "anthropic".into(),
+            provider: pn::ANTHROPIC.into(),
             client_kind: "claude-cli".into(),
             start_time_us: 0,
             end_time_us: 1_500_000,
@@ -172,7 +173,7 @@ mod tests {
             turn_id: "t".into(),
             session_id: "s".into(),
             tenant_id: None,
-            provider: "anthropic".into(),
+            provider: pn::ANTHROPIC.into(),
             client_kind: "claude-cli".into(),
             start_time_us: 0,
             end_time_us: 0,

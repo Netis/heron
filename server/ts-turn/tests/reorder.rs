@@ -14,7 +14,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ts_common::internal_metrics::{Metric, MetricsSystem, MetricsWorker};
-use ts_llm::model::{ApiType, CallIdentity, FinishReason, IdentifiedCall, LlmCall, ProviderFormat};
+use ts_llm::model::{ApiType, CallIdentity, FinishReason, IdentifiedCall, LlmCall};
+use ts_llm::provider_names as pn;
 use ts_llm::profiles;
 use ts_turn::tracker::{TrackerConfig, TurnEvent, TurnTracker};
 use ts_turn::{LlmTurn, TurnStatus};
@@ -78,7 +79,7 @@ fn anthropic_call(
     LlmCall {
         stream_id: String::new(),
         id: format!("c-{request_time_us}"),
-        provider: ProviderFormat::Anthropic,
+        provider: pn::ANTHROPIC,
         model: "claude".into(),
         api_type: ApiType::Chat,
         tenant_id: None,

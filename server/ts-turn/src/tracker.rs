@@ -769,8 +769,9 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
     use ts_common::internal_metrics::MetricsSystem;
-    use ts_llm::model::{ApiType, CallIdentity, IdentifiedCall, LlmCall, ProviderFormat};
+    use ts_llm::model::{ApiType, CallIdentity, IdentifiedCall, LlmCall};
     use ts_llm::profiles;
+    use ts_llm::provider_names as pn;
 
     fn test_metrics() -> MetricsWorker {
         let mut sys = MetricsSystem::new();
@@ -852,7 +853,7 @@ mod tests {
         LlmCall {
             stream_id: String::new(),
             id: format!("c-{request_time_us}"),
-            provider: ProviderFormat::Anthropic,
+            provider: pn::ANTHROPIC,
             model: "claude".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -901,7 +902,7 @@ mod tests {
         LlmCall {
             stream_id: String::new(),
             id: format!("c-{turn}"),
-            provider: ProviderFormat::OpenAIResponses,
+            provider: pn::OPENAI_RESPONSES,
             model: "gpt-5.4".into(),
             api_type: ApiType::Chat,
             tenant_id: None,

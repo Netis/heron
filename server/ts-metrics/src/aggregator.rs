@@ -320,7 +320,8 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
     use std::sync::Arc;
-    use ts_llm::model::{ApiType, FinishReason, LlmCall, LlmCallStart, ProviderFormat};
+    use ts_llm::model::{ApiType, FinishReason, LlmCall, LlmCallStart};
+    use ts_llm::provider_names as pn;
 
     fn test_metrics() -> MetricsWorker {
         use ts_common::internal_metrics::MetricsSystem;
@@ -340,7 +341,7 @@ mod tests {
     fn make_start_with_stream(ts_us: i64, model: &str, is_stream: bool, sid: &str) -> LlmEvent {
         LlmEvent::Start(LlmCallStart {
             stream_id: sid.to_string(),
-            provider: ProviderFormat::OpenAI,
+            provider: pn::OPENAI,
             model: model.to_string(),
             is_stream,
             server_ip: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
@@ -362,7 +363,7 @@ mod tests {
             call: Arc::new(LlmCall {
                 stream_id: sid.to_string(),
                 id: format!("c-{request_time}-{complete_time}"),
-                provider: ProviderFormat::OpenAI,
+                provider: pn::OPENAI,
                 model: model.to_string(),
                 api_type: ApiType::Chat,
                 tenant_id: None,
@@ -699,12 +700,12 @@ mod tests {
         let metrics = agg.flush_all();
         let rows_10s: Vec<_> = metrics.iter().filter(|m| m.granularity == "10s").collect();
         assert_eq!(rows_10s.len(), 4);
-        assert!(rows_10s.iter().any(|m| m.provider == "openai"
+        assert!(rows_10s.iter().any(|m| m.provider == pn::OPENAI
             && m.model == "gpt-4"
             && m.server_ip == "10.0.0.1"));
         assert!(rows_10s
             .iter()
-            .any(|m| m.provider == "openai" && m.model == "gpt-4" && m.server_ip == "*"));
+            .any(|m| m.provider == pn::OPENAI && m.model == "gpt-4" && m.server_ip == "*"));
         assert!(rows_10s
             .iter()
             .any(|m| m.provider == "*" && m.model == "*" && m.server_ip == "10.0.0.1"));

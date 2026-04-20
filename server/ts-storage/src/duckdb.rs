@@ -7,8 +7,9 @@ use duckdb::Connection;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::info;
 use ts_common::error::{AppError, Result};
-use ts_llm::model::{ApiType, LlmCall, ProviderFormat};
+use ts_llm::model::{ApiType, LlmCall};
 use ts_llm::profiles::build_default_registry;
+use ts_llm::provider_names as pn;
 use ts_metrics::model::LlmMetric;
 use ts_turn::LlmTurn;
 
@@ -322,7 +323,7 @@ fn extract_full_text(
     let call = LlmCall {
         stream_id: String::new(),
         id: String::new(),
-        provider: ProviderFormat::Anthropic,
+        provider: pn::ANTHROPIC,
         model: String::new(),
         api_type: ApiType::Chat,
         tenant_id: None,
@@ -2056,7 +2057,7 @@ mod tests {
     use super::*;
     use crate::StorageBackend;
     use std::net::IpAddr;
-    use ts_llm::model::{ApiType, FinishReason, ProviderFormat};
+    use ts_llm::model::{ApiType, FinishReason};
 
     fn in_memory_backend() -> DuckDbBackend {
         DuckDbBackend::open(":memory:").unwrap()
@@ -2066,7 +2067,7 @@ mod tests {
         LlmCall {
             stream_id: String::new(),
             id: "01912345-6789-7abc-def0-123456789abc".to_string(),
-            provider: ProviderFormat::OpenAI,
+            provider: pn::OPENAI,
             model: "gpt-4".to_string(),
             api_type: ApiType::Chat,
             tenant_id: Some("tenant-abc".to_string()),
@@ -2210,7 +2211,7 @@ mod tests {
             timestamp_us: 1_700_000_000_000_000,
             stream_id: String::new(),
             granularity: "1m",
-            provider: "openai".to_string(),
+            provider: pn::OPENAI.to_string(),
             model: "gpt-4".to_string(),
             server_ip: "10.0.0.2".to_string(),
             request_count: 42,
@@ -2344,12 +2345,12 @@ mod tests {
 
         // Write metrics with providers "openai", "anthropic", and "*"
         let mut m1 = sample_metric();
-        m1.provider = "openai".to_string();
+        m1.provider = pn::OPENAI.to_string();
         m1.model = "gpt-4".to_string();
         m1.server_ip = "10.0.0.1".to_string();
 
         let mut m2 = sample_metric();
-        m2.provider = "anthropic".to_string();
+        m2.provider = pn::ANTHROPIC.to_string();
         m2.model = "claude-3".to_string();
         m2.server_ip = "10.0.0.1".to_string();
 
@@ -2361,7 +2362,7 @@ mod tests {
         backend.write_metrics(vec![m1, m2, m3]).await.unwrap();
 
         let providers = backend.query_distinct_providers().await.unwrap();
-        assert_eq!(providers, vec!["anthropic", "openai"]);
+        assert_eq!(providers, vec![pn::ANTHROPIC, pn::OPENAI]);
     }
 
     #[tokio::test]
@@ -2370,12 +2371,12 @@ mod tests {
         backend.init().await.unwrap();
 
         let mut m1 = sample_metric();
-        m1.provider = "openai".to_string();
+        m1.provider = pn::OPENAI.to_string();
         m1.model = "gpt-4".to_string();
         m1.server_ip = "10.0.0.1".to_string();
 
         let mut m2 = sample_metric();
-        m2.provider = "openai".to_string();
+        m2.provider = pn::OPENAI.to_string();
         m2.model = "gpt-3.5".to_string();
         m2.server_ip = "10.0.0.1".to_string();
 
@@ -2396,12 +2397,12 @@ mod tests {
         backend.init().await.unwrap();
 
         let mut m1 = sample_metric();
-        m1.provider = "openai".to_string();
+        m1.provider = pn::OPENAI.to_string();
         m1.model = "gpt-4".to_string();
         m1.server_ip = "10.0.0.1".to_string();
 
         let mut m2 = sample_metric();
-        m2.provider = "openai".to_string();
+        m2.provider = pn::OPENAI.to_string();
         m2.model = "gpt-4".to_string();
         m2.server_ip = "10.0.0.2".to_string();
 
@@ -2479,7 +2480,7 @@ mod tests {
         m.granularity = "1m";
         m.server_ip = "*".to_string();
 
-        m.provider = "openai".to_string();
+        m.provider = pn::OPENAI.to_string();
         m.model = "gpt-4".to_string();
         m.request_count = 200;
         backend.write_metrics(vec![m.clone()]).await.unwrap();
@@ -2488,7 +2489,7 @@ mod tests {
         m.request_count = 100;
         backend.write_metrics(vec![m.clone()]).await.unwrap();
 
-        m.provider = "anthropic".to_string();
+        m.provider = pn::ANTHROPIC.to_string();
         m.model = "claude-3".to_string();
         m.request_count = 50;
         backend.write_metrics(vec![m]).await.unwrap();
@@ -2509,11 +2510,11 @@ mod tests {
         assert_eq!(rows.len(), 2);
         let anthropic_row = rows
             .iter()
-            .find(|r| r.group.as_deref() == Some("anthropic"))
+            .find(|r| r.group.as_deref() == Some(pn::ANTHROPIC))
             .unwrap();
         let openai_row = rows
             .iter()
-            .find(|r| r.group.as_deref() == Some("openai"))
+            .find(|r| r.group.as_deref() == Some(pn::OPENAI))
             .unwrap();
         assert_eq!(anthropic_row.values[0], Some(50.0));
         assert_eq!(openai_row.values[0], Some(300.0)); // 200 + 100
@@ -2597,7 +2598,7 @@ mod tests {
         s0.timestamp_us = ts;
         s0.stream_id = "s0".into();
         s0.granularity = "1m";
-        s0.provider = "openai".into();
+        s0.provider = pn::OPENAI.into();
         s0.model = "gpt-4".into();
         s0.server_ip = "*".into();
         s0.request_count = 10;
@@ -2606,7 +2607,7 @@ mod tests {
         s1.timestamp_us = ts;
         s1.stream_id = "s1".into();
         s1.granularity = "1m";
-        s1.provider = "openai".into();
+        s1.provider = pn::OPENAI.into();
         s1.model = "gpt-4".into();
         s1.server_ip = "*".into();
         s1.request_count = 40;
@@ -2626,7 +2627,7 @@ mod tests {
 
         let rows = backend.query_metrics_timeseries(&query).await.unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].group.as_deref(), Some("openai"));
+        assert_eq!(rows[0].group.as_deref(), Some(pn::OPENAI));
         assert_eq!(rows[0].values[0], Some(50.0), "grouped SUM across streams");
     }
 
@@ -2730,7 +2731,7 @@ mod tests {
         let mut m_gpt4 = sample_metric();
         m_gpt4.timestamp_us = ts;
         m_gpt4.granularity = "10s";
-        m_gpt4.provider = "openai".to_string();
+        m_gpt4.provider = pn::OPENAI.to_string();
         m_gpt4.model = "gpt-4".to_string();
         m_gpt4.server_ip = "*".to_string();
         m_gpt4.request_count = 100;
@@ -2749,7 +2750,7 @@ mod tests {
         let mut m_claude = sample_metric();
         m_claude.timestamp_us = ts;
         m_claude.granularity = "10s";
-        m_claude.provider = "anthropic".to_string();
+        m_claude.provider = pn::ANTHROPIC.to_string();
         m_claude.model = "claude-3".to_string();
         m_claude.server_ip = "*".to_string();
         m_claude.request_count = 200;
@@ -2781,10 +2782,10 @@ mod tests {
         let rows = backend.query_metrics_models(&query).await.unwrap();
         assert_eq!(rows.len(), 2);
         // claude-3 should come first (200 > 100)
-        assert_eq!(rows[0].provider, "anthropic");
+        assert_eq!(rows[0].provider, pn::ANTHROPIC);
         assert_eq!(rows[0].model, "claude-3");
         assert_eq!(rows[0].request_count, 200);
-        assert_eq!(rows[1].provider, "openai");
+        assert_eq!(rows[1].provider, pn::OPENAI);
         assert_eq!(rows[1].model, "gpt-4");
         assert_eq!(rows[1].request_count, 100);
     }
@@ -2878,7 +2879,7 @@ mod tests {
         let detail = detail.unwrap();
         assert_eq!(detail.id, "01912345-6789-7abc-def0-123456789abc");
         assert_eq!(detail.model, "gpt-4");
-        assert_eq!(detail.provider, "openai");
+        assert_eq!(detail.provider, pn::OPENAI);
         assert_eq!(detail.status_code, Some(200));
         assert_eq!(detail.input_tokens, Some(100));
         assert_eq!(detail.output_tokens, Some(50));
@@ -2899,7 +2900,7 @@ mod tests {
 mod turn_tests {
     use super::*;
     use std::net::IpAddr;
-    use ts_llm::model::{ApiType, FinishReason, ProviderFormat};
+    use ts_llm::model::{ApiType, FinishReason};
     use ts_turn::{LlmTurn, TurnStatus};
 
     fn sample_turn(
@@ -2946,7 +2947,7 @@ mod turn_tests {
         LlmCall {
             stream_id: String::new(),
             id: id.into(),
-            provider: ProviderFormat::OpenAI,
+            provider: pn::OPENAI,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -2983,7 +2984,7 @@ mod turn_tests {
         let turn = sample_turn(
             "t1",
             "s1",
-            "anthropic",
+            pn::ANTHROPIC,
             vec!["claude-sonnet"],
             1_700_000_000_000_000,
             1500,
@@ -3020,7 +3021,7 @@ mod turn_tests {
             sample_turn(
                 "t1",
                 "s1",
-                "openai",
+                pn::OPENAI,
                 vec!["gpt-4"],
                 base + 1_000_000,
                 100,
@@ -3031,7 +3032,7 @@ mod turn_tests {
             sample_turn(
                 "t2",
                 "s1",
-                "anthropic",
+                pn::ANTHROPIC,
                 vec!["claude-sonnet"],
                 base + 2_000_000,
                 200,
@@ -3042,7 +3043,7 @@ mod turn_tests {
             sample_turn(
                 "t3",
                 "s2",
-                "openai",
+                pn::OPENAI,
                 vec!["gpt-4o"],
                 base + 3_000_000,
                 300,
@@ -3053,7 +3054,7 @@ mod turn_tests {
             sample_turn(
                 "t4",
                 "s3",
-                "openai",
+                pn::OPENAI,
                 vec!["gpt-4", "gpt-4o"],
                 base + 4_000_000,
                 400,
@@ -3075,7 +3076,7 @@ mod turn_tests {
 
         // Provider filter
         let mut q = base_turns_query();
-        q.filter.providers = vec!["anthropic".into()];
+        q.filter.providers = vec![pn::ANTHROPIC.into()];
         let page = backend.query_turns(&q).await.unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].turn_id, "t2");
@@ -3130,7 +3131,7 @@ mod turn_tests {
         let turn = sample_turn(
             "t-detail",
             "s1",
-            "anthropic",
+            pn::ANTHROPIC,
             vec!["claude-sonnet", "claude-haiku"],
             1_700_000_000_000_000,
             1500,
@@ -3163,11 +3164,11 @@ mod turn_tests {
         // (short, no trailing `…`) and never touch the body.
         let base = 1_700_000_000_000_000_i64;
         let mut user_call = mk_call_with_time("c-user", base + 1_000);
-        user_call.provider = ProviderFormat::Anthropic;
+        user_call.provider = pn::ANTHROPIC;
         user_call.request_body =
             Some(r#"{"messages":[{"role":"user","content":"DB-USER-FULL"}]}"#.into());
         let mut asst_call = mk_call_with_time("c-asst", base + 2_000);
-        asst_call.provider = ProviderFormat::Anthropic;
+        asst_call.provider = pn::ANTHROPIC;
         asst_call.response_body =
             Some(r#"{"content":[{"type":"text","text":"DB-ASSISTANT-FULL"}]}"#.into());
         backend
@@ -3178,7 +3179,7 @@ mod turn_tests {
         let mut turn = sample_turn(
             "t-short",
             "s-short",
-            "anthropic",
+            pn::ANTHROPIC,
             vec!["claude-sonnet"],
             base,
             1500,
@@ -3213,7 +3214,7 @@ mod turn_tests {
         let full_user: String = "u".repeat(600);
         let full_asst: String = "a".repeat(600);
         let mut user_call = mk_call_with_time("c-user", base + 1_000);
-        user_call.provider = ProviderFormat::Anthropic;
+        user_call.provider = pn::ANTHROPIC;
         user_call.request_body = Some(
             serde_json::json!({
                 "messages": [{ "role": "user", "content": &full_user }]
@@ -3221,7 +3222,7 @@ mod turn_tests {
             .to_string(),
         );
         let mut asst_call = mk_call_with_time("c-asst", base + 2_000);
-        asst_call.provider = ProviderFormat::Anthropic;
+        asst_call.provider = pn::ANTHROPIC;
         asst_call.response_body = Some(
             serde_json::json!({
                 "content": [{ "type": "text", "text": &full_asst }]
@@ -3238,7 +3239,7 @@ mod turn_tests {
         let mut turn = sample_turn(
             "t-long",
             "s-long",
-            "anthropic",
+            pn::ANTHROPIC,
             vec!["claude-sonnet"],
             base,
             1500,
@@ -3280,7 +3281,7 @@ mod turn_tests {
         let turn = sample_turn(
             "t-calls",
             "s1",
-            "openai",
+            pn::OPENAI,
             vec!["gpt-4"],
             base,
             3000,
@@ -3312,7 +3313,7 @@ mod concurrent_tests {
     use std::net::IpAddr;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use ts_llm::model::{ApiType, FinishReason, ProviderFormat};
+    use ts_llm::model::{ApiType, FinishReason};
     use ts_metrics::model::LlmMetric;
     use ts_turn::{LlmTurn, TurnStatus};
 
@@ -3320,7 +3321,7 @@ mod concurrent_tests {
         LlmCall {
             stream_id: String::new(),
             id: format!("call-{i:08}"),
-            provider: ProviderFormat::OpenAI,
+            provider: pn::OPENAI,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -3356,7 +3357,7 @@ mod concurrent_tests {
             turn_id: format!("turn-{i:08}"),
             session_id: format!("session-{}", i % 10),
             tenant_id: None,
-            provider: "openai".into(),
+            provider: pn::OPENAI.into(),
             client_kind: "test".into(),
             start_time_us: 1_700_000_000_000_000 + i as i64,
             end_time_us: 1_700_000_000_000_000 + i as i64 + 1_000_000,
@@ -3385,7 +3386,7 @@ mod concurrent_tests {
             timestamp_us: 1_700_000_000_000_000 + i as i64 * 10_000_000,
             stream_id: String::new(),
             granularity: "10s",
-            provider: "openai".into(),
+            provider: pn::OPENAI.into(),
             model: "gpt-4".into(),
             server_ip: "10.0.0.2".into(),
             request_count: 1,
@@ -3495,7 +3496,7 @@ mod retention_tests {
     use crate::StorageBackend;
     use std::net::IpAddr;
     use std::time::{Duration, SystemTime};
-    use ts_llm::model::{ApiType, FinishReason, ProviderFormat};
+    use ts_llm::model::{ApiType, FinishReason};
     use ts_metrics::model::LlmMetric;
     use ts_turn::{LlmTurn, TurnStatus};
 
@@ -3503,7 +3504,7 @@ mod retention_tests {
         LlmCall {
             stream_id: String::new(),
             id: id.into(),
-            provider: ProviderFormat::OpenAI,
+            provider: pn::OPENAI,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -3539,7 +3540,7 @@ mod retention_tests {
             turn_id: id.into(),
             session_id: "s".into(),
             tenant_id: None,
-            provider: "openai".into(),
+            provider: pn::OPENAI.into(),
             client_kind: "claude-cli".into(),
             start_time_us: start_us,
             end_time_us: start_us + (duration_ms as i64) * 1000,
@@ -3568,7 +3569,7 @@ mod retention_tests {
             timestamp_us: ts_us,
             stream_id: String::new(),
             granularity,
-            provider: "openai".into(),
+            provider: pn::OPENAI.into(),
             model: "gpt-4".into(),
             server_ip: "10.0.0.2".into(),
             request_count: 1,

@@ -4,10 +4,32 @@ use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
 use crate::model::{FinishReason, Provider, RequestInfo, ResponseInfo};
 
+/// Check for Bearer auth header (common to OpenAI variants).
+fn has_bearer_auth(req: &HttpRequestData) -> bool {
+    req.header("authorization")
+        .map(|v| v.starts_with("Bearer "))
+        .unwrap_or(false)
+}
+
 /// Provider implementation for OpenAI Chat Completions API.
 pub struct OpenAiChatProvider;
 
 impl Provider for OpenAiChatProvider {
+    fn name(&self) -> &'static str {
+        crate::provider_names::OPENAI
+    }
+
+    fn matches(&self, req: &HttpRequestData) -> bool {
+        if req.method != "POST" {
+            return false;
+        }
+        let path = req.uri.split('?').next().unwrap_or(&req.uri);
+        if !path.ends_with("/v1/chat/completions") {
+            return false;
+        }
+        has_bearer_auth(req)
+    }
+
     fn extract_request(&self, req: &HttpRequestData) -> RequestInfo {
         extract_from_request(req)
     }
@@ -24,6 +46,21 @@ impl Provider for OpenAiChatProvider {
 pub struct OpenAiResponsesProvider;
 
 impl Provider for OpenAiResponsesProvider {
+    fn name(&self) -> &'static str {
+        crate::provider_names::OPENAI_RESPONSES
+    }
+
+    fn matches(&self, req: &HttpRequestData) -> bool {
+        if req.method != "POST" {
+            return false;
+        }
+        let path = req.uri.split('?').next().unwrap_or(&req.uri);
+        if !path.ends_with("/v1/responses") {
+            return false;
+        }
+        has_bearer_auth(req)
+    }
+
     fn extract_request(&self, req: &HttpRequestData) -> RequestInfo {
         extract_from_request(req)
     }

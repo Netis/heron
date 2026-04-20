@@ -103,10 +103,9 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
     use std::sync::Arc;
-    use ts_llm::model::{
-        ApiType, CallIdentity, FinishReason, IdentifiedCall, LlmCall, ProviderFormat,
-    };
+    use ts_llm::model::{ApiType, CallIdentity, FinishReason, IdentifiedCall, LlmCall};
     use ts_llm::profiles::build_default_registry;
+    use ts_llm::provider_names as pn;
 
     /// `is_user_start`: true ⇒ text body (new-turn marker); false ⇒ tool_result body (continuation).
     fn anthropic_call(
@@ -123,7 +122,7 @@ mod tests {
         LlmCall {
             stream_id: String::new(),
             id: format!("c-{ts_us}"),
-            provider: ProviderFormat::Anthropic,
+            provider: pn::ANTHROPIC,
             model: "claude".into(),
             api_type: ApiType::Chat,
             tenant_id: None,

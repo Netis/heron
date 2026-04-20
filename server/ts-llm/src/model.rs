@@ -2,25 +2,6 @@ use std::fmt;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-/// Identifies the LLM API provider format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderFormat {
-    Anthropic,
-    OpenAI,
-    OpenAIResponses,
-    // Azure, Gemini, Generic — future
-}
-
-impl fmt::Display for ProviderFormat {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProviderFormat::Anthropic => write!(f, "anthropic"),
-            ProviderFormat::OpenAI => write!(f, "openai"),
-            ProviderFormat::OpenAIResponses => write!(f, "openai-responses"),
-        }
-    }
-}
-
 /// The type of LLM API call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiType {
@@ -68,7 +49,9 @@ impl fmt::Display for FinishReason {
 pub struct LlmCall {
     pub stream_id: String,
     pub id: String,
-    pub provider: ProviderFormat,
+    /// Stable provider identifier (e.g. "anthropic", "openai", "openai-responses").
+    /// Sourced from `Provider::name()`; persisted verbatim to storage.
+    pub provider: &'static str,
     pub model: String,
     pub api_type: ApiType,
     pub tenant_id: Option<String>,
@@ -156,7 +139,8 @@ pub enum LlmEvent {
 #[derive(Debug, Clone)]
 pub struct LlmCallStart {
     pub stream_id: String,
-    pub provider: ProviderFormat,
+    /// Stable provider identifier (see `LlmCall::provider`).
+    pub provider: &'static str,
     pub model: String,
     pub is_stream: bool,
     pub server_ip: IpAddr,
@@ -196,11 +180,22 @@ pub struct ResponseInfo {
     pub response_id: Option<String>,
 }
 
-/// Trait for provider-specific field extraction.
+/// Trait for provider-specific detection + field extraction.
 ///
 /// Each LLM API provider (OpenAI, Anthropic, etc.) implements this trait
 /// to handle its wire format differences while producing unified output.
+/// Providers are registered in a `ProviderRegistry`; `LlmProcessor` calls
+/// `matches()` in registry order and then uses the matched provider's
+/// extraction methods for the entire request/response lifecycle.
 pub trait Provider: Send + Sync {
+    /// Stable identifier (e.g. "anthropic"). Persisted to storage as
+    /// `LlmCall.provider`; changing this value is a data migration.
+    fn name(&self) -> &'static str;
+
+    /// Decide whether this provider handles the given HTTP request.
+    /// Checked in registry order; the first `true` wins.
+    fn matches(&self, req: &ts_protocol::model::HttpRequestData) -> bool;
+
     /// Extract model, stream flag, tenant from the request.
     fn extract_request(&self, req: &ts_protocol::model::HttpRequestData) -> RequestInfo;
 
@@ -223,6 +218,7 @@ pub fn truncate_str(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod extension_tests {
     use super::*;
+    use crate::provider_names as pn;
     use std::net::IpAddr;
     use std::sync::Arc;
 
@@ -244,7 +240,7 @@ mod extension_tests {
         let call = LlmCall {
             stream_id: String::new(),
             id: "c".into(),
-            provider: ProviderFormat::Anthropic,
+            provider: pn::ANTHROPIC,
             model: "claude".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -293,7 +289,7 @@ mod extension_tests {
         let call = LlmCall {
             stream_id: String::new(),
             id: "c1".into(),
-            provider: ProviderFormat::Anthropic,
+            provider: pn::ANTHROPIC,
             model: "claude-sonnet".into(),
             api_type: ApiType::Chat,
             tenant_id: None,

@@ -1,7 +1,8 @@
 //! llm_turns list + detail views.
 
 use duckdb::Connection;
-use ts_llm::model::{ApiType, LlmCall, ProviderFormat};
+use ts_llm::model::{ApiType, LlmCall};
+use ts_llm::provider_names as pn;
 use ts_llm::profiles::build_default_registry;
 
 use crate::ui::{
@@ -244,7 +245,7 @@ fn extract_with_profile(
     let call = LlmCall {
         stream_id: String::new(),
         id: String::new(),
-        provider: ProviderFormat::Anthropic,
+        provider: pn::ANTHROPIC,
         model: String::new(),
         api_type: ApiType::Chat,
         tenant_id: None,

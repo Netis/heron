@@ -22,6 +22,7 @@ use ts_common::config::{
     StorageSinkConfig,
 };
 use ts_common::internal_metrics::{Metric, MetricsSystem};
+use ts_llm::provider_names as pn;
 use ts_storage::create_backend;
 
 fn fixture(name: &str) -> Option<PathBuf> {
@@ -195,7 +196,7 @@ async fn claude_cli_pcap_populates_all_three_tables() {
         .map(Result::unwrap)
         .collect();
     assert!(
-        call_providers.iter().any(|p| p == "anthropic"),
+        call_providers.iter().any(|p| p == pn::ANTHROPIC),
         "expected anthropic in llm_calls providers, got {call_providers:?}"
     );
 
@@ -292,11 +293,11 @@ async fn two_pcaps_isolated_but_metrics_merged() {
         .map(Result::unwrap)
         .collect();
     assert!(
-        providers.iter().any(|p| p == "anthropic"),
+        providers.iter().any(|p| p == pn::ANTHROPIC),
         "expected anthropic in llm_calls providers, got {providers:?}"
     );
     assert!(
-        providers.iter().any(|p| p == "openai-responses"),
+        providers.iter().any(|p| p == pn::OPENAI_RESPONSES),
         "expected openai-responses in llm_calls providers, got {providers:?}"
     );
 
@@ -342,11 +343,11 @@ async fn two_pcaps_isolated_but_metrics_merged() {
         .map(Result::unwrap)
         .collect();
     assert!(
-        metric_providers.iter().any(|p| p == "anthropic"),
+        metric_providers.iter().any(|p| p == pn::ANTHROPIC),
         "expected anthropic in llm_metrics providers, got {metric_providers:?}"
     );
     assert!(
-        metric_providers.iter().any(|p| p == "openai-responses"),
+        metric_providers.iter().any(|p| p == pn::OPENAI_RESPONSES),
         "expected openai-responses in llm_metrics providers, got {metric_providers:?}"
     );
 

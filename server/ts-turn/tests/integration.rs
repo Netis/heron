@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use ts_capture::{CaptureSource, PcapFileSource, RoutingSender};
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_protocol::{spawn_flow_dispatcher, spawn_protocol_stage};
+use ts_llm::provider_names as pn;
 use ts_turn::tracker::TrackerConfig;
 use ts_turn::TurnStatus;
 
@@ -87,11 +88,13 @@ async fn run_pcap_full_sharded(
     spawn_protocol_stage(parsed_rxs, event_txs, &mut metrics_sys);
 
     let registry = Arc::new(ts_llm::profiles::build_default_registry());
+    let provider_registry = Arc::new(ts_llm::providers::build_default_provider_registry());
     ts_llm::spawn_llm_stage(
         event_rxs,
         turn_shard_txs,
         metrics_shard_txs,
         calls_tx,
+        provider_registry,
         registry,
         &mut metrics_sys,
     );
@@ -153,7 +156,7 @@ async fn claude_cli_messages_expects_one_complete_turn() {
         eprintln!("skip: fixture not present");
         return;
     };
-    let anthropic: Vec<_> = turns.iter().filter(|t| t.provider == "anthropic").collect();
+    let anthropic: Vec<_> = turns.iter().filter(|t| t.provider == pn::ANTHROPIC).collect();
     eprintln!("claude-cli-messages: {} anthropic turns", anthropic.len());
     for t in &anthropic {
         eprintln!(
@@ -177,7 +180,7 @@ async fn claude_cli_messages_multi_expects_two_turns() {
         eprintln!("skip: fixture not present");
         return;
     };
-    let anthropic: Vec<_> = turns.iter().filter(|t| t.provider == "anthropic").collect();
+    let anthropic: Vec<_> = turns.iter().filter(|t| t.provider == pn::ANTHROPIC).collect();
     eprintln!(
         "claude-cli-messages-multi: {} anthropic turns",
         anthropic.len()
@@ -219,7 +222,7 @@ async fn codex_cli_messages_multi_expects_two_turns() {
     };
     let openai: Vec<_> = turns
         .iter()
-        .filter(|t| t.provider == "openai-responses")
+        .filter(|t| t.provider == pn::OPENAI_RESPONSES)
         .collect();
     eprintln!("codex-cli-messages-multi: {} openai turns", openai.len());
     for t in &openai {
@@ -315,7 +318,7 @@ async fn codex_cli_messages_multi_flow_shard_reorder_parity() {
     };
     let baseline_openai: Vec<_> = baseline
         .iter()
-        .filter(|t| t.provider == "openai-responses")
+        .filter(|t| t.provider == pn::OPENAI_RESPONSES)
         .collect();
     assert_eq!(
         baseline_openai.len(),
@@ -335,7 +338,7 @@ async fn codex_cli_messages_multi_flow_shard_reorder_parity() {
             .expect("fixture present");
         let openai: Vec<_> = turns
             .iter()
-            .filter(|t| t.provider == "openai-responses")
+            .filter(|t| t.provider == pn::OPENAI_RESPONSES)
             .collect();
         let keys: std::collections::BTreeSet<_> = openai
             .iter()

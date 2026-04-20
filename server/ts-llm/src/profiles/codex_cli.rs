@@ -1,5 +1,6 @@
-use crate::model::{LlmCall, ProviderFormat};
+use crate::model::LlmCall;
 use crate::profile::{ClientProfile, ExtractedIds};
+use crate::provider_names as pn;
 use serde_json::Value;
 
 pub struct CodexCliProfile;
@@ -34,7 +35,7 @@ impl ClientProfile for CodexCliProfile {
     }
 
     fn matches(&self, call: &LlmCall) -> bool {
-        if call.provider != ProviderFormat::OpenAIResponses {
+        if call.provider != pn::OPENAI_RESPONSES {
             return false;
         }
         // Prefer Originator (stable short identifier); fall back to UA prefix.
@@ -211,11 +212,11 @@ impl ClientProfile for CodexCliProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ApiType, LlmCall, ProviderFormat};
+    use crate::model::{ApiType, LlmCall};
     use std::net::IpAddr;
 
     fn call_with(
-        provider: ProviderFormat,
+        provider: &'static str,
         headers: Vec<(&str, &str)>,
         body: Option<&str>,
     ) -> LlmCall {
@@ -258,7 +259,7 @@ mod tests {
     #[test]
     fn matches_by_originator() {
         let c = call_with(
-            ProviderFormat::OpenAIResponses,
+            pn::OPENAI_RESPONSES,
             vec![("Originator", "codex_cli_rs")],
             None,
         );
@@ -268,7 +269,7 @@ mod tests {
     #[test]
     fn matches_codex_tui_by_ua() {
         let c = call_with(
-            ProviderFormat::OpenAIResponses,
+            pn::OPENAI_RESPONSES,
             vec![("User-Agent", "codex-tui/0.118.0 (Mac OS)")],
             None,
         );
@@ -278,7 +279,7 @@ mod tests {
     #[test]
     fn matches_codex_exec_by_originator() {
         let c = call_with(
-            ProviderFormat::OpenAIResponses,
+            pn::OPENAI_RESPONSES,
             vec![("Originator", "codex_exec")],
             None,
         );
@@ -288,7 +289,7 @@ mod tests {
     #[test]
     fn matches_codex_exec_by_ua() {
         let c = call_with(
-            ProviderFormat::OpenAIResponses,
+            pn::OPENAI_RESPONSES,
             vec![("User-Agent", "codex_exec/0.120.0 (Ubuntu 24.4.0; x86_64)")],
             None,
         );
@@ -298,7 +299,7 @@ mod tests {
     #[test]
     fn does_not_match_chat_api() {
         let c = call_with(
-            ProviderFormat::OpenAI,
+            pn::OPENAI,
             vec![("Originator", "codex_cli_rs")],
             None,
         );
@@ -309,7 +310,7 @@ mod tests {
     fn extract_ids_from_turn_metadata_header() {
         let meta = r#"{"session_id":"019d7170-77f6-7eb3-9c93-2e19cbdf9a86","turn_id":"019d7170-7806-7ff0-9d84-8c917b132acd","workspaces":{}}"#;
         let c = call_with(
-            ProviderFormat::OpenAIResponses,
+            pn::OPENAI_RESPONSES,
             vec![
                 ("Originator", "codex_cli_rs"),
                 ("X-Codex-Turn-Metadata", meta),
@@ -327,7 +328,7 @@ mod tests {
     #[test]
     fn extract_ids_fallback_to_client_request_id() {
         let c = call_with(
-            ProviderFormat::OpenAIResponses,
+            pn::OPENAI_RESPONSES,
             vec![
                 ("Originator", "codex_cli_rs"),
                 ("X-Client-Request-Id", "abc-123"),
@@ -342,21 +343,21 @@ mod tests {
     #[test]
     fn is_user_turn_start_message_role_user() {
         let body = r#"{"input":[{"type":"message","role":"user","content":"hi"}]}"#;
-        let c = call_with(ProviderFormat::OpenAIResponses, vec![], Some(body));
+        let c = call_with(pn::OPENAI_RESPONSES, vec![], Some(body));
         assert_eq!(CodexCliProfile.is_user_turn_start(&c), Some(true));
     }
 
     #[test]
     fn is_user_turn_start_function_call_output() {
         let body = r#"{"input":[{"type":"function_call_output","call_id":"c1","output":"{}"}]}"#;
-        let c = call_with(ProviderFormat::OpenAIResponses, vec![], Some(body));
+        let c = call_with(pn::OPENAI_RESPONSES, vec![], Some(body));
         assert_eq!(CodexCliProfile.is_user_turn_start(&c), Some(false));
     }
 
     #[test]
     fn is_user_turn_start_reasoning_is_continuation() {
         let body = r#"{"input":[{"type":"reasoning","content":"..."}]}"#;
-        let c = call_with(ProviderFormat::OpenAIResponses, vec![], Some(body));
+        let c = call_with(pn::OPENAI_RESPONSES, vec![], Some(body));
         assert_eq!(CodexCliProfile.is_user_turn_start(&c), Some(false));
     }
 
@@ -368,7 +369,7 @@ mod tests {
                 {"type":"input_text","text":"please refactor X"}
             ]}
         ]}"#;
-        let c = call_with(ProviderFormat::OpenAIResponses, vec![], Some(body));
+        let c = call_with(pn::OPENAI_RESPONSES, vec![], Some(body));
         assert_eq!(
             CodexCliProfile.extract_user_input(&c).as_deref(),
             Some("please refactor X")
@@ -378,7 +379,7 @@ mod tests {
     #[test]
     fn extract_user_input_string_content() {
         let body = r#"{"input":[{"type":"message","role":"user","content":"hi"}]}"#;
-        let c = call_with(ProviderFormat::OpenAIResponses, vec![], Some(body));
+        let c = call_with(pn::OPENAI_RESPONSES, vec![], Some(body));
         assert_eq!(
             CodexCliProfile.extract_user_input(&c).as_deref(),
             Some("hi")
@@ -388,7 +389,7 @@ mod tests {
     #[test]
     fn extract_user_input_none_when_last_is_tool_output() {
         let body = r#"{"input":[{"type":"function_call_output","call_id":"c1","output":"{}"}]}"#;
-        let c = call_with(ProviderFormat::OpenAIResponses, vec![], Some(body));
+        let c = call_with(pn::OPENAI_RESPONSES, vec![], Some(body));
         assert_eq!(CodexCliProfile.extract_user_input(&c), None);
     }
 
@@ -400,7 +401,7 @@ mod tests {
                 {"type":"output_text","text":"done."}
             ]}
         ]}"#;
-        let mut c = call_with(ProviderFormat::OpenAIResponses, vec![], None);
+        let mut c = call_with(pn::OPENAI_RESPONSES, vec![], None);
         c.response_body = Some(body.to_string());
         assert_eq!(
             CodexCliProfile.extract_assistant_text(&c).as_deref(),
@@ -411,7 +412,7 @@ mod tests {
     #[test]
     fn extract_assistant_text_chat_completions_fallback() {
         let body = r#"{"choices":[{"message":{"role":"assistant","content":"hello from chat"}}]}"#;
-        let mut c = call_with(ProviderFormat::OpenAIResponses, vec![], None);
+        let mut c = call_with(pn::OPENAI_RESPONSES, vec![], None);
         c.response_body = Some(body.to_string());
         assert_eq!(
             CodexCliProfile.extract_assistant_text(&c).as_deref(),
@@ -425,7 +426,7 @@ mod tests {
             {"type":"reasoning","summary":[]},
             {"type":"message","role":"assistant","content":[{"type":"output_text","text":"done."}]}
         ]}"#;
-        let mut c = call_with(ProviderFormat::OpenAIResponses, vec![], None);
+        let mut c = call_with(pn::OPENAI_RESPONSES, vec![], None);
         c.response_body = Some(body.to_string());
         assert!(CodexCliProfile.is_turn_terminal(&c));
     }
@@ -436,7 +437,7 @@ mod tests {
             {"type":"reasoning","summary":[]},
             {"type":"function_call","name":"shell","arguments":"{}","call_id":"c1"}
         ]}"#;
-        let mut c = call_with(ProviderFormat::OpenAIResponses, vec![], None);
+        let mut c = call_with(pn::OPENAI_RESPONSES, vec![], None);
         c.response_body = Some(body.to_string());
         assert!(!CodexCliProfile.is_turn_terminal(&c));
     }
@@ -449,7 +450,7 @@ mod tests {
             {"type":"message","role":"assistant","content":[{"type":"output_text","text":"running"}]},
             {"type":"function_call","name":"shell","arguments":"{}","call_id":"c1"}
         ]}"#;
-        let mut c = call_with(ProviderFormat::OpenAIResponses, vec![], None);
+        let mut c = call_with(pn::OPENAI_RESPONSES, vec![], None);
         c.response_body = Some(body.to_string());
         assert!(!CodexCliProfile.is_turn_terminal(&c));
     }
@@ -458,21 +459,21 @@ mod tests {
     fn is_turn_terminal_false_when_output_only_reasoning() {
         // No final message → not a final answer.
         let body = r#"{"output":[{"type":"reasoning","summary":[]}]}"#;
-        let mut c = call_with(ProviderFormat::OpenAIResponses, vec![], None);
+        let mut c = call_with(pn::OPENAI_RESPONSES, vec![], None);
         c.response_body = Some(body.to_string());
         assert!(!CodexCliProfile.is_turn_terminal(&c));
     }
 
     #[test]
     fn is_turn_terminal_false_when_no_response_body() {
-        let c = call_with(ProviderFormat::OpenAIResponses, vec![], None);
+        let c = call_with(pn::OPENAI_RESPONSES, vec![], None);
         assert!(!CodexCliProfile.is_turn_terminal(&c));
     }
 
     #[test]
     fn subagent_header_returned() {
         let c = call_with(
-            ProviderFormat::OpenAIResponses,
+            pn::OPENAI_RESPONSES,
             vec![
                 ("Originator", "codex_cli_rs"),
                 ("X-Openai-Subagent", "review"),

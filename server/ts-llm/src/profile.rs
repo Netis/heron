@@ -116,14 +116,15 @@ impl Default for ProfileRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ApiType, LlmCall, ProviderFormat};
+    use crate::model::{ApiType, LlmCall};
+    use crate::provider_names as pn;
     use std::net::IpAddr;
 
     fn stub_call(ua: &str) -> LlmCall {
         LlmCall {
             stream_id: String::new(),
             id: "c".into(),
-            provider: ProviderFormat::Anthropic,
+            provider: pn::ANTHROPIC,
             model: "m".into(),
             api_type: ApiType::Chat,
             tenant_id: None,

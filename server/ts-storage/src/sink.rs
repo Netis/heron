@@ -308,11 +308,12 @@ mod tests {
 
     fn dummy_call(i: usize) -> LlmCall {
         use std::net::IpAddr;
-        use ts_llm::model::{ApiType, ProviderFormat};
+        use ts_llm::model::ApiType;
+        use ts_llm::provider_names as pn;
         LlmCall {
             stream_id: String::new(),
             id: format!("c-{i}"),
-            provider: ProviderFormat::OpenAI,
+            provider: pn::OPENAI,
             model: "m".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -348,7 +349,7 @@ mod tests {
             turn_id: format!("t-{i}"),
             session_id: "s".into(),
             tenant_id: None,
-            provider: "openai".into(),
+            provider: ts_llm::provider_names::OPENAI.into(),
             client_kind: "x".into(),
             start_time_us: 0,
             end_time_us: 0,
@@ -377,7 +378,7 @@ mod tests {
             timestamp_us: i as i64,
             stream_id: String::new(),
             granularity: "10s",
-            provider: "openai".into(),
+            provider: ts_llm::provider_names::OPENAI.into(),
             model: "m".into(),
             server_ip: "*".into(),
             request_count: 1,

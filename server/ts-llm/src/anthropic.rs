@@ -8,6 +8,29 @@ use crate::model::{FinishReason, Provider, RequestInfo, ResponseInfo};
 pub struct AnthropicProvider;
 
 impl Provider for AnthropicProvider {
+    fn name(&self) -> &'static str {
+        crate::provider_names::ANTHROPIC
+    }
+
+    fn matches(&self, req: &HttpRequestData) -> bool {
+        if req.method != "POST" {
+            return false;
+        }
+        // Strictly `/v1/messages` (ignoring query). Sub-paths such as
+        // `/v1/messages/count_tokens` and `/v1/messages/batches` are auxiliary
+        // endpoints — not inference calls — and must not be ingested.
+        let path = req.uri.split('?').next().unwrap_or(&req.uri);
+        if !path.ends_with("/v1/messages") {
+            return false;
+        }
+        let has_anthropic_version = req.header("anthropic-version").is_some();
+        let has_anthropic_key = req
+            .header("x-api-key")
+            .map(|v| v.starts_with("sk-ant-"))
+            .unwrap_or(false);
+        has_anthropic_version || has_anthropic_key
+    }
+
     fn extract_request(&self, req: &HttpRequestData) -> RequestInfo {
         extract_from_request(req)
     }

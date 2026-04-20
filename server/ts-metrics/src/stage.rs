@@ -72,14 +72,13 @@ pub fn spawn_metrics_stage(
 mod tests {
     use super::*;
     use std::net::IpAddr;
-    use ts_llm::model::{
-        ApiType, CallIdentity, FinishReason, LlmCall, LlmCallStart, ProviderFormat,
-    };
+    use ts_llm::model::{ApiType, CallIdentity, FinishReason, LlmCall, LlmCallStart};
+    use ts_llm::provider_names as pn;
 
     fn start_event(ts_us: i64, model: &str) -> LlmEvent {
         LlmEvent::Start(LlmCallStart {
             stream_id: String::new(),
-            provider: ProviderFormat::OpenAI,
+            provider: pn::OPENAI,
             model: model.into(),
             is_stream: true,
             server_ip: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
@@ -92,7 +91,7 @@ mod tests {
             call: std::sync::Arc::new(LlmCall {
                 stream_id: String::new(),
                 id: format!("c-{ts_us}"),
-                provider: ProviderFormat::OpenAI,
+                provider: pn::OPENAI,
                 model: model.into(),
                 api_type: ApiType::Chat,
                 tenant_id: None,
