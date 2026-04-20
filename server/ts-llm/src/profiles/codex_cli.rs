@@ -298,11 +298,7 @@ mod tests {
 
     #[test]
     fn does_not_match_chat_api() {
-        let c = call_with(
-            pn::OPENAI,
-            vec![("Originator", "codex_cli_rs")],
-            None,
-        );
+        let c = call_with(pn::OPENAI, vec![("Originator", "codex_cli_rs")], None);
         assert!(!CodexCliProfile.matches(&c));
     }
 

@@ -1,0 +1,9 @@
+{
+  "model": "gpt-4o",
+  "tools": [
+    {
+      "type": "web_search_preview"
+    }
+  ],
+  "input": "What was a positive news story from today?"
+}

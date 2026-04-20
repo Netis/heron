@@ -1,0 +1,127 @@
+{
+  "id": "resp_67ccf4c55fc48190b71bd0463ad3306d09504fb6872380d7",
+  "object": "response",
+  "created_at": 1741485253,
+  "status": "completed",
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "model": "gpt-4o-2024-08-06",
+  "output": [
+    {
+      "type": "file_search_call",
+      "id": "fs_67ccf4c63cd08190887ef6464ba5681609504fb6872380d7",
+      "status": "completed",
+      "queries": [
+        "attributes of an ancient brown dragon"
+      ],
+      "results": null
+    },
+    {
+      "type": "message",
+      "id": "msg_67ccf4c93e5c81909d595b369351a9d309504fb6872380d7",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "The attributes of an ancient brown dragon include...",
+          "annotations": [
+            {
+              "type": "file_citation",
+              "index": 320,
+              "file_id": "file-4wDz5b167pAf72nx1h9eiN",
+              "filename": "dragons.pdf"
+            },
+            {
+              "type": "file_citation",
+              "index": 576,
+              "file_id": "file-4wDz5b167pAf72nx1h9eiN",
+              "filename": "dragons.pdf"
+            },
+            {
+              "type": "file_citation",
+              "index": 815,
+              "file_id": "file-4wDz5b167pAf72nx1h9eiN",
+              "filename": "dragons.pdf"
+            },
+            {
+              "type": "file_citation",
+              "index": 815,
+              "file_id": "file-4wDz5b167pAf72nx1h9eiN",
+              "filename": "dragons.pdf"
+            },
+            {
+              "type": "file_citation",
+              "index": 1030,
+              "file_id": "file-4wDz5b167pAf72nx1h9eiN",
+              "filename": "dragons.pdf"
+            },
+            {
+              "type": "file_citation",
+              "index": 1030,
+              "file_id": "file-4wDz5b167pAf72nx1h9eiN",
+              "filename": "dragons.pdf"
+            },
+            {
+              "type": "file_citation",
+              "index": 1156,
+              "file_id": "file-4wDz5b167pAf72nx1h9eiN",
+              "filename": "dragons.pdf"
+            },
+            {
+              "type": "file_citation",
+              "index": 1225,
+              "file_id": "file-4wDz5b167pAf72nx1h9eiN",
+              "filename": "dragons.pdf"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "parallel_tool_calls": true,
+  "previous_response_id": null,
+  "reasoning": {
+    "effort": null,
+    "generate_summary": null
+  },
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    }
+  },
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "type": "file_search",
+      "filters": null,
+      "max_num_results": 20,
+      "ranking_options": {
+        "ranker": "auto",
+        "score_threshold": 0.0
+      },
+      "vector_store_ids": [
+        "vs_1234567890"
+      ]
+    }
+  ],
+  "top_p": 1.0,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 18307,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 348,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 18655
+  },
+  "user": null,
+  "metadata": {}
+}

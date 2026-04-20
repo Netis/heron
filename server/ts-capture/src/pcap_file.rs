@@ -144,8 +144,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_pcap_file_not_found_returns_error() {
-        let source =
-            PcapFileSource::new(PathBuf::from("/nonexistent/test.pcap"), "test".to_string(), None);
+        let source = PcapFileSource::new(
+            PathBuf::from("/nonexistent/test.pcap"),
+            "test".to_string(),
+            None,
+        );
         let (tx, _rx) = mpsc::channel(16);
         let cancel = CancellationToken::new();
         let result = Box::new(source)

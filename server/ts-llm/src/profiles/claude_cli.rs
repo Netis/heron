@@ -238,11 +238,7 @@ mod tests {
 
     #[test]
     fn does_not_match_other_user_agent() {
-        let c = call_with(
-            pn::ANTHROPIC,
-            vec![("User-Agent", "curl/8.1.2")],
-            None,
-        );
+        let c = call_with(pn::ANTHROPIC, vec![("User-Agent", "curl/8.1.2")], None);
         assert!(!ClaudeCliProfile.matches(&c));
     }
 

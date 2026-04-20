@@ -160,16 +160,16 @@ impl CaptureSource for CloudProbeSource {
         let recv_hwm = self.recv_hwm;
 
         // Best-effort dumper setup; failure here only disables dumping.
-        let mut dumper = self
-            .dump_cfg
-            .clone()
-            .and_then(|c| match PacketDumper::new(c, metrics.clone()) {
-                Ok(d) => Some(d),
-                Err(e) => {
-                    tracing::warn!("cloud-probe: packet dump disabled: {e}");
-                    None
-                }
-            });
+        let mut dumper =
+            self.dump_cfg
+                .clone()
+                .and_then(|c| match PacketDumper::new(c, metrics.clone()) {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        tracing::warn!("cloud-probe: packet dump disabled: {e}");
+                        None
+                    }
+                });
 
         // zmq.rs 0.4 does not expose RCVHWM as a socket option; backpressure
         // flows naturally through the downstream mpsc channel instead. We

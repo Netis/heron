@@ -2,8 +2,8 @@
 
 use duckdb::Connection;
 use ts_llm::model::{ApiType, LlmCall};
-use ts_llm::provider_names as pn;
 use ts_llm::profiles::build_default_registry;
+use ts_llm::provider_names as pn;
 
 use crate::ui::{
     clear_screen, fmt_duration_ms, fmt_opt, fmt_tokens, pretty_json, read_line, truncate,

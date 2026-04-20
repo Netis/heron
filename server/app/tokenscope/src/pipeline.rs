@@ -134,8 +134,7 @@ impl Pipeline {
         let (metrics_out_tx, metrics_out_rx) = mpsc::channel::<LlmMetric>(sink_capacity);
 
         let registry = Arc::new(ts_llm::profiles::build_default_registry());
-        let provider_registry =
-            Arc::new(ts_llm::providers::build_default_provider_registry());
+        let provider_registry = Arc::new(ts_llm::providers::build_default_provider_registry());
 
         assert_eq!(
             per_pipeline_metrics.len(),

@@ -1,0 +1,7 @@
+{
+  "model": "o3-mini",
+  "input": "How much wood would a woodchuck chuck?",
+  "reasoning": {
+    "effort": "high"
+  }
+}

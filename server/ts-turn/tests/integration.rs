@@ -10,8 +10,8 @@ use tokio::sync::mpsc;
 
 use ts_capture::{CaptureSource, PcapFileSource, RoutingSender};
 use ts_common::internal_metrics::{Metric, MetricsSystem};
-use ts_protocol::{spawn_flow_dispatcher, spawn_protocol_stage};
 use ts_llm::provider_names as pn;
+use ts_protocol::{spawn_flow_dispatcher, spawn_protocol_stage};
 use ts_turn::tracker::TrackerConfig;
 use ts_turn::TurnStatus;
 
@@ -156,7 +156,10 @@ async fn claude_cli_messages_expects_one_complete_turn() {
         eprintln!("skip: fixture not present");
         return;
     };
-    let anthropic: Vec<_> = turns.iter().filter(|t| t.provider == pn::ANTHROPIC).collect();
+    let anthropic: Vec<_> = turns
+        .iter()
+        .filter(|t| t.provider == pn::ANTHROPIC)
+        .collect();
     eprintln!("claude-cli-messages: {} anthropic turns", anthropic.len());
     for t in &anthropic {
         eprintln!(
@@ -180,7 +183,10 @@ async fn claude_cli_messages_multi_expects_two_turns() {
         eprintln!("skip: fixture not present");
         return;
     };
-    let anthropic: Vec<_> = turns.iter().filter(|t| t.provider == pn::ANTHROPIC).collect();
+    let anthropic: Vec<_> = turns
+        .iter()
+        .filter(|t| t.provider == pn::ANTHROPIC)
+        .collect();
     eprintln!(
         "claude-cli-messages-multi: {} anthropic turns",
         anthropic.len()

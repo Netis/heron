@@ -337,12 +337,11 @@ async fn main() {
         // Spawn capture sources — each pipeline may have N sources that
         // fan-in to a single raw-packet channel.
         let mut capture_tasks: JoinSet<()> = JoinSet::new();
-        for ((((pipeline_name, routing_tx), source_cfgs), source_metrics), dump_cfg) in
-            pipeline_txs
-                .into_iter()
-                .zip(pipeline_sources.into_iter())
-                .zip(capture_metrics.into_iter())
-                .zip(pipeline_dump_cfgs.into_iter())
+        for ((((pipeline_name, routing_tx), source_cfgs), source_metrics), dump_cfg) in pipeline_txs
+            .into_iter()
+            .zip(pipeline_sources.into_iter())
+            .zip(capture_metrics.into_iter())
+            .zip(pipeline_dump_cfgs.into_iter())
         {
             for ((j, source_cfg), metrics) in source_cfgs
                 .iter()

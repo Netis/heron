@@ -478,7 +478,11 @@ mod tests {
                     && m.server_ip != "*"
             })
             .collect();
-        assert_eq!(complete_rows.len(), 2, "two rows for same window: start + late complete");
+        assert_eq!(
+            complete_rows.len(),
+            2,
+            "two rows for same window: start + late complete"
+        );
         let late = complete_rows
             .iter()
             .find(|m| m.total_input_tokens > 0)
@@ -520,7 +524,10 @@ mod tests {
             })
             .map(|m| m.request_count)
             .sum();
-        assert_eq!(traffic, 2, "two starts in [t0, t0+10s), late complete adds 0");
+        assert_eq!(
+            traffic, 2,
+            "two starts in [t0, t0+10s), late complete adds 0"
+        );
     }
 
     #[test]
@@ -586,10 +593,7 @@ mod tests {
         let metrics = agg.flush_all();
         assert_eq!(metrics.len(), 16, "4 grans × 4 dims, one merged row each");
         for gran in ["10s", "1m", "5m", "1h"] {
-            assert_eq!(
-                metrics.iter().filter(|m| m.granularity == gran).count(),
-                4
-            );
+            assert_eq!(metrics.iter().filter(|m| m.granularity == gran).count(), 4);
         }
     }
 
@@ -636,16 +640,13 @@ mod tests {
 
         let s0_rows: Vec<_> = s0_flushed
             .iter()
-            .filter(|m| {
-                m.granularity == "10s" && m.stream_id == "s0" && m.timestamp_us == t0
-            })
+            .filter(|m| m.granularity == "10s" && m.stream_id == "s0" && m.timestamp_us == t0)
             .collect();
         assert_eq!(s0_rows.len(), 4, "s0 drains for t0");
 
         // Stream s1 still inside [t0, t0+10s) — its window must not drain.
         agg.process(&make_start_with_stream(t0, "gpt-4", true, "s1"));
-        let s1_flushed =
-            agg.process(&make_complete_with_stream(t0, t0 + 500_000, "gpt-4", "s1"));
+        let s1_flushed = agg.process(&make_complete_with_stream(t0, t0 + 500_000, "gpt-4", "s1"));
         assert_eq!(
             s1_flushed
                 .iter()
@@ -700,9 +701,9 @@ mod tests {
         let metrics = agg.flush_all();
         let rows_10s: Vec<_> = metrics.iter().filter(|m| m.granularity == "10s").collect();
         assert_eq!(rows_10s.len(), 4);
-        assert!(rows_10s.iter().any(|m| m.provider == pn::OPENAI
-            && m.model == "gpt-4"
-            && m.server_ip == "10.0.0.1"));
+        assert!(rows_10s
+            .iter()
+            .any(|m| m.provider == pn::OPENAI && m.model == "gpt-4" && m.server_ip == "10.0.0.1"));
         assert!(rows_10s
             .iter()
             .any(|m| m.provider == pn::OPENAI && m.model == "gpt-4" && m.server_ip == "*"));

@@ -180,21 +180,50 @@ pub struct ResponseInfo {
     pub response_id: Option<String>,
 }
 
+/// Verdict returned by `Provider::classify_route` — a three-valued outcome
+/// so route information can express both "this is me" and "this is not me"
+/// without having to re-ask every provider.
+///
+/// The registry uses these to short-circuit on `Accept`, skip `Reject`
+/// candidates entirely in the shape pass, and defer `Unknown` candidates
+/// for structural matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteVerdict {
+    /// Method + URI + headers are enough to identify this provider.
+    Accept,
+    /// Method + URI + headers are enough to rule this provider out.
+    Reject,
+    /// Route alone is ambiguous — defer to `matches_shape`.
+    Unknown,
+}
+
 /// Trait for provider-specific detection + field extraction.
 ///
 /// Each LLM API provider (OpenAI, Anthropic, etc.) implements this trait
 /// to handle its wire format differences while producing unified output.
-/// Providers are registered in a `ProviderRegistry`; `LlmProcessor` calls
-/// `matches()` in registry order and then uses the matched provider's
-/// extraction methods for the entire request/response lifecycle.
+/// Providers are registered in a `ProviderRegistry`, which runs a two-pass
+/// detection: `classify_route` first (cheap, inspects method/URI/headers),
+/// then `matches_shape` on Unknown candidates (reads the parsed JSON body).
+/// Once a provider wins, the registry uses its extraction methods for the
+/// entire request/response lifecycle.
 pub trait Provider: Send + Sync {
     /// Stable identifier (e.g. "anthropic"). Persisted to storage as
     /// `LlmCall.provider`; changing this value is a data migration.
     fn name(&self) -> &'static str;
 
-    /// Decide whether this provider handles the given HTTP request.
-    /// Checked in registry order; the first `true` wins.
-    fn matches(&self, req: &ts_protocol::model::HttpRequestData) -> bool;
+    /// Pass 1 of detection: inspect method + URI + headers only.
+    /// No body parsing — this runs on every HTTP request so it must be cheap.
+    fn classify_route(&self, req: &ts_protocol::model::HttpRequestData) -> RouteVerdict;
+
+    /// Pass 2 of detection: inspect the parsed JSON body. Called by the
+    /// registry only when `classify_route` returned `Unknown` for every
+    /// provider, and the body parses as JSON. `body` is shared across all
+    /// candidates (parsed once per request).
+    fn matches_shape(
+        &self,
+        req: &ts_protocol::model::HttpRequestData,
+        body: &serde_json::Value,
+    ) -> bool;
 
     /// Extract model, stream flag, tenant from the request.
     fn extract_request(&self, req: &ts_protocol::model::HttpRequestData) -> RequestInfo;

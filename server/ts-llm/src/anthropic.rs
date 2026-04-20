@@ -2,7 +2,25 @@ use serde_json::Value;
 
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
-use crate::model::{FinishReason, Provider, RequestInfo, ResponseInfo};
+use crate::model::{FinishReason, Provider, RequestInfo, ResponseInfo, RouteVerdict};
+
+/// Check whether the request carries an Anthropic-style API key, either via
+/// `x-api-key` (direct keys) or `Authorization: Bearer` (OAuth tokens issued
+/// by Anthropic still aren't `sk-ant-*`, so this only catches direct keys
+/// sent through either header).
+fn has_anthropic_api_key(req: &HttpRequestData) -> bool {
+    if req
+        .header("x-api-key")
+        .map(|v| v.starts_with("sk-ant-"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    req.header("authorization")
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|t| t.starts_with("sk-ant-"))
+        .unwrap_or(false)
+}
 
 /// Provider implementation for Anthropic Messages API.
 pub struct AnthropicProvider;
@@ -12,23 +30,68 @@ impl Provider for AnthropicProvider {
         crate::provider_names::ANTHROPIC
     }
 
-    fn matches(&self, req: &HttpRequestData) -> bool {
+    fn classify_route(&self, req: &HttpRequestData) -> RouteVerdict {
         if req.method != "POST" {
-            return false;
+            return RouteVerdict::Reject;
         }
-        // Strictly `/v1/messages` (ignoring query). Sub-paths such as
-        // `/v1/messages/count_tokens` and `/v1/messages/batches` are auxiliary
-        // endpoints — not inference calls — and must not be ingested.
         let path = req.uri.split('?').next().unwrap_or(&req.uri);
-        if !path.ends_with("/v1/messages") {
+
+        // Auxiliary Anthropic endpoints are not inference calls. Reject
+        // before the header-only accept rule below can catch them.
+        if path.ends_with("/v1/messages/count_tokens") || path.ends_with("/v1/messages/batches") {
+            return RouteVerdict::Reject;
+        }
+
+        let has_anthropic_version = req.header("anthropic-version").is_some();
+        let has_anthropic_key = has_anthropic_api_key(req);
+
+        // Canonical inference path.
+        if path.ends_with("/v1/messages") && (has_anthropic_version || has_anthropic_key) {
+            return RouteVerdict::Accept;
+        }
+
+        // Non-standard path (gateway prefix, tenant routing, ...) but the
+        // request is unambiguously Anthropic by header.
+        if has_anthropic_version {
+            return RouteVerdict::Accept;
+        }
+
+        RouteVerdict::Unknown
+    }
+
+    fn matches_shape(&self, _req: &HttpRequestData, body: &Value) -> bool {
+        // Required spec fields: {model, messages, max_tokens}. Presence of
+        // `messages` array and `model` string is table stakes.
+        if body.get("model").and_then(|v| v.as_str()).is_none() {
             return false;
         }
-        let has_anthropic_version = req.header("anthropic-version").is_some();
-        let has_anthropic_key = req
-            .header("x-api-key")
-            .map(|v| v.starts_with("sk-ant-"))
-            .unwrap_or(false);
-        has_anthropic_version || has_anthropic_key
+        let Some(messages) = body.get("messages").and_then(|v| v.as_array()) else {
+            return false;
+        };
+
+        // Anthropic InputMessage.role is strictly {user, assistant}. Any
+        // system/developer/tool role in `messages[]` proves it's OpenAI-shaped.
+        let strict_roles = messages.iter().all(|m| {
+            matches!(
+                m.get("role").and_then(|r| r.as_str()),
+                Some("user" | "assistant")
+            )
+        });
+        if !strict_roles {
+            return false;
+        }
+
+        // `input` is the Responses API discriminator — not ours.
+        if body.get("input").is_some() {
+            return false;
+        }
+
+        // Beyond the roles constraint, require at least one Anthropic-exclusive
+        // signal. `max_tokens` alone is too weak (OpenAI accepts it too); we
+        // use it only in combination with other signals via the top-level
+        // `system` field or `stop_sequences` array which OpenAI Chat doesn't
+        // have (OpenAI uses `stop` + inline `{"role":"system"}` messages).
+        body.get("system").is_some() || body.get("stop_sequences").is_some()
     }
 
     fn extract_request(&self, req: &HttpRequestData) -> RequestInfo {

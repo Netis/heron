@@ -152,9 +152,7 @@ fn turn_shard_index(stream_id: &str, session_id: &str, n: usize) -> usize {
 fn metrics_shard_index(event: &LlmEvent, n: usize) -> usize {
     let (provider, model, server_ip) = match event {
         LlmEvent::Start(s) => (s.provider, s.model.as_str(), s.server_ip),
-        LlmEvent::Complete { call, .. } => {
-            (call.provider, call.model.as_str(), call.server_ip)
-        }
+        LlmEvent::Complete { call, .. } => (call.provider, call.model.as_str(), call.server_ip),
         LlmEvent::Heartbeat { .. } => {
             unreachable!("metrics_shard_index called with Heartbeat event")
         }

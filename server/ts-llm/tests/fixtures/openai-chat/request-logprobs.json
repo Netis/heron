@@ -1,0 +1,11 @@
+{
+  "model": "VAR_chat_model_id",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello!"
+    }
+  ],
+  "logprobs": true,
+  "top_logprobs": 2
+}

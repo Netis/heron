@@ -2,13 +2,35 @@ use serde_json::Value;
 
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
-use crate::model::{FinishReason, Provider, RequestInfo, ResponseInfo};
+use crate::model::{FinishReason, Provider, RequestInfo, ResponseInfo, RouteVerdict};
 
 /// Check for Bearer auth header (common to OpenAI variants).
 fn has_bearer_auth(req: &HttpRequestData) -> bool {
     req.header("authorization")
         .map(|v| v.starts_with("Bearer "))
         .unwrap_or(false)
+}
+
+/// Header-level signals that rule OpenAI providers out — the request is
+/// unambiguously Anthropic. `anthropic-version` is the strongest (Anthropic
+/// SDKs always set it); `Bearer sk-ant-*` is weaker because gateways that
+/// re-sign keys can erase it, but when present it's a reliable negative.
+fn is_anthropic_request(req: &HttpRequestData) -> bool {
+    if req.header("anthropic-version").is_some() {
+        return true;
+    }
+    req.header("authorization")
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|t| t.starts_with("sk-ant-"))
+        .unwrap_or(false)
+}
+
+/// Shape signals common to both OpenAI variants: `model` string present and
+/// no `input` field (that one belongs to the Responses API — Chat providers
+/// use it to disambiguate from OpenAI Responses, Responses uses its own rule
+/// below which requires `input`).
+fn has_openai_model_field(body: &Value) -> bool {
+    body.get("model").and_then(|v| v.as_str()).is_some()
 }
 
 /// Provider implementation for OpenAI Chat Completions API.
@@ -19,15 +41,31 @@ impl Provider for OpenAiChatProvider {
         crate::provider_names::OPENAI
     }
 
-    fn matches(&self, req: &HttpRequestData) -> bool {
+    fn classify_route(&self, req: &HttpRequestData) -> RouteVerdict {
         if req.method != "POST" {
-            return false;
+            return RouteVerdict::Reject;
+        }
+        // Header-level exclusion: Anthropic-shaped requests are not us.
+        if is_anthropic_request(req) {
+            return RouteVerdict::Reject;
         }
         let path = req.uri.split('?').next().unwrap_or(&req.uri);
-        if !path.ends_with("/v1/chat/completions") {
+        if path.ends_with("/v1/chat/completions") && has_bearer_auth(req) {
+            return RouteVerdict::Accept;
+        }
+        RouteVerdict::Unknown
+    }
+
+    fn matches_shape(&self, _req: &HttpRequestData, body: &Value) -> bool {
+        // Chat Completions requires `model` + `messages[]`. `input` present
+        // means it's the Responses API, not us.
+        if !has_openai_model_field(body) || body.get("input").is_some() {
             return false;
         }
-        has_bearer_auth(req)
+        body.get("messages")
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false)
     }
 
     fn extract_request(&self, req: &HttpRequestData) -> RequestInfo {
@@ -50,15 +88,26 @@ impl Provider for OpenAiResponsesProvider {
         crate::provider_names::OPENAI_RESPONSES
     }
 
-    fn matches(&self, req: &HttpRequestData) -> bool {
+    fn classify_route(&self, req: &HttpRequestData) -> RouteVerdict {
         if req.method != "POST" {
-            return false;
+            return RouteVerdict::Reject;
+        }
+        if is_anthropic_request(req) {
+            return RouteVerdict::Reject;
         }
         let path = req.uri.split('?').next().unwrap_or(&req.uri);
-        if !path.ends_with("/v1/responses") {
+        if path.ends_with("/v1/responses") && has_bearer_auth(req) {
+            return RouteVerdict::Accept;
+        }
+        RouteVerdict::Unknown
+    }
+
+    fn matches_shape(&self, _req: &HttpRequestData, body: &Value) -> bool {
+        // Responses API discriminator: `input` present, `messages` absent.
+        if !has_openai_model_field(body) {
             return false;
         }
-        has_bearer_auth(req)
+        body.get("input").is_some() && body.get("messages").is_none()
     }
 
     fn extract_request(&self, req: &HttpRequestData) -> RequestInfo {
