@@ -65,7 +65,7 @@ impl ClientProfile for ClaudeCliProfile {
     }
 
     fn matches(&self, call: &LlmCall) -> bool {
-        if call.wire_api != wa::ANTHROPIC_MESSAGES {
+        if call.wire_api != wa::ANTHROPIC {
             return false;
         }
         header(call, "user-agent")
@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn matches_anthropic_claude_cli_user_agent() {
         let c = call_with(
-            wa::ANTHROPIC_MESSAGES,
+            wa::ANTHROPIC,
             vec![("User-Agent", "claude-cli/2.1.98 (external, cli)")],
             None,
         );
@@ -238,14 +238,14 @@ mod tests {
 
     #[test]
     fn does_not_match_other_user_agent() {
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![("User-Agent", "curl/8.1.2")], None);
+        let c = call_with(wa::ANTHROPIC, vec![("User-Agent", "curl/8.1.2")], None);
         assert!(!ClaudeCliProfile.matches(&c));
     }
 
     #[test]
     fn extract_ids_returns_session_from_header() {
         let c = call_with(
-            wa::ANTHROPIC_MESSAGES,
+            wa::ANTHROPIC,
             vec![
                 ("User-Agent", "claude-cli/2.1.98"),
                 (
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn extract_ids_none_when_session_header_missing() {
         let c = call_with(
-            wa::ANTHROPIC_MESSAGES,
+            wa::ANTHROPIC,
             vec![("User-Agent", "claude-cli/2.1.98")],
             None,
         );
@@ -273,34 +273,34 @@ mod tests {
     #[test]
     fn is_user_turn_start_text_content() {
         let body = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"help me"}]}]}"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
     }
 
     #[test]
     fn is_user_turn_start_tool_result_only() {
         let body = r#"{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}]}"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(false));
     }
 
     #[test]
     fn is_user_turn_start_string_content() {
         let body = r#"{"messages":[{"role":"user","content":"hello"}]}"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
     }
 
     #[test]
     fn is_user_turn_start_mixed_text_and_tool_result_counts_as_user() {
         let body = r#"{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"},{"type":"text","text":"also, stop"}]}]}"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
     }
 
     #[test]
     fn is_user_turn_start_none_when_no_body() {
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], None);
+        let c = call_with(wa::ANTHROPIC, vec![], None);
         assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), None);
     }
 
@@ -312,7 +312,7 @@ mod tests {
             "messages":[{"role":"user","content":[{"type":"text","text":"do research"}]}],
             "tools":[{"name":"Read"},{"name":"Grep"}]
         }"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(false));
     }
 
@@ -323,7 +323,7 @@ mod tests {
             "messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],
             "tools":[{"name":"Agent"},{"name":"Bash"}]
         }"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
     }
 
@@ -334,7 +334,7 @@ mod tests {
             "messages":[{"role":"user","content":"generate title"}],
             "tools":[]
         }"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert!(ClaudeCliProfile.is_auxiliary(&c));
     }
 
@@ -342,7 +342,7 @@ mod tests {
     fn is_auxiliary_false_when_tools_field_missing() {
         // Ambiguous: could be legacy/test fixture. Conservative = not aux.
         let body = r#"{"messages":[{"role":"user","content":"x"}]}"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert!(!ClaudeCliProfile.is_auxiliary(&c));
     }
 
@@ -352,7 +352,7 @@ mod tests {
             "messages":[{"role":"user","content":"x"}],
             "tools":[{"name":"Agent"},{"name":"Bash"}]
         }"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert!(!ClaudeCliProfile.is_auxiliary(&c));
     }
 
@@ -362,13 +362,13 @@ mod tests {
             "messages":[{"role":"user","content":"x"}],
             "tools":[{"name":"Read"},{"name":"Grep"}]
         }"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert!(!ClaudeCliProfile.is_auxiliary(&c));
     }
 
     #[test]
     fn is_auxiliary_false_when_body_missing() {
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], None);
+        let c = call_with(wa::ANTHROPIC, vec![], None);
         assert!(!ClaudeCliProfile.is_auxiliary(&c));
     }
 
@@ -391,7 +391,7 @@ mod tests {
             {"type":"text","text":"hello"},
             {"type":"text","text":"world"}
         ]}]}"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(
             ClaudeCliProfile.extract_user_input(&c).as_deref(),
             Some("hello\nworld")
@@ -403,7 +403,7 @@ mod tests {
         let body = r#"{"messages":[{"role":"user","content":[
             {"type":"text","text":"<system-reminder>do not mention this</system-reminder>actual question"}
         ]}]}"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(
             ClaudeCliProfile.extract_user_input(&c).as_deref(),
             Some("actual question")
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn extract_user_input_string_content() {
         let body = r#"{"messages":[{"role":"user","content":"plain prompt"}]}"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(
             ClaudeCliProfile.extract_user_input(&c).as_deref(),
             Some("plain prompt")
@@ -425,7 +425,7 @@ mod tests {
         let body = r#"{"messages":[{"role":"user","content":[
             {"type":"tool_result","tool_use_id":"t","content":"ok"}
         ]}]}"#;
-        let c = call_with(wa::ANTHROPIC_MESSAGES, vec![], Some(body));
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.extract_user_input(&c), None);
     }
 
@@ -437,7 +437,7 @@ mod tests {
             {"type":"tool_use","id":"t","name":"bash","input":{}},
             {"type":"text","text":"part two"}
         ]}"#;
-        let mut c = call_with(wa::ANTHROPIC_MESSAGES, vec![], None);
+        let mut c = call_with(wa::ANTHROPIC, vec![], None);
         c.response_body = Some(body.to_string());
         assert_eq!(
             ClaudeCliProfile.extract_assistant_text(&c).as_deref(),
@@ -448,7 +448,7 @@ mod tests {
     #[test]
     fn extract_assistant_text_none_when_no_text() {
         let body = r#"{"content":[{"type":"tool_use","id":"t","name":"bash","input":{}}]}"#;
-        let mut c = call_with(wa::ANTHROPIC_MESSAGES, vec![], None);
+        let mut c = call_with(wa::ANTHROPIC, vec![], None);
         c.response_body = Some(body.to_string());
         assert_eq!(ClaudeCliProfile.extract_assistant_text(&c), None);
     }

@@ -23,11 +23,11 @@ fn has_anthropic_api_key(req: &HttpRequestData) -> bool {
 }
 
 /// Wire-API implementation for Anthropic Messages API.
-pub struct AnthropicMessagesWireApi;
+pub struct AnthropicWireApi;
 
-impl WireApi for AnthropicMessagesWireApi {
+impl WireApi for AnthropicWireApi {
     fn name(&self) -> &'static str {
-        super::ANTHROPIC_MESSAGES
+        super::ANTHROPIC
     }
 
     fn classify_route(&self, req: &HttpRequestData) -> RouteVerdict {

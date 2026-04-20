@@ -158,7 +158,7 @@ async fn claude_cli_messages_expects_one_complete_turn() {
     };
     let anthropic: Vec<_> = turns
         .iter()
-        .filter(|t| t.wire_api == wa::ANTHROPIC_MESSAGES)
+        .filter(|t| t.wire_api == wa::ANTHROPIC)
         .collect();
     eprintln!("claude-cli-messages: {} anthropic turns", anthropic.len());
     for t in &anthropic {
@@ -185,7 +185,7 @@ async fn claude_cli_messages_multi_expects_two_turns() {
     };
     let anthropic: Vec<_> = turns
         .iter()
-        .filter(|t| t.wire_api == wa::ANTHROPIC_MESSAGES)
+        .filter(|t| t.wire_api == wa::ANTHROPIC)
         .collect();
     eprintln!(
         "claude-cli-messages-multi: {} anthropic turns",

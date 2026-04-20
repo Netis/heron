@@ -34,17 +34,21 @@ pub mod anthropic;
 pub mod openai;
 
 use crate::wire_api_registry::WireApiRegistry;
-use anthropic::AnthropicMessagesWireApi;
+use anthropic::AnthropicWireApi;
 use openai::{OpenAiChatWireApi, OpenAiResponsesWireApi};
 
-pub const ANTHROPIC_MESSAGES: &str = "anthropic-messages";
+/// Anthropic currently ships one public chat-style API (Messages). If a
+/// second Anthropic wire shape appears later (e.g. a Responses-equivalent),
+/// split this into `ANTHROPIC_MESSAGES`, `ANTHROPIC_RESPONSES`, etc. and
+/// migrate the stored value.
+pub const ANTHROPIC: &str = "anthropic";
 pub const OPENAI_CHAT: &str = "openai-chat";
 pub const OPENAI_RESPONSES: &str = "openai-responses";
 
 /// Default registry with all built-in wire APIs.
 pub fn build_default_wire_api_registry() -> WireApiRegistry {
     WireApiRegistry::new()
-        .with(Box::new(AnthropicMessagesWireApi))
+        .with(Box::new(AnthropicWireApi))
         .with(Box::new(OpenAiResponsesWireApi))
         .with(Box::new(OpenAiChatWireApi))
 }

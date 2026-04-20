@@ -49,7 +49,7 @@ impl fmt::Display for FinishReason {
 pub struct LlmCall {
     pub stream_id: String,
     pub id: String,
-    /// Stable wire-API identifier (e.g. "anthropic-messages", "openai-chat",
+    /// Stable wire-API identifier (e.g. "anthropic", "openai-chat",
     /// "openai-responses"). Sourced from `WireApi::name()`; persisted verbatim
     /// to storage. This is the HTTP API shape, not the vendor.
     pub wire_api: &'static str,
@@ -209,8 +209,8 @@ pub enum RouteVerdict {
 /// Once a wire API wins, the registry uses its extraction methods for the
 /// entire request/response lifecycle.
 pub trait WireApi: Send + Sync {
-    /// Stable identifier (e.g. "anthropic-messages"). Persisted to storage
-    /// as `LlmCall.wire_api`; changing this value is a data migration.
+    /// Stable identifier (e.g. "anthropic"). Persisted to storage as
+    /// `LlmCall.wire_api`; changing this value is a data migration.
     fn name(&self) -> &'static str;
 
     /// Pass 1 of detection: inspect method + URI + headers only.
@@ -271,7 +271,7 @@ mod extension_tests {
         let call = LlmCall {
             stream_id: String::new(),
             id: "c".into(),
-            wire_api: wa::ANTHROPIC_MESSAGES,
+            wire_api: wa::ANTHROPIC,
             model: "claude".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -320,7 +320,7 @@ mod extension_tests {
         let call = LlmCall {
             stream_id: String::new(),
             id: "c1".into(),
-            wire_api: wa::ANTHROPIC_MESSAGES,
+            wire_api: wa::ANTHROPIC,
             model: "claude-sonnet".into(),
             api_type: ApiType::Chat,
             tenant_id: None,

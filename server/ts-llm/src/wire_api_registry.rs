@@ -154,7 +154,7 @@ mod tests {
             "/v1/messages",
             vec![("anthropic-version", "2023-06-01")],
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC_MESSAGES));
+        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC));
     }
 
     #[test]
@@ -241,7 +241,7 @@ mod tests {
             vec![],
             r#"{"model":"claude-3","messages":[{"role":"user","content":"hi"}],"max_tokens":100,"system":"be concise"}"#,
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC_MESSAGES));
+        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC));
     }
 
     #[test]
@@ -256,7 +256,7 @@ mod tests {
                 ("x-api-key", "sk-ant-abc"),
             ],
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC_MESSAGES));
+        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC));
     }
 
     #[test]
@@ -286,7 +286,7 @@ mod tests {
             vec![("anthropic-version", "2023-06-01")],
             r#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#,
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC_MESSAGES));
+        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC));
     }
 
     #[test]
@@ -318,8 +318,8 @@ mod tests {
     fn find_by_name_round_trips() {
         let reg = build_default_wire_api_registry();
         assert_eq!(
-            reg.find_by_name(wa::ANTHROPIC_MESSAGES).map(|p| p.name()),
-            Some(wa::ANTHROPIC_MESSAGES)
+            reg.find_by_name(wa::ANTHROPIC).map(|p| p.name()),
+            Some(wa::ANTHROPIC)
         );
         assert_eq!(
             reg.find_by_name(wa::OPENAI_RESPONSES).map(|p| p.name()),

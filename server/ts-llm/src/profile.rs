@@ -124,7 +124,7 @@ mod tests {
         LlmCall {
             stream_id: String::new(),
             id: "c".into(),
-            wire_api: wa::ANTHROPIC_MESSAGES,
+            wire_api: wa::ANTHROPIC,
             model: "m".into(),
             api_type: ApiType::Chat,
             tenant_id: None,

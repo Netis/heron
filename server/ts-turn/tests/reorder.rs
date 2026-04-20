@@ -79,7 +79,7 @@ fn anthropic_call(
     LlmCall {
         stream_id: String::new(),
         id: format!("c-{request_time_us}"),
-        wire_api: wa::ANTHROPIC_MESSAGES,
+        wire_api: wa::ANTHROPIC,
         model: "claude".into(),
         api_type: ApiType::Chat,
         tenant_id: None,

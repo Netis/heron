@@ -31,7 +31,7 @@ llm_calls
 │   └── complete_time: timestamp?    # Response completion time
 │
 ├── Request Info
-│   ├── wire_api: string             # openai-chat / openai-responses / anthropic-messages / ...
+│   ├── wire_api: string             # openai-chat / openai-responses / anthropic / ...
 │   ├── model: string
 │   ├── api_type: string             # chat / embedding / image / completion
 │   ├── is_stream: bool

@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             LlmEvent::Start(s) => {
-                assert_eq!(s.wire_api, wa::ANTHROPIC_MESSAGES);
+                assert_eq!(s.wire_api, wa::ANTHROPIC);
                 assert!(s.is_stream);
             }
             _ => panic!("expected Start"),
@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             LlmEvent::Complete { call, .. } => {
-                assert_eq!(call.wire_api, wa::ANTHROPIC_MESSAGES);
+                assert_eq!(call.wire_api, wa::ANTHROPIC);
                 assert!(call.is_stream);
                 assert_eq!(call.finish_reason, Some(FinishReason::Complete));
                 assert_eq!(call.input_tokens, Some(10));

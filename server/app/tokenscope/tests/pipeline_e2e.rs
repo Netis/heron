@@ -196,8 +196,8 @@ async fn claude_cli_pcap_populates_all_three_tables() {
         .map(Result::unwrap)
         .collect();
     assert!(
-        call_wire_apis.iter().any(|p| p == wa::ANTHROPIC_MESSAGES),
-        "expected anthropic-messages in llm_calls wire_apis, got {call_wire_apis:?}"
+        call_wire_apis.iter().any(|p| p == wa::ANTHROPIC),
+        "expected anthropic in llm_calls wire_apis, got {call_wire_apis:?}"
     );
 
     // A single complete claude-cli turn is the documented ground truth
@@ -205,7 +205,7 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     let (anthropic_turns, status, client_kind): (i64, String, String) = conn
         .query_row(
             "SELECT COUNT(*), MIN(status), MIN(client_kind) \
-             FROM llm_turns WHERE wire_api = 'anthropic-messages'",
+             FROM llm_turns WHERE wire_api = 'anthropic'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -219,7 +219,7 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     let anthropic_requests_10s: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(request_count), 0) FROM llm_metrics \
-             WHERE granularity = '10s' AND wire_api = 'anthropic-messages'",
+             WHERE granularity = '10s' AND wire_api = 'anthropic'",
             [],
             |r| r.get(0),
         )
@@ -251,8 +251,8 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     // belong to unfinalised turns in other fixtures).
     let (turn_call_count, anthropic_calls): (i64, i64) = conn
         .query_row(
-            "SELECT (SELECT MIN(call_count) FROM llm_turns WHERE wire_api = 'anthropic-messages'), \
-                    (SELECT COUNT(*) FROM llm_calls WHERE wire_api = 'anthropic-messages')",
+            "SELECT (SELECT MIN(call_count) FROM llm_turns WHERE wire_api = 'anthropic'), \
+                    (SELECT COUNT(*) FROM llm_calls WHERE wire_api = 'anthropic')",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -293,8 +293,8 @@ async fn two_pcaps_isolated_but_metrics_merged() {
         .map(Result::unwrap)
         .collect();
     assert!(
-        wire_apis.iter().any(|p| p == wa::ANTHROPIC_MESSAGES),
-        "expected anthropic-messages in llm_calls wire_apis, got {wire_apis:?}"
+        wire_apis.iter().any(|p| p == wa::ANTHROPIC),
+        "expected anthropic in llm_calls wire_apis, got {wire_apis:?}"
     );
     assert!(
         wire_apis.iter().any(|p| p == wa::OPENAI_RESPONSES),
@@ -307,7 +307,7 @@ async fn two_pcaps_isolated_but_metrics_merged() {
     let anthropic_turns: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM llm_turns \
-             WHERE wire_api = 'anthropic-messages' AND status = 'complete'",
+             WHERE wire_api = 'anthropic' AND status = 'complete'",
             [],
             |r| r.get(0),
         )
@@ -343,8 +343,8 @@ async fn two_pcaps_isolated_but_metrics_merged() {
         .map(Result::unwrap)
         .collect();
     assert!(
-        metric_wire_apis.iter().any(|p| p == wa::ANTHROPIC_MESSAGES),
-        "expected anthropic-messages in llm_metrics wire_apis, got {metric_wire_apis:?}"
+        metric_wire_apis.iter().any(|p| p == wa::ANTHROPIC),
+        "expected anthropic in llm_metrics wire_apis, got {metric_wire_apis:?}"
     );
     assert!(
         metric_wire_apis.iter().any(|p| p == wa::OPENAI_RESPONSES),

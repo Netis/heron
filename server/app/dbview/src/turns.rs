@@ -245,7 +245,7 @@ fn extract_with_profile(
     let call = LlmCall {
         stream_id: String::new(),
         id: String::new(),
-        wire_api: wa::ANTHROPIC_MESSAGES,
+        wire_api: wa::ANTHROPIC,
         model: String::new(),
         api_type: ApiType::Chat,
         tenant_id: None,

@@ -114,7 +114,7 @@ Each wire API's extractor is responsible for:
 
 | Wire API | session_id source | turn_id_hint source | Main-agent terminal predicate |
 |----------|------------------|---------------------|-------------------------------|
-| `anthropic-messages` | `X-Claude-Code-Session-Id` header | None (UUIDv7 minted at finalize) | `finish_reason ∈ {Complete, Length}` |
+| `anthropic` | `X-Claude-Code-Session-Id` header | None (UUIDv7 minted at finalize) | `finish_reason ∈ {Complete, Length}` |
 | `openai-responses` | `session_id` in body/header | `turn_id` in `X-Codex-Turn-Metadata` | `is_turn_terminal` (terminal `message` item, no pending function calls) |
 | `openai-chat` | `Authorization` token prefix | None (UUIDv7 minted at finalize) | `finish_reason ∈ {Complete, Length}` |
 

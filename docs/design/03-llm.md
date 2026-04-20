@@ -6,7 +6,7 @@ The `ts-llm` crate detects the LLM wire API from HTTP requests/responses and ext
 
 ### Terminology
 
-- **Wire API** — the on-wire HTTP shape (method + path + body schema) of a single LLM API. Examples: `openai-chat` (Chat Completions), `openai-responses` (Responses API), `anthropic-messages` (Messages API). This is what `ts-llm` detects and parses.
+- **Wire API** — the on-wire HTTP shape (method + path + body schema) of a single LLM API. Examples: `openai-chat` (Chat Completions), `openai-responses` (Responses API), `anthropic` (Anthropic Messages API for now). This is what `ts-llm` detects and parses.
 - **Vendor** — the organization that serves a given wire API (OpenAI, Anthropic, Azure, Google, self-hosted vLLM). Multiple vendors can speak the same wire API (Azure OpenAI, vLLM, Ollama all speak `openai-chat`). Not yet a first-class field in TokenScope; if/when we need it it will come from hostname / key prefix / route prefix.
 
 `LlmCall.wire_api` is persisted verbatim to storage as the compound `<vendor>-<api>` form (e.g. `openai-chat`) so operator filter UIs stay self-descriptive until an explicit vendor dimension lands.
@@ -52,7 +52,7 @@ Detection is two-pass:
 
 What each extractor needs to handle:
 
-| | openai-chat | anthropic-messages | azure-openai (future) | gemini (future) | generic (future) |
+| | openai-chat | anthropic | azure-openai (future) | gemini (future) | generic (future) |
 |---|---|---|---|---|---|
 | **Path** | `/v1/chat/completions` | `/v1/messages` | `/openai/deployments/*/...` | `/v1beta/models/*/generateContent` | configurable |
 | **Auth header** | `Authorization: Bearer sk-...` | `x-api-key: sk-ant-...` | `api-key: ...` | `x-goog-api-key: ...` | varies |
@@ -71,7 +71,7 @@ See [07-schema.md](07-schema.md) for the full data schema. The Rust types:
 ```rust
 pub struct LlmCall {
     pub id: String,                     // UUID v7
-    /// Stable wire-API identifier (e.g. "openai-chat", "anthropic-messages",
+    /// Stable wire-API identifier (e.g. "openai-chat", "anthropic",
     /// "openai-responses"). This is the HTTP API shape, not the vendor.
     pub wire_api: &'static str,
     pub model: String,
@@ -98,7 +98,7 @@ pub struct LlmCall {
 }
 
 pub enum FinishReason {
-    Complete,   // openai-chat: "stop", anthropic-messages: "end_turn"
+    Complete,   // openai-chat: "stop", anthropic: "end_turn"
     Length,     // Max tokens reached
     ToolUse,    // Agent will make another call
     Error,

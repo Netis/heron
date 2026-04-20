@@ -320,7 +320,7 @@ mod tests {
             .recv()
             .await
             .expect("calls_tx should receive identified call");
-        assert_eq!(call.wire_api, wa::ANTHROPIC_MESSAGES);
+        assert_eq!(call.wire_api, wa::ANTHROPIC);
 
         let mut start = false;
         let mut complete = false;

@@ -122,7 +122,7 @@ mod tests {
         LlmCall {
             stream_id: String::new(),
             id: format!("c-{ts_us}"),
-            wire_api: wa::ANTHROPIC_MESSAGES,
+            wire_api: wa::ANTHROPIC,
             model: "claude".into(),
             api_type: ApiType::Chat,
             tenant_id: None,

@@ -323,7 +323,7 @@ fn extract_full_text(
     let call = LlmCall {
         stream_id: String::new(),
         id: String::new(),
-        wire_api: wa::ANTHROPIC_MESSAGES,
+        wire_api: wa::ANTHROPIC,
         model: String::new(),
         api_type: ApiType::Chat,
         tenant_id: None,
@@ -2343,14 +2343,14 @@ mod tests {
         let backend = in_memory_backend();
         backend.init().await.unwrap();
 
-        // Write metrics with wire APIs "openai-chat", "anthropic-messages", and "*"
+        // Write metrics with wire APIs "openai-chat", "anthropic", and "*"
         let mut m1 = sample_metric();
         m1.wire_api = wa::OPENAI_CHAT.to_string();
         m1.model = "gpt-4".to_string();
         m1.server_ip = "10.0.0.1".to_string();
 
         let mut m2 = sample_metric();
-        m2.wire_api = wa::ANTHROPIC_MESSAGES.to_string();
+        m2.wire_api = wa::ANTHROPIC.to_string();
         m2.model = "claude-3".to_string();
         m2.server_ip = "10.0.0.1".to_string();
 
@@ -2362,7 +2362,7 @@ mod tests {
         backend.write_metrics(vec![m1, m2, m3]).await.unwrap();
 
         let wire_apis = backend.query_distinct_wire_apis().await.unwrap();
-        assert_eq!(wire_apis, vec![wa::ANTHROPIC_MESSAGES, wa::OPENAI_CHAT]);
+        assert_eq!(wire_apis, vec![wa::ANTHROPIC, wa::OPENAI_CHAT]);
     }
 
     #[tokio::test]
@@ -2489,7 +2489,7 @@ mod tests {
         m.request_count = 100;
         backend.write_metrics(vec![m.clone()]).await.unwrap();
 
-        m.wire_api = wa::ANTHROPIC_MESSAGES.to_string();
+        m.wire_api = wa::ANTHROPIC.to_string();
         m.model = "claude-3".to_string();
         m.request_count = 50;
         backend.write_metrics(vec![m]).await.unwrap();
@@ -2510,7 +2510,7 @@ mod tests {
         assert_eq!(rows.len(), 2);
         let anthropic_row = rows
             .iter()
-            .find(|r| r.group.as_deref() == Some(wa::ANTHROPIC_MESSAGES))
+            .find(|r| r.group.as_deref() == Some(wa::ANTHROPIC))
             .unwrap();
         let openai_row = rows
             .iter()
@@ -2750,7 +2750,7 @@ mod tests {
         let mut m_claude = sample_metric();
         m_claude.timestamp_us = ts;
         m_claude.granularity = "10s";
-        m_claude.wire_api = wa::ANTHROPIC_MESSAGES.to_string();
+        m_claude.wire_api = wa::ANTHROPIC.to_string();
         m_claude.model = "claude-3".to_string();
         m_claude.server_ip = "*".to_string();
         m_claude.request_count = 200;
@@ -2782,7 +2782,7 @@ mod tests {
         let rows = backend.query_metrics_models(&query).await.unwrap();
         assert_eq!(rows.len(), 2);
         // claude-3 should come first (200 > 100)
-        assert_eq!(rows[0].wire_api, wa::ANTHROPIC_MESSAGES);
+        assert_eq!(rows[0].wire_api, wa::ANTHROPIC);
         assert_eq!(rows[0].model, "claude-3");
         assert_eq!(rows[0].request_count, 200);
         assert_eq!(rows[1].wire_api, wa::OPENAI_CHAT);
@@ -2984,7 +2984,7 @@ mod turn_tests {
         let turn = sample_turn(
             "t1",
             "s1",
-            wa::ANTHROPIC_MESSAGES,
+            wa::ANTHROPIC,
             vec!["claude-sonnet"],
             1_700_000_000_000_000,
             1500,
@@ -3032,7 +3032,7 @@ mod turn_tests {
             sample_turn(
                 "t2",
                 "s1",
-                wa::ANTHROPIC_MESSAGES,
+                wa::ANTHROPIC,
                 vec!["claude-sonnet"],
                 base + 2_000_000,
                 200,
@@ -3076,7 +3076,7 @@ mod turn_tests {
 
         // wire_api filter
         let mut q = base_turns_query();
-        q.filter.wire_apis = vec![wa::ANTHROPIC_MESSAGES.into()];
+        q.filter.wire_apis = vec![wa::ANTHROPIC.into()];
         let page = backend.query_turns(&q).await.unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].turn_id, "t2");
@@ -3131,7 +3131,7 @@ mod turn_tests {
         let turn = sample_turn(
             "t-detail",
             "s1",
-            wa::ANTHROPIC_MESSAGES,
+            wa::ANTHROPIC,
             vec!["claude-sonnet", "claude-haiku"],
             1_700_000_000_000_000,
             1500,
@@ -3164,11 +3164,11 @@ mod turn_tests {
         // (short, no trailing `…`) and never touch the body.
         let base = 1_700_000_000_000_000_i64;
         let mut user_call = mk_call_with_time("c-user", base + 1_000);
-        user_call.wire_api = wa::ANTHROPIC_MESSAGES;
+        user_call.wire_api = wa::ANTHROPIC;
         user_call.request_body =
             Some(r#"{"messages":[{"role":"user","content":"DB-USER-FULL"}]}"#.into());
         let mut asst_call = mk_call_with_time("c-asst", base + 2_000);
-        asst_call.wire_api = wa::ANTHROPIC_MESSAGES;
+        asst_call.wire_api = wa::ANTHROPIC;
         asst_call.response_body =
             Some(r#"{"content":[{"type":"text","text":"DB-ASSISTANT-FULL"}]}"#.into());
         backend
@@ -3179,7 +3179,7 @@ mod turn_tests {
         let mut turn = sample_turn(
             "t-short",
             "s-short",
-            wa::ANTHROPIC_MESSAGES,
+            wa::ANTHROPIC,
             vec!["claude-sonnet"],
             base,
             1500,
@@ -3214,7 +3214,7 @@ mod turn_tests {
         let full_user: String = "u".repeat(600);
         let full_asst: String = "a".repeat(600);
         let mut user_call = mk_call_with_time("c-user", base + 1_000);
-        user_call.wire_api = wa::ANTHROPIC_MESSAGES;
+        user_call.wire_api = wa::ANTHROPIC;
         user_call.request_body = Some(
             serde_json::json!({
                 "messages": [{ "role": "user", "content": &full_user }]
@@ -3222,7 +3222,7 @@ mod turn_tests {
             .to_string(),
         );
         let mut asst_call = mk_call_with_time("c-asst", base + 2_000);
-        asst_call.wire_api = wa::ANTHROPIC_MESSAGES;
+        asst_call.wire_api = wa::ANTHROPIC;
         asst_call.response_body = Some(
             serde_json::json!({
                 "content": [{ "type": "text", "text": &full_asst }]
@@ -3239,7 +3239,7 @@ mod turn_tests {
         let mut turn = sample_turn(
             "t-long",
             "s-long",
-            wa::ANTHROPIC_MESSAGES,
+            wa::ANTHROPIC,
             vec!["claude-sonnet"],
             base,
             1500,
