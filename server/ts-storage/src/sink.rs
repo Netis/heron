@@ -233,7 +233,7 @@ mod tests {
         async fn query_turn_calls(&self, _turn_id: &str) -> Result<Vec<TurnCallItem>> {
             Ok(vec![])
         }
-        async fn query_distinct_providers(&self) -> Result<Vec<String>> {
+        async fn query_distinct_wire_apis(&self) -> Result<Vec<String>> {
             Ok(vec![])
         }
         async fn query_distinct_models(&self) -> Result<Vec<String>> {
@@ -309,11 +309,11 @@ mod tests {
     fn dummy_call(i: usize) -> LlmCall {
         use std::net::IpAddr;
         use ts_llm::model::ApiType;
-        use ts_llm::provider_names as pn;
+        use ts_llm::wire_apis as wa;
         LlmCall {
             stream_id: String::new(),
             id: format!("c-{i}"),
-            provider: pn::OPENAI,
+            wire_api: wa::OPENAI_CHAT,
             model: "m".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -349,7 +349,7 @@ mod tests {
             turn_id: format!("t-{i}"),
             session_id: "s".into(),
             tenant_id: None,
-            provider: ts_llm::provider_names::OPENAI.into(),
+            wire_api: ts_llm::wire_apis::OPENAI_CHAT.into(),
             client_kind: "x".into(),
             start_time_us: 0,
             end_time_us: 0,
@@ -378,7 +378,7 @@ mod tests {
             timestamp_us: i as i64,
             stream_id: String::new(),
             granularity: "10s",
-            provider: ts_llm::provider_names::OPENAI.into(),
+            wire_api: ts_llm::wire_apis::OPENAI_CHAT.into(),
             model: "m".into(),
             server_ip: "*".into(),
             request_count: 1,

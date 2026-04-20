@@ -18,7 +18,7 @@ export function isValidPreset(v: string): v is TimeRangePreset {
 }
 
 export interface DimensionFilters {
-  provider: string
+  wireApi: string
   model: string
   serverIp: string
 }
@@ -26,7 +26,7 @@ export interface DimensionFilters {
 /** Default values — used to decide whether a param should appear in the URL */
 export const TOOLBAR_DEFAULTS = {
   preset: "1h" as TimeRangePreset,
-  provider: "",
+  wireApi: "",
   model: "",
   serverIp: "",
   refreshInterval: 0,
@@ -65,7 +65,7 @@ export const useToolbarStore = create<ToolbarState>((set) => {
     preset: "1h",
     start: now - PRESET_SECONDS["1h"],
     end: now,
-    filters: { provider: "", model: "", serverIp: "" },
+    filters: { wireApi: "", model: "", serverIp: "" },
     refreshInterval: 0,
     setPreset: (preset) => {
       const now = nowSeconds()

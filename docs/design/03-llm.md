@@ -2,71 +2,78 @@
 
 ## Overview
 
-The `ts-llm` crate detects the LLM Provider from HTTP requests/responses and extracts LLM-specific semantics using provider-specific extractors. It consumes `HttpRequest`, `HttpResponse`, and `SseEvent` from `ts-protocol` and outputs `LlmCall`.
+The `ts-llm` crate detects the LLM wire API from HTTP requests/responses and extracts LLM-specific semantics using per-wire-API extractors. It consumes `HttpRequest`, `HttpResponse`, and `SseEvent` from `ts-protocol` and outputs `LlmCall`.
 
-## Provider Registry Pattern
+### Terminology
 
-Inspired by [CLIProxyAPIPlus](https://github.com/router-for-me/CLIProxyAPI) translator architecture: global registry with per-provider detection + extraction.
+- **Wire API** — the on-wire HTTP shape (method + path + body schema) of a single LLM API. Examples: `openai-chat` (Chat Completions), `openai-responses` (Responses API), `anthropic-messages` (Messages API). This is what `ts-llm` detects and parses.
+- **Vendor** — the organization that serves a given wire API (OpenAI, Anthropic, Azure, Google, self-hosted vLLM). Multiple vendors can speak the same wire API (Azure OpenAI, vLLM, Ollama all speak `openai-chat`). Not yet a first-class field in TokenScope; if/when we need it it will come from hostname / key prefix / route prefix.
+
+`LlmCall.wire_api` is persisted verbatim to storage as the compound `<vendor>-<api>` form (e.g. `openai-chat`) so operator filter UIs stay self-descriptive until an explicit vendor dimension lands.
+
+## Wire-API Registry Pattern
+
+Inspired by [CLIProxyAPIPlus](https://github.com/router-for-me/CLIProxyAPI) translator architecture: global registry with per-wire-API detection + extraction.
 
 ```rust
-/// Identifies the API format
-pub enum ProviderFormat {
-    OpenAI,             // /v1/chat/completions
-    OpenAIResponses,    // /v1/responses
-    Anthropic,          // /v1/messages
-    Azure,              // /openai/deployments/*/chat/completions
-    Gemini,             // /v1beta/models/*/generateContent
-    Generic,            // OpenAI-compatible fallback (vLLM, Ollama, etc.)
+pub trait WireApi: Send + Sync {
+    /// Stable identifier (e.g. "openai-chat"). Persisted verbatim to storage
+    /// as `LlmCall.wire_api`.
+    fn name(&self) -> &'static str;
+
+    /// Pass 1: inspect method + URI + headers only. Runs on every HTTP
+    /// request so it must be cheap. Returns RouteVerdict::{Accept, Reject,
+    /// Unknown}.
+    fn classify_route(&self, req: &HttpRequestData) -> RouteVerdict;
+
+    /// Pass 2: inspect parsed JSON body. Called only when classify_route
+    /// returned Unknown for every wire API and the body parses as JSON.
+    fn matches_shape(&self, req: &HttpRequestData, body: &Value) -> bool;
+
+    /// Extraction methods, called after a wire API has won detection.
+    fn extract_request(&self, req: &HttpRequestData) -> RequestInfo;
+    fn extract_response(&self, resp: &HttpResponseData) -> ResponseInfo;
+    fn extract_sse(&self, events: &[SseEventData]) -> ResponseInfo;
 }
 
-/// Determines if an HTTP request matches a specific provider
-pub trait ProviderDetector: Send + Sync {
-    fn detect(&self, req: &HttpRequest) -> Option<ProviderFormat>;
-}
+pub struct WireApiRegistry { /* Vec<Box<dyn WireApi>> */ }
 
-/// Extracts LLM semantics from an HTTP exchange
-pub trait ProviderExtractor: Send + Sync {
-    fn extract(&self, request: &HttpRequest, response: &HttpResponse) -> Result<LlmCall>;
-}
-
-/// Registry: maps formats to detectors + extractors
-pub struct ProviderRegistry {
-    detectors: Vec<(Box<dyn ProviderDetector>, ProviderFormat)>,
-    extractors: HashMap<ProviderFormat, Box<dyn ProviderExtractor>>,
-}
-
-impl ProviderRegistry {
-    pub fn register(&mut self, format: ProviderFormat,
-                    detector: impl ProviderDetector,
-                    extractor: impl ProviderExtractor);
-
-    /// Auto-detect provider and return extractor
-    pub fn detect(&self, req: &HttpRequest) -> Option<(ProviderFormat, &dyn ProviderExtractor)>;
+impl WireApiRegistry {
+    pub fn detect(&self, req: &HttpRequestData) -> Option<&dyn WireApi>;
+    pub fn find_by_name(&self, name: &str) -> Option<&dyn WireApi>;
 }
 ```
 
-## Provider Differences
+Detection is two-pass:
+1. `classify_route` on every wire API. An `Accept` short-circuits and wins. `Reject` candidates drop out.
+2. If nobody accepted and at least one returned `Unknown`, parse the request body once and call `matches_shape` on the remaining candidates in registry order; the first match wins.
+
+## Wire-API Differences
 
 What each extractor needs to handle:
 
-| | OpenAI | Anthropic | Azure | Gemini | Generic |
+| | openai-chat | anthropic-messages | azure-openai (future) | gemini (future) | generic (future) |
 |---|---|---|---|---|---|
 | **Path** | `/v1/chat/completions` | `/v1/messages` | `/openai/deployments/*/...` | `/v1beta/models/*/generateContent` | configurable |
 | **Auth header** | `Authorization: Bearer sk-...` | `x-api-key: sk-ant-...` | `api-key: ...` | `x-goog-api-key: ...` | varies |
 | **SSE event type** | not used | `content_block_delta`, `message_delta`, etc. | not used | not used | usually not used |
-| **Token delta in SSE** | `choices[0].delta.content` | `delta.text` | `choices[0].delta.content` | `candidates[0].content.parts[0].text` | usually OpenAI-compatible |
-| **Usage field** | `usage.{prompt,completion}_tokens` | `usage.{input,output}_tokens` | same as OpenAI + extra | `usageMetadata.{prompt,candidates}TokenCount` | varies |
+| **Token delta in SSE** | `choices[0].delta.content` | `delta.text` | `choices[0].delta.content` | `candidates[0].content.parts[0].text` | usually openai-chat-compatible |
+| **Usage field** | `usage.{prompt,completion}_tokens` | `usage.{input,output}_tokens` | same as openai-chat + extra | `usageMetadata.{prompt,candidates}TokenCount` | varies |
 | **Finish marker** | `finish_reason` | `stop_reason` | `finish_reason` | `finishReason` | varies |
-| **Tool use signal** | `finish_reason: "tool_calls"` | `stop_reason: "tool_use"` | same as OpenAI | function call in response | usually same as OpenAI |
+| **Tool use signal** | `finish_reason: "tool_calls"` | `stop_reason: "tool_use"` | same as openai-chat | function call in response | usually same as openai-chat |
+
+`openai-responses` (OpenAI Responses API) is also implemented; it shares the OpenAI auth and extraction shape but uses `/v1/responses` with an `input`-based body schema.
 
 ## Output Model
 
-See [schema.md](schema.md) for the full data schema. The Rust types:
+See [07-schema.md](07-schema.md) for the full data schema. The Rust types:
 
 ```rust
 pub struct LlmCall {
     pub id: String,                     // UUID v7
-    pub provider: ProviderFormat,
+    /// Stable wire-API identifier (e.g. "openai-chat", "anthropic-messages",
+    /// "openai-responses"). This is the HTTP API shape, not the vendor.
+    pub wire_api: &'static str,
     pub model: String,
     pub api_type: ApiType,              // Chat / Embedding / Image / ...
     pub tenant_id: Option<String>,      // Hashed API key prefix
@@ -91,7 +98,7 @@ pub struct LlmCall {
 }
 
 pub enum FinishReason {
-    Complete,   // OpenAI: "stop", Anthropic: "end_turn"
+    Complete,   // openai-chat: "stop", anthropic-messages: "end_turn"
     Length,     // Max tokens reached
     ToolUse,    // Agent will make another call
     Error,
@@ -99,12 +106,12 @@ pub enum FinishReason {
 }
 ```
 
-## Adding a New Provider
+## Adding a New Wire API
 
-1. Create `providers/new_provider.rs`
-2. Implement `ProviderDetector` (URL/header matching rules)
-3. Implement `ProviderExtractor` (JSON parsing for request/response/SSE)
-4. Register in `providers/mod.rs` → `register_all()`
+1. Create `wire_apis/new_api.rs`
+2. Implement `WireApi` (URL/header match rules + JSON parsing for request/response/SSE)
+3. Add the constant in `wire_apis/mod.rs` (e.g. `GEMINI_V1BETA`)
+4. Register it in `wire_apis::build_default_wire_api_registry()`
 
 No changes to `ts-protocol`, `ts-storage`, or `ts-api`.
 
@@ -115,17 +122,17 @@ ts-llm/
 ├── Cargo.toml
 └── src/
     ├── lib.rs
-    ├── format.rs           # ProviderFormat enum
-    ├── detector.rs         # ProviderDetector trait
-    ├── extractor.rs        # ProviderExtractor trait
-    ├── registry.rs         # ProviderRegistry
-    ├── model.rs            # LlmCall, FinishReason and supporting types
-    └── providers/
-        ├── mod.rs           # register_all()
-        ├── openai.rs
-        ├── openai_responses.rs
-        ├── anthropic.rs
-        ├── azure.rs
-        ├── gemini.rs
-        └── generic.rs       # OpenAI-compatible fallback
+    ├── model.rs              # LlmCall, FinishReason, WireApi trait, RouteVerdict
+    ├── profile.rs            # ClientProfile trait + ProfileRegistry
+    ├── processor.rs          # LlmProcessor: ProtocolEvent → LlmEvent
+    ├── stage.rs              # spawn_llm_stage (shards + fan-out)
+    ├── wire_api_registry.rs  # WireApiRegistry
+    ├── wire_apis/
+    │   ├── mod.rs            # wire-API name constants + build_default_wire_api_registry()
+    │   ├── anthropic.rs      # AnthropicMessagesWireApi
+    │   └── openai.rs         # OpenAiChatWireApi + OpenAiResponsesWireApi
+    └── profiles/
+        ├── mod.rs
+        ├── claude_cli.rs
+        └── codex_cli.rs
 ```

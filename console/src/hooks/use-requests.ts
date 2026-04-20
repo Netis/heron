@@ -21,7 +21,7 @@ export function useRequests({ page, pageSize, sortBy, sortOrder, statusCode, fin
   return useQuery({
     queryKey: ["calls", {
       start, end, page, pageSize, sortBy, sortOrder,
-      provider: filters.provider, model: filters.model, serverIp: filters.serverIp,
+      wireApi: filters.wireApi, model: filters.model, serverIp: filters.serverIp,
       statusCode, finishReason,
     }],
     queryFn: () =>
@@ -32,7 +32,7 @@ export function useRequests({ page, pageSize, sortBy, sortOrder, statusCode, fin
         page_size: pageSize,
         sort_by: sortBy,
         sort_order: sortOrder,
-        provider: filters.provider || undefined,
+        wire_api: filters.wireApi || undefined,
         model: filters.model || undefined,
         server_ip: filters.serverIp || undefined,
         status_code: statusCode || undefined,

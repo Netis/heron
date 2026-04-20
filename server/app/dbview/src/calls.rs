@@ -10,7 +10,7 @@ struct CallSummary {
     timestamp: String,
     client_ip: String,
     server: String,
-    provider: String,
+    wire_api: String,
     model: String,
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
@@ -21,7 +21,7 @@ struct CallSummary {
 fn list(conn: &Connection, limit: usize) -> Vec<CallSummary> {
     let sql = format!(
         "SELECT id, strftime(request_time, '%m-%d %H:%M:%S'), \
-         client_ip, server_ip || ':' || server_port, provider, model, \
+         client_ip, server_ip || ':' || server_port, wire_api, model, \
          input_tokens, output_tokens, ttfb_ms, status_code, finish_reason, is_stream \
          FROM llm_calls ORDER BY request_time DESC LIMIT {limit}"
     );
@@ -43,7 +43,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<CallSummary> {
                 timestamp: row.get(1)?,
                 client_ip: row.get(2)?,
                 server: row.get(3)?,
-                provider: row.get(4)?,
+                wire_api: row.get(4)?,
                 model: row.get(5)?,
                 input_tokens: row.get(6)?,
                 output_tokens: row.get(7)?,
@@ -80,7 +80,7 @@ fn print_list(calls: &[CallSummary]) {
         "TIMESTAMP",
         "IP",
         "SERVER",
-        "PROVIDER",
+        "WIRE_API",
         "MODEL",
         "INPUT",
         "OUTPUT",
@@ -94,7 +94,7 @@ fn print_list(calls: &[CallSummary]) {
             c.timestamp,
             c.client_ip,
             c.server,
-            c.provider,
+            c.wire_api,
             truncate(&c.model, 16),
             c.input_tokens.map(|t| t.to_string()).unwrap_or("0".into()),
             c.output_tokens.map(|t| t.to_string()).unwrap_or("0".into()),
@@ -115,7 +115,7 @@ struct CallDetail {
     request_time: String,
     response_time: Option<String>,
     complete_time: Option<String>,
-    provider: String,
+    wire_api: String,
     model: String,
     api_type: String,
     is_stream: bool,
@@ -138,7 +138,7 @@ fn load_detail(conn: &Connection, id: &str) -> Option<CallDetail> {
     let sql = "SELECT id, tenant_id, client_ip, client_port, server_ip, server_port, \
                CAST(request_time AS VARCHAR), CAST(response_time AS VARCHAR), \
                CAST(complete_time AS VARCHAR), \
-               provider, model, api_type, is_stream, request_path, \
+               wire_api, model, api_type, is_stream, request_path, \
                status_code, finish_reason, \
                input_tokens, output_tokens, total_tokens, \
                ttfb_ms, e2e_latency_ms, \
@@ -157,7 +157,7 @@ fn load_detail(conn: &Connection, id: &str) -> Option<CallDetail> {
             request_time: row.get(6)?,
             response_time: row.get(7)?,
             complete_time: row.get(8)?,
-            provider: row.get(9)?,
+            wire_api: row.get(9)?,
             model: row.get(10)?,
             api_type: row.get(11)?,
             is_stream: row.get(12)?,
@@ -192,7 +192,7 @@ fn print_detail(d: &CallDetail) {
     println!("  Response Time:  {}", fmt_opt(d.response_time.as_deref()));
     println!("  Complete Time:  {}", fmt_opt(d.complete_time.as_deref()));
     println!("{}", "-".repeat(80));
-    println!("  Provider:       {}", d.provider);
+    println!("  Wire API:       {}", d.wire_api);
     println!("  Model:          {}", d.model);
     println!("  API Type:       {}", d.api_type);
     println!(

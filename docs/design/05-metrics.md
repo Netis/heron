@@ -8,7 +8,7 @@ The `ts-metrics` crate receives `LlmEvent` values from the pipeline, aggregates 
 
 The aggregator consumes three kinds of `LlmEvent`:
 
-- **`Start`** — emitted when request headers are parsed. Carries `stream_id`, timestamp, `provider`, `model`, `is_stream`, `server_ip`. Writes Start-side fields (traffic counts, concurrency sample) into the bucket.
+- **`Start`** — emitted when request headers are parsed. Carries `stream_id`, timestamp, `wire_api`, `model`, `is_stream`, `server_ip`. Writes Start-side fields (traffic counts, concurrency sample) into the bucket.
 - **`Complete`** — emitted when the full LLM call has been assembled. Carries the full `LlmCall`. Writes Complete-side fields (tokens, errors, finish reason, TTFB / E2E / TPOT samples) into the bucket.
 - **`Heartbeat`** — synthetic event-time advance, broadcast from capture to every shard. Does not write data; only advances the per-stream watermark so the drain cadence fires on idle streams.
 
@@ -37,8 +37,8 @@ First-drain alignment via the `window_start` anchor prevents a single early even
 
 Each record is aggregated into four dimension combinations:
 
-- `(provider, model, server_ip)` — finest pre-aggregated level
-- `(provider, model, *)` — per-model across all servers
+- `(wire_api, model, server_ip)` — finest pre-aggregated level
+- `(wire_api, model, *)` — per-model across all servers
 - `(*, *, server_ip)` — per-server across all models
 - `(*, *, *)` — global, for overview dashboards
 

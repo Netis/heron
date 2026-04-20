@@ -105,7 +105,7 @@ mod tests {
     use std::sync::Arc;
     use ts_llm::model::{ApiType, CallIdentity, FinishReason, IdentifiedCall, LlmCall};
     use ts_llm::profiles::build_default_registry;
-    use ts_llm::provider_names as pn;
+    use ts_llm::wire_apis as wa;
 
     /// `is_user_start`: true ⇒ text body (new-turn marker); false ⇒ tool_result body (continuation).
     fn anthropic_call(
@@ -122,7 +122,7 @@ mod tests {
         LlmCall {
             stream_id: String::new(),
             id: format!("c-{ts_us}"),
-            provider: pn::ANTHROPIC,
+            wire_api: wa::ANTHROPIC_MESSAGES,
             model: "claude".into(),
             api_type: ApiType::Chat,
             tenant_id: None,

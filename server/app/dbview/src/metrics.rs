@@ -8,7 +8,7 @@ struct MetricRow {
     row_num: usize,
     timestamp: String,
     granularity: String,
-    provider: String,
+    wire_api: String,
     model: String,
     server_ip: String,
     request_count: u64,
@@ -23,7 +23,7 @@ struct MetricRow {
 fn list(conn: &Connection, limit: usize) -> Vec<MetricRow> {
     let sql = format!(
         "SELECT strftime(timestamp, '%m-%d %H:%M:%S'), granularity, \
-         provider, model, server_ip, \
+         wire_api, model, server_ip, \
          request_count, error_count, \
          total_input_tokens, total_output_tokens, \
          ttfb_p95, e2e_p95, tpot_avg \
@@ -36,7 +36,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<MetricRow> {
                 row_num: 0,
                 timestamp: row.get(0)?,
                 granularity: row.get(1)?,
-                provider: row.get(2)?,
+                wire_api: row.get(2)?,
                 model: row.get(3)?,
                 server_ip: row.get(4)?,
                 request_count: row.get(5)?,
@@ -73,7 +73,7 @@ fn print_list(rows: &[MetricRow]) {
     }
     println!(
         "{:>4}  {:<14}  {:<4}  {:<10}  {:<20}  {:<15}  {:>5}  {:>5}  {:>6}  {:>6}  {:>9}  {:>9}  {:>10}",
-        "#", "TIMESTAMP", "GR", "PROVIDER", "MODEL", "SERVER_IP",
+        "#", "TIMESTAMP", "GR", "WIRE_API", "MODEL", "SERVER_IP",
         "REQ", "ERR", "IN", "OUT", "TTFB_P95", "E2E_P95", "TPOT_AVG"
     );
     for m in rows {
@@ -82,7 +82,7 @@ fn print_list(rows: &[MetricRow]) {
             m.row_num,
             m.timestamp,
             truncate(&m.granularity, 4),
-            truncate(&m.provider, 10),
+            truncate(&m.wire_api, 10),
             truncate(&m.model, 20),
             truncate(&m.server_ip, 15),
             m.request_count,
@@ -95,7 +95,7 @@ fn print_list(rows: &[MetricRow]) {
         );
     }
     println!();
-    println!("  GR = granularity (1m/5m/...); PROVIDER='*' and MODEL='*' are rollup rows.");
+    println!("  GR = granularity (1m/5m/...); WIRE_API='*' and MODEL='*' are rollup rows.");
     println!();
 }
 

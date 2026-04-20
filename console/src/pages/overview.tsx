@@ -44,7 +44,7 @@ function errorRateColor(rate: number): "green" | "amber" | "red" {
 
 export function OverviewPage() {
   const { data: summary, isLoading: summaryLoading } = useMetricsSummary()
-  const { data: volumeTs } = useTimeseries("request_count", { groupBy: "provider" })
+  const { data: volumeTs } = useTimeseries("request_count", { groupBy: "wire_api" })
   const { data: latencyTs } = useTimeseries("ttfb_avg,ttfb_p95,e2e_avg,e2e_p95")
   const { data: modelsData } = useModels()
 

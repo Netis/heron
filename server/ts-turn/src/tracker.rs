@@ -645,7 +645,7 @@ fn build_turn(
     let stream_id = first.call.stream_id.clone();
     let session_id = first.identity.session_id.clone();
     let client_kind = first.identity.client_kind.clone();
-    let provider = first.call.provider.to_string();
+    let wire_api = first.call.wire_api.to_string();
     let tenant_id = first.call.tenant_id.clone();
     let turn_id = Uuid::now_v7().to_string();
 
@@ -740,7 +740,7 @@ fn build_turn(
         turn_id,
         session_id,
         tenant_id,
-        provider,
+        wire_api,
         client_kind,
         start_time_us,
         end_time_us,
@@ -771,7 +771,7 @@ mod tests {
     use ts_common::internal_metrics::MetricsSystem;
     use ts_llm::model::{ApiType, CallIdentity, IdentifiedCall, LlmCall};
     use ts_llm::profiles;
-    use ts_llm::provider_names as pn;
+    use ts_llm::wire_apis as wa;
 
     fn test_metrics() -> MetricsWorker {
         let mut sys = MetricsSystem::new();
@@ -853,7 +853,7 @@ mod tests {
         LlmCall {
             stream_id: String::new(),
             id: format!("c-{request_time_us}"),
-            provider: pn::ANTHROPIC,
+            wire_api: wa::ANTHROPIC_MESSAGES,
             model: "claude".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -902,7 +902,7 @@ mod tests {
         LlmCall {
             stream_id: String::new(),
             id: format!("c-{turn}"),
-            provider: pn::OPENAI_RESPONSES,
+            wire_api: wa::OPENAI_RESPONSES,
             model: "gpt-5.4".into(),
             api_type: ApiType::Chat,
             tenant_id: None,

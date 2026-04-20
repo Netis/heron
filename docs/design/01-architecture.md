@@ -112,7 +112,7 @@ capture ──▶ packet_parser (extract flow key from IP/TCP headers)
           │   Each worker runs:
           │     protocol::net  (TCP reassembly for assigned flows)
           │     protocol::http (HTTP/SSE parsing)
-          │     llm            (provider detection + extraction)
+          │     llm            (wire-API detection + extraction)
           │       ├──▶ CallStart event ──▶ metrics::Aggregator(stream_id)
           │       └──▶ LlmCall            (per-capture; own watermark)
           └─────────┼─────────┘
@@ -157,7 +157,7 @@ Stages are connected by `tokio::sync::mpsc` channels with bounded capacity, prov
 | `ts-common` | Shared config (TOML), unified error type, global constants | `Config`, `AppError` |
 | `ts-capture` | libpcap packet capture + cloud-probe ZMQ receiver | `RawPacket` |
 | `ts-protocol` | Flow-key extraction, flow dispatcher, link-layer stripping, IP/TCP parsing, TCP reassembly, HTTP/1.1 parsing, SSE framing | `FlowKey`, `FlowDispatcher`, `TcpStream`, `HttpRequest`, `HttpResponse`, `SseEvent` |
-| `ts-llm` | Provider auto-detection, registry + extractor pattern | `ProviderRegistry`, `ProviderExtractor` trait, `LlmCall` |
+| `ts-llm` | Wire-API auto-detection, registry + extractor pattern | `WireApiRegistry`, `WireApi` trait, `LlmCall` |
 | `ts-metrics` | Sliding-window aggregation of LlmCall into LlmMetric (P50/P95/P99 via t-digest) | `MetricsAggregator`, `WindowBucket`, `LlmMetric` |
 | `ts-storage` | StorageBackend trait + DuckDB/PostgreSQL/ClickHouse implementations, write buffer with batch flush | `StorageBackend` trait, `WriteBuffer` |
 | `ts-api` | Axum HTTP routes + WebSocket realtime push, serves frontend static files in production | REST endpoints, WS handlers |

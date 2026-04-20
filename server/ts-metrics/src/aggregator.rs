@@ -36,7 +36,7 @@ struct BucketKey {
     stream_id: String,
     granularity_idx: usize,
     window_start_us: i64,
-    provider: String,
+    wire_api: String,
     model: String,
     server_ip: String,
 }
@@ -45,7 +45,7 @@ struct BucketKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DimensionKey {
     stream_id: String,
-    provider: String,
+    wire_api: String,
     model: String,
     server_ip: String,
 }
@@ -121,7 +121,7 @@ impl MetricsAggregator {
                         key.window_start_us,
                         &key.stream_id,
                         GRANULARITIES[key.granularity_idx].label,
-                        key.provider,
+                        key.wire_api,
                         key.model,
                         key.server_ip,
                     ));
@@ -133,7 +133,7 @@ impl MetricsAggregator {
             a.granularity
                 .cmp(b.granularity)
                 .then(a.timestamp_us.cmp(&b.timestamp_us))
-                .then(a.provider.cmp(&b.provider))
+                .then(a.wire_api.cmp(&b.wire_api))
                 .then(a.model.cmp(&b.model))
                 .then(a.server_ip.cmp(&b.server_ip))
         });
@@ -143,7 +143,7 @@ impl MetricsAggregator {
     fn on_call_start(&mut self, start: &LlmCallStart) {
         let dim_keys = dimension_keys(
             &start.stream_id,
-            &start.provider.to_string(),
+            &start.wire_api.to_string(),
             &start.model,
             &start.server_ip.to_string(),
         );
@@ -165,7 +165,7 @@ impl MetricsAggregator {
                     stream_id: start.stream_id.clone(),
                     granularity_idx: gi,
                     window_start_us: ws,
-                    provider: dk.provider.clone(),
+                    wire_api: dk.wire_api.clone(),
                     model: dk.model.clone(),
                     server_ip: dk.server_ip.clone(),
                 };
@@ -179,7 +179,7 @@ impl MetricsAggregator {
     fn on_call_complete(&mut self, call: &LlmCall) {
         let dim_keys = dimension_keys(
             &call.stream_id,
-            &call.provider.to_string(),
+            &call.wire_api.to_string(),
             &call.model,
             &call.server_ip.to_string(),
         );
@@ -201,7 +201,7 @@ impl MetricsAggregator {
                     stream_id: call.stream_id.clone(),
                     granularity_idx: gi,
                     window_start_us: ws,
-                    provider: dk.provider.clone(),
+                    wire_api: dk.wire_api.clone(),
                     model: dk.model.clone(),
                     server_ip: dk.server_ip.clone(),
                 };
@@ -243,7 +243,7 @@ impl MetricsAggregator {
                             key.window_start_us,
                             &key.stream_id,
                             gran.label,
-                            key.provider,
+                            key.wire_api,
                             key.model,
                             key.server_ip,
                         ));
@@ -283,32 +283,32 @@ fn window_start(timestamp_us: i64, window_secs: i64) -> i64 {
 /// Generate the 4 dimension keys for a single event.
 fn dimension_keys(
     stream_id: &str,
-    provider: &str,
+    wire_api: &str,
     model: &str,
     server_ip: &str,
 ) -> [DimensionKey; 4] {
     [
         DimensionKey {
             stream_id: stream_id.to_string(),
-            provider: provider.to_string(),
+            wire_api: wire_api.to_string(),
             model: model.to_string(),
             server_ip: server_ip.to_string(),
         },
         DimensionKey {
             stream_id: stream_id.to_string(),
-            provider: provider.to_string(),
+            wire_api: wire_api.to_string(),
             model: model.to_string(),
             server_ip: "*".to_string(),
         },
         DimensionKey {
             stream_id: stream_id.to_string(),
-            provider: "*".to_string(),
+            wire_api: "*".to_string(),
             model: "*".to_string(),
             server_ip: server_ip.to_string(),
         },
         DimensionKey {
             stream_id: stream_id.to_string(),
-            provider: "*".to_string(),
+            wire_api: "*".to_string(),
             model: "*".to_string(),
             server_ip: "*".to_string(),
         },
@@ -321,7 +321,7 @@ mod tests {
     use std::net::IpAddr;
     use std::sync::Arc;
     use ts_llm::model::{ApiType, FinishReason, LlmCall, LlmCallStart};
-    use ts_llm::provider_names as pn;
+    use ts_llm::wire_apis as wa;
 
     fn test_metrics() -> MetricsWorker {
         use ts_common::internal_metrics::MetricsSystem;
@@ -341,7 +341,7 @@ mod tests {
     fn make_start_with_stream(ts_us: i64, model: &str, is_stream: bool, sid: &str) -> LlmEvent {
         LlmEvent::Start(LlmCallStart {
             stream_id: sid.to_string(),
-            provider: pn::OPENAI,
+            wire_api: wa::OPENAI_CHAT,
             model: model.to_string(),
             is_stream,
             server_ip: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
@@ -363,7 +363,7 @@ mod tests {
             call: Arc::new(LlmCall {
                 stream_id: sid.to_string(),
                 id: format!("c-{request_time}-{complete_time}"),
-                provider: pn::OPENAI,
+                wire_api: wa::OPENAI_CHAT,
                 model: model.to_string(),
                 api_type: ApiType::Chat,
                 tenant_id: None,
@@ -677,7 +677,7 @@ mod tests {
             .find(|m| {
                 m.granularity == "10s"
                     && m.timestamp_us == t0
-                    && m.provider == "*"
+                    && m.wire_api == "*"
                     && m.model == "*"
                     && m.server_ip == "*"
             })
@@ -703,15 +703,15 @@ mod tests {
         assert_eq!(rows_10s.len(), 4);
         assert!(rows_10s
             .iter()
-            .any(|m| m.provider == pn::OPENAI && m.model == "gpt-4" && m.server_ip == "10.0.0.1"));
+            .any(|m| m.wire_api == wa::OPENAI_CHAT && m.model == "gpt-4" && m.server_ip == "10.0.0.1"));
         assert!(rows_10s
             .iter()
-            .any(|m| m.provider == pn::OPENAI && m.model == "gpt-4" && m.server_ip == "*"));
+            .any(|m| m.wire_api == wa::OPENAI_CHAT && m.model == "gpt-4" && m.server_ip == "*"));
         assert!(rows_10s
             .iter()
-            .any(|m| m.provider == "*" && m.model == "*" && m.server_ip == "10.0.0.1"));
+            .any(|m| m.wire_api == "*" && m.model == "*" && m.server_ip == "10.0.0.1"));
         assert!(rows_10s
             .iter()
-            .any(|m| m.provider == "*" && m.model == "*" && m.server_ip == "*"));
+            .any(|m| m.wire_api == "*" && m.model == "*" && m.server_ip == "*"));
     }
 }

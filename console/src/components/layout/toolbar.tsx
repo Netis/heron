@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react"
 import { Calendar, ChevronDown, RefreshCw } from "lucide-react"
 import { useIsFetching } from "@tanstack/react-query"
 import { useToolbarStore, type TimeRangePreset } from "@/stores/toolbar"
-import { useProviders, useModelNames, useServerIps } from "@/hooks/use-filter-values"
+import { useWireApis, useModelNames, useServerIps } from "@/hooks/use-filter-values"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import { cn } from "@/lib/utils"
 
@@ -68,7 +68,7 @@ export function Toolbar() {
 
   const isFetching = useIsFetching()
 
-  const { data: providersData } = useProviders()
+  const { data: wireApisData } = useWireApis()
   const { data: modelsData } = useModelNames()
   const { data: serverIpsData } = useServerIps()
 
@@ -218,10 +218,10 @@ export function Toolbar() {
 
       {/* Dimension filters */}
       <FilterDropdown
-        label="Provider"
-        options={providersData?.values ?? []}
-        selected={csvToArray(filters.provider)}
-        onChange={(v) => setFilter("provider", arrayToCsv(v))}
+        label="Wire API"
+        options={wireApisData?.values ?? []}
+        selected={csvToArray(filters.wireApi)}
+        onChange={(v) => setFilter("wireApi", arrayToCsv(v))}
       />
       <FilterDropdown
         label="Model"

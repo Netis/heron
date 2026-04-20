@@ -39,7 +39,7 @@ pub async fn bind(config: &ApiConfig) -> Result<TcpListener> {
 /// Build the API router (without serving). Useful for composing with other layers.
 pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
     Router::new()
-        .route("/api/filters/providers", get(routes::filters::providers))
+        .route("/api/filters/wire_apis", get(routes::filters::wire_apis))
         .route("/api/filters/models", get(routes::filters::models))
         .route("/api/filters/server_ips", get(routes::filters::server_ips))
         .route("/api/metrics/timeseries", get(routes::metrics::timeseries))

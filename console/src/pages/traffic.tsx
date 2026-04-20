@@ -107,7 +107,7 @@ function TopModelsTable({ models }: { models: MetricsModelRow[] }) {
             <tr key={m.model} className="border-b border-border/30 hover:bg-muted/30">
               <td className="py-2 pr-3">
                 <div className="truncate font-medium" title={m.model}>{m.model}</div>
-                <div className="text-xs text-muted-foreground">{m.provider}</div>
+                <div className="text-xs text-muted-foreground">{m.wire_api}</div>
               </td>
               <td className="px-2 py-2 text-right tabular-nums">{formatNumber(m.request_count)}</td>
               <td className="px-2 py-2 text-right tabular-nums">{formatNumber(m.total_input_tokens)}</td>
@@ -128,7 +128,7 @@ function TopModelsTable({ models }: { models: MetricsModelRow[] }) {
 }
 
 export function TrafficPage() {
-  const { data: volumeData } = useTimeseries("request_count", { groupBy: "provider" })
+  const { data: volumeData } = useTimeseries("request_count", { groupBy: "wire_api" })
   const { data: tokenUsageData } = useTimeseries("total_input_tokens,total_output_tokens")
   const { data: finishReasonData } = useTimeseries("finish_complete_count,finish_length_count,finish_tool_use_count,finish_error_count,finish_cancelled_count")
   const { data: tokenAvgData } = useTimeseries("input_tokens_avg,output_tokens_avg")
@@ -138,7 +138,7 @@ export function TrafficPage() {
     <div className="flex flex-col gap-4 p-4">
       {/* Top row */}
       <div className="grid grid-cols-2 gap-4">
-        <ChartCard title="Request Volume by Provider">
+        <ChartCard title="Request Volume by Wire API">
           <StackedBarChart data={volumeData ?? null} field="request_count" />
         </ChartCard>
         <ChartCard title="Token Usage">

@@ -7,7 +7,7 @@ pub struct TimeseriesParams {
     pub end: i64,
     pub granularity: String,
     #[serde(default)]
-    pub provider: Option<String>,
+    pub wire_api: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -22,7 +22,7 @@ pub struct SummaryParams {
     pub start: i64,
     pub end: i64,
     #[serde(default)]
-    pub provider: Option<String>,
+    pub wire_api: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -34,7 +34,7 @@ pub struct ModelsParams {
     pub start: i64,
     pub end: i64,
     #[serde(default)]
-    pub provider: Option<String>,
+    pub wire_api: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -78,12 +78,12 @@ pub fn to_time_range(start: i64, end: i64) -> TimeRange {
 }
 
 pub fn to_dimension_filter(
-    provider: &Option<String>,
+    wire_api: &Option<String>,
     model: &Option<String>,
     server_ip: &Option<String>,
 ) -> DimensionFilter {
     DimensionFilter {
-        providers: parse_csv(provider),
+        wire_apis: parse_csv(wire_api),
         models: parse_csv(model),
         server_ips: parse_csv(server_ip),
     }

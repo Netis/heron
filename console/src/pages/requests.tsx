@@ -17,7 +17,7 @@ const PAGE_SIZES = [20, 50, 100] as const
 
 const columns = [
   { key: "request_time", label: "Time", width: "w-[160px]" },
-  { key: "provider", label: "Provider", width: "w-[80px]" },
+  { key: "wire_api", label: "Wire API", width: "w-[110px]" },
   { key: "model", label: "Model", width: "w-[140px]" },
   { key: "status_code", label: "Status", width: "w-[52px]" },
   { key: "is_stream", label: "S", width: "w-[32px]" },
@@ -43,8 +43,8 @@ function CellValue({ item, column }: { item: CallListItem; column: SortKey }) {
   switch (column) {
     case "request_time":
       return <span className="tabular-nums">{formatTime(item.request_time)}</span>
-    case "provider":
-      return <span className="truncate">{item.provider}</span>
+    case "wire_api":
+      return <span className="truncate">{item.wire_api}</span>
     case "model":
       return (
         <span className="truncate" title={item.model}>

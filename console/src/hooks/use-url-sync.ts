@@ -16,7 +16,7 @@ const P = {
   preset: "preset",
   start: "start",
   end: "end",
-  provider: "provider",
+  wireApi: "wire_api",
   model: "model",
   serverIp: "server_ip",
   refresh: "refresh",
@@ -53,12 +53,12 @@ export function useToolbarUrlSync() {
       }
     }
 
-    const provider = searchParams.get(P.provider)
+    const wireApi = searchParams.get(P.wireApi)
     const model = searchParams.get(P.model)
     const serverIp = searchParams.get(P.serverIp)
-    if (provider !== null || model !== null || serverIp !== null) {
+    if (wireApi !== null || model !== null || serverIp !== null) {
       hydratePatch.filters = {
-        ...(provider !== null && { provider }),
+        ...(wireApi !== null && { wireApi }),
         ...(model !== null && { model }),
         ...(serverIp !== null && { serverIp }),
       }
@@ -115,8 +115,8 @@ function storeToParams(
     entries.push([P.start, String(state.start)])
     entries.push([P.end, String(state.end)])
   }
-  if (state.filters.provider !== TOOLBAR_DEFAULTS.provider) {
-    entries.push([P.provider, state.filters.provider])
+  if (state.filters.wireApi !== TOOLBAR_DEFAULTS.wireApi) {
+    entries.push([P.wireApi, state.filters.wireApi])
   }
   if (state.filters.model !== TOOLBAR_DEFAULTS.model) {
     entries.push([P.model, state.filters.model])

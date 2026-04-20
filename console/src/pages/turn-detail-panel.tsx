@@ -336,8 +336,8 @@ function TurnDetailView({ turn, calls }: { turn: TurnDetail; calls: TurnCallItem
               </div>
             ))}
             <div className="contents">
-              <span className="text-muted-foreground">Provider</span>
-              <span className="font-mono text-xs">{turn.provider}</span>
+              <span className="text-muted-foreground">Wire API</span>
+              <span className="font-mono text-xs">{turn.wire_api}</span>
             </div>
           </div>
         </CollapsibleSection>
@@ -423,8 +423,8 @@ function CallDetailView({
       ) : (
         <>
           <div className="grid grid-cols-4 gap-3 p-4">
-            <SummaryCard label="Provider / Model">
-              <div>{detail.provider}</div>
+            <SummaryCard label="Wire API / Model">
+              <div>{detail.wire_api}</div>
               <div className="truncate text-xs text-muted-foreground" title={detail.model}>
                 {detail.model}
               </div>

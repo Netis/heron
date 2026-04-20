@@ -15,7 +15,7 @@ const PAGE_SIZES = [20, 50, 100] as const
 
 const columns = [
   { key: "start_time", label: "Time", width: "w-[140px]", sortable: true, align: "left" as const },
-  { key: "provider", label: "Provider", width: "w-[100px]", sortable: false, align: "left" as const },
+  { key: "wire_api", label: "Wire API", width: "w-[120px]", sortable: false, align: "left" as const },
   { key: "primary_model", label: "Model", width: "w-[180px]", sortable: false, align: "left" as const },
   { key: "client_kind", label: "Client", width: "w-[100px]", sortable: false, align: "left" as const },
   { key: "status", label: "Status", width: "w-[100px]", sortable: false, align: "left" as const },
@@ -35,10 +35,10 @@ function CellValue({ item, column }: { item: TurnListItem; column: (typeof colum
   switch (column) {
     case "start_time":
       return <span className="tabular-nums">{formatTime(item.start_time)}</span>
-    case "provider":
+    case "wire_api":
       return (
-        <span className="truncate" title={item.provider}>
-          {item.provider}
+        <span className="truncate" title={item.wire_api}>
+          {item.wire_api}
         </span>
       )
     case "primary_model":

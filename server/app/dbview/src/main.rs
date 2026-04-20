@@ -28,7 +28,7 @@ fn print_summary(conn: &Connection) {
                COALESCE(SUM(total_input_tokens), 0), \
                COALESCE(SUM(total_output_tokens), 0), \
                COALESCE(SUM(error_count), 0) \
-               FROM llm_metrics WHERE provider = '*' AND model = '*' AND server_ip = '*'";
+               FROM llm_metrics WHERE wire_api = '*' AND model = '*' AND server_ip = '*'";
     let (in_tokens, out_tokens, err_count) = conn
         .prepare(sql)
         .and_then(|mut s| {

@@ -12,7 +12,7 @@ export interface CallsPage {
 export interface CallListItem {
   id: string
   request_time: number
-  provider: string
+  wire_api: string
   model: string
   status_code: number | null
   is_stream: boolean
@@ -54,7 +54,7 @@ export interface ModelsData {
 }
 
 export interface MetricsModelRow {
-  provider: string
+  wire_api: string
   model: string
   request_count: number
   error_count: number
@@ -83,7 +83,7 @@ export interface TurnListItem {
   start_time: number
   end_time: number
   duration_ms: number
-  provider: string
+  wire_api: string
   client_kind: string
   primary_model: string | null
   models_used: string[]
@@ -100,7 +100,7 @@ export interface TurnDetail {
   turn_id: string
   session_id: string
   tenant_id: string | null
-  provider: string
+  wire_api: string
   client_kind: string
   start_time: number
   end_time: number
@@ -128,7 +128,7 @@ export interface TurnCallItem {
   request_time: number
   response_time: number | null
   complete_time: number | null
-  provider: string
+  wire_api: string
   model: string
   status_code: number | null
   is_stream: boolean
@@ -146,7 +146,7 @@ export interface CallDetail {
   request_time: number
   response_time: number | null
   complete_time: number | null
-  provider: string
+  wire_api: string
   model: string
   api_type: string
   is_stream: boolean

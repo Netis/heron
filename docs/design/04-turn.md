@@ -106,17 +106,17 @@ Not yet observed in captures. Expected behavior based on API docs:
 - `finish_reason: "stop"` → agent done
 - Connection behavior varies by client
 
-## Provider-Specific Extraction
+## Wire-API-Specific Extraction
 
-Each provider's extractor is responsible for:
+Each wire API's extractor is responsible for:
 1. Extracting `session_id` and `turn_id` from headers/body (if available)
 2. Normalizing `finish_reason` to indicate whether the turn continues or ends
 
-| Provider | session_id source | turn_id_hint source | Main-agent terminal predicate |
+| Wire API | session_id source | turn_id_hint source | Main-agent terminal predicate |
 |----------|------------------|---------------------|-------------------------------|
-| Anthropic | `X-Claude-Code-Session-Id` header | None (UUIDv7 minted at finalize) | `finish_reason ∈ {Complete, Length}` |
-| OpenAI Responses | `session_id` in body/header | `turn_id` in `X-Codex-Turn-Metadata` | `is_turn_terminal` (terminal `message` item, no pending function calls) |
-| OpenAI Chat | `Authorization` token prefix | None (UUIDv7 minted at finalize) | `finish_reason ∈ {Complete, Length}` |
+| `anthropic-messages` | `X-Claude-Code-Session-Id` header | None (UUIDv7 minted at finalize) | `finish_reason ∈ {Complete, Length}` |
+| `openai-responses` | `session_id` in body/header | `turn_id` in `X-Codex-Turn-Metadata` | `is_turn_terminal` (terminal `message` item, no pending function calls) |
+| `openai-chat` | `Authorization` token prefix | None (UUIDv7 minted at finalize) | `finish_reason ∈ {Complete, Length}` |
 
 ## FinishReason Normalization
 
@@ -411,7 +411,7 @@ sweep_interval_s = 10
 
 ## Data Model
 
-`LlmCall` is provider-shaped raw data. Turn association data lives in
+`LlmCall` is wire-API-shaped raw data. Turn association data lives in
 `CallIdentity`, attached by `ts-llm/src/stage.rs` before the call enters the
 turn shard:
 
@@ -427,7 +427,7 @@ The aggregated `LlmTurn` (see `ts-turn/src/model.rs`) is built at finalize
 time from the sorted partition:
 
 - `turn_id: String` (UUIDv7), `session_id`, `stream_id`, `client_kind`,
-  `provider`, `tenant_id`
+  `wire_api`, `tenant_id`
 - `start_time_us`, `end_time_us`, `duration_ms`, `call_count`, `call_ids`
 - `models_used`, `subagents_used`
 - `total_input_tokens`, `total_output_tokens`,

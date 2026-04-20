@@ -1,5 +1,5 @@
 //! Metrics aggregation stage: spawns M parallel MetricsAggregator tasks,
-//! each shard keyed by hash(provider, model, server_ip) % M. Window close
+//! each shard keyed by hash(wire_api, model, server_ip) % M. Window close
 //! is purely event-timestamp driven (no wall-clock tick).
 //!
 //! Each aggregator handles multiple streams (identified by `stream_id` on
@@ -73,12 +73,12 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
     use ts_llm::model::{ApiType, CallIdentity, FinishReason, LlmCall, LlmCallStart};
-    use ts_llm::provider_names as pn;
+    use ts_llm::wire_apis as wa;
 
     fn start_event(ts_us: i64, model: &str) -> LlmEvent {
         LlmEvent::Start(LlmCallStart {
             stream_id: String::new(),
-            provider: pn::OPENAI,
+            wire_api: wa::OPENAI_CHAT,
             model: model.into(),
             is_stream: true,
             server_ip: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
@@ -91,7 +91,7 @@ mod tests {
             call: std::sync::Arc::new(LlmCall {
                 stream_id: String::new(),
                 id: format!("c-{ts_us}"),
-                provider: pn::OPENAI,
+                wire_api: wa::OPENAI_CHAT,
                 model: model.into(),
                 api_type: ApiType::Chat,
                 tenant_id: None,

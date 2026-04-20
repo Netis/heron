@@ -235,7 +235,7 @@ impl WindowBucket {
         timestamp_us: i64,
         stream_id: &str,
         granularity: &'static str,
-        provider: String,
+        wire_api: String,
         model: String,
         server_ip: String,
     ) -> LlmMetric {
@@ -243,7 +243,7 @@ impl WindowBucket {
             timestamp_us,
             stream_id: stream_id.to_string(),
             granularity,
-            provider,
+            wire_api,
             model,
             server_ip,
             request_count: self.request_count,
@@ -291,7 +291,7 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
     use ts_llm::model::{ApiType, FinishReason, LlmCall};
-    use ts_llm::provider_names as pn;
+    use ts_llm::wire_apis as wa;
 
     #[test]
     fn digest_empty() {
@@ -339,7 +339,7 @@ mod tests {
         LlmCall {
             stream_id: String::new(),
             id: "test".to_string(),
-            provider: pn::OPENAI,
+            wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".to_string(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -439,7 +439,7 @@ mod tests {
             1_000_000,
             "s",
             "10s",
-            pn::OPENAI.to_string(),
+            wa::OPENAI_CHAT.to_string(),
             "gpt-4".to_string(),
             "10.0.0.1".to_string(),
         );
@@ -476,7 +476,7 @@ mod tests {
             0,
             "s",
             "10s",
-            pn::OPENAI.to_string(),
+            wa::OPENAI_CHAT.to_string(),
             "gpt-4".to_string(),
             "10.0.0.1".to_string(),
         );

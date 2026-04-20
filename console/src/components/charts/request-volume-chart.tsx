@@ -11,8 +11,8 @@ import {
 import { formatNumber } from "@/lib/format"
 import type { TimeseriesData } from "@/types/api"
 
-// Stable color palette for providers
-const PROVIDER_COLORS = [
+// Stable color palette for wire APIs
+const SERIES_COLORS = [
   "#3b82f6", // blue
   "#10b981", // emerald
   "#f59e0b", // amber
@@ -43,11 +43,11 @@ export function RequestVolumeChart({ data }: Props) {
     )
   }
 
-  // Extract provider groups from series
+  // Extract wire-api groups from series
   const requestSeries = data.series.filter((s) => s.name === "request_count" && s.group)
-  const providers = requestSeries.map((s) => s.group!)
+  const groups = requestSeries.map((s) => s.group!)
 
-  // Build chart data: [{time, provider1: val, provider2: val, ...}]
+  // Build chart data: [{time, group1: val, group2: val, ...}]
   const chartData = data.timestamps.map((ts, i) => {
     const point: Record<string, number> = { time: ts }
     for (const series of requestSeries) {
@@ -84,14 +84,14 @@ export function RequestVolumeChart({ data }: Props) {
           }}
         />
         <Legend wrapperStyle={{ fontSize: "12px" }} />
-        {providers.map((provider, i) => (
+        {groups.map((group, i) => (
           <Area
-            key={provider}
+            key={group}
             type="monotone"
-            dataKey={provider}
+            dataKey={group}
             stackId="1"
-            fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
-            stroke={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+            fill={SERIES_COLORS[i % SERIES_COLORS.length]}
+            stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
             fillOpacity={0.4}
           />
         ))}

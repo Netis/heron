@@ -9,7 +9,7 @@ use tracing::info;
 use ts_common::error::{AppError, Result};
 use ts_llm::model::{ApiType, LlmCall};
 use ts_llm::profiles::build_default_registry;
-use ts_llm::provider_names as pn;
+use ts_llm::wire_apis as wa;
 use ts_metrics::model::LlmMetric;
 use ts_turn::LlmTurn;
 
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     request_time      TIMESTAMP NOT NULL,
     response_time     TIMESTAMP,
     complete_time     TIMESTAMP,
-    provider          VARCHAR NOT NULL,
+    wire_api          VARCHAR NOT NULL,
     model             VARCHAR NOT NULL,
     api_type          VARCHAR NOT NULL,
     is_stream         BOOLEAN NOT NULL,
@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS llm_metrics (
     timestamp           TIMESTAMP NOT NULL,
     stream_id           VARCHAR NOT NULL,
     granularity         VARCHAR NOT NULL,
-    provider            VARCHAR NOT NULL,
+    wire_api            VARCHAR NOT NULL,
     model               VARCHAR NOT NULL,
     server_ip           VARCHAR NOT NULL,
     request_count       UBIGINT NOT NULL,
@@ -234,7 +234,7 @@ CREATE TABLE IF NOT EXISTS llm_turns (
     stream_id                 VARCHAR NOT NULL DEFAULT '',
     session_id                VARCHAR NOT NULL,
     tenant_id                 VARCHAR,
-    provider                  VARCHAR NOT NULL,
+    wire_api                  VARCHAR NOT NULL,
     client_kind               VARCHAR NOT NULL,
     start_time                TIMESTAMP NOT NULL,
     end_time                  TIMESTAMP NOT NULL,
@@ -323,7 +323,7 @@ fn extract_full_text(
     let call = LlmCall {
         stream_id: String::new(),
         id: String::new(),
-        provider: pn::ANTHROPIC,
+        wire_api: wa::ANTHROPIC_MESSAGES,
         model: String::new(),
         api_type: ApiType::Chat,
         tenant_id: None,
@@ -502,15 +502,15 @@ const SUM_FIELDS: &[&str] = &[
 /// Build a WHERE clause segment for dimension filters (ungrouped queries).
 /// Empty filter vec => match wildcard '*'. Non-empty => IN (...).
 fn build_dimension_where(filter: &DimensionFilter) -> String {
-    let provider_clause = if filter.providers.is_empty() {
-        "provider = '*'".to_string()
+    let wire_api_clause = if filter.wire_apis.is_empty() {
+        "wire_api = '*'".to_string()
     } else {
         let list: Vec<String> = filter
-            .providers
+            .wire_apis
             .iter()
             .map(|s| format!("'{}'", s.replace('\'', "''")))
             .collect();
-        format!("provider IN ({})", list.join(", "))
+        format!("wire_api IN ({})", list.join(", "))
     };
     let model_clause = if filter.models.is_empty() {
         "model = '*'".to_string()
@@ -532,42 +532,42 @@ fn build_dimension_where(filter: &DimensionFilter) -> String {
             .collect();
         format!("server_ip IN ({})", list.join(", "))
     };
-    format!("{provider_clause} AND {model_clause} AND {server_clause}")
+    format!("{wire_api_clause} AND {model_clause} AND {server_clause}")
 }
 
 /// Build WHERE clause for grouped timeseries queries.
-/// group_by="provider": returns per-model rows (provider != '*', model != '*', server_ip = '*')
-///   filtered by provider filter if specified.
-/// group_by="model": returns per-model rows (provider != '*', model != '*', server_ip = '*')
+/// group_by="wire_api": returns per-model rows (wire_api != '*', model != '*', server_ip = '*')
+///   filtered by wire_api filter if specified.
+/// group_by="model": returns per-model rows (wire_api != '*', model != '*', server_ip = '*')
 ///   filtered by model filter if specified.
 fn build_dimension_where_for_group(filter: &DimensionFilter, group_by: &str) -> String {
     match group_by {
-        "provider" => {
-            let provider_clause = if filter.providers.is_empty() {
-                "provider != '*'".to_string()
+        "wire_api" => {
+            let wire_api_clause = if filter.wire_apis.is_empty() {
+                "wire_api != '*'".to_string()
             } else {
                 let list: Vec<String> = filter
-                    .providers
+                    .wire_apis
                     .iter()
                     .map(|s| format!("'{}'", s.replace('\'', "''")))
                     .collect();
-                format!("provider IN ({})", list.join(", "))
+                format!("wire_api IN ({})", list.join(", "))
             };
-            // No pre-aggregated (provider, *, *) rows exist — the aggregator
-            // produces (provider, model, *) rows.  GROUP BY provider in the
-            // timeseries query will SUM across models for each provider.
-            format!("{provider_clause} AND model != '*' AND server_ip = '*'")
+            // No pre-aggregated (wire_api, *, *) rows exist — the aggregator
+            // produces (wire_api, model, *) rows.  GROUP BY wire_api in the
+            // timeseries query will SUM across models for each wire_api.
+            format!("{wire_api_clause} AND model != '*' AND server_ip = '*'")
         }
         "model" => {
-            let provider_clause = if filter.providers.is_empty() {
-                "provider != '*'".to_string()
+            let wire_api_clause = if filter.wire_apis.is_empty() {
+                "wire_api != '*'".to_string()
             } else {
                 let list: Vec<String> = filter
-                    .providers
+                    .wire_apis
                     .iter()
                     .map(|s| format!("'{}'", s.replace('\'', "''")))
                     .collect();
-                format!("provider IN ({})", list.join(", "))
+                format!("wire_api IN ({})", list.join(", "))
             };
             let model_clause = if filter.models.is_empty() {
                 "model != '*'".to_string()
@@ -579,7 +579,7 @@ fn build_dimension_where_for_group(filter: &DimensionFilter, group_by: &str) -> 
                     .collect();
                 format!("model IN ({})", list.join(", "))
             };
-            format!("{provider_clause} AND {model_clause} AND server_ip = '*'")
+            format!("{wire_api_clause} AND {model_clause} AND server_ip = '*'")
         }
         _ => build_dimension_where(filter),
     }
@@ -599,7 +599,7 @@ struct PreparedCall {
     request_time: Value,
     response_time: Option<Value>,
     complete_time: Option<Value>,
-    provider: String,
+    wire_api: String,
     model: String,
     api_type: String,
     is_stream: bool,
@@ -636,7 +636,7 @@ fn prepare_call(call: LlmCall) -> PreparedCall {
         complete_time: call
             .complete_time
             .map(|us| Value::Timestamp(TimeUnit::Microsecond, us)),
-        provider: call.provider.to_string(),
+        wire_api: call.wire_api.to_string(),
         model: call.model,
         api_type: call.api_type.to_string(),
         is_stream: call.is_stream,
@@ -663,7 +663,7 @@ struct PreparedTurn {
     stream_id: String,
     session_id: String,
     tenant_id: Option<String>,
-    provider: String,
+    wire_api: String,
     client_kind: String,
     start_time: Value,
     end_time: Value,
@@ -692,7 +692,7 @@ fn prepare_turn(t: LlmTurn) -> PreparedTurn {
         stream_id: t.stream_id,
         session_id: t.session_id,
         tenant_id: t.tenant_id,
-        provider: t.provider,
+        wire_api: t.wire_api,
         client_kind: t.client_kind,
         start_time: Value::Timestamp(TimeUnit::Microsecond, t.start_time_us),
         end_time: Value::Timestamp(TimeUnit::Microsecond, t.end_time_us),
@@ -720,7 +720,7 @@ struct PreparedMetric {
     timestamp: Value,
     stream_id: String,
     granularity: &'static str,
-    provider: String,
+    wire_api: String,
     model: String,
     server_ip: String,
     inner: LlmMetric,
@@ -731,7 +731,7 @@ fn prepare_metric(m: LlmMetric) -> PreparedMetric {
         timestamp: Value::Timestamp(TimeUnit::Microsecond, m.timestamp_us),
         stream_id: m.stream_id.clone(),
         granularity: m.granularity,
-        provider: m.provider.clone(),
+        wire_api: m.wire_api.clone(),
         model: m.model.clone(),
         server_ip: m.server_ip.clone(),
         inner: m,
@@ -790,7 +790,7 @@ impl StorageBackend for DuckDbBackend {
                         p.request_time,
                         p.response_time,
                         p.complete_time,
-                        p.provider,
+                        p.wire_api,
                         p.model,
                         p.api_type,
                         p.is_stream,
@@ -842,7 +842,7 @@ impl StorageBackend for DuckDbBackend {
                         p.timestamp,
                         p.stream_id,
                         p.granularity,
-                        p.provider,
+                        p.wire_api,
                         p.model,
                         p.server_ip,
                         m.request_count,
@@ -914,7 +914,7 @@ impl StorageBackend for DuckDbBackend {
                         p.stream_id,
                         p.session_id,
                         p.tenant_id,
-                        p.provider,
+                        p.wire_api,
                         p.client_kind,
                         p.start_time,
                         p.end_time,
@@ -1092,7 +1092,7 @@ impl StorageBackend for DuckDbBackend {
                     CASE WHEN SUM(tpot_count) > 0
                          THEN SUM(tpot_sum) / SUM(tpot_count) ELSE NULL END
                 FROM llm_metrics
-                WHERE provider = '*' AND model = '*' AND server_ip = '*'
+                WHERE wire_api = '*' AND model = '*' AND server_ip = '*'
                   AND granularity = '10s'
                   AND timestamp >= ? AND timestamp < ?
             ";
@@ -1167,7 +1167,7 @@ impl StorageBackend for DuckDbBackend {
                 "
                 SELECT * FROM (
                     SELECT
-                        provider,
+                        wire_api,
                         model,
                         COALESCE(SUM(request_count), 0) AS request_count,
                         COALESCE(SUM(error_count), 0) AS error_count,
@@ -1192,10 +1192,10 @@ impl StorageBackend for DuckDbBackend {
                              THEN SUM(tpot_sum) / SUM(tpot_count)
                              ELSE NULL END AS tpot_avg
                     FROM llm_metrics
-                    WHERE provider != '*' AND model != '*' AND server_ip = '*'
+                    WHERE wire_api != '*' AND model != '*' AND server_ip = '*'
                       AND granularity = '10s'
                       AND timestamp >= ? AND timestamp < ?
-                    GROUP BY provider, model
+                    GROUP BY wire_api, model
                 ) sub
                 ORDER BY {sort_by} {sort_order}
                 LIMIT {limit}
@@ -1216,7 +1216,7 @@ impl StorageBackend for DuckDbBackend {
                 .map_err(|e| AppError::Storage(format!("row error: {e}")))?
             {
                 rows.push(MetricsModelRow {
-                    provider: row
+                    wire_api: row
                         .get(0)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     model: row
@@ -1303,14 +1303,14 @@ impl StorageBackend for DuckDbBackend {
                 "request_time < ?".to_string(),
             ];
 
-            if !query.filter.providers.is_empty() {
+            if !query.filter.wire_apis.is_empty() {
                 let list: Vec<String> = query
                     .filter
-                    .providers
+                    .wire_apis
                     .iter()
                     .map(|s| format!("'{}'", s.replace('\'', "''")))
                     .collect();
-                where_parts.push(format!("provider IN ({})", list.join(", ")));
+                where_parts.push(format!("wire_api IN ({})", list.join(", ")));
             }
             if !query.filter.models.is_empty() {
                 let list: Vec<String> = query
@@ -1359,7 +1359,7 @@ impl StorageBackend for DuckDbBackend {
             let offset = (query.page.saturating_sub(1)) as u64 * query.page_size as u64;
             let limit = query.page_size;
             let items_sql = format!(
-                "SELECT id, stream_id, epoch_ms(request_time), provider, model, status_code, is_stream, \
+                "SELECT id, stream_id, epoch_ms(request_time), wire_api, model, status_code, is_stream, \
                  finish_reason, ttfb_ms, e2e_latency_ms, input_tokens, output_tokens \
                  FROM llm_calls WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
@@ -1389,7 +1389,7 @@ impl StorageBackend for DuckDbBackend {
                     request_time: row
                         .get(2)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    provider: row
+                    wire_api: row
                         .get(3)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     model: row
@@ -1436,7 +1436,7 @@ impl StorageBackend for DuckDbBackend {
                     epoch_ms(request_time),
                     epoch_ms(response_time),
                     epoch_ms(complete_time),
-                    provider, model, api_type, is_stream, request_path,
+                    wire_api, model, api_type, is_stream, request_path,
                     status_code, finish_reason,
                     input_tokens, output_tokens, total_tokens,
                     ttfb_ms, e2e_latency_ms,
@@ -1459,7 +1459,7 @@ impl StorageBackend for DuckDbBackend {
                     request_time: row.get(2)?,
                     response_time: row.get(3)?,
                     complete_time: row.get(4)?,
-                    provider: row.get(5)?,
+                    wire_api: row.get(5)?,
                     model: row.get(6)?,
                     api_type: row.get(7)?,
                     is_stream: row.get(8)?,
@@ -1528,14 +1528,14 @@ impl StorageBackend for DuckDbBackend {
 
             let mut where_parts = vec!["start_time >= ?".to_string(), "start_time < ?".to_string()];
 
-            if !query.filter.providers.is_empty() {
+            if !query.filter.wire_apis.is_empty() {
                 let list: Vec<String> = query
                     .filter
-                    .providers
+                    .wire_apis
                     .iter()
                     .map(|s| format!("'{}'", s.replace('\'', "''")))
                     .collect();
-                where_parts.push(format!("provider IN ({})", list.join(", ")));
+                where_parts.push(format!("wire_api IN ({})", list.join(", ")));
             }
             if !query.filter.models.is_empty() {
                 // models_used is stored as a JSON-encoded VARCHAR of Vec<String>.
@@ -1584,7 +1584,7 @@ impl StorageBackend for DuckDbBackend {
             let items_sql = format!(
                 "SELECT turn_id, stream_id, session_id, \
                  epoch_ms(start_time), epoch_ms(end_time), duration_ms, \
-                 provider, client_kind, models_used, call_count, \
+                 wire_api, client_kind, models_used, call_count, \
                  total_input_tokens, total_output_tokens, status, \
                  final_finish_reason, user_input_preview, final_answer_preview \
                  FROM llm_turns WHERE {where_sql} \
@@ -1629,7 +1629,7 @@ impl StorageBackend for DuckDbBackend {
                     duration_ms: row
                         .get(5)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    provider: row
+                    wire_api: row
                         .get(6)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     client_kind: row
@@ -1674,7 +1674,7 @@ impl StorageBackend for DuckDbBackend {
         tokio::task::spawn_blocking(move || {
             let sql = "
                 SELECT
-                    turn_id, stream_id, session_id, tenant_id, provider, client_kind,
+                    turn_id, stream_id, session_id, tenant_id, wire_api, client_kind,
                     epoch_ms(start_time), epoch_ms(end_time), duration_ms, call_count,
                     models_used, subagents_used,
                     total_input_tokens, total_output_tokens,
@@ -1698,7 +1698,7 @@ impl StorageBackend for DuckDbBackend {
                     row.get::<_, String>(1)?,          // stream_id
                     row.get::<_, String>(2)?,          // session_id
                     row.get::<_, Option<String>>(3)?,  // tenant_id
-                    row.get::<_, String>(4)?,          // provider
+                    row.get::<_, String>(4)?,          // wire_api
                     row.get::<_, String>(5)?,          // client_kind
                     row.get::<_, i64>(6)?,             // start_time
                     row.get::<_, i64>(7)?,             // end_time
@@ -1737,7 +1737,7 @@ impl StorageBackend for DuckDbBackend {
                 stream_id,
                 session_id,
                 tenant_id,
-                provider,
+                wire_api,
                 client_kind,
                 start_time,
                 end_time,
@@ -1796,7 +1796,7 @@ impl StorageBackend for DuckDbBackend {
                 stream_id,
                 session_id,
                 tenant_id,
-                provider,
+                wire_api,
                 client_kind,
                 start_time,
                 end_time,
@@ -1834,7 +1834,7 @@ impl StorageBackend for DuckDbBackend {
                     epoch_ms(c.request_time),
                     epoch_ms(c.response_time),
                     epoch_ms(c.complete_time),
-                    c.provider, c.model, c.status_code, c.is_stream,
+                    c.wire_api, c.model, c.status_code, c.is_stream,
                     c.finish_reason, c.ttfb_ms, c.e2e_latency_ms,
                     c.input_tokens, c.output_tokens
                 FROM llm_calls c
@@ -1872,7 +1872,7 @@ impl StorageBackend for DuckDbBackend {
                     complete_time: row
                         .get::<_, Option<i64>>(3)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    provider: row
+                    wire_api: row
                         .get(4)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     model: row
@@ -1908,14 +1908,14 @@ impl StorageBackend for DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    async fn query_distinct_providers(&self) -> Result<Vec<String>> {
+    async fn query_distinct_wire_apis(&self) -> Result<Vec<String>> {
         let conn = self.read_pool.acquire().await?;
         tokio::task::spawn_blocking(move || {
             let mut stmt = conn.prepare(
-                "SELECT DISTINCT provider FROM llm_metrics WHERE provider != '*' ORDER BY provider"
-            ).map_err(|e| AppError::Storage(format!("failed to prepare distinct_providers query: {e}")))?;
+                "SELECT DISTINCT wire_api FROM llm_metrics WHERE wire_api != '*' ORDER BY wire_api"
+            ).map_err(|e| AppError::Storage(format!("failed to prepare distinct_wire_apis query: {e}")))?;
             let mut rows = stmt.query([])
-                .map_err(|e| AppError::Storage(format!("failed to execute distinct_providers query: {e}")))?;
+                .map_err(|e| AppError::Storage(format!("failed to execute distinct_wire_apis query: {e}")))?;
             let mut result = Vec::new();
             while let Some(row) = rows.next().map_err(|e| AppError::Storage(format!("row error: {e}")))? {
                 let v: String = row.get(0).map_err(|e| AppError::Storage(format!("read error: {e}")))?;
@@ -2067,7 +2067,7 @@ mod tests {
         LlmCall {
             stream_id: String::new(),
             id: "01912345-6789-7abc-def0-123456789abc".to_string(),
-            provider: pn::OPENAI,
+            wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".to_string(),
             api_type: ApiType::Chat,
             tenant_id: Some("tenant-abc".to_string()),
@@ -2211,7 +2211,7 @@ mod tests {
             timestamp_us: 1_700_000_000_000_000,
             stream_id: String::new(),
             granularity: "1m",
-            provider: pn::OPENAI.to_string(),
+            wire_api: wa::OPENAI_CHAT.to_string(),
             model: "gpt-4".to_string(),
             server_ip: "10.0.0.2".to_string(),
             request_count: 42,
@@ -2339,30 +2339,30 @@ mod tests {
     // ===== Task 3: query_distinct_* tests =====
 
     #[tokio::test]
-    async fn test_query_distinct_providers() {
+    async fn test_query_distinct_wire_apis() {
         let backend = in_memory_backend();
         backend.init().await.unwrap();
 
-        // Write metrics with providers "openai", "anthropic", and "*"
+        // Write metrics with wire APIs "openai-chat", "anthropic-messages", and "*"
         let mut m1 = sample_metric();
-        m1.provider = pn::OPENAI.to_string();
+        m1.wire_api = wa::OPENAI_CHAT.to_string();
         m1.model = "gpt-4".to_string();
         m1.server_ip = "10.0.0.1".to_string();
 
         let mut m2 = sample_metric();
-        m2.provider = pn::ANTHROPIC.to_string();
+        m2.wire_api = wa::ANTHROPIC_MESSAGES.to_string();
         m2.model = "claude-3".to_string();
         m2.server_ip = "10.0.0.1".to_string();
 
         let mut m3 = sample_metric();
-        m3.provider = "*".to_string();
+        m3.wire_api = "*".to_string();
         m3.model = "*".to_string();
         m3.server_ip = "*".to_string();
 
         backend.write_metrics(vec![m1, m2, m3]).await.unwrap();
 
-        let providers = backend.query_distinct_providers().await.unwrap();
-        assert_eq!(providers, vec![pn::ANTHROPIC, pn::OPENAI]);
+        let wire_apis = backend.query_distinct_wire_apis().await.unwrap();
+        assert_eq!(wire_apis, vec![wa::ANTHROPIC_MESSAGES, wa::OPENAI_CHAT]);
     }
 
     #[tokio::test]
@@ -2371,17 +2371,17 @@ mod tests {
         backend.init().await.unwrap();
 
         let mut m1 = sample_metric();
-        m1.provider = pn::OPENAI.to_string();
+        m1.wire_api = wa::OPENAI_CHAT.to_string();
         m1.model = "gpt-4".to_string();
         m1.server_ip = "10.0.0.1".to_string();
 
         let mut m2 = sample_metric();
-        m2.provider = pn::OPENAI.to_string();
+        m2.wire_api = wa::OPENAI_CHAT.to_string();
         m2.model = "gpt-3.5".to_string();
         m2.server_ip = "10.0.0.1".to_string();
 
         let mut m3 = sample_metric();
-        m3.provider = "*".to_string();
+        m3.wire_api = "*".to_string();
         m3.model = "*".to_string();
         m3.server_ip = "*".to_string();
 
@@ -2397,17 +2397,17 @@ mod tests {
         backend.init().await.unwrap();
 
         let mut m1 = sample_metric();
-        m1.provider = pn::OPENAI.to_string();
+        m1.wire_api = wa::OPENAI_CHAT.to_string();
         m1.model = "gpt-4".to_string();
         m1.server_ip = "10.0.0.1".to_string();
 
         let mut m2 = sample_metric();
-        m2.provider = pn::OPENAI.to_string();
+        m2.wire_api = wa::OPENAI_CHAT.to_string();
         m2.model = "gpt-4".to_string();
         m2.server_ip = "10.0.0.2".to_string();
 
         let mut m3 = sample_metric();
-        m3.provider = "*".to_string();
+        m3.wire_api = "*".to_string();
         m3.model = "*".to_string();
         m3.server_ip = "*".to_string();
 
@@ -2428,7 +2428,7 @@ mod tests {
         let mut m1 = sample_metric();
         m1.timestamp_us = 1_700_000_000_000_000;
         m1.granularity = "1m";
-        m1.provider = "*".to_string();
+        m1.wire_api = "*".to_string();
         m1.model = "*".to_string();
         m1.server_ip = "*".to_string();
         m1.ttfb_p50 = Some(100.0);
@@ -2437,7 +2437,7 @@ mod tests {
         let mut m2 = sample_metric();
         m2.timestamp_us = 1_700_000_060_000_000; // +60s
         m2.granularity = "1m";
-        m2.provider = "*".to_string();
+        m2.wire_api = "*".to_string();
         m2.model = "*".to_string();
         m2.server_ip = "*".to_string();
         m2.ttfb_p50 = Some(150.0);
@@ -2466,21 +2466,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_metrics_timeseries_group_by_provider() {
+    async fn test_query_metrics_timeseries_group_by_wire_api() {
         let backend = in_memory_backend();
         backend.init().await.unwrap();
 
         let ts = 1_700_000_000_000_000i64;
 
-        // Per-model rows: (provider, model, server_ip='*')
-        // These are what the aggregator actually produces. group_by=provider
-        // should SUM across models within each provider.
+        // Per-model rows: (wire_api, model, server_ip='*')
+        // These are what the aggregator actually produces. group_by=wire_api
+        // should SUM across models within each wire_api.
         let mut m = sample_metric();
         m.timestamp_us = ts;
         m.granularity = "1m";
         m.server_ip = "*".to_string();
 
-        m.provider = pn::OPENAI.to_string();
+        m.wire_api = wa::OPENAI_CHAT.to_string();
         m.model = "gpt-4".to_string();
         m.request_count = 200;
         backend.write_metrics(vec![m.clone()]).await.unwrap();
@@ -2489,7 +2489,7 @@ mod tests {
         m.request_count = 100;
         backend.write_metrics(vec![m.clone()]).await.unwrap();
 
-        m.provider = pn::ANTHROPIC.to_string();
+        m.wire_api = wa::ANTHROPIC_MESSAGES.to_string();
         m.model = "claude-3".to_string();
         m.request_count = 50;
         backend.write_metrics(vec![m]).await.unwrap();
@@ -2502,7 +2502,7 @@ mod tests {
             granularity: "1m".to_string(),
             filter: DimensionFilter::default(),
             fields: vec!["request_count".to_string()],
-            group_by: Some("provider".to_string()),
+            group_by: Some("wire_api".to_string()),
         };
 
         let rows = backend.query_metrics_timeseries(&query).await.unwrap();
@@ -2510,11 +2510,11 @@ mod tests {
         assert_eq!(rows.len(), 2);
         let anthropic_row = rows
             .iter()
-            .find(|r| r.group.as_deref() == Some(pn::ANTHROPIC))
+            .find(|r| r.group.as_deref() == Some(wa::ANTHROPIC_MESSAGES))
             .unwrap();
         let openai_row = rows
             .iter()
-            .find(|r| r.group.as_deref() == Some(pn::OPENAI))
+            .find(|r| r.group.as_deref() == Some(wa::OPENAI_CHAT))
             .unwrap();
         assert_eq!(anthropic_row.values[0], Some(50.0));
         assert_eq!(openai_row.values[0], Some(300.0)); // 200 + 100
@@ -2536,7 +2536,7 @@ mod tests {
         stream0.timestamp_us = ts;
         stream0.stream_id = "s0".into();
         stream0.granularity = "1m";
-        stream0.provider = "*".into();
+        stream0.wire_api = "*".into();
         stream0.model = "*".into();
         stream0.server_ip = "*".into();
         stream0.request_count = 10;
@@ -2548,7 +2548,7 @@ mod tests {
         stream1.timestamp_us = ts;
         stream1.stream_id = "s1".into();
         stream1.granularity = "1m";
-        stream1.provider = "*".into();
+        stream1.wire_api = "*".into();
         stream1.model = "*".into();
         stream1.server_ip = "*".into();
         stream1.request_count = 30;
@@ -2598,7 +2598,7 @@ mod tests {
         s0.timestamp_us = ts;
         s0.stream_id = "s0".into();
         s0.granularity = "1m";
-        s0.provider = pn::OPENAI.into();
+        s0.wire_api = wa::OPENAI_CHAT.into();
         s0.model = "gpt-4".into();
         s0.server_ip = "*".into();
         s0.request_count = 10;
@@ -2607,7 +2607,7 @@ mod tests {
         s1.timestamp_us = ts;
         s1.stream_id = "s1".into();
         s1.granularity = "1m";
-        s1.provider = pn::OPENAI.into();
+        s1.wire_api = wa::OPENAI_CHAT.into();
         s1.model = "gpt-4".into();
         s1.server_ip = "*".into();
         s1.request_count = 40;
@@ -2622,12 +2622,12 @@ mod tests {
             granularity: "1m".to_string(),
             filter: DimensionFilter::default(),
             fields: vec!["request_count".to_string()],
-            group_by: Some("provider".to_string()),
+            group_by: Some("wire_api".to_string()),
         };
 
         let rows = backend.query_metrics_timeseries(&query).await.unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].group.as_deref(), Some(pn::OPENAI));
+        assert_eq!(rows[0].group.as_deref(), Some(wa::OPENAI_CHAT));
         assert_eq!(rows[0].values[0], Some(50.0), "grouped SUM across streams");
     }
 
@@ -2644,7 +2644,7 @@ mod tests {
         let mut m1 = sample_metric();
         m1.timestamp_us = ts1;
         m1.granularity = "10s";
-        m1.provider = "*".to_string();
+        m1.wire_api = "*".to_string();
         m1.model = "*".to_string();
         m1.server_ip = "*".to_string();
         m1.request_count = 100;
@@ -2667,7 +2667,7 @@ mod tests {
         let mut m2 = sample_metric();
         m2.timestamp_us = ts2;
         m2.granularity = "10s";
-        m2.provider = "*".to_string();
+        m2.wire_api = "*".to_string();
         m2.model = "*".to_string();
         m2.server_ip = "*".to_string();
         m2.request_count = 200;
@@ -2731,7 +2731,7 @@ mod tests {
         let mut m_gpt4 = sample_metric();
         m_gpt4.timestamp_us = ts;
         m_gpt4.granularity = "10s";
-        m_gpt4.provider = pn::OPENAI.to_string();
+        m_gpt4.wire_api = wa::OPENAI_CHAT.to_string();
         m_gpt4.model = "gpt-4".to_string();
         m_gpt4.server_ip = "*".to_string();
         m_gpt4.request_count = 100;
@@ -2750,7 +2750,7 @@ mod tests {
         let mut m_claude = sample_metric();
         m_claude.timestamp_us = ts;
         m_claude.granularity = "10s";
-        m_claude.provider = pn::ANTHROPIC.to_string();
+        m_claude.wire_api = wa::ANTHROPIC_MESSAGES.to_string();
         m_claude.model = "claude-3".to_string();
         m_claude.server_ip = "*".to_string();
         m_claude.request_count = 200;
@@ -2782,10 +2782,10 @@ mod tests {
         let rows = backend.query_metrics_models(&query).await.unwrap();
         assert_eq!(rows.len(), 2);
         // claude-3 should come first (200 > 100)
-        assert_eq!(rows[0].provider, pn::ANTHROPIC);
+        assert_eq!(rows[0].wire_api, wa::ANTHROPIC_MESSAGES);
         assert_eq!(rows[0].model, "claude-3");
         assert_eq!(rows[0].request_count, 200);
-        assert_eq!(rows[1].provider, pn::OPENAI);
+        assert_eq!(rows[1].wire_api, wa::OPENAI_CHAT);
         assert_eq!(rows[1].model, "gpt-4");
         assert_eq!(rows[1].request_count, 100);
     }
@@ -2879,7 +2879,7 @@ mod tests {
         let detail = detail.unwrap();
         assert_eq!(detail.id, "01912345-6789-7abc-def0-123456789abc");
         assert_eq!(detail.model, "gpt-4");
-        assert_eq!(detail.provider, pn::OPENAI);
+        assert_eq!(detail.wire_api, wa::OPENAI_CHAT);
         assert_eq!(detail.status_code, Some(200));
         assert_eq!(detail.input_tokens, Some(100));
         assert_eq!(detail.output_tokens, Some(50));
@@ -2906,7 +2906,7 @@ mod turn_tests {
     fn sample_turn(
         turn_id: &str,
         session_id: &str,
-        provider: &str,
+        wire_api: &str,
         models_used: Vec<&str>,
         start_us: i64,
         duration_ms: u64,
@@ -2919,7 +2919,7 @@ mod turn_tests {
             turn_id: turn_id.into(),
             session_id: session_id.into(),
             tenant_id: None,
-            provider: provider.into(),
+            wire_api: wire_api.into(),
             client_kind: "claude-cli".into(),
             start_time_us: start_us,
             end_time_us: start_us + (duration_ms as i64) * 1000,
@@ -2947,7 +2947,7 @@ mod turn_tests {
         LlmCall {
             stream_id: String::new(),
             id: id.into(),
-            provider: pn::OPENAI,
+            wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -2984,7 +2984,7 @@ mod turn_tests {
         let turn = sample_turn(
             "t1",
             "s1",
-            pn::ANTHROPIC,
+            wa::ANTHROPIC_MESSAGES,
             vec!["claude-sonnet"],
             1_700_000_000_000_000,
             1500,
@@ -3021,7 +3021,7 @@ mod turn_tests {
             sample_turn(
                 "t1",
                 "s1",
-                pn::OPENAI,
+                wa::OPENAI_CHAT,
                 vec!["gpt-4"],
                 base + 1_000_000,
                 100,
@@ -3032,7 +3032,7 @@ mod turn_tests {
             sample_turn(
                 "t2",
                 "s1",
-                pn::ANTHROPIC,
+                wa::ANTHROPIC_MESSAGES,
                 vec!["claude-sonnet"],
                 base + 2_000_000,
                 200,
@@ -3043,7 +3043,7 @@ mod turn_tests {
             sample_turn(
                 "t3",
                 "s2",
-                pn::OPENAI,
+                wa::OPENAI_CHAT,
                 vec!["gpt-4o"],
                 base + 3_000_000,
                 300,
@@ -3054,7 +3054,7 @@ mod turn_tests {
             sample_turn(
                 "t4",
                 "s3",
-                pn::OPENAI,
+                wa::OPENAI_CHAT,
                 vec!["gpt-4", "gpt-4o"],
                 base + 4_000_000,
                 400,
@@ -3074,9 +3074,9 @@ mod turn_tests {
         assert_eq!(page.items[0].primary_model.as_deref(), Some("gpt-4"));
         assert_eq!(page.items[0].models_used, vec!["gpt-4", "gpt-4o"]);
 
-        // Provider filter
+        // wire_api filter
         let mut q = base_turns_query();
-        q.filter.providers = vec![pn::ANTHROPIC.into()];
+        q.filter.wire_apis = vec![wa::ANTHROPIC_MESSAGES.into()];
         let page = backend.query_turns(&q).await.unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].turn_id, "t2");
@@ -3131,7 +3131,7 @@ mod turn_tests {
         let turn = sample_turn(
             "t-detail",
             "s1",
-            pn::ANTHROPIC,
+            wa::ANTHROPIC_MESSAGES,
             vec!["claude-sonnet", "claude-haiku"],
             1_700_000_000_000_000,
             1500,
@@ -3164,11 +3164,11 @@ mod turn_tests {
         // (short, no trailing `…`) and never touch the body.
         let base = 1_700_000_000_000_000_i64;
         let mut user_call = mk_call_with_time("c-user", base + 1_000);
-        user_call.provider = pn::ANTHROPIC;
+        user_call.wire_api = wa::ANTHROPIC_MESSAGES;
         user_call.request_body =
             Some(r#"{"messages":[{"role":"user","content":"DB-USER-FULL"}]}"#.into());
         let mut asst_call = mk_call_with_time("c-asst", base + 2_000);
-        asst_call.provider = pn::ANTHROPIC;
+        asst_call.wire_api = wa::ANTHROPIC_MESSAGES;
         asst_call.response_body =
             Some(r#"{"content":[{"type":"text","text":"DB-ASSISTANT-FULL"}]}"#.into());
         backend
@@ -3179,7 +3179,7 @@ mod turn_tests {
         let mut turn = sample_turn(
             "t-short",
             "s-short",
-            pn::ANTHROPIC,
+            wa::ANTHROPIC_MESSAGES,
             vec!["claude-sonnet"],
             base,
             1500,
@@ -3214,7 +3214,7 @@ mod turn_tests {
         let full_user: String = "u".repeat(600);
         let full_asst: String = "a".repeat(600);
         let mut user_call = mk_call_with_time("c-user", base + 1_000);
-        user_call.provider = pn::ANTHROPIC;
+        user_call.wire_api = wa::ANTHROPIC_MESSAGES;
         user_call.request_body = Some(
             serde_json::json!({
                 "messages": [{ "role": "user", "content": &full_user }]
@@ -3222,7 +3222,7 @@ mod turn_tests {
             .to_string(),
         );
         let mut asst_call = mk_call_with_time("c-asst", base + 2_000);
-        asst_call.provider = pn::ANTHROPIC;
+        asst_call.wire_api = wa::ANTHROPIC_MESSAGES;
         asst_call.response_body = Some(
             serde_json::json!({
                 "content": [{ "type": "text", "text": &full_asst }]
@@ -3239,7 +3239,7 @@ mod turn_tests {
         let mut turn = sample_turn(
             "t-long",
             "s-long",
-            pn::ANTHROPIC,
+            wa::ANTHROPIC_MESSAGES,
             vec!["claude-sonnet"],
             base,
             1500,
@@ -3281,7 +3281,7 @@ mod turn_tests {
         let turn = sample_turn(
             "t-calls",
             "s1",
-            pn::OPENAI,
+            wa::OPENAI_CHAT,
             vec!["gpt-4"],
             base,
             3000,
@@ -3321,7 +3321,7 @@ mod concurrent_tests {
         LlmCall {
             stream_id: String::new(),
             id: format!("call-{i:08}"),
-            provider: pn::OPENAI,
+            wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -3357,7 +3357,7 @@ mod concurrent_tests {
             turn_id: format!("turn-{i:08}"),
             session_id: format!("session-{}", i % 10),
             tenant_id: None,
-            provider: pn::OPENAI.into(),
+            wire_api: wa::OPENAI_CHAT.into(),
             client_kind: "test".into(),
             start_time_us: 1_700_000_000_000_000 + i as i64,
             end_time_us: 1_700_000_000_000_000 + i as i64 + 1_000_000,
@@ -3386,7 +3386,7 @@ mod concurrent_tests {
             timestamp_us: 1_700_000_000_000_000 + i as i64 * 10_000_000,
             stream_id: String::new(),
             granularity: "10s",
-            provider: pn::OPENAI.into(),
+            wire_api: wa::OPENAI_CHAT.into(),
             model: "gpt-4".into(),
             server_ip: "10.0.0.2".into(),
             request_count: 1,
@@ -3504,7 +3504,7 @@ mod retention_tests {
         LlmCall {
             stream_id: String::new(),
             id: id.into(),
-            provider: pn::OPENAI,
+            wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -3540,7 +3540,7 @@ mod retention_tests {
             turn_id: id.into(),
             session_id: "s".into(),
             tenant_id: None,
-            provider: pn::OPENAI.into(),
+            wire_api: wa::OPENAI_CHAT.into(),
             client_kind: "claude-cli".into(),
             start_time_us: start_us,
             end_time_us: start_us + (duration_ms as i64) * 1000,
@@ -3569,7 +3569,7 @@ mod retention_tests {
             timestamp_us: ts_us,
             stream_id: String::new(),
             granularity,
-            provider: pn::OPENAI.into(),
+            wire_api: wa::OPENAI_CHAT.into(),
             model: "gpt-4".into(),
             server_ip: "10.0.0.2".into(),
             request_count: 1,

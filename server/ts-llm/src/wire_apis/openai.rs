@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
-use crate::model::{FinishReason, Provider, RequestInfo, ResponseInfo, RouteVerdict};
+use crate::model::{FinishReason, RequestInfo, ResponseInfo, RouteVerdict, WireApi};
 
 /// Check for Bearer auth header (common to OpenAI variants).
 fn has_bearer_auth(req: &HttpRequestData) -> bool {
@@ -11,7 +11,7 @@ fn has_bearer_auth(req: &HttpRequestData) -> bool {
         .unwrap_or(false)
 }
 
-/// Header-level signals that rule OpenAI providers out — the request is
+/// Header-level signals that rule OpenAI wire APIs out — the request is
 /// unambiguously Anthropic. `anthropic-version` is the strongest (Anthropic
 /// SDKs always set it); `Bearer sk-ant-*` is weaker because gateways that
 /// re-sign keys can erase it, but when present it's a reliable negative.
@@ -26,19 +26,19 @@ fn is_anthropic_request(req: &HttpRequestData) -> bool {
 }
 
 /// Shape signals common to both OpenAI variants: `model` string present and
-/// no `input` field (that one belongs to the Responses API — Chat providers
+/// no `input` field (that one belongs to the Responses API — Chat wire APIs
 /// use it to disambiguate from OpenAI Responses, Responses uses its own rule
 /// below which requires `input`).
 fn has_openai_model_field(body: &Value) -> bool {
     body.get("model").and_then(|v| v.as_str()).is_some()
 }
 
-/// Provider implementation for OpenAI Chat Completions API.
-pub struct OpenAiChatProvider;
+/// Wire-API implementation for OpenAI Chat Completions API.
+pub struct OpenAiChatWireApi;
 
-impl Provider for OpenAiChatProvider {
+impl WireApi for OpenAiChatWireApi {
     fn name(&self) -> &'static str {
-        crate::provider_names::OPENAI
+        super::OPENAI_CHAT
     }
 
     fn classify_route(&self, req: &HttpRequestData) -> RouteVerdict {
@@ -79,13 +79,13 @@ impl Provider for OpenAiChatProvider {
     }
 }
 
-/// Provider implementation for OpenAI Responses API.
+/// Wire-API implementation for OpenAI Responses API.
 /// Shares extraction logic with Chat Completions.
-pub struct OpenAiResponsesProvider;
+pub struct OpenAiResponsesWireApi;
 
-impl Provider for OpenAiResponsesProvider {
+impl WireApi for OpenAiResponsesWireApi {
     fn name(&self) -> &'static str {
-        crate::provider_names::OPENAI_RESPONSES
+        super::OPENAI_RESPONSES
     }
 
     fn classify_route(&self, req: &HttpRequestData) -> RouteVerdict {

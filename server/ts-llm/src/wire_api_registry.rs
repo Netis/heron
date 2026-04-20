@@ -1,48 +1,48 @@
-//! Registry of `Provider` trait objects.
+//! Registry of `WireApi` trait objects.
 //!
 //! Detection is two-pass:
-//!   1. `classify_route` on every provider. An `Accept` short-circuits and
-//!      wins. Providers that `Reject` are dropped from the candidate pool.
-//!   2. If no provider accepted and at least one returned `Unknown`, parse
+//!   1. `classify_route` on every wire API. An `Accept` short-circuits and
+//!      wins. Wire APIs that `Reject` are dropped from the candidate pool.
+//!   2. If no wire API accepted and at least one returned `Unknown`, parse
 //!      the request body once and call `matches_shape` on each remaining
 //!      candidate in registry order; the first match wins.
 //!
-//! Registry order still matters when multiple providers would `Accept` the
+//! Registry order still matters when multiple wire APIs would `Accept` the
 //! same request (e.g. `/v1/responses` must precede `/v1/chat/completions`)
-//! or when shape-pass candidates overlap. Adding a provider is still a
+//! or when shape-pass candidates overlap. Adding a wire API is still a
 //! two-step change:
-//!   1. Implement `Provider` in a new module.
-//!   2. Register it in `providers::build_default_provider_registry()`.
+//!   1. Implement `WireApi` in a new module.
+//!   2. Register it in `wire_apis::build_default_wire_api_registry()`.
 
 use serde_json::Value;
 use ts_protocol::model::HttpRequestData;
 
-use crate::model::{Provider, RouteVerdict};
+use crate::model::{RouteVerdict, WireApi};
 
-/// Two-pass detection registry of `Provider` implementations.
-pub struct ProviderRegistry {
-    providers: Vec<Box<dyn Provider>>,
+/// Two-pass detection registry of `WireApi` implementations.
+pub struct WireApiRegistry {
+    wire_apis: Vec<Box<dyn WireApi>>,
 }
 
-impl ProviderRegistry {
+impl WireApiRegistry {
     pub fn new() -> Self {
         Self {
-            providers: Vec::new(),
+            wire_apis: Vec::new(),
         }
     }
 
-    pub fn with(mut self, provider: Box<dyn Provider>) -> Self {
-        self.providers.push(provider);
+    pub fn with(mut self, wire_api: Box<dyn WireApi>) -> Self {
+        self.wire_apis.push(wire_api);
         self
     }
 
-    /// Run two-pass detection. Returns the first provider that accepts the
+    /// Run two-pass detection. Returns the first wire API that accepts the
     /// request by route, or — failing that — the first Unknown candidate
     /// whose `matches_shape` returns true against the parsed JSON body.
-    pub fn detect(&self, req: &HttpRequestData) -> Option<&dyn Provider> {
+    pub fn detect(&self, req: &HttpRequestData) -> Option<&dyn WireApi> {
         // Pass 1: iterate, short-circuit on Accept, collect Unknowns.
-        let mut deferred: Vec<&dyn Provider> = Vec::new();
-        for p in &self.providers {
+        let mut deferred: Vec<&dyn WireApi> = Vec::new();
+        for p in &self.wire_apis {
             match p.classify_route(req) {
                 RouteVerdict::Accept => return Some(p.as_ref()),
                 RouteVerdict::Reject => {}
@@ -61,11 +61,11 @@ impl ProviderRegistry {
         deferred.into_iter().find(|p| p.matches_shape(req, &body))
     }
 
-    /// Look up a previously-detected provider by its stable `name()`.
+    /// Look up a previously-detected wire API by its stable `name()`.
     /// Used by `LlmProcessor::on_response` to route the response parsing
-    /// to the same provider that matched the request.
-    pub fn find_by_name(&self, name: &str) -> Option<&dyn Provider> {
-        self.providers
+    /// to the same wire API that matched the request.
+    pub fn find_by_name(&self, name: &str) -> Option<&dyn WireApi> {
+        self.wire_apis
             .iter()
             .map(|p| p.as_ref())
             .find(|p| p.name() == name)
@@ -86,7 +86,7 @@ fn is_json_content_type(req: &HttpRequestData) -> bool {
         .unwrap_or(false)
 }
 
-impl Default for ProviderRegistry {
+impl Default for WireApiRegistry {
     fn default() -> Self {
         Self::new()
     }
@@ -95,8 +95,8 @@ impl Default for ProviderRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider_names as pn;
-    use crate::providers::build_default_provider_registry;
+    use crate::wire_apis as wa;
+    use crate::wire_apis::build_default_wire_api_registry;
     use bytes::Bytes;
     use ts_protocol::net::FlowKey;
 
@@ -148,19 +148,19 @@ mod tests {
 
     #[test]
     fn detect_anthropic() {
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = make_request(
             "POST",
             "/v1/messages",
             vec![("anthropic-version", "2023-06-01")],
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(pn::ANTHROPIC));
+        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC_MESSAGES));
     }
 
     #[test]
     fn detect_openai_responses_before_chat() {
         // /v1/responses must win even though Chat Completions is also POST+Bearer.
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = make_request(
             "POST",
             "/v1/responses",
@@ -168,31 +168,31 @@ mod tests {
         );
         assert_eq!(
             reg.detect(&req).map(|p| p.name()),
-            Some(pn::OPENAI_RESPONSES)
+            Some(wa::OPENAI_RESPONSES)
         );
     }
 
     #[test]
     fn detect_openai_chat() {
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = make_request(
             "POST",
             "/v1/chat/completions",
             vec![("authorization", "Bearer sk-xxx")],
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(pn::OPENAI));
+        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::OPENAI_CHAT));
     }
 
     #[test]
     fn detect_none_for_unknown() {
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = make_request("GET", "/healthz", vec![]);
         assert!(reg.detect(&req).is_none());
     }
 
     #[test]
     fn detect_ignores_count_tokens_subpath() {
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = make_request(
             "POST",
             "/v1/messages/count_tokens",
@@ -206,20 +206,20 @@ mod tests {
         // pcap A case: /v1/llm/chat/completions. Route pass says Unknown
         // (suffix doesn't match /v1/chat/completions), shape pass picks it
         // up from model+messages.
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = json_post(
             "/v1/llm/chat/completions",
             vec![],
             r#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#,
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(pn::OPENAI));
+        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::OPENAI_CHAT));
     }
 
     #[test]
     fn detect_openai_responses_via_gateway_prefix() {
         // Same story for the Responses API behind a prefix — `input` + no
         // `messages` is the distinguishing shape signal.
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = json_post(
             "/proxy/openai/v1/responses",
             vec![],
@@ -227,7 +227,7 @@ mod tests {
         );
         assert_eq!(
             reg.detect(&req).map(|p| p.name()),
-            Some(pn::OPENAI_RESPONSES)
+            Some(wa::OPENAI_RESPONSES)
         );
     }
 
@@ -235,19 +235,19 @@ mod tests {
     fn detect_anthropic_via_shape_when_system_present() {
         // No anthropic-version header, gateway prefix path; top-level
         // `system` is the exclusive Anthropic signal.
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = json_post(
             "/proxy/anthropic/v1/messages",
             vec![],
             r#"{"model":"claude-3","messages":[{"role":"user","content":"hi"}],"max_tokens":100,"system":"be concise"}"#,
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(pn::ANTHROPIC));
+        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC_MESSAGES));
     }
 
     #[test]
     fn detect_anthropic_header_overrides_path() {
         // Header alone is enough — even an unusual path.
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = make_request(
             "POST",
             "/api/agents/run",
@@ -256,20 +256,20 @@ mod tests {
                 ("x-api-key", "sk-ant-abc"),
             ],
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(pn::ANTHROPIC));
+        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC_MESSAGES));
     }
 
     #[test]
     fn detect_none_for_anthropic_without_version_on_custom_path() {
         // A request that looks like OpenAI Chat on a weird path and has no
         // Anthropic headers should fall through shape to OpenAI.
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = json_post(
             "/weird/endpoint",
             vec![],
             r#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#,
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(pn::OPENAI));
+        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::OPENAI_CHAT));
     }
 
     #[test]
@@ -278,21 +278,21 @@ mod tests {
         // Anthropic's header-only Accept rule wins over OpenAI's path
         // Accept because Anthropic comes first in the registry and the
         // `anthropic-version` header is an unambiguous positive signal.
-        // OpenAI providers also Reject this request (header-level negative)
+        // OpenAI wire APIs also Reject this request (header-level negative)
         // so they couldn't win even without Anthropic's Accept.
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = json_post(
             "/v1/chat/completions",
             vec![("anthropic-version", "2023-06-01")],
             r#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#,
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(pn::ANTHROPIC));
+        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC_MESSAGES));
     }
 
     #[test]
     fn detect_none_for_non_llm_json_post() {
         // Generic JSON business API on the same host.
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = json_post("/api/users", vec![], r#"{"name":"alice"}"#);
         assert!(reg.detect(&req).is_none());
     }
@@ -301,7 +301,7 @@ mod tests {
     fn detect_shape_pass_requires_json_content_type() {
         // POST with a plausible OpenAI-shaped body but non-JSON Content-Type
         // must not trip shape-pass.
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         let req = make_request_body(
             "POST",
             "/weird/endpoint",
@@ -316,18 +316,18 @@ mod tests {
 
     #[test]
     fn find_by_name_round_trips() {
-        let reg = build_default_provider_registry();
+        let reg = build_default_wire_api_registry();
         assert_eq!(
-            reg.find_by_name(pn::ANTHROPIC).map(|p| p.name()),
-            Some(pn::ANTHROPIC)
+            reg.find_by_name(wa::ANTHROPIC_MESSAGES).map(|p| p.name()),
+            Some(wa::ANTHROPIC_MESSAGES)
         );
         assert_eq!(
-            reg.find_by_name(pn::OPENAI_RESPONSES).map(|p| p.name()),
-            Some(pn::OPENAI_RESPONSES)
+            reg.find_by_name(wa::OPENAI_RESPONSES).map(|p| p.name()),
+            Some(wa::OPENAI_RESPONSES)
         );
         assert_eq!(
-            reg.find_by_name(pn::OPENAI).map(|p| p.name()),
-            Some(pn::OPENAI)
+            reg.find_by_name(wa::OPENAI_CHAT).map(|p| p.name()),
+            Some(wa::OPENAI_CHAT)
         );
         assert!(reg.find_by_name("gemini").is_none());
     }

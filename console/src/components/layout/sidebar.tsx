@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils"
 import { useSidebarStore } from "@/stores/sidebar"
 
 /** Toolbar-level param keys that should be preserved across page navigation */
-const TOOLBAR_KEYS = ["preset", "start", "end", "provider", "model", "server_ip", "refresh"]
+const TOOLBAR_KEYS = ["preset", "start", "end", "wire_api", "model", "server_ip", "refresh"]
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Overview" },

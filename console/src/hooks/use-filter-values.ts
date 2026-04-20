@@ -13,8 +13,8 @@ function useFilterValues(endpoint: string) {
   })
 }
 
-export function useProviders() {
-  return useFilterValues("/api/filters/providers")
+export function useWireApis() {
+  return useFilterValues("/api/filters/wire_apis")
 }
 
 export function useModelNames() {

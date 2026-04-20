@@ -38,7 +38,7 @@ pub trait StorageBackend: Send + Sync {
     async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage>;
     async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>>;
     async fn query_turn_calls(&self, turn_id: &str) -> Result<Vec<TurnCallItem>>;
-    async fn query_distinct_providers(&self) -> Result<Vec<String>>;
+    async fn query_distinct_wire_apis(&self) -> Result<Vec<String>>;
     async fn query_distinct_models(&self) -> Result<Vec<String>>;
     async fn query_distinct_server_ips(&self) -> Result<Vec<String>>;
 

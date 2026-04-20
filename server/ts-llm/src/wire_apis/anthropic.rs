@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
-use crate::model::{FinishReason, Provider, RequestInfo, ResponseInfo, RouteVerdict};
+use crate::model::{FinishReason, RequestInfo, ResponseInfo, RouteVerdict, WireApi};
 
 /// Check whether the request carries an Anthropic-style API key, either via
 /// `x-api-key` (direct keys) or `Authorization: Bearer` (OAuth tokens issued
@@ -22,12 +22,12 @@ fn has_anthropic_api_key(req: &HttpRequestData) -> bool {
         .unwrap_or(false)
 }
 
-/// Provider implementation for Anthropic Messages API.
-pub struct AnthropicProvider;
+/// Wire-API implementation for Anthropic Messages API.
+pub struct AnthropicMessagesWireApi;
 
-impl Provider for AnthropicProvider {
+impl WireApi for AnthropicMessagesWireApi {
     fn name(&self) -> &'static str {
-        crate::provider_names::ANTHROPIC
+        super::ANTHROPIC_MESSAGES
     }
 
     fn classify_route(&self, req: &HttpRequestData) -> RouteVerdict {

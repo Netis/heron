@@ -8,7 +8,7 @@ pub struct TimeRange {
 
 #[derive(Debug, Clone, Default)]
 pub struct DimensionFilter {
-    pub providers: Vec<String>,
+    pub wire_apis: Vec<String>,
     pub models: Vec<String>,
     pub server_ips: Vec<String>,
 }
@@ -72,7 +72,7 @@ pub struct MetricsSummaryRow {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MetricsModelRow {
-    pub provider: String,
+    pub wire_api: String,
     pub model: String,
     pub request_count: u64,
     pub error_count: u64,
@@ -93,7 +93,7 @@ pub struct CallListItem {
     pub id: String,
     pub stream_id: String,
     pub request_time: i64,
-    pub provider: String,
+    pub wire_api: String,
     pub model: String,
     pub status_code: Option<u16>,
     pub is_stream: bool,
@@ -130,7 +130,7 @@ pub struct TurnListItem {
     pub start_time: i64,
     pub end_time: i64,
     pub duration_ms: u64,
-    pub provider: String,
+    pub wire_api: String,
     pub client_kind: String,
     pub primary_model: Option<String>,
     pub models_used: Vec<String>,
@@ -155,7 +155,7 @@ pub struct TurnDetail {
     pub stream_id: String,
     pub session_id: String,
     pub tenant_id: Option<String>,
-    pub provider: String,
+    pub wire_api: String,
     pub client_kind: String,
     pub start_time: i64,
     pub end_time: i64,
@@ -185,7 +185,7 @@ pub struct TurnCallItem {
     pub request_time: i64,
     pub response_time: Option<i64>,
     pub complete_time: Option<i64>,
-    pub provider: String,
+    pub wire_api: String,
     pub model: String,
     pub status_code: Option<u16>,
     pub is_stream: bool,
@@ -203,7 +203,7 @@ pub struct CallDetail {
     pub request_time: i64,
     pub response_time: Option<i64>,
     pub complete_time: Option<i64>,
-    pub provider: String,
+    pub wire_api: String,
     pub model: String,
     pub api_type: String,
     pub is_stream: bool,

@@ -15,7 +15,7 @@ pub struct CallsParams {
     pub start: i64,
     pub end: i64,
     #[serde(default)]
-    pub provider: Option<String>,
+    pub wire_api: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -62,7 +62,7 @@ pub async fn list(
 
     let query = CallsQuery {
         time_range: to_time_range(params.start, params.end),
-        filter: to_dimension_filter(&params.provider, &params.model, &params.server_ip),
+        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         status_codes,
         finish_reasons: parse_csv(&params.finish_reason),
         sort_by: params.sort_by,

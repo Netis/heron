@@ -22,7 +22,7 @@ export function useTurns({ page, pageSize, sortBy, sortOrder, status, clientKind
   return useQuery({
     queryKey: ["turns", {
       start, end, page, pageSize, sortBy, sortOrder,
-      provider: filters.provider, model: filters.model, serverIp: filters.serverIp,
+      wireApi: filters.wireApi, model: filters.model, serverIp: filters.serverIp,
       status, clientKind,
     }],
     queryFn: () =>
@@ -33,7 +33,7 @@ export function useTurns({ page, pageSize, sortBy, sortOrder, status, clientKind
         page_size: pageSize,
         sort_by: sortBy,
         sort_order: sortOrder,
-        provider: filters.provider || undefined,
+        wire_api: filters.wireApi || undefined,
         model: filters.model || undefined,
         server_ip: filters.serverIp || undefined,
         status: status || undefined,

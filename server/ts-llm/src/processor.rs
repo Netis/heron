@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::model::{ApiType, CallIdentity, LlmCall, LlmCallStart, LlmEvent};
 use crate::profile::ProfileRegistry;
-use crate::provider_registry::ProviderRegistry;
+use crate::wire_api_registry::WireApiRegistry;
 
 /// Default stale-pending-call timeout. Pending LLM calls older than this are
 /// evicted on every heartbeat and silently replaced (rather than warned)
@@ -20,9 +20,9 @@ const PENDING_STALE_TIMEOUT_US: i64 = 600_000_000;
 /// Pending LLM call waiting for response completion.
 struct PendingCall {
     request: HttpRequestData,
-    /// Stable `Provider::name()` of the provider that matched the request.
+    /// Stable `WireApi::name()` of the wire API that matched the request.
     /// Re-resolved against the registry on response arrival.
-    provider: &'static str,
+    wire_api: &'static str,
     model: String,
     is_stream: bool,
     tenant_id: Option<String>,
@@ -32,20 +32,20 @@ struct PendingCall {
 /// Processes ProtocolEvents and extracts LlmCall records.
 pub struct LlmProcessor {
     pending: HashMap<FlowKey, PendingCall>,
-    providers: Arc<ProviderRegistry>,
+    wire_apis: Arc<WireApiRegistry>,
     registry: Arc<ProfileRegistry>,
     metrics: MetricsWorker,
 }
 
 impl LlmProcessor {
     pub fn new(
-        providers: Arc<ProviderRegistry>,
+        wire_apis: Arc<WireApiRegistry>,
         registry: Arc<ProfileRegistry>,
         metrics: MetricsWorker,
     ) -> Self {
         Self {
             pending: HashMap::new(),
-            providers,
+            wire_apis,
             registry,
             metrics,
         }
@@ -77,20 +77,20 @@ impl LlmProcessor {
     }
 
     fn on_request(&mut self, req: HttpRequestData) -> Vec<LlmEvent> {
-        let extractor = match self.providers.detect(&req) {
+        let extractor = match self.wire_apis.detect(&req) {
             Some(p) => p,
             None => {
                 self.metrics.counter(Metric::LlmRequestsIgnored).inc();
                 return Vec::new();
             }
         };
-        let provider_name = extractor.name();
+        let wire_api_name = extractor.name();
         let info = extractor.extract_request(&req);
 
         let flow_key = req.flow_key.clone();
         let start = LlmCallStart {
             stream_id: req.flow_key.stream_id.clone(),
-            provider: provider_name,
+            wire_api: wire_api_name,
             model: info.model.clone(),
             is_stream: info.is_stream,
             server_ip: req.server_addr.0,
@@ -120,7 +120,7 @@ impl LlmProcessor {
             flow_key,
             PendingCall {
                 request: req,
-                provider: provider_name,
+                wire_api: wire_api_name,
                 model: info.model,
                 is_stream: info.is_stream,
                 tenant_id: info.tenant_id,
@@ -147,7 +147,7 @@ impl LlmProcessor {
             }
         };
 
-        let extractor = match self.providers.find_by_name(pending.provider) {
+        let extractor = match self.wire_apis.find_by_name(pending.wire_api) {
             Some(p) => p,
             None => {
                 // The registry changed underfoot — impossible today since the
@@ -155,8 +155,8 @@ impl LlmProcessor {
                 // guard against future mutability. Drop the call; the storage
                 // sink has the option of re-ingesting if needed.
                 warn!(
-                    provider = pending.provider,
-                    "pending provider vanished from registry — dropping response"
+                    wire_api = pending.wire_api,
+                    "pending wire_api vanished from registry — dropping response"
                 );
                 return None;
             }
@@ -207,7 +207,7 @@ impl LlmProcessor {
         Some(LlmCall {
             stream_id: pending.request.flow_key.stream_id.clone(),
             id,
-            provider: pending.provider,
+            wire_api: pending.wire_api,
             model,
             api_type: ApiType::Chat,
             tenant_id: pending.tenant_id,
@@ -291,7 +291,7 @@ impl LlmProcessor {
 mod tests {
     use super::*;
     use crate::model::FinishReason;
-    use crate::provider_names as pn;
+    use crate::wire_apis as wa;
     use bytes::Bytes;
     use std::net::IpAddr;
     use ts_protocol::net::FlowKey;
@@ -300,8 +300,8 @@ mod tests {
         std::sync::Arc::new(crate::profile::ProfileRegistry::new())
     }
 
-    fn providers() -> std::sync::Arc<crate::provider_registry::ProviderRegistry> {
-        std::sync::Arc::new(crate::providers::build_default_provider_registry())
+    fn wire_apis() -> std::sync::Arc<crate::wire_api_registry::WireApiRegistry> {
+        std::sync::Arc::new(crate::wire_apis::build_default_wire_api_registry())
     }
 
     fn test_metrics() -> MetricsWorker {
@@ -401,14 +401,14 @@ mod tests {
     #[test]
     fn test_openai_chat_non_streaming() {
         use serde_json::json;
-        let mut proc = LlmProcessor::new(providers(), empty_registry(), test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
 
         let req_body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
         let events = proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));
         assert_eq!(events.len(), 1);
         match &events[0] {
             LlmEvent::Start(s) => {
-                assert_eq!(s.provider, pn::OPENAI);
+                assert_eq!(s.wire_api, wa::OPENAI_CHAT);
                 assert_eq!(s.model, "gpt-4");
                 assert!(!s.is_stream);
             }
@@ -424,7 +424,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             LlmEvent::Complete { call, .. } => {
-                assert_eq!(call.provider, pn::OPENAI);
+                assert_eq!(call.wire_api, wa::OPENAI_CHAT);
                 assert_eq!(call.model, "gpt-4");
                 assert!(!call.is_stream);
                 assert_eq!(call.finish_reason, Some(FinishReason::Complete));
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn test_openai_chat_streaming() {
         use serde_json::json;
-        let mut proc = LlmProcessor::new(providers(), empty_registry(), test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
 
         let req_body = json!({"model": "gpt-4", "stream": true, "messages": [{"role": "user", "content": "hi"}]});
         let events = proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));
@@ -509,14 +509,14 @@ mod tests {
     #[test]
     fn test_anthropic_streaming() {
         use serde_json::json;
-        let mut proc = LlmProcessor::new(providers(), empty_registry(), test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
 
         let req_body = json!({"model": "claude-3-opus", "stream": true, "messages": [{"role": "user", "content": "hi"}]});
         let events = proc.process(ProtocolEvent::HttpRequest(anthropic_request(&req_body)));
         assert_eq!(events.len(), 1);
         match &events[0] {
             LlmEvent::Start(s) => {
-                assert_eq!(s.provider, pn::ANTHROPIC);
+                assert_eq!(s.wire_api, wa::ANTHROPIC_MESSAGES);
                 assert!(s.is_stream);
             }
             _ => panic!("expected Start"),
@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             LlmEvent::Complete { call, .. } => {
-                assert_eq!(call.provider, pn::ANTHROPIC);
+                assert_eq!(call.wire_api, wa::ANTHROPIC_MESSAGES);
                 assert!(call.is_stream);
                 assert_eq!(call.finish_reason, Some(FinishReason::Complete));
                 assert_eq!(call.input_tokens, Some(10));
@@ -586,7 +586,7 @@ mod tests {
     #[test]
     fn test_response_without_request_ignored() {
         use serde_json::json;
-        let mut proc = LlmProcessor::new(providers(), empty_registry(), test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
 
         let resp_body = json!({"model": "gpt-4", "choices": [{"finish_reason": "stop"}]});
         let events = proc.process(ProtocolEvent::HttpResponse(http_response(&resp_body)));
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn test_cleanup_stale_pending() {
         use serde_json::json;
-        let mut proc = LlmProcessor::new(providers(), empty_registry(), test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
 
         let req_body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
         proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));
@@ -620,7 +620,7 @@ mod tests {
     fn cleanup_stale_is_per_stream() {
         use crate::model::LlmEvent;
         use serde_json::json;
-        let mut proc = LlmProcessor::new(providers(), empty_registry(), test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
 
         let body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
 
@@ -665,7 +665,7 @@ mod tests {
     #[test]
     fn heartbeat_triggers_stale_cleanup() {
         use serde_json::json;
-        let mut proc = LlmProcessor::new(providers(), empty_registry(), test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
 
         let req_body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
         proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn stale_pending_is_replaced_silently_on_reuse() {
         use serde_json::json;
-        let mut proc = LlmProcessor::new(providers(), empty_registry(), test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
 
         // First request establishes a pending entry at t=1s.
         let req_body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
@@ -712,7 +712,7 @@ mod tests {
 
     #[test]
     fn test_non_llm_request_ignored() {
-        let mut proc = LlmProcessor::new(providers(), empty_registry(), test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
         let (client, server) = addr();
         let req = HttpRequestData {
             flow_key: flow(),
@@ -736,7 +736,7 @@ mod tests {
         use std::sync::Arc;
 
         let registry = Arc::new(build_default_registry());
-        let mut proc = LlmProcessor::new(providers(), registry, test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), registry, test_metrics());
 
         let (client, server) = addr();
         let body = serde_json::json!({
@@ -796,7 +796,7 @@ mod tests {
         use std::sync::Arc;
 
         let registry = Arc::new(build_default_registry());
-        let mut proc = LlmProcessor::new(providers(), registry, test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), registry, test_metrics());
 
         let req_body = serde_json::json!({
             "model": "gpt-4",
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn test_headers_and_response_id_passed_through() {
         use serde_json::json;
-        let mut proc = LlmProcessor::new(providers(), empty_registry(), test_metrics());
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
 
         let req_body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
         proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));

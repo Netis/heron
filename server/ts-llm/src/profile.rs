@@ -7,7 +7,7 @@ pub trait ClientProfile: Send + Sync {
     fn name(&self) -> &'static str;
 
     /// Return true iff this profile handles the given call.
-    /// Implementations typically check `provider` + User-Agent / Originator header.
+    /// Implementations typically check `wire_api` + User-Agent / Originator header.
     fn matches(&self, call: &LlmCall) -> bool;
 
     /// Extract the (session_id, optional turn_id) pair.
@@ -117,14 +117,14 @@ impl Default for ProfileRegistry {
 mod tests {
     use super::*;
     use crate::model::{ApiType, LlmCall};
-    use crate::provider_names as pn;
+    use crate::wire_apis as wa;
     use std::net::IpAddr;
 
     fn stub_call(ua: &str) -> LlmCall {
         LlmCall {
             stream_id: String::new(),
             id: "c".into(),
-            provider: pn::ANTHROPIC,
+            wire_api: wa::ANTHROPIC_MESSAGES,
             model: "m".into(),
             api_type: ApiType::Chat,
             tenant_id: None,

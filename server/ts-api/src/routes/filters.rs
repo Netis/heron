@@ -12,10 +12,10 @@ struct FilterValues {
     values: Vec<String>,
 }
 
-pub async fn providers(
+pub async fn wire_apis(
     State(storage): State<Arc<dyn StorageBackend>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let values = storage.query_distinct_providers().await?;
+    let values = storage.query_distinct_wire_apis().await?;
     Ok(ApiResponse::ok(FilterValues { values }))
 }
 

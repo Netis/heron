@@ -22,7 +22,7 @@ pub struct LlmMetric {
     /// Aggregation granularity.
     pub granularity: &'static str,
     /// Dimension values ("*" = wildcard / all).
-    pub provider: String,
+    pub wire_api: String,
     pub model: String,
     pub server_ip: String,
 
@@ -152,7 +152,7 @@ impl fmt::Display for LlmMetric {
             self.granularity,
             format_ts(self.timestamp_us),
             self.stream_id,
-            self.provider,
+            self.wire_api,
             self.model,
             self.server_ip,
         )?;

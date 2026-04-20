@@ -58,7 +58,7 @@ TokenScope/
 │   ├── ts-common/               # Shared config, error types
 │   ├── ts-capture/              # libpcap + cloud-probe ZMQ receiver → RawPacket
 │   ├── ts-protocol/             # net (L2-L4) + http (HTTP/SSE) parsing
-│   ├── ts-llm/                  # Provider detection + extractors → LlmCall
+│   ├── ts-llm/                  # Wire-API detection + extractors → LlmCall
 │   ├── ts-turn/                 # Client profiles + state machine → LlmTurn
 │   ├── ts-metrics/              # Sliding-window aggregation → LlmMetric
 │   ├── ts-storage/              # StorageBackend trait + DuckDB/PG/ClickHouse + write buffer

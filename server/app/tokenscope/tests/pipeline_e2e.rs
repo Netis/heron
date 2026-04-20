@@ -22,7 +22,7 @@ use ts_common::config::{
     StorageSinkConfig,
 };
 use ts_common::internal_metrics::{Metric, MetricsSystem};
-use ts_llm::provider_names as pn;
+use ts_llm::wire_apis as wa;
 use ts_storage::create_backend;
 
 fn fixture(name: &str) -> Option<PathBuf> {
@@ -187,17 +187,17 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     assert!(turns >= 1, "expected >=1 llm_turns, got {turns}");
     assert!(metrics >= 1, "expected >=1 llm_metrics, got {metrics}");
 
-    // Provider ground truth: fixture is an anthropic Messages API capture.
-    let call_providers: Vec<String> = conn
-        .prepare("SELECT DISTINCT provider FROM llm_calls")
+    // Wire-API ground truth: fixture is an anthropic Messages API capture.
+    let call_wire_apis: Vec<String> = conn
+        .prepare("SELECT DISTINCT wire_api FROM llm_calls")
         .unwrap()
         .query_map([], |r| r.get::<_, String>(0))
         .unwrap()
         .map(Result::unwrap)
         .collect();
     assert!(
-        call_providers.iter().any(|p| p == pn::ANTHROPIC),
-        "expected anthropic in llm_calls providers, got {call_providers:?}"
+        call_wire_apis.iter().any(|p| p == wa::ANTHROPIC_MESSAGES),
+        "expected anthropic-messages in llm_calls wire_apis, got {call_wire_apis:?}"
     );
 
     // A single complete claude-cli turn is the documented ground truth
@@ -205,7 +205,7 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     let (anthropic_turns, status, client_kind): (i64, String, String) = conn
         .query_row(
             "SELECT COUNT(*), MIN(status), MIN(client_kind) \
-             FROM llm_turns WHERE provider = 'anthropic'",
+             FROM llm_turns WHERE wire_api = 'anthropic-messages'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -219,7 +219,7 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     let anthropic_requests_10s: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(request_count), 0) FROM llm_metrics \
-             WHERE granularity = '10s' AND provider = 'anthropic'",
+             WHERE granularity = '10s' AND wire_api = 'anthropic-messages'",
             [],
             |r| r.get(0),
         )
@@ -251,8 +251,8 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     // belong to unfinalised turns in other fixtures).
     let (turn_call_count, anthropic_calls): (i64, i64) = conn
         .query_row(
-            "SELECT (SELECT MIN(call_count) FROM llm_turns WHERE provider = 'anthropic'), \
-                    (SELECT COUNT(*) FROM llm_calls WHERE provider = 'anthropic')",
+            "SELECT (SELECT MIN(call_count) FROM llm_turns WHERE wire_api = 'anthropic-messages'), \
+                    (SELECT COUNT(*) FROM llm_calls WHERE wire_api = 'anthropic-messages')",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -266,7 +266,7 @@ async fn claude_cli_pcap_populates_all_three_tables() {
 /// Drives two different pcap fixtures through two capture sources
 /// simultaneously and asserts that:
 ///
-/// * Both providers land in `llm_calls` — proves each sub-pipeline reached
+/// * Both wire APIs land in `llm_calls` — proves each sub-pipeline reached
 ///   the shared sink independently.
 /// * The anthropic-only fixture produces exactly 1 complete anthropic turn
 ///   (matches the single-source E2E's ground truth), which rules out
@@ -285,20 +285,20 @@ async fn two_pcaps_isolated_but_metrics_merged() {
 
     let conn = Connection::open(&db_path).expect("reopen duckdb for verify");
 
-    let providers: Vec<String> = conn
-        .prepare("SELECT DISTINCT provider FROM llm_calls ORDER BY 1")
+    let wire_apis: Vec<String> = conn
+        .prepare("SELECT DISTINCT wire_api FROM llm_calls ORDER BY 1")
         .unwrap()
         .query_map([], |r| r.get::<_, String>(0))
         .unwrap()
         .map(Result::unwrap)
         .collect();
     assert!(
-        providers.iter().any(|p| p == pn::ANTHROPIC),
-        "expected anthropic in llm_calls providers, got {providers:?}"
+        wire_apis.iter().any(|p| p == wa::ANTHROPIC_MESSAGES),
+        "expected anthropic-messages in llm_calls wire_apis, got {wire_apis:?}"
     );
     assert!(
-        providers.iter().any(|p| p == pn::OPENAI_RESPONSES),
-        "expected openai-responses in llm_calls providers, got {providers:?}"
+        wire_apis.iter().any(|p| p == wa::OPENAI_RESPONSES),
+        "expected openai-responses in llm_calls wire_apis, got {wire_apis:?}"
     );
 
     // The anthropic fixture alone produces exactly 1 complete turn. If the
@@ -307,7 +307,7 @@ async fn two_pcaps_isolated_but_metrics_merged() {
     let anthropic_turns: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM llm_turns \
-             WHERE provider = 'anthropic' AND status = 'complete'",
+             WHERE wire_api = 'anthropic-messages' AND status = 'complete'",
             [],
             |r| r.get(0),
         )
@@ -322,7 +322,7 @@ async fn two_pcaps_isolated_but_metrics_merged() {
     // anthropic one.
     let openai_turns: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM llm_turns WHERE provider = 'openai-responses'",
+            "SELECT COUNT(*) FROM llm_turns WHERE wire_api = 'openai-responses'",
             [],
             |r| r.get(0),
         )
@@ -332,23 +332,23 @@ async fn two_pcaps_isolated_but_metrics_merged() {
         "expected >=1 openai-responses turn, got {openai_turns}"
     );
 
-    // Per-capture metrics: both providers must appear in llm_metrics and
+    // Per-capture metrics: both wire APIs must appear in llm_metrics and
     // each must have been emitted by its own stream. Stream IDs are derived
     // from the pcap file basenames.
-    let metric_providers: Vec<String> = conn
-        .prepare("SELECT DISTINCT provider FROM llm_metrics ORDER BY 1")
+    let metric_wire_apis: Vec<String> = conn
+        .prepare("SELECT DISTINCT wire_api FROM llm_metrics ORDER BY 1")
         .unwrap()
         .query_map([], |r| r.get::<_, String>(0))
         .unwrap()
         .map(Result::unwrap)
         .collect();
     assert!(
-        metric_providers.iter().any(|p| p == pn::ANTHROPIC),
-        "expected anthropic in llm_metrics providers, got {metric_providers:?}"
+        metric_wire_apis.iter().any(|p| p == wa::ANTHROPIC_MESSAGES),
+        "expected anthropic-messages in llm_metrics wire_apis, got {metric_wire_apis:?}"
     );
     assert!(
-        metric_providers.iter().any(|p| p == pn::OPENAI_RESPONSES),
-        "expected openai-responses in llm_metrics providers, got {metric_providers:?}"
+        metric_wire_apis.iter().any(|p| p == wa::OPENAI_RESPONSES),
+        "expected openai-responses in llm_metrics wire_apis, got {metric_wire_apis:?}"
     );
 
     let stream_ids: Vec<String> = conn

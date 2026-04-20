@@ -7,7 +7,7 @@ import type { MetricsSummary, TimeseriesData, ModelsData } from "@/types/api"
 function useFilterParams() {
   const filters = useToolbarStore((s) => s.filters)
   return {
-    provider: filters.provider || undefined,
+    wire_api: filters.wireApi || undefined,
     model: filters.model || undefined,
     server_ip: filters.serverIp || undefined,
   }

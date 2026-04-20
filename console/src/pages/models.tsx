@@ -8,7 +8,7 @@ import type { MetricsModelRow, TimeseriesData } from "@/types/api"
 
 type SortKey =
   | "model"
-  | "provider"
+  | "wire_api"
   | "request_count"
   | "error_rate"
   | "ttfb_avg"
@@ -26,7 +26,7 @@ function getErrorRate(m: MetricsModelRow): number {
 
 function getSortValue(m: MetricsModelRow, key: SortKey): number | string {
   if (key === "error_rate") return getErrorRate(m)
-  if (key === "model" || key === "provider") return m[key]
+  if (key === "model" || key === "wire_api") return m[key]
   return (m[key] as number) ?? 0
 }
 
@@ -139,7 +139,7 @@ export function ModelsPage() {
             <thead>
               <tr className="border-b border-border">
                 <th className="px-4 py-3 text-left"><SortHeader label="Model" field="model" align="left" /></th>
-                <th className="px-3 py-3 text-left"><SortHeader label="Provider" field="provider" align="left" /></th>
+                <th className="px-3 py-3 text-left"><SortHeader label="Wire API" field="wire_api" align="left" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="Requests" field="request_count" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="Error %" field="error_rate" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="TTFB avg" field="ttfb_avg" align="right" /></th>
@@ -177,7 +177,7 @@ export function ModelsPage() {
                           {m.model}
                         </span>
                       </td>
-                      <td className="px-3 py-2.5 text-muted-foreground">{m.provider}</td>
+                      <td className="px-3 py-2.5 text-muted-foreground">{m.wire_api}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(m.request_count)}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
                         <span

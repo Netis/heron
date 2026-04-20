@@ -41,9 +41,9 @@ pub async fn timeseries(
         return Err(ApiError::InvalidParam("fields is required".to_string()));
     }
     if let Some(ref gb) = params.group_by {
-        if gb != "provider" && gb != "model" {
+        if gb != "wire_api" && gb != "model" {
             return Err(ApiError::InvalidParam(
-                "group_by must be 'provider' or 'model'".to_string(),
+                "group_by must be 'wire_api' or 'model'".to_string(),
             ));
         }
     }
@@ -51,7 +51,7 @@ pub async fn timeseries(
     let query = MetricsTimeseriesQuery {
         time_range: to_time_range(params.start, params.end),
         granularity: params.granularity,
-        filter: to_dimension_filter(&params.provider, &params.model, &params.server_ip),
+        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         fields: fields.clone(),
         group_by: params.group_by,
     };
@@ -108,7 +108,7 @@ pub async fn summary(
 ) -> Result<impl IntoResponse, ApiError> {
     let query = MetricsSummaryQuery {
         time_range: to_time_range(params.start, params.end),
-        filter: to_dimension_filter(&params.provider, &params.model, &params.server_ip),
+        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
     };
     let row = storage.query_metrics_summary(&query).await?;
     Ok(ApiResponse::ok(row))
@@ -125,7 +125,7 @@ pub async fn models(
 ) -> Result<impl IntoResponse, ApiError> {
     let query = MetricsModelsQuery {
         time_range: to_time_range(params.start, params.end),
-        filter: to_dimension_filter(&params.provider, &params.model, &params.server_ip),
+        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         sort_by: params.sort_by,
         sort_order: params.sort_order,
         limit: params.limit,

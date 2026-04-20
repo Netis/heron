@@ -49,9 +49,10 @@ impl fmt::Display for FinishReason {
 pub struct LlmCall {
     pub stream_id: String,
     pub id: String,
-    /// Stable provider identifier (e.g. "anthropic", "openai", "openai-responses").
-    /// Sourced from `Provider::name()`; persisted verbatim to storage.
-    pub provider: &'static str,
+    /// Stable wire-API identifier (e.g. "anthropic-messages", "openai-chat",
+    /// "openai-responses"). Sourced from `WireApi::name()`; persisted verbatim
+    /// to storage. This is the HTTP API shape, not the vendor.
+    pub wire_api: &'static str,
     pub model: String,
     pub api_type: ApiType,
     pub tenant_id: Option<String>,
@@ -139,8 +140,8 @@ pub enum LlmEvent {
 #[derive(Debug, Clone)]
 pub struct LlmCallStart {
     pub stream_id: String,
-    /// Stable provider identifier (see `LlmCall::provider`).
-    pub provider: &'static str,
+    /// Stable wire-API identifier (see `LlmCall::wire_api`).
+    pub wire_api: &'static str,
     pub model: String,
     pub is_stream: bool,
     pub server_ip: IpAddr,
@@ -152,12 +153,12 @@ impl fmt::Display for LlmCallStart {
         write!(
             f,
             "[CallStart] {} | {} | stream={} | server={}",
-            self.provider, self.model, self.is_stream, self.server_ip,
+            self.wire_api, self.model, self.is_stream, self.server_ip,
         )
     }
 }
 
-/// Information extracted from a provider-specific request body.
+/// Information extracted from a wire-API-specific request body.
 #[derive(Debug, Clone)]
 pub struct RequestInfo {
     pub model: String,
@@ -165,7 +166,7 @@ pub struct RequestInfo {
     pub tenant_id: Option<String>,
 }
 
-/// Information extracted from a provider-specific response (body or SSE).
+/// Information extracted from a wire-API-specific response (body or SSE).
 #[derive(Debug, Clone)]
 pub struct ResponseInfo {
     pub model: Option<String>,
@@ -180,35 +181,36 @@ pub struct ResponseInfo {
     pub response_id: Option<String>,
 }
 
-/// Verdict returned by `Provider::classify_route` — a three-valued outcome
+/// Verdict returned by `WireApi::classify_route` — a three-valued outcome
 /// so route information can express both "this is me" and "this is not me"
-/// without having to re-ask every provider.
+/// without having to re-ask every wire API.
 ///
 /// The registry uses these to short-circuit on `Accept`, skip `Reject`
 /// candidates entirely in the shape pass, and defer `Unknown` candidates
 /// for structural matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteVerdict {
-    /// Method + URI + headers are enough to identify this provider.
+    /// Method + URI + headers are enough to identify this wire API.
     Accept,
-    /// Method + URI + headers are enough to rule this provider out.
+    /// Method + URI + headers are enough to rule this wire API out.
     Reject,
     /// Route alone is ambiguous — defer to `matches_shape`.
     Unknown,
 }
 
-/// Trait for provider-specific detection + field extraction.
+/// Trait for wire-API-specific detection + field extraction.
 ///
-/// Each LLM API provider (OpenAI, Anthropic, etc.) implements this trait
-/// to handle its wire format differences while producing unified output.
-/// Providers are registered in a `ProviderRegistry`, which runs a two-pass
-/// detection: `classify_route` first (cheap, inspects method/URI/headers),
-/// then `matches_shape` on Unknown candidates (reads the parsed JSON body).
-/// Once a provider wins, the registry uses its extraction methods for the
+/// Each LLM HTTP wire API (OpenAI Chat Completions, OpenAI Responses,
+/// Anthropic Messages, etc.) implements this trait to handle its on-wire
+/// format differences while producing unified output. Wire APIs are
+/// registered in a `WireApiRegistry`, which runs a two-pass detection:
+/// `classify_route` first (cheap, inspects method/URI/headers), then
+/// `matches_shape` on Unknown candidates (reads the parsed JSON body).
+/// Once a wire API wins, the registry uses its extraction methods for the
 /// entire request/response lifecycle.
-pub trait Provider: Send + Sync {
-    /// Stable identifier (e.g. "anthropic"). Persisted to storage as
-    /// `LlmCall.provider`; changing this value is a data migration.
+pub trait WireApi: Send + Sync {
+    /// Stable identifier (e.g. "anthropic-messages"). Persisted to storage
+    /// as `LlmCall.wire_api`; changing this value is a data migration.
     fn name(&self) -> &'static str;
 
     /// Pass 1 of detection: inspect method + URI + headers only.
@@ -217,7 +219,7 @@ pub trait Provider: Send + Sync {
 
     /// Pass 2 of detection: inspect the parsed JSON body. Called by the
     /// registry only when `classify_route` returned `Unknown` for every
-    /// provider, and the body parses as JSON. `body` is shared across all
+    /// wire API, and the body parses as JSON. `body` is shared across all
     /// candidates (parsed once per request).
     fn matches_shape(
         &self,
@@ -247,7 +249,7 @@ pub fn truncate_str(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod extension_tests {
     use super::*;
-    use crate::provider_names as pn;
+    use crate::wire_apis as wa;
     use std::net::IpAddr;
     use std::sync::Arc;
 
@@ -269,7 +271,7 @@ mod extension_tests {
         let call = LlmCall {
             stream_id: String::new(),
             id: "c".into(),
-            provider: pn::ANTHROPIC,
+            wire_api: wa::ANTHROPIC_MESSAGES,
             model: "claude".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -318,7 +320,7 @@ mod extension_tests {
         let call = LlmCall {
             stream_id: String::new(),
             id: "c1".into(),
-            provider: pn::ANTHROPIC,
+            wire_api: wa::ANTHROPIC_MESSAGES,
             model: "claude-sonnet".into(),
             api_type: ApiType::Chat,
             tenant_id: None,
@@ -360,7 +362,7 @@ impl fmt::Display for LlmCall {
             self.client_port,
             self.server_ip,
             self.server_port,
-            self.provider,
+            self.wire_api,
             self.model,
             self.request_path,
         )?;

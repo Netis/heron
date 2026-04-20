@@ -182,8 +182,8 @@ export function RequestDetailPanel({ id, onClose, onNavigate, hasPrev, hasNext }
             <>
               {/* Summary cards */}
               <div className="grid grid-cols-4 gap-3 p-4">
-                <SummaryCard label="Provider / Model">
-                  <div>{detail.provider}</div>
+                <SummaryCard label="Wire API / Model">
+                  <div>{detail.wire_api}</div>
                   <div className="truncate text-xs text-muted-foreground" title={detail.model}>
                     {detail.model}
                   </div>

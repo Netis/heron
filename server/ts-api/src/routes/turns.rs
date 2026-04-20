@@ -15,7 +15,7 @@ pub struct TurnsParams {
     pub start: i64,
     pub end: i64,
     #[serde(default)]
-    pub provider: Option<String>,
+    pub wire_api: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     /// Accepted for API symmetry with calls/metrics but ignored — llm_turns
@@ -57,7 +57,7 @@ pub async fn list(
 
     let query = TurnsQuery {
         time_range: to_time_range(params.start, params.end),
-        filter: to_dimension_filter(&params.provider, &params.model, &params.server_ip),
+        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         statuses: parse_csv(&params.status),
         client_kinds: parse_csv(&params.client_kind),
         sort_by: params.sort_by,

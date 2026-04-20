@@ -3,7 +3,7 @@
 use duckdb::Connection;
 use ts_llm::model::{ApiType, LlmCall};
 use ts_llm::profiles::build_default_registry;
-use ts_llm::provider_names as pn;
+use ts_llm::wire_apis as wa;
 
 use crate::ui::{
     clear_screen, fmt_duration_ms, fmt_opt, fmt_tokens, pretty_json, read_line, truncate,
@@ -14,7 +14,7 @@ struct TurnSummary {
     turn_id: String,
     session_id: String,
     start_time: String,
-    provider: String,
+    wire_api: String,
     client_kind: String,
     call_count: u32,
     duration_ms: u64,
@@ -27,7 +27,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<TurnSummary> {
     let sql = format!(
         "SELECT turn_id, session_id, \
          strftime(start_time, '%m-%d %H:%M:%S'), \
-         provider, client_kind, call_count, duration_ms, \
+         wire_api, client_kind, call_count, duration_ms, \
          total_input_tokens, total_output_tokens, status \
          FROM llm_turns ORDER BY start_time DESC LIMIT {limit}"
     );
@@ -39,7 +39,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<TurnSummary> {
                 turn_id: row.get(0)?,
                 session_id: row.get(1)?,
                 start_time: row.get(2)?,
-                provider: row.get(3)?,
+                wire_api: row.get(3)?,
                 client_kind: row.get(4)?,
                 call_count: row.get(5)?,
                 duration_ms: row.get(6)?,
@@ -77,7 +77,7 @@ fn print_list(turns: &[TurnSummary]) {
         "START",
         "TURN_ID",
         "SESSION_ID",
-        "PROVIDER",
+        "WIRE_API",
         "CLIENT",
         "CALLS",
         "DURATION",
@@ -92,7 +92,7 @@ fn print_list(turns: &[TurnSummary]) {
             t.start_time,
             truncate(&t.turn_id, 22),
             truncate(&t.session_id, 22),
-            truncate(&t.provider, 10),
+            truncate(&t.wire_api, 10),
             truncate(&t.client_kind, 12),
             t.call_count,
             fmt_duration_ms(t.duration_ms),
@@ -108,7 +108,7 @@ struct TurnDetail {
     turn_id: String,
     session_id: String,
     tenant_id: Option<String>,
-    provider: String,
+    wire_api: String,
     client_kind: String,
     start_time: String,
     end_time: String,
@@ -131,7 +131,7 @@ struct TurnDetail {
 }
 
 fn load_detail(conn: &Connection, turn_id: &str) -> Option<TurnDetail> {
-    let sql = "SELECT turn_id, session_id, tenant_id, provider, client_kind, \
+    let sql = "SELECT turn_id, session_id, tenant_id, wire_api, client_kind, \
                CAST(start_time AS VARCHAR), CAST(end_time AS VARCHAR), \
                duration_ms, call_count, models_used, subagents_used, \
                total_input_tokens, total_output_tokens, total_cache_read_input_tokens, \
@@ -148,7 +148,7 @@ fn load_detail(conn: &Connection, turn_id: &str) -> Option<TurnDetail> {
             turn_id: row.get(0)?,
             session_id: row.get(1)?,
             tenant_id: row.get(2)?,
-            provider: row.get(3)?,
+            wire_api: row.get(3)?,
             client_kind: row.get(4)?,
             start_time: row.get(5)?,
             end_time: row.get(6)?,
@@ -245,7 +245,7 @@ fn extract_with_profile(
     let call = LlmCall {
         stream_id: String::new(),
         id: String::new(),
-        provider: pn::ANTHROPIC,
+        wire_api: wa::ANTHROPIC_MESSAGES,
         model: String::new(),
         api_type: ApiType::Chat,
         tenant_id: None,
@@ -286,7 +286,7 @@ fn print_detail(conn: &Connection, d: &TurnDetail, calls: &[ChildCall]) {
     println!("  Turn ID:        {}", d.turn_id);
     println!("  Session ID:     {}", d.session_id);
     println!("  Tenant:         {}", fmt_opt(d.tenant_id.as_deref()));
-    println!("  Provider:       {}", d.provider);
+    println!("  Wire API:       {}", d.wire_api);
     println!("  Client Kind:    {}", d.client_kind);
     println!("  Start:          {}", d.start_time);
     println!("  End:            {}", d.end_time);
