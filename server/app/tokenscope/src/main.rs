@@ -99,6 +99,28 @@ fn init_logger(color: &Color, verbose: u8) {
     }
 }
 
+/// Resolve on the first of Ctrl+C, SIGTERM, or SIGHUP. Returns the signal
+/// name so the caller can log which one fired. `tmux kill-session` (used by
+/// `just demo stop`) sends SIGHUP — without catching it, Rust's default
+/// aborts the process before Drop runs, leaving pcap dumps truncated.
+#[cfg(unix)]
+async fn wait_shutdown_signal() -> &'static str {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    let mut hup = signal(SignalKind::hangup()).expect("install SIGHUP handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => "SIGINT",
+        _ = term.recv() => "SIGTERM",
+        _ = hup.recv() => "SIGHUP",
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_shutdown_signal() -> &'static str {
+    let _ = tokio::signal::ctrl_c().await;
+    "Ctrl+C"
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -354,8 +376,8 @@ async fn main() {
         // observes its final drain.
         let mut supervisor = tokio::spawn(Pipeline::supervise(stage_handles));
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("received Ctrl+C, stopping...");
+            sig = wait_shutdown_signal() => {
+                tracing::info!("received {sig}, stopping...");
                 cancel.cancel();
             }
             _ = async {
@@ -403,10 +425,8 @@ async fn main() {
         );
         tracing::info!("tokenscope ready, press Ctrl+C to stop");
 
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => tracing::info!("received Ctrl+C, shutting down..."),
-            Err(e) => tracing::error!("failed to listen for Ctrl+C: {e}"),
-        }
+        let sig = wait_shutdown_signal().await;
+        tracing::info!("received {sig}, shutting down...");
         cancel.cancel();
     }
 

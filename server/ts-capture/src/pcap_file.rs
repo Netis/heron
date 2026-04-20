@@ -106,6 +106,9 @@ impl CaptureSource for PcapFileSource {
                 }
             }
 
+            if let Some(d) = dumper.as_mut() {
+                d.flush_all();
+            }
             tracing::info!("pcap-file: finished reading {} packets", count);
             Ok(())
         })

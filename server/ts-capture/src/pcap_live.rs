@@ -240,6 +240,12 @@ impl CaptureSource for PcapLiveSource {
 
             // Final stats update and log.
             update_drop_stats(&mut cap, &mut last_dropped, &metrics);
+            // Explicit flush before Drop as defense-in-depth: if the runtime
+            // aborts this task without running Drop, the on-disk pcap file is
+            // still well-formed up to the last completed packet.
+            if let Some(d) = dumper.as_mut() {
+                d.flush_all();
+            }
             if let Ok(stats) = cap.stats() {
                 tracing::info!(
                     "pcap-live: stopped after {} packets (pcap stats: received={}, dropped={}, if_dropped={})",

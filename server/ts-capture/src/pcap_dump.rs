@@ -113,6 +113,22 @@ impl PacketDumper {
         entry.file.write(&packet);
     }
 
+    /// Flush every open stream's stdio buffer to the kernel. Cheap; safe to
+    /// call from the shutdown path to bound data loss on hard termination.
+    /// Flush errors are logged+counted like any other dump error but never
+    /// propagated.
+    pub fn flush_all(&mut self) {
+        let mut errs: Vec<(String, String)> = Vec::new();
+        for (sid, w) in self.writers.iter_mut() {
+            if let Err(e) = w.file.flush() {
+                errs.push((sid.clone(), e.to_string()));
+            }
+        }
+        for (sid, e) in errs {
+            self.note_error(&format!("pcap-dump: flush failed for stream '{sid}': {e}"));
+        }
+    }
+
     fn open_stream(&mut self, pkt: &RawPacket) -> Option<StreamWriter> {
         let path = match self.resolve_path(&pkt.stream_id) {
             Ok(p) => p,

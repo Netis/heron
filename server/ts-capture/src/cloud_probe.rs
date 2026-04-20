@@ -217,6 +217,9 @@ impl CaptureSource for CloudProbeSource {
                                                 tracing::debug!(
                                                     "cloud-probe: channel closed, stopping"
                                                 );
+                                                if let Some(d) = dumper.as_mut() {
+                                                    d.flush_all();
+                                                }
                                                 log_summary(
                                                     &endpoint, batch_count, pkt_count, hb_count,
                                                 );
@@ -236,6 +239,9 @@ impl CaptureSource for CloudProbeSource {
                                             tracing::debug!(
                                                 "cloud-probe: channel closed, stopping"
                                             );
+                                            if let Some(d) = dumper.as_mut() {
+                                                d.flush_all();
+                                            }
                                             log_summary(
                                                 &endpoint, batch_count, pkt_count, hb_count,
                                             );
@@ -297,6 +303,9 @@ impl CaptureSource for CloudProbeSource {
             }
         }
 
+        if let Some(d) = dumper.as_mut() {
+            d.flush_all();
+        }
         log_summary(&endpoint, batch_count, pkt_count, hb_count);
         Ok(())
     }
