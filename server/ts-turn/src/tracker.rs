@@ -3,7 +3,7 @@
 //! Each `(stream_id, session_id)` owns a `SessionBuffer` that holds calls
 //! sorted by `request_time` until a main-agent terminal call appears and its
 //! grace window elapses. On grace expiry the buffer is partitioned at each
-//! terminal and every partition becomes one `LlmTurn`. Partitions that
+//! terminal and every partition becomes one `AgentTurn`. Partitions that
 //! contain no `is_user_turn_start = Some(true)` call are discarded.
 
 use std::collections::{BTreeMap, HashMap};
@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use ts_common::internal_metrics::{Metric, MetricsWorker};
-use ts_llm::model::{FinishReason, IdentifiedCall};
-use ts_llm::profile::{ClientProfile, ProfileRegistry};
+use ts_llm::model::{AgentCall, FinishReason};
+use ts_llm::profile::{AgentProfile, AgentProfileRegistry};
 
-use crate::model::{LlmTurn, TurnStatus};
+use crate::model::{AgentTurn, TurnStatus};
 
 const FINAL_ANSWER_PREVIEW_CHARS: usize = 500;
 const USER_INPUT_PREVIEW_CHARS: usize = 500;
@@ -62,12 +62,12 @@ impl Default for TrackerConfig {
 /// events were removed when the buffer model replaced ActiveTurn (04b §6.4).
 #[derive(Debug, Clone)]
 pub enum TurnEvent {
-    Completed(LlmTurn),
+    Completed(AgentTurn),
 }
 
 #[derive(Debug)]
 struct BufferedCall {
-    ic: IdentifiedCall,
+    ic: AgentCall,
     /// Wall-clock `Instant` at the moment ingest stored this call. Each
     /// terminal's grace is checked against its own arrival time **in
     /// wall-clock**, not event time — grace measures pipeline fan-in jitter,
@@ -105,7 +105,7 @@ struct SessionBuffer {
 ///   fast-forward another stream's idle/gc horizon.
 /// * `Instant` taken at ingest / advance — wall-clock. Used only for grace.
 pub struct TurnTracker {
-    registry: Arc<ProfileRegistry>,
+    registry: Arc<AgentProfileRegistry>,
     config: TrackerConfig,
     buffers: HashMap<(String, String), SessionBuffer>,
     /// Event-time watermark, keyed by `stream_id`. `0` ≡ "never seen".
@@ -118,7 +118,7 @@ pub struct TurnTracker {
 
 impl TurnTracker {
     pub fn new(
-        registry: Arc<ProfileRegistry>,
+        registry: Arc<AgentProfileRegistry>,
         config: TrackerConfig,
         metrics: MetricsWorker,
     ) -> Self {
@@ -151,8 +151,8 @@ impl TurnTracker {
         *e
     }
 
-    /// Ingest one identified, completed call using the current wall-clock.
-    pub fn ingest(&mut self, ic: IdentifiedCall) -> Vec<TurnEvent> {
+    /// Ingest one agent-attributed, completed call using the current wall-clock.
+    pub fn ingest(&mut self, ic: AgentCall) -> Vec<TurnEvent> {
         self.ingest_at(ic, Instant::now())
     }
 
@@ -161,7 +161,7 @@ impl TurnTracker {
     /// Event-time watermark is bumped on the **call's own `stream_id`** only;
     /// grace timestamps are wall-clock. Together this ensures that no activity
     /// outside this `(stream_id, session_id)` can shrink its grace window.
-    pub fn ingest_at(&mut self, ic: IdentifiedCall, now_wall: Instant) -> Vec<TurnEvent> {
+    pub fn ingest_at(&mut self, ic: AgentCall, now_wall: Instant) -> Vec<TurnEvent> {
         let arrival_ts = ic
             .call
             .complete_time
@@ -172,7 +172,7 @@ impl TurnTracker {
         self.metrics.counter(Metric::TurnCallsIngested).inc();
 
         let registry = Arc::clone(&self.registry);
-        let profile = match registry.find_by_name(ic.identity.profile_name) {
+        let profile = match registry.find_by_name(ic.agent.agent_kind) {
             Some(p) => p,
             None => return self.flush_ready_buffers(now_wall),
         };
@@ -184,7 +184,7 @@ impl TurnTracker {
             return self.flush_ready_buffers(now_wall);
         }
 
-        let key = (stream_id, ic.identity.session_id.clone());
+        let key = (stream_id, ic.agent.session_id.clone());
         let buf = self.buffers.entry(key).or_default();
 
         if let Some(hw) = buf.last_finalized_request_time {
@@ -230,16 +230,16 @@ impl TurnTracker {
 
         let mut events = Vec::new();
         for key in ready_keys {
-            let profile_name = match self
+            let agent_kind = match self
                 .buffers
                 .get(&key)
                 .and_then(|b| b.pending.values().flatten().next())
-                .map(|bc| bc.ic.identity.profile_name)
+                .map(|bc| bc.ic.agent.agent_kind)
             {
                 Some(n) => n,
                 None => continue,
             };
-            let profile = match registry.find_by_name(profile_name) {
+            let profile = match registry.find_by_name(agent_kind) {
                 Some(p) => p,
                 None => continue,
             };
@@ -357,8 +357,8 @@ impl TurnTracker {
             buf.last_finalized_request_time = Some(max_request_time);
             buf.grace_started_at_wall = None;
 
-            let profile_name = drained[0].ic.identity.profile_name;
-            let profile = match registry.find_by_name(profile_name) {
+            let agent_kind = drained[0].ic.agent.agent_kind;
+            let profile = match registry.find_by_name(agent_kind) {
                 Some(p) => p,
                 None => continue,
             };
@@ -403,16 +403,16 @@ impl TurnTracker {
 
         let mut events = Vec::new();
         for key in keys {
-            let profile_name = match self
+            let agent_kind = match self
                 .buffers
                 .get(&key)
                 .and_then(|b| b.pending.values().flatten().next())
-                .map(|bc| bc.ic.identity.profile_name)
+                .map(|bc| bc.ic.agent.agent_kind)
             {
                 Some(n) => n,
                 None => continue,
             };
-            let profile = match registry.find_by_name(profile_name) {
+            let profile = match registry.find_by_name(agent_kind) {
                 Some(p) => p,
                 None => continue,
             };
@@ -475,7 +475,7 @@ enum FinalizeKind {
 /// reseats `buf.grace_started_at_wall` to that next terminal's arrival.
 #[allow(clippy::too_many_arguments)]
 fn finalize_session(
-    profile: &dyn ClientProfile,
+    profile: &dyn AgentProfile,
     stream_id: &str,
     session_id: &str,
     buf: &mut SessionBuffer,
@@ -552,7 +552,7 @@ fn finalize_session(
 /// earlier Completed events in prior iterations.
 #[must_use]
 fn emit_or_discard(
-    profile: &dyn ClientProfile,
+    profile: &dyn AgentProfile,
     stream_id: &str,
     session_id: &str,
     calls: &[BufferedCall],
@@ -571,7 +571,7 @@ fn emit_or_discard(
         return false;
     }
 
-    let refs: Vec<&IdentifiedCall> = calls.iter().map(|bc| &bc.ic).collect();
+    let refs: Vec<&AgentCall> = calls.iter().map(|bc| &bc.ic).collect();
     let status = derive_status(profile, &refs);
     let mut turn = build_turn(profile, &refs, status);
     // The buffer key is authoritative for stream/session — call.stream_id
@@ -595,14 +595,14 @@ fn emit_or_discard(
 /// predicate counts — Codex's `finish_reason=Complete` means "API call
 /// succeeded," not "turn done." For implicit-path profiles (Anthropic),
 /// definitive finish reasons fall through.
-fn is_main_terminal(profile: &dyn ClientProfile, ic: &IdentifiedCall) -> bool {
+fn is_main_terminal(profile: &dyn AgentProfile, ic: &AgentCall) -> bool {
     if profile.subagent(&ic.call).is_some() {
         return false;
     }
     if profile.is_turn_terminal(&ic.call) {
         return true;
     }
-    if ic.identity.turn_id_hint.is_none() {
+    if ic.agent.turn_id_hint.is_none() {
         matches!(
             ic.call.finish_reason,
             Some(FinishReason::Complete) | Some(FinishReason::Length)
@@ -614,7 +614,7 @@ fn is_main_terminal(profile: &dyn ClientProfile, ic: &IdentifiedCall) -> bool {
 
 /// Map the last main-agent call's finish_reason to a TurnStatus. Sub-agent
 /// finishes are ignored — they belong to the sub-agent, not the parent turn.
-fn derive_status(profile: &dyn ClientProfile, calls: &[&IdentifiedCall]) -> TurnStatus {
+fn derive_status(profile: &dyn AgentProfile, calls: &[&AgentCall]) -> TurnStatus {
     let last_main = calls
         .iter()
         .rev()
@@ -635,16 +635,12 @@ fn push_unique(list: &mut Vec<String>, value: String) {
 }
 
 /// Pure constructor over a request_time-sorted, complete partition.
-fn build_turn(
-    profile: &dyn ClientProfile,
-    calls: &[&IdentifiedCall],
-    status: TurnStatus,
-) -> LlmTurn {
+fn build_turn(profile: &dyn AgentProfile, calls: &[&AgentCall], status: TurnStatus) -> AgentTurn {
     assert!(!calls.is_empty(), "build_turn requires at least one call");
     let first = calls[0];
     let stream_id = first.call.stream_id.clone();
-    let session_id = first.identity.session_id.clone();
-    let client_kind = first.identity.client_kind.clone();
+    let session_id = first.agent.session_id.clone();
+    let agent_kind = first.agent.agent_kind.to_string();
     let wire_api = first.call.wire_api.to_string();
     let tenant_id = first.call.tenant_id.clone();
     let turn_id = Uuid::now_v7().to_string();
@@ -735,13 +731,13 @@ fn build_turn(
         None => (None, None, None),
     };
 
-    LlmTurn {
+    AgentTurn {
         stream_id,
         turn_id,
         session_id,
         tenant_id,
         wire_api,
-        client_kind,
+        agent_kind,
         start_time_us,
         end_time_us,
         duration_ms,
@@ -769,8 +765,8 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
     use ts_common::internal_metrics::MetricsSystem;
-    use ts_llm::model::{ApiType, CallIdentity, IdentifiedCall, LlmCall};
-    use ts_llm::profiles;
+    use ts_llm::agents;
+    use ts_llm::model::{AgentCall, AgentIdentity, ApiType, LlmCall};
     use ts_llm::wire_apis as wa;
 
     fn test_metrics() -> MetricsWorker {
@@ -796,7 +792,7 @@ mod tests {
     /// unit assertions tight.
     fn mk_tracker_no_grace() -> TurnTracker {
         TurnTracker::new(
-            Arc::new(profiles::build_default_registry()),
+            Arc::new(agents::build_default_registry()),
             TrackerConfig {
                 grace: Duration::ZERO,
                 ..TrackerConfig::default()
@@ -805,32 +801,30 @@ mod tests {
         )
     }
 
-    fn ic(call: LlmCall, identity: CallIdentity) -> IdentifiedCall {
-        IdentifiedCall {
+    fn ic(call: LlmCall, agent: AgentIdentity) -> AgentCall {
+        AgentCall {
             call: Arc::new(call),
-            identity,
+            agent,
         }
     }
 
-    fn identity_for_anthropic(call: &LlmCall) -> CallIdentity {
-        let reg = profiles::build_default_registry();
+    fn identity_for_anthropic(call: &LlmCall) -> AgentIdentity {
+        let reg = agents::build_default_registry();
         let profile = reg.find_by_name("claude-cli").expect("claude-cli profile");
         let ids = profile.extract_ids(call).expect("ids");
-        CallIdentity {
-            profile_name: "claude-cli",
-            client_kind: "claude-cli".into(),
+        AgentIdentity {
+            agent_kind: "claude-cli",
             session_id: ids.session_id,
             turn_id_hint: ids.turn_id,
         }
     }
 
-    fn identity_for_codex(call: &LlmCall) -> CallIdentity {
-        let reg = profiles::build_default_registry();
+    fn identity_for_codex(call: &LlmCall) -> AgentIdentity {
+        let reg = agents::build_default_registry();
         let profile = reg.find_by_name("codex-cli").expect("codex-cli profile");
         let ids = profile.extract_ids(call).expect("ids");
-        CallIdentity {
-            profile_name: "codex-cli",
-            client_kind: "codex-cli".into(),
+        AgentIdentity {
+            agent_kind: "codex-cli",
             session_id: ids.session_id,
             turn_id_hint: ids.turn_id,
         }
@@ -935,7 +929,7 @@ mod tests {
         }
     }
 
-    fn drain_completed(events: Vec<TurnEvent>) -> Vec<LlmTurn> {
+    fn drain_completed(events: Vec<TurnEvent>) -> Vec<AgentTurn> {
         events
             .into_iter()
             .map(|TurnEvent::Completed(t)| t)
@@ -945,7 +939,7 @@ mod tests {
     #[test]
     fn tracker_starts_empty() {
         let t = TurnTracker::new(
-            Arc::new(ProfileRegistry::new()),
+            Arc::new(AgentProfileRegistry::new()),
             TrackerConfig::default(),
             test_metrics(),
         );
@@ -955,7 +949,7 @@ mod tests {
     #[test]
     fn flush_all_on_empty_tracker_returns_no_events() {
         let mut t = TurnTracker::new(
-            Arc::new(ProfileRegistry::new()),
+            Arc::new(AgentProfileRegistry::new()),
             TrackerConfig::default(),
             test_metrics(),
         );
@@ -1157,9 +1151,8 @@ mod tests {
         let mut c = anthropic_call("S", 1_000_000, "text", FinishReason::Complete);
         c.request_body =
             Some(r#"{"messages":[{"role":"user","content":"generate title"}],"tools":[]}"#.into());
-        let id = CallIdentity {
-            profile_name: "claude-cli",
-            client_kind: "claude-cli".into(),
+        let id = AgentIdentity {
+            agent_kind: "claude-cli",
             session_id: "S".into(),
             turn_id_hint: None,
         };
@@ -1247,7 +1240,7 @@ mod tests {
             sweep_interval_us: 1_000,
         };
         let mut t = TurnTracker::new(
-            Arc::new(profiles::build_default_registry()),
+            Arc::new(agents::build_default_registry()),
             cfg,
             test_metrics(),
         );

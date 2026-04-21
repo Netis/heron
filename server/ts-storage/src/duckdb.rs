@@ -7,11 +7,11 @@ use duckdb::Connection;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::info;
 use ts_common::error::{AppError, Result};
+use ts_llm::agents::build_default_registry;
 use ts_llm::model::{ApiType, LlmCall};
-use ts_llm::profiles::build_default_registry;
 use ts_llm::wire_apis as wa;
 use ts_metrics::model::LlmMetric;
-use ts_turn::LlmTurn;
+use ts_turn::AgentTurn;
 
 use crate::query::*;
 use crate::retention::{RetentionPolicy, RetentionReport};
@@ -229,13 +229,13 @@ CREATE TABLE IF NOT EXISTS llm_metrics (
 ";
 
 const CREATE_LLM_TURNS: &str = "
-CREATE TABLE IF NOT EXISTS llm_turns (
+CREATE TABLE IF NOT EXISTS agent_turns (
     turn_id                   VARCHAR NOT NULL PRIMARY KEY,
     stream_id                 VARCHAR NOT NULL DEFAULT '',
     session_id                VARCHAR NOT NULL,
     tenant_id                 VARCHAR,
     wire_api                  VARCHAR NOT NULL,
-    client_kind               VARCHAR NOT NULL,
+    agent_kind               VARCHAR NOT NULL,
     start_time                TIMESTAMP NOT NULL,
     end_time                  TIMESTAMP NOT NULL,
     duration_ms               UBIGINT NOT NULL,
@@ -278,7 +278,7 @@ fn us_to_timestamp(us: i64) -> String {
     dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
 }
 
-/// Parse a JSON-encoded array-of-strings (as stored in llm_turns.models_used /
+/// Parse a JSON-encoded array-of-strings (as stored in agent_turns.models_used /
 /// subagents_used / call_ids) into a `Vec<String>`. Missing or malformed values
 /// degrade to an empty vec — the turn payload is still returnable.
 fn parse_json_string_list(raw: Option<&str>) -> Vec<String> {
@@ -294,18 +294,18 @@ enum ExtractKind {
 }
 
 /// Load the request_body / response_body of `call_id` from llm_calls and run
-/// it through the `client_kind`-matched profile to produce the full user_input
+/// it through the `agent_kind`-matched profile to produce the full user_input
 /// or final_answer text. Returns `None` if the call row is missing, the
 /// profile is not registered, or the extractor declines.
 fn extract_full_text(
     conn: &Connection,
-    client_kind: &str,
+    agent_kind: &str,
     call_id: Option<&str>,
     kind: ExtractKind,
 ) -> Option<String> {
     let call_id = call_id?;
     let registry = build_default_registry();
-    let profile = registry.find_by_name(client_kind)?;
+    let profile = registry.find_by_name(agent_kind)?;
 
     let sql = match kind {
         ExtractKind::User => "SELECT request_body FROM llm_calls WHERE id = ?",
@@ -664,7 +664,7 @@ struct PreparedTurn {
     session_id: String,
     tenant_id: Option<String>,
     wire_api: String,
-    client_kind: String,
+    agent_kind: String,
     start_time: Value,
     end_time: Value,
     duration_ms: u64,
@@ -686,14 +686,14 @@ struct PreparedTurn {
     metadata: String,
 }
 
-fn prepare_turn(t: LlmTurn) -> PreparedTurn {
+fn prepare_turn(t: AgentTurn) -> PreparedTurn {
     PreparedTurn {
         turn_id: t.turn_id,
         stream_id: t.stream_id,
         session_id: t.session_id,
         tenant_id: t.tenant_id,
         wire_api: t.wire_api,
-        client_kind: t.client_kind,
+        agent_kind: t.agent_kind,
         start_time: Value::Timestamp(TimeUnit::Microsecond, t.start_time_us),
         end_time: Value::Timestamp(TimeUnit::Microsecond, t.end_time_us),
         duration_ms: t.duration_ms,
@@ -753,7 +753,7 @@ impl StorageBackend for DuckDbBackend {
             conn.execute_batch(CREATE_LLM_METRICS)
                 .map_err(|e| AppError::Storage(format!("failed to create llm_metrics: {e}")))?;
             conn.execute_batch(CREATE_LLM_TURNS)
-                .map_err(|e| AppError::Storage(format!("failed to create llm_turns: {e}")))?;
+                .map_err(|e| AppError::Storage(format!("failed to create agent_turns: {e}")))?;
             info!("storage tables initialized");
             Ok(())
         })
@@ -893,7 +893,7 @@ impl StorageBackend for DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    async fn write_turns(&self, turns: Vec<LlmTurn>) -> Result<()> {
+    async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()> {
         if turns.is_empty() {
             return Ok(());
         }
@@ -905,7 +905,7 @@ impl StorageBackend for DuckDbBackend {
                 .lock()
                 .map_err(|e| AppError::Storage(format!("failed to lock writer: {e}")))?;
             let mut appender = conn
-                .appender("llm_turns")
+                .appender("agent_turns")
                 .map_err(|e| AppError::Storage(format!("failed to create turns appender: {e}")))?;
             for p in &prepared {
                 appender
@@ -915,7 +915,7 @@ impl StorageBackend for DuckDbBackend {
                         p.session_id,
                         p.tenant_id,
                         p.wire_api,
-                        p.client_kind,
+                        p.agent_kind,
                         p.start_time,
                         p.end_time,
                         p.duration_ms,
@@ -1559,19 +1559,19 @@ impl StorageBackend for DuckDbBackend {
                     .collect();
                 where_parts.push(format!("status IN ({})", list.join(", ")));
             }
-            if !query.client_kinds.is_empty() {
+            if !query.agent_kinds.is_empty() {
                 let list: Vec<String> = query
-                    .client_kinds
+                    .agent_kinds
                     .iter()
                     .map(|s| format!("'{}'", s.replace('\'', "''")))
                     .collect();
-                where_parts.push(format!("client_kind IN ({})", list.join(", ")));
+                where_parts.push(format!("agent_kind IN ({})", list.join(", ")));
             }
 
             let where_sql = where_parts.join(" AND ");
             let sort_by = &query.sort_by;
 
-            let count_sql = format!("SELECT COUNT(*) FROM llm_turns WHERE {where_sql}");
+            let count_sql = format!("SELECT COUNT(*) FROM agent_turns WHERE {where_sql}");
             let mut count_stmt = conn
                 .prepare(&count_sql)
                 .map_err(|e| AppError::Storage(format!("failed to prepare count query: {e}")))?;
@@ -1584,10 +1584,10 @@ impl StorageBackend for DuckDbBackend {
             let items_sql = format!(
                 "SELECT turn_id, stream_id, session_id, \
                  epoch_ms(start_time), epoch_ms(end_time), duration_ms, \
-                 wire_api, client_kind, models_used, call_count, \
+                 wire_api, agent_kind, models_used, call_count, \
                  total_input_tokens, total_output_tokens, status, \
                  final_finish_reason, user_input_preview, final_answer_preview \
-                 FROM llm_turns WHERE {where_sql} \
+                 FROM agent_turns WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
             );
@@ -1632,7 +1632,7 @@ impl StorageBackend for DuckDbBackend {
                     wire_api: row
                         .get(6)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    client_kind: row
+                    agent_kind: row
                         .get(7)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     primary_model,
@@ -1674,7 +1674,7 @@ impl StorageBackend for DuckDbBackend {
         tokio::task::spawn_blocking(move || {
             let sql = "
                 SELECT
-                    turn_id, stream_id, session_id, tenant_id, wire_api, client_kind,
+                    turn_id, stream_id, session_id, tenant_id, wire_api, agent_kind,
                     epoch_ms(start_time), epoch_ms(end_time), duration_ms, call_count,
                     models_used, subagents_used,
                     total_input_tokens, total_output_tokens,
@@ -1683,7 +1683,7 @@ impl StorageBackend for DuckDbBackend {
                     user_input_preview, user_call_id,
                     final_answer_preview, final_call_id,
                     call_ids, metadata
-                FROM llm_turns
+                FROM agent_turns
                 WHERE turn_id = ?
             ";
 
@@ -1699,7 +1699,7 @@ impl StorageBackend for DuckDbBackend {
                     row.get::<_, String>(2)?,          // session_id
                     row.get::<_, Option<String>>(3)?,  // tenant_id
                     row.get::<_, String>(4)?,          // wire_api
-                    row.get::<_, String>(5)?,          // client_kind
+                    row.get::<_, String>(5)?,          // agent_kind
                     row.get::<_, i64>(6)?,             // start_time
                     row.get::<_, i64>(7)?,             // end_time
                     row.get::<_, u64>(8)?,             // duration_ms
@@ -1738,7 +1738,7 @@ impl StorageBackend for DuckDbBackend {
                 session_id,
                 tenant_id,
                 wire_api,
-                client_kind,
+                agent_kind,
                 start_time,
                 end_time,
                 duration_ms,
@@ -1774,7 +1774,7 @@ impl StorageBackend for DuckDbBackend {
                 Some(p) if !p.ends_with('…') => user_input_preview.clone(),
                 _ => extract_full_text(
                     &conn,
-                    &client_kind,
+                    &agent_kind,
                     user_call_id.as_deref(),
                     ExtractKind::User,
                 )
@@ -1784,7 +1784,7 @@ impl StorageBackend for DuckDbBackend {
                 Some(p) if !p.ends_with('…') => final_answer_preview.clone(),
                 _ => extract_full_text(
                     &conn,
-                    &client_kind,
+                    &agent_kind,
                     final_call_id.as_deref(),
                     ExtractKind::Assistant,
                 )
@@ -1797,7 +1797,7 @@ impl StorageBackend for DuckDbBackend {
                 session_id,
                 tenant_id,
                 wire_api,
-                client_kind,
+                agent_kind,
                 start_time,
                 end_time,
                 duration_ms,
@@ -1839,7 +1839,7 @@ impl StorageBackend for DuckDbBackend {
                     c.input_tokens, c.output_tokens
                 FROM llm_calls c
                 JOIN (SELECT UNNEST(json_extract_string(call_ids, '$[*]')) AS cid
-                      FROM llm_turns WHERE turn_id = ?) ids ON c.id = ids.cid
+                      FROM agent_turns WHERE turn_id = ?) ids ON c.id = ids.cid
                 ORDER BY c.request_time ASC, c.complete_time ASC
             ";
 
@@ -2002,10 +2002,10 @@ impl StorageBackend for DuckDbBackend {
                     .map_err(|e| AppError::Storage(format!("failed to lock turns writer: {e}")))?;
                 let n = conn
                     .execute(
-                        "DELETE FROM llm_turns WHERE end_time < ?1",
+                        "DELETE FROM agent_turns WHERE end_time < ?1",
                         duckdb::params![ts],
                     )
-                    .map_err(|e| AppError::Storage(format!("failed to delete llm_turns: {e}")))?;
+                    .map_err(|e| AppError::Storage(format!("failed to delete agent_turns: {e}")))?;
                 report.turns_deleted = n as u64;
             }
 
@@ -2901,7 +2901,7 @@ mod turn_tests {
     use super::*;
     use std::net::IpAddr;
     use ts_llm::model::{ApiType, FinishReason};
-    use ts_turn::{LlmTurn, TurnStatus};
+    use ts_turn::{AgentTurn, TurnStatus};
 
     fn sample_turn(
         turn_id: &str,
@@ -2913,14 +2913,14 @@ mod turn_tests {
         call_count: u32,
         call_ids: Vec<&str>,
         status: TurnStatus,
-    ) -> LlmTurn {
-        LlmTurn {
+    ) -> AgentTurn {
+        AgentTurn {
             stream_id: String::new(),
             turn_id: turn_id.into(),
             session_id: session_id.into(),
             tenant_id: None,
             wire_api: wire_api.into(),
-            client_kind: "claude-cli".into(),
+            agent_kind: "claude-cli".into(),
             start_time_us: start_us,
             end_time_us: start_us + (duration_ms as i64) * 1000,
             duration_ms,
@@ -3003,7 +3003,7 @@ mod turn_tests {
             },
             filter: DimensionFilter::default(),
             statuses: vec![],
-            client_kinds: vec![],
+            agent_kinds: vec![],
             sort_by: "start_time".into(),
             sort_order: "desc".into(),
             page: 1,
@@ -3315,7 +3315,7 @@ mod concurrent_tests {
     use tempfile::TempDir;
     use ts_llm::model::{ApiType, FinishReason};
     use ts_metrics::model::LlmMetric;
-    use ts_turn::{LlmTurn, TurnStatus};
+    use ts_turn::{AgentTurn, TurnStatus};
 
     fn mk_call(i: usize) -> LlmCall {
         LlmCall {
@@ -3351,14 +3351,14 @@ mod concurrent_tests {
         }
     }
 
-    fn mk_turn(i: usize) -> LlmTurn {
-        LlmTurn {
+    fn mk_turn(i: usize) -> AgentTurn {
+        AgentTurn {
             stream_id: String::new(),
             turn_id: format!("turn-{i:08}"),
             session_id: format!("session-{}", i % 10),
             tenant_id: None,
             wire_api: wa::OPENAI_CHAT.into(),
-            client_kind: "test".into(),
+            agent_kind: "test".into(),
             start_time_us: 1_700_000_000_000_000 + i as i64,
             end_time_us: 1_700_000_000_000_000 + i as i64 + 1_000_000,
             duration_ms: 1000,
@@ -3479,7 +3479,7 @@ mod concurrent_tests {
             .query_row("SELECT COUNT(*) FROM llm_calls", [], |r| r.get(0))
             .unwrap();
         let turns_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM llm_turns", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM agent_turns", [], |r| r.get(0))
             .unwrap();
         let metrics_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM llm_metrics", [], |r| r.get(0))
@@ -3498,7 +3498,7 @@ mod retention_tests {
     use std::time::{Duration, SystemTime};
     use ts_llm::model::{ApiType, FinishReason};
     use ts_metrics::model::LlmMetric;
-    use ts_turn::{LlmTurn, TurnStatus};
+    use ts_turn::{AgentTurn, TurnStatus};
 
     fn mk_call(id: &str, request_time_us: i64) -> LlmCall {
         LlmCall {
@@ -3534,14 +3534,14 @@ mod retention_tests {
         }
     }
 
-    fn mk_turn(id: &str, start_us: i64, duration_ms: u64) -> LlmTurn {
-        LlmTurn {
+    fn mk_turn(id: &str, start_us: i64, duration_ms: u64) -> AgentTurn {
+        AgentTurn {
             stream_id: String::new(),
             turn_id: id.into(),
             session_id: "s".into(),
             tenant_id: None,
             wire_api: wa::OPENAI_CHAT.into(),
-            client_kind: "claude-cli".into(),
+            agent_kind: "claude-cli".into(),
             start_time_us: start_us,
             end_time_us: start_us + (duration_ms as i64) * 1000,
             duration_ms,
@@ -3682,7 +3682,7 @@ mod retention_tests {
             .query_row("SELECT COUNT(*) FROM llm_calls", [], |r| r.get(0))
             .unwrap();
         let turns_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM llm_turns", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM agent_turns", [], |r| r.get(0))
             .unwrap();
         let total_metrics: i64 = conn
             .query_row("SELECT COUNT(*) FROM llm_metrics", [], |r| r.get(0))

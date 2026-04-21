@@ -1,5 +1,5 @@
 use crate::model::LlmCall;
-use crate::profile::{ClientProfile, ExtractedIds};
+use crate::profile::{AgentProfile, ExtractedIds};
 use crate::wire_apis as wa;
 use serde_json::Value;
 
@@ -59,7 +59,7 @@ fn strip_system_reminders(s: &str) -> String {
     out
 }
 
-impl ClientProfile for ClaudeCliProfile {
+impl AgentProfile for ClaudeCliProfile {
     fn name(&self) -> &'static str {
         "claude-cli"
     }

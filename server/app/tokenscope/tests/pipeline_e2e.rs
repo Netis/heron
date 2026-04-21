@@ -2,7 +2,7 @@
 //!
 //! Drives `Pipeline::build` with a pcap fixture, waits for the EOF cascade to
 //! drain every stage, then opens a fresh DuckDB connection to verify that all
-//! three tables (`llm_calls`, `llm_turns`, `llm_metrics`) contain the
+//! three tables (`llm_calls`, `agent_turns`, `llm_metrics`) contain the
 //! expected rows. Unlike the per-stage integration tests, this one exercises
 //! the composition root and the storage sink together — regressions in
 //! channel wiring, shard-fan-out, or EOF propagation surface here.
@@ -179,12 +179,12 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     let conn = Connection::open(&db_path).expect("reopen duckdb for verify");
 
     let calls = count(&conn, "llm_calls");
-    let turns = count(&conn, "llm_turns");
+    let turns = count(&conn, "agent_turns");
     let metrics = count(&conn, "llm_metrics");
     eprintln!("e2e rows: calls={calls} turns={turns} metrics={metrics}");
 
     assert!(calls >= 1, "expected >=1 llm_calls, got {calls}");
-    assert!(turns >= 1, "expected >=1 llm_turns, got {turns}");
+    assert!(turns >= 1, "expected >=1 agent_turns, got {turns}");
     assert!(metrics >= 1, "expected >=1 llm_metrics, got {metrics}");
 
     // Wire-API ground truth: fixture is an anthropic Messages API capture.
@@ -202,17 +202,17 @@ async fn claude_cli_pcap_populates_all_three_tables() {
 
     // A single complete claude-cli turn is the documented ground truth
     // (matches `ts-turn/tests/integration.rs::claude_cli_messages_expects_one_complete_turn`).
-    let (anthropic_turns, status, client_kind): (i64, String, String) = conn
+    let (anthropic_turns, status, agent_kind): (i64, String, String) = conn
         .query_row(
-            "SELECT COUNT(*), MIN(status), MIN(client_kind) \
-             FROM llm_turns WHERE wire_api = 'anthropic'",
+            "SELECT COUNT(*), MIN(status), MIN(agent_kind) \
+             FROM agent_turns WHERE wire_api = 'anthropic'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .expect("turn summary query");
     assert_eq!(anthropic_turns, 1, "expected exactly 1 anthropic turn");
     assert_eq!(status, "complete", "turn status should be 'complete'");
-    assert_eq!(client_kind, "claude-cli");
+    assert_eq!(agent_kind, "claude-cli");
 
     // Metrics must have at least one anthropic 10s bucket with a non-zero
     // request_count — proves LLM stage → metrics shard → sink wiring end-to-end.
@@ -234,7 +234,7 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     // call sink writes.
     let dangling_final_call: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM llm_turns t \
+            "SELECT COUNT(*) FROM agent_turns t \
              WHERE t.final_call_id IS NOT NULL \
                AND NOT EXISTS (SELECT 1 FROM llm_calls c WHERE c.id = t.final_call_id)",
             [],
@@ -251,7 +251,7 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     // belong to unfinalised turns in other fixtures).
     let (turn_call_count, anthropic_calls): (i64, i64) = conn
         .query_row(
-            "SELECT (SELECT MIN(call_count) FROM llm_turns WHERE wire_api = 'anthropic'), \
+            "SELECT (SELECT MIN(call_count) FROM agent_turns WHERE wire_api = 'anthropic'), \
                     (SELECT COUNT(*) FROM llm_calls WHERE wire_api = 'anthropic')",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -306,7 +306,7 @@ async fn two_pcaps_isolated_but_metrics_merged() {
     // tracker, flow-key collisions, …), this count would drift.
     let anthropic_turns: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM llm_turns \
+            "SELECT COUNT(*) FROM agent_turns \
              WHERE wire_api = 'anthropic' AND status = 'complete'",
             [],
             |r| r.get(0),
@@ -322,7 +322,7 @@ async fn two_pcaps_isolated_but_metrics_merged() {
     // anthropic one.
     let openai_turns: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM llm_turns WHERE wire_api = 'openai-responses'",
+            "SELECT COUNT(*) FROM agent_turns WHERE wire_api = 'openai-responses'",
             [],
             |r| r.get(0),
         )

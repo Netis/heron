@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use ts_llm::model::LlmCall;
 use ts_metrics::model::LlmMetric;
-use ts_turn::LlmTurn;
+use ts_turn::AgentTurn;
 
 use crate::query::*;
 use crate::retention::{RetentionPolicy, RetentionReport};
@@ -20,8 +20,8 @@ pub trait StorageBackend: Send + Sync {
     /// Batch-write LlmMetric records.
     async fn write_metrics(&self, metrics: Vec<LlmMetric>) -> Result<()>;
 
-    /// Batch-write LlmTurn records.
-    async fn write_turns(&self, turns: Vec<LlmTurn>) -> Result<()>;
+    /// Batch-write AgentTurn records.
+    async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()>;
 
     async fn query_metrics_timeseries(
         &self,

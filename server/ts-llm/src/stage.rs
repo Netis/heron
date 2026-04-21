@@ -1,13 +1,13 @@
 //! LLM extraction stage: spawns N parallel LlmProcessor tasks, one per input
-//! receiver. Each task owns its own LlmProcessor (sharing the ProfileRegistry
-//! via Arc) and fans out each produced event to up to three independent
-//! downstream destinations:
+//! receiver. Each task owns its own LlmProcessor (sharing the
+//! AgentProfileRegistry via Arc) and fans out each produced event to up to
+//! three independent downstream destinations:
 //!
 //! * Every `LlmEvent` (Start and Complete) → one metrics shard, chosen by
 //!   `hash(wire_api, model, server_ip) % M`.
 //! * Every `LlmEvent::Complete` → `calls_tx` as `Arc<LlmCall>` (every call
-//!   reaches storage regardless of profile identification).
-//! * `LlmEvent::Complete` with `identity.is_some()` → one turn shard, chosen
+//!   reaches storage regardless of agent attribution).
+//! * `LlmEvent::Complete` with `agent.is_some()` → one turn shard, chosen
 //!   by `hash(session_id) % T`.
 
 use std::collections::hash_map::DefaultHasher;
@@ -20,21 +20,21 @@ use tokio::task::JoinHandle;
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_protocol::model::ProtocolEvent;
 
-use crate::model::{IdentifiedCall, LlmCall, LlmEvent, TurnShardInput};
+use crate::model::{AgentCall, LlmCall, LlmEvent, TurnShardInput};
 use crate::processor::LlmProcessor;
-use crate::profile::ProfileRegistry;
+use crate::profile::AgentProfileRegistry;
 use crate::wire_api_registry::WireApiRegistry;
 
 /// Spawn N parallel LLM-extraction tasks, one per input receiver. Each task
 /// owns its own `LlmProcessor` (sharing the `WireApiRegistry` and
-/// `ProfileRegistry` via `Arc`) and fans out each produced event to up to
+/// `AgentProfileRegistry` via `Arc`) and fans out each produced event to up to
 /// three downstream destinations:
 ///
 /// * Every `LlmEvent` (Start and Complete) → one metrics shard, chosen by
 ///   `hash(wire_api, model, server_ip) % metrics_shard_txs.len()`.
 /// * Every `LlmEvent::Complete` → `calls_tx` as `Arc<LlmCall>` (every call
-///   reaches storage regardless of identification).
-/// * `LlmEvent::Complete` with `identity.is_some()` → one turn shard, chosen
+///   reaches storage regardless of agent attribution).
+/// * `LlmEvent::Complete` with `agent.is_some()` → one turn shard, chosen
 ///   by `hash(session_id) % turn_shard_txs.len()`.
 pub fn spawn_llm_stage(
     event_rxs: Vec<mpsc::Receiver<ProtocolEvent>>,
@@ -42,7 +42,7 @@ pub fn spawn_llm_stage(
     metrics_shard_txs: Vec<mpsc::Sender<LlmEvent>>,
     calls_tx: mpsc::Sender<Arc<LlmCall>>,
     wire_apis: Arc<WireApiRegistry>,
-    registry: Arc<ProfileRegistry>,
+    registry: Arc<AgentProfileRegistry>,
     metrics_sys: &mut MetricsSystem,
 ) -> Vec<JoinHandle<()>> {
     assert!(
@@ -104,8 +104,8 @@ pub fn spawn_llm_stage(
                             if metrics_txs[metrics_idx].send(other.clone()).await.is_err() {
                                 break 'main "downstream_closed_metrics";
                             }
-                            if let LlmEvent::Complete { call, identity } = other {
-                                if identity.is_some() {
+                            if let LlmEvent::Complete { call, agent } = other {
+                                if agent.is_some() {
                                     worker_metrics.counter(Metric::LlmCallsIdentified).inc();
                                 } else {
                                     worker_metrics.counter(Metric::LlmCallsUnidentified).inc();
@@ -113,13 +113,13 @@ pub fn spawn_llm_stage(
                                 if calls_tx.send(call.clone()).await.is_err() {
                                     break 'main "downstream_closed_calls";
                                 }
-                                if let Some(id) = identity {
+                                if let Some(id) = agent {
                                     let idx = turn_shard_index(
                                         &call.stream_id,
                                         &id.session_id,
                                         turn_txs.len(),
                                     );
-                                    let ic = IdentifiedCall { call, identity: id };
+                                    let ic = AgentCall { call, agent: id };
                                     if turn_txs[idx].send(TurnShardInput::Call(ic)).await.is_err() {
                                         break 'main "downstream_closed_turn";
                                     }
@@ -173,8 +173,8 @@ mod tests {
     use ts_protocol::model::{HttpRequestData, HttpResponseData, ProtocolEvent};
     use ts_protocol::net::FlowKey;
 
+    use crate::agents::build_default_registry;
     use crate::model::{LlmCall, TurnShardInput};
-    use crate::profiles::build_default_registry;
     use crate::wire_apis as wa;
     use crate::wire_apis::build_default_wire_api_registry;
     use ts_common::internal_metrics::MetricsSystem;
@@ -314,7 +314,7 @@ mod tests {
             TurnShardInput::Call(ic) => ic,
             TurnShardInput::Heartbeat { .. } => panic!("expected Call, got Heartbeat"),
         };
-        assert_eq!(turn.identity.session_id, "S1");
+        assert_eq!(turn.agent.session_id, "S1");
 
         let call = calls_rx
             .recv()

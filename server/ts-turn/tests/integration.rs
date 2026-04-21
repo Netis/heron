@@ -31,7 +31,7 @@ async fn run_pcap_full_sharded(
     flow_shards: usize,
     turn_shards: usize,
     metrics_shards: usize,
-) -> Option<Vec<ts_turn::LlmTurn>> {
+) -> Option<Vec<ts_turn::AgentTurn>> {
     let path = fixture(name)?;
     let mut metrics_sys = MetricsSystem::new();
 
@@ -81,13 +81,13 @@ async fn run_pcap_full_sharded(
     }
 
     let (calls_tx, mut calls_rx) = mpsc::channel::<Arc<ts_llm::model::LlmCall>>(queue_size);
-    let (turns_tx, mut turns_rx) = mpsc::channel::<ts_turn::LlmTurn>(queue_size);
+    let (turns_tx, mut turns_rx) = mpsc::channel::<ts_turn::AgentTurn>(queue_size);
     let (m_out_tx, mut m_out_rx) = mpsc::channel::<ts_metrics::model::LlmMetric>(queue_size);
 
     spawn_flow_dispatcher(raw_rx, parsed_txs, "dispatcher", &mut metrics_sys);
     spawn_protocol_stage(parsed_rxs, event_txs, &mut metrics_sys);
 
-    let registry = Arc::new(ts_llm::profiles::build_default_registry());
+    let registry = Arc::new(ts_llm::agents::build_default_registry());
     let wire_api_registry = Arc::new(ts_llm::wire_apis::build_default_wire_api_registry());
     ts_llm::spawn_llm_stage(
         event_rxs,
@@ -103,7 +103,7 @@ async fn run_pcap_full_sharded(
         TrackerConfig::default(),
         turn_shard_rxs,
         turns_tx,
-        Arc::new(ts_llm::profiles::build_default_registry()),
+        Arc::new(ts_llm::agents::build_default_registry()),
         &mut metrics_sys,
     );
 
@@ -127,7 +127,7 @@ async fn run_pcap_full_sharded(
     let calls_drain = tokio::spawn(async move { while calls_rx.recv().await.is_some() {} });
     let metrics_drain = tokio::spawn(async move { while m_out_rx.recv().await.is_some() {} });
 
-    let mut finalized: Vec<ts_turn::LlmTurn> = Vec::new();
+    let mut finalized: Vec<ts_turn::AgentTurn> = Vec::new();
     while let Some(turn) = turns_rx.recv().await {
         finalized.push(turn);
     }
@@ -142,11 +142,11 @@ async fn run_pcap_sharded(
     name: &str,
     turn_shards: usize,
     metrics_shards: usize,
-) -> Option<Vec<ts_turn::LlmTurn>> {
+) -> Option<Vec<ts_turn::AgentTurn>> {
     run_pcap_full_sharded(name, 1, turn_shards, metrics_shards).await
 }
 
-async fn run_pcap(name: &str) -> Option<Vec<ts_turn::LlmTurn>> {
+async fn run_pcap(name: &str) -> Option<Vec<ts_turn::AgentTurn>> {
     run_pcap_sharded(name, 1, 1).await
 }
 
@@ -174,7 +174,7 @@ async fn claude_cli_messages_expects_one_complete_turn() {
         anthropic.len()
     );
     assert_eq!(anthropic[0].status, TurnStatus::Complete);
-    assert_eq!(anthropic[0].client_kind, "claude-cli");
+    assert_eq!(anthropic[0].agent_kind, "claude-cli");
 }
 
 #[tokio::test]
@@ -208,7 +208,7 @@ async fn claude_cli_messages_multi_expects_two_turns() {
         "expected 2 turns; got {}",
         anthropic.len()
     );
-    assert!(anthropic.iter().all(|t| t.client_kind == "claude-cli"));
+    assert!(anthropic.iter().all(|t| t.agent_kind == "claude-cli"));
     let sessions: std::collections::BTreeSet<_> =
         anthropic.iter().map(|t| t.session_id.as_str()).collect();
     assert_eq!(sessions.len(), 1, "all turns must share one session_id");
@@ -238,7 +238,7 @@ async fn codex_cli_messages_multi_expects_two_turns() {
         );
     }
     assert_eq!(openai.len(), 2, "expected 2 turns; got {}", openai.len());
-    assert!(openai.iter().all(|t| t.client_kind == "codex-cli"));
+    assert!(openai.iter().all(|t| t.agent_kind == "codex-cli"));
     let sessions: std::collections::BTreeSet<_> =
         openai.iter().map(|t| t.session_id.as_str()).collect();
     assert_eq!(sessions.len(), 1, "all turns must share one session_id");

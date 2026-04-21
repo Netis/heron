@@ -1,5 +1,5 @@
 use crate::model::LlmCall;
-use crate::profile::{ClientProfile, ExtractedIds};
+use crate::profile::{AgentProfile, ExtractedIds};
 use crate::wire_apis as wa;
 use serde_json::Value;
 
@@ -29,7 +29,7 @@ fn parse_turn_metadata(raw: &str) -> Option<Value> {
     None
 }
 
-impl ClientProfile for CodexCliProfile {
+impl AgentProfile for CodexCliProfile {
     fn name(&self) -> &'static str {
         "codex-cli"
     }

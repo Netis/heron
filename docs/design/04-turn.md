@@ -2,21 +2,23 @@
 
 ## Overview
 
-A **Turn** is one user interaction cycle: user submits a question → agent executes a series of LLM API calls (with tool use) → agent produces a final answer. A single Turn contains 1–N `LlmCall` records. A user session contains 1–N Turns.
+A **Turn** in this document always means an **agent turn** — the data type is `AgentTurn`, produced only for traffic matched by an `AgentProfile` (currently `claude-cli`, `codex-cli`). Non-agent LLM traffic still lands in `LlmCall` and `LlmMetric` but never in an `AgentTurn`.
+
+A Turn is one user interaction cycle: user submits a question → agent executes a series of LLM API calls (with tool use) → agent produces a final answer. A single Turn contains 1–N `LlmCall` records. A user session contains 1–N Turns.
 
 ## Implementation Status
 
 This design is implemented by the `ts-turn` crate (see `server/ts-turn/`).
 
-- Header-explicit-only policy: calls without a matching `ClientProfile` do not
-  participate in turn grouping. Extending to a new client = adding a new
-  `ClientProfile` impl in `server/ts-turn/src/profiles/`.
+- Header-explicit-only policy: calls without a matching `AgentProfile` do not
+  participate in turn grouping. Extending to a new agent = adding a new
+  `AgentProfile` impl in `server/ts-llm/src/agents/`.
 - Currently supported clients: `claude-cli` (Anthropic), `codex_cli_rs` /
   `codex-tui` (OpenAI Responses).
 - **Assembly model:** buffer-and-finalize. Each `(stream_id, session_id)` owns
   a `SessionBuffer` keyed by `request_time`. When a main-agent terminal call
   arrives, a small grace window (`grace_ms`, default 1000) starts; on grace
-  expiry the buffer is partitioned at each terminal and one `LlmTurn` is
+  expiry the buffer is partitioned at each terminal and one `AgentTurn` is
   emitted per partition. This tolerates arbitrary intra-shard arrival order
   (fan-in jitter, multi-connection sessions, parallel sub-agents).
 - Turn boundaries: profile-defined terminal predicate (`is_turn_terminal` /
@@ -181,7 +183,7 @@ sub-calls for that turn are physically on the wire.
 /// multi-terminal flushes evaluate each terminal's grace against
 /// when that terminal landed (not when the first one did).
 struct BufferedCall {
-    ic: IdentifiedCall,
+    ic: AgentCall,
     arrived_at_us: i64,
     is_terminal: bool,  // cached is_main_terminal(profile, call)
 }
@@ -202,7 +204,7 @@ struct SessionBuffer {
 }
 
 pub struct TurnTracker {
-    registry: Arc<ProfileRegistry>,
+    registry: Arc<AgentProfileRegistry>,
     config: TrackerConfig,
     virtual_now_us: i64,
     last_sweep_us: i64,
@@ -215,13 +217,13 @@ pub struct TurnTracker {
 `grace_us`. `TurnEvent` collapses to a single `Completed` variant — there
 is no in-progress turn state, so `Started` / `CallAdded` are unnecessary.
 
-### ingest(IdentifiedCall)
+### ingest(AgentCall)
 
 ```
 1. virtual_now_us = max(virtual_now_us, call.complete_time
                                         .or(response_time)
                                         .unwrap_or(request_time))
-2. profile = registry.find_by_name(identity.profile_name)
+2. profile = registry.find_by_name(call.agent.agent_kind)
    if None: return flush_ready_buffers()
 3. if profile.is_auxiliary(call): return flush_ready_buffers()    # aux never enters buffer
 4. buf = buffers.entry((stream_id, session_id)).or_default()
@@ -248,7 +250,7 @@ return events
 ```
 
 `profile_for(key)` re-resolves the profile from any pending call in the
-buffer (`profile_name` lives on every `IdentifiedCall.identity`).
+buffer (`agent_kind` lives on every `AgentCall.agent`).
 
 ### finalize_session (grace expired)
 
@@ -301,7 +303,7 @@ Two consequences:
 ### is_main_terminal
 
 ```rust
-fn is_main_terminal(profile: &dyn ClientProfile, call: &LlmCall) -> bool {
+fn is_main_terminal(profile: &dyn AgentProfile, call: &LlmCall) -> bool {
     if profile.subagent(call).is_some() { return false; }   // sub-agent never terminates parent
     if profile.is_turn_terminal(call) { return true; }      // explicit (Codex: response.output)
     matches!(call.finish_reason, Some(FinishReason::Complete | FinishReason::Length))
@@ -411,22 +413,24 @@ sweep_interval_s = 10
 
 ## Data Model
 
-`LlmCall` is wire-API-shaped raw data. Turn association data lives in
-`CallIdentity`, attached by `ts-llm/src/stage.rs` before the call enters the
-turn shard:
+`LlmCall` is wire-API-shaped raw data. Agent attribution lives in
+`AgentIdentity`, attached by `ts-llm/src/stage.rs` before the call enters the
+turn shard. An `AgentCall` is `{ call: Arc<LlmCall>, agent: AgentIdentity }`.
 
-- `profile_name: &'static str` — selects the `ClientProfile` impl
-- `client_kind: String` — denormalized for storage (e.g. `claude-cli`)
-- `session_id: String` — extracted by the profile
-- `turn_id_hint: Option<String>` — set by Codex; informational only
+`AgentIdentity` fields:
+
+- `agent_kind: &'static str` — selects the `AgentProfile` impl and is the
+  value persisted to `AgentTurn.agent_kind` (e.g. `"claude-cli"`).
+- `session_id: String` — extracted by the profile.
+- `turn_id_hint: Option<String>` — set by Codex; informational only.
 
 `LlmCall.finish_reason: Option<FinishReason>` carries the normalized
 terminal signal (see table above).
 
-The aggregated `LlmTurn` (see `ts-turn/src/model.rs`) is built at finalize
+The aggregated `AgentTurn` (see `ts-turn/src/model.rs`) is built at finalize
 time from the sorted partition:
 
-- `turn_id: String` (UUIDv7), `session_id`, `stream_id`, `client_kind`,
+- `turn_id: String` (UUIDv7), `session_id`, `stream_id`, `agent_kind`,
   `wire_api`, `tenant_id`
 - `start_time_us`, `end_time_us`, `duration_ms`, `call_count`, `call_ids`
 - `models_used`, `subagents_used`

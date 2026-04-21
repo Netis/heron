@@ -10,7 +10,7 @@ Module-level design docs for TokenScope's data pipeline. Ordered to follow the p
 | 04 | [Turn](04-turn.md) | `ts-turn` | Agent interaction (turn) grouping state machine |
 | 05 | [Metrics](05-metrics.md) | `ts-metrics` | Sliding-window aggregation, t-digest percentiles |
 | 06 | [Storage](06-storage.md) | `ts-storage` | Pluggable backend trait, write buffer, batch flush |
-| 07 | [Schema](07-schema.md) | `ts-storage` | `llm_turns`, `llm_calls`, `llm_metrics` table definitions |
+| 07 | [Schema](07-schema.md) | `ts-storage` | `agent_turns`, `llm_calls`, `llm_metrics` table definitions |
 | 08 | [Internal Metrics](08-internal-metrics.md) | `ts-common` | Operational self-monitoring (counters, gauges) |
 
 ## Pipeline Flow

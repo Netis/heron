@@ -47,7 +47,7 @@ fn print_summary(conn: &Connection) {
         .and_then(|mut s| s.query_row([], |row| row.get(0)))
         .unwrap_or(0);
     let turn_count: u64 = conn
-        .prepare("SELECT COUNT(*) FROM llm_turns")
+        .prepare("SELECT COUNT(*) FROM agent_turns")
         .and_then(|mut s| s.query_row([], |row| row.get(0)))
         .unwrap_or(0);
 
@@ -67,7 +67,7 @@ fn print_menu(db_path: &str, conn: &Connection) {
     println!();
     println!("  1) llm_metrics   — aggregated time-series");
     println!("  2) llm_calls     — per-request detail");
-    println!("  3) llm_turns     — agent interaction turns");
+    println!("  3) agent_turns     — agent interaction turns");
     println!("  q) quit");
     println!();
 }

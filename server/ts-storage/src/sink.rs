@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 
 use ts_llm::model::LlmCall;
 use ts_metrics::model::LlmMetric;
-use ts_turn::LlmTurn;
+use ts_turn::AgentTurn;
 
 use ts_common::internal_metrics::{Metric, MetricsWorker};
 
@@ -37,7 +37,7 @@ impl Default for StorageSinkConfig {
 pub fn spawn_storage_sink_stage(
     config: StorageSinkConfig,
     calls_rx: mpsc::Receiver<Arc<LlmCall>>,
-    turns_rx: mpsc::Receiver<LlmTurn>,
+    turns_rx: mpsc::Receiver<AgentTurn>,
     metrics_rx: mpsc::Receiver<LlmMetric>,
     backend: Arc<dyn StorageBackend>,
     metrics: MetricsWorker,
@@ -175,7 +175,7 @@ mod tests {
             self.calls.fetch_add(batch.len(), Ordering::SeqCst);
             Ok(())
         }
-        async fn write_turns(&self, batch: Vec<LlmTurn>) -> Result<()> {
+        async fn write_turns(&self, batch: Vec<AgentTurn>) -> Result<()> {
             self.turns.fetch_add(batch.len(), Ordering::SeqCst);
             Ok(())
         }
@@ -265,7 +265,7 @@ mod tests {
         let backend: Arc<dyn StorageBackend> = Arc::new(counts);
 
         let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(16);
-        let (turns_tx, turns_rx) = mpsc::channel::<LlmTurn>(16);
+        let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(16);
         let (metrics_tx, metrics_rx) = mpsc::channel::<LlmMetric>(16);
 
         let cfg = StorageSinkConfig {
@@ -343,14 +343,14 @@ mod tests {
         }
     }
 
-    fn dummy_turn(i: usize) -> LlmTurn {
-        LlmTurn {
+    fn dummy_turn(i: usize) -> AgentTurn {
+        AgentTurn {
             stream_id: String::new(),
             turn_id: format!("t-{i}"),
             session_id: "s".into(),
             tenant_id: None,
             wire_api: ts_llm::wire_apis::OPENAI_CHAT.into(),
-            client_kind: "x".into(),
+            agent_kind: "x".into(),
             start_time_us: 0,
             end_time_us: 0,
             duration_ms: 0,

@@ -23,7 +23,7 @@ const navItems = [
   { to: "/errors", icon: AlertTriangle, label: "Errors" },
   { to: "/models", icon: Cpu, label: "Models" },
   { to: "/requests", icon: List, label: "Requests" },
-  { to: "/turns", icon: GitBranch, label: "Turns" },
+  { to: "/turns", icon: GitBranch, label: "Agent Turns" },
 ]
 
 export function Sidebar() {

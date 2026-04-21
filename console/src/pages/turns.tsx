@@ -17,7 +17,7 @@ const columns = [
   { key: "start_time", label: "Time", width: "w-[140px]", sortable: true, align: "left" as const },
   { key: "wire_api", label: "Wire API", width: "w-[120px]", sortable: false, align: "left" as const },
   { key: "primary_model", label: "Model", width: "w-[180px]", sortable: false, align: "left" as const },
-  { key: "client_kind", label: "Client", width: "w-[100px]", sortable: false, align: "left" as const },
+  { key: "agent_kind", label: "Agent", width: "w-[100px]", sortable: false, align: "left" as const },
   { key: "status", label: "Status", width: "w-[100px]", sortable: false, align: "left" as const },
   { key: "call_count", label: "Calls", width: "w-[60px]", sortable: true, align: "right" as const },
   { key: "total_input_tokens", label: "In", width: "w-[70px]", sortable: true, align: "right" as const },
@@ -47,10 +47,10 @@ function CellValue({ item, column }: { item: TurnListItem; column: (typeof colum
           {item.primary_model ?? "—"}
         </span>
       )
-    case "client_kind":
+    case "agent_kind":
       return (
-        <span className="truncate" title={item.client_kind}>
-          {item.client_kind}
+        <span className="truncate" title={item.agent_kind}>
+          {item.agent_kind}
         </span>
       )
     case "status":

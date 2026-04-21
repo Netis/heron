@@ -4,7 +4,7 @@
 //! llm → turn → **metrics** — with N sources fan-in through a
 //! [`RoutingSender`] that routes by `hash(stream_id) % D` to D dispatcher
 //! channels (default D=1). Flow keys, HTTP reassembly state,
-//! `LlmCall`/`LlmTurn` state, and the metrics aggregator's event-time
+//! `LlmCall`/`AgentTurn` state, and the metrics aggregator's event-time
 //! watermark never leak between pipelines. Only the storage sink is shared
 //! across pipelines so every record lands in the same DB tables.
 //!
@@ -52,7 +52,7 @@ use ts_metrics::model::LlmMetric;
 use ts_protocol::{spawn_flow_dispatcher, spawn_protocol_stage, WorkerInput};
 use ts_storage::StorageBackend;
 use ts_turn::tracker::TrackerConfig;
-use ts_turn::LlmTurn;
+use ts_turn::AgentTurn;
 
 /// Every task spawned by the pipeline is labeled so panic logs name the
 /// specific worker that died. Cheap strings — formatting happens only at
@@ -130,10 +130,10 @@ impl Pipeline {
             .unwrap_or(4096);
 
         let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(sink_capacity);
-        let (turns_tx, turns_rx) = mpsc::channel::<LlmTurn>(sink_capacity);
+        let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(sink_capacity);
         let (metrics_out_tx, metrics_out_rx) = mpsc::channel::<LlmMetric>(sink_capacity);
 
-        let registry = Arc::new(ts_llm::profiles::build_default_registry());
+        let registry = Arc::new(ts_llm::agents::build_default_registry());
         let wire_api_registry = Arc::new(ts_llm::wire_apis::build_default_wire_api_registry());
 
         assert_eq!(

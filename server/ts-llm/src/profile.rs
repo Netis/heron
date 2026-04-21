@@ -1,9 +1,11 @@
 use crate::model::LlmCall;
 
-/// Per-client knowledge about how to extract session/turn IDs and identify
-/// whether a call is user-initiated.
-pub trait ClientProfile: Send + Sync {
-    /// Short stable name, used as `LlmCall.client_kind`.
+/// Per-agent knowledge about how to extract session/turn IDs and identify
+/// whether a call is user-initiated. Each concrete impl represents one
+/// agent client (e.g. `claude-cli`, `codex-cli`).
+pub trait AgentProfile: Send + Sync {
+    /// Short stable name (e.g. `"claude-cli"`). Persisted to storage as
+    /// `AgentTurn.agent_kind`.
     fn name(&self) -> &'static str;
 
     /// Return true iff this profile handles the given call.
@@ -66,7 +68,7 @@ pub trait ClientProfile: Send + Sync {
     }
 }
 
-/// Output of `ClientProfile::extract_ids`.
+/// Output of `AgentProfile::extract_ids`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedIds {
     pub session_id: String,
@@ -76,30 +78,30 @@ pub struct ExtractedIds {
 }
 
 /// First-match registry. Order matters: the first matching profile wins.
-pub struct ProfileRegistry {
-    profiles: Vec<Box<dyn ClientProfile>>,
+pub struct AgentProfileRegistry {
+    profiles: Vec<Box<dyn AgentProfile>>,
 }
 
-impl ProfileRegistry {
+impl AgentProfileRegistry {
     pub fn new() -> Self {
         Self {
             profiles: Vec::new(),
         }
     }
 
-    pub fn with(mut self, profile: Box<dyn ClientProfile>) -> Self {
+    pub fn with(mut self, profile: Box<dyn AgentProfile>) -> Self {
         self.profiles.push(profile);
         self
     }
 
-    pub fn find(&self, call: &LlmCall) -> Option<&dyn ClientProfile> {
+    pub fn find(&self, call: &LlmCall) -> Option<&dyn AgentProfile> {
         self.profiles
             .iter()
             .map(|p| p.as_ref())
             .find(|p| p.matches(call))
     }
 
-    pub fn find_by_name(&self, name: &str) -> Option<&dyn ClientProfile> {
+    pub fn find_by_name(&self, name: &str) -> Option<&dyn AgentProfile> {
         self.profiles
             .iter()
             .map(|p| p.as_ref())
@@ -107,7 +109,7 @@ impl ProfileRegistry {
     }
 }
 
-impl Default for ProfileRegistry {
+impl Default for AgentProfileRegistry {
     fn default() -> Self {
         Self::new()
     }
@@ -158,7 +160,7 @@ mod tests {
         ua_prefix: &'static str,
         name: &'static str,
     }
-    impl ClientProfile for FakeProfile {
+    impl AgentProfile for FakeProfile {
         fn name(&self) -> &'static str {
             self.name
         }
@@ -180,7 +182,7 @@ mod tests {
 
     #[test]
     fn registry_first_match_wins() {
-        let reg = ProfileRegistry::new()
+        let reg = AgentProfileRegistry::new()
             .with(Box::new(FakeProfile {
                 ua_prefix: "alpha/",
                 name: "alpha",
@@ -196,7 +198,7 @@ mod tests {
 
     #[test]
     fn find_by_name_returns_matching_profile() {
-        let reg = ProfileRegistry::new()
+        let reg = AgentProfileRegistry::new()
             .with(Box::new(FakeProfile {
                 ua_prefix: "alpha/",
                 name: "alpha",

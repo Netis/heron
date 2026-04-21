@@ -1,8 +1,8 @@
-//! llm_turns list + detail views.
+//! agent_turns list + detail views.
 
 use duckdb::Connection;
+use ts_llm::agents::build_default_registry;
 use ts_llm::model::{ApiType, LlmCall};
-use ts_llm::profiles::build_default_registry;
 use ts_llm::wire_apis as wa;
 
 use crate::ui::{
@@ -15,7 +15,7 @@ struct TurnSummary {
     session_id: String,
     start_time: String,
     wire_api: String,
-    client_kind: String,
+    agent_kind: String,
     call_count: u32,
     duration_ms: u64,
     input_tokens: u64,
@@ -27,9 +27,9 @@ fn list(conn: &Connection, limit: usize) -> Vec<TurnSummary> {
     let sql = format!(
         "SELECT turn_id, session_id, \
          strftime(start_time, '%m-%d %H:%M:%S'), \
-         wire_api, client_kind, call_count, duration_ms, \
+         wire_api, agent_kind, call_count, duration_ms, \
          total_input_tokens, total_output_tokens, status \
-         FROM llm_turns ORDER BY start_time DESC LIMIT {limit}"
+         FROM agent_turns ORDER BY start_time DESC LIMIT {limit}"
     );
     let mut stmt = conn.prepare(&sql).expect("failed to prepare turns query");
     let rows = stmt
@@ -40,7 +40,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<TurnSummary> {
                 session_id: row.get(1)?,
                 start_time: row.get(2)?,
                 wire_api: row.get(3)?,
-                client_kind: row.get(4)?,
+                agent_kind: row.get(4)?,
                 call_count: row.get(5)?,
                 duration_ms: row.get(6)?,
                 input_tokens: row.get(7)?,
@@ -48,7 +48,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<TurnSummary> {
                 status: row.get(9)?,
             })
         })
-        .expect("failed to query llm_turns");
+        .expect("failed to query agent_turns");
 
     rows.enumerate()
         .filter_map(|(i, r)| match r {
@@ -68,7 +68,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<TurnSummary> {
 
 fn print_list(turns: &[TurnSummary]) {
     if turns.is_empty() {
-        println!("No llm_turns records found.");
+        println!("No agent_turns records found.");
         return;
     }
     println!(
@@ -93,7 +93,7 @@ fn print_list(turns: &[TurnSummary]) {
             truncate(&t.turn_id, 22),
             truncate(&t.session_id, 22),
             truncate(&t.wire_api, 10),
-            truncate(&t.client_kind, 12),
+            truncate(&t.agent_kind, 12),
             t.call_count,
             fmt_duration_ms(t.duration_ms),
             fmt_tokens(t.input_tokens),
@@ -109,7 +109,7 @@ struct TurnDetail {
     session_id: String,
     tenant_id: Option<String>,
     wire_api: String,
-    client_kind: String,
+    agent_kind: String,
     start_time: String,
     end_time: String,
     duration_ms: u64,
@@ -131,7 +131,7 @@ struct TurnDetail {
 }
 
 fn load_detail(conn: &Connection, turn_id: &str) -> Option<TurnDetail> {
-    let sql = "SELECT turn_id, session_id, tenant_id, wire_api, client_kind, \
+    let sql = "SELECT turn_id, session_id, tenant_id, wire_api, agent_kind, \
                CAST(start_time AS VARCHAR), CAST(end_time AS VARCHAR), \
                duration_ms, call_count, models_used, subagents_used, \
                total_input_tokens, total_output_tokens, total_cache_read_input_tokens, \
@@ -139,7 +139,7 @@ fn load_detail(conn: &Connection, turn_id: &str) -> Option<TurnDetail> {
                total_cost_usd, status, final_finish_reason, \
                user_input_preview, user_call_id, \
                final_answer_preview, final_call_id, metadata \
-               FROM llm_turns WHERE turn_id = ?";
+               FROM agent_turns WHERE turn_id = ?";
     let mut stmt = conn
         .prepare(sql)
         .expect("failed to prepare turn detail query");
@@ -149,7 +149,7 @@ fn load_detail(conn: &Connection, turn_id: &str) -> Option<TurnDetail> {
             session_id: row.get(1)?,
             tenant_id: row.get(2)?,
             wire_api: row.get(3)?,
-            client_kind: row.get(4)?,
+            agent_kind: row.get(4)?,
             start_time: row.get(5)?,
             end_time: row.get(6)?,
             duration_ms: row.get(7)?,
@@ -183,13 +183,13 @@ struct ChildCall {
 }
 
 fn load_child_calls(conn: &Connection, turn_id: &str) -> Vec<ChildCall> {
-    // Resolve call_ids for this turn from llm_turns, then join to llm_calls.
-    // call_ids is a JSON array of strings stored on llm_turns.
+    // Resolve call_ids for this turn from agent_turns, then join to llm_calls.
+    // call_ids is a JSON array of strings stored on agent_turns.
     let sql = "SELECT strftime(c.request_time, '%m-%d %H:%M:%S'), c.model, \
                c.input_tokens, c.output_tokens, c.finish_reason, c.status_code \
                FROM llm_calls c \
                JOIN (SELECT UNNEST(json_extract_string(call_ids, '$[*]')) AS cid \
-                     FROM llm_turns WHERE turn_id = ?) ids ON c.id = ids.cid \
+                     FROM agent_turns WHERE turn_id = ?) ids ON c.id = ids.cid \
                ORDER BY c.request_time";
     let Ok(mut stmt) = conn.prepare(sql) else {
         return Vec::new();
@@ -235,13 +235,13 @@ enum ExtractKind {
 }
 
 fn extract_with_profile(
-    client_kind: &str,
+    agent_kind: &str,
     request_body: Option<String>,
     response_body: Option<String>,
     kind: ExtractKind,
 ) -> Option<String> {
     let registry = build_default_registry();
-    let profile = registry.find_by_name(client_kind)?;
+    let profile = registry.find_by_name(agent_kind)?;
     let call = LlmCall {
         stream_id: String::new(),
         id: String::new(),
@@ -287,7 +287,7 @@ fn print_detail(conn: &Connection, d: &TurnDetail, calls: &[ChildCall]) {
     println!("  Session ID:     {}", d.session_id);
     println!("  Tenant:         {}", fmt_opt(d.tenant_id.as_deref()));
     println!("  Wire API:       {}", d.wire_api);
-    println!("  Client Kind:    {}", d.client_kind);
+    println!("  Client Kind:    {}", d.agent_kind);
     println!("  Start:          {}", d.start_time);
     println!("  End:            {}", d.end_time);
     println!(
@@ -322,7 +322,7 @@ fn print_detail(conn: &Connection, d: &TurnDetail, calls: &[ChildCall]) {
 
     let full_user_input = match d.user_call_id.as_deref() {
         Some(cid) => load_call_bodies(conn, cid).and_then(|b| {
-            extract_with_profile(&d.client_kind, b.request_body, None, ExtractKind::User)
+            extract_with_profile(&d.agent_kind, b.request_body, None, ExtractKind::User)
         }),
         None => None,
     };
@@ -342,12 +342,7 @@ fn print_detail(conn: &Connection, d: &TurnDetail, calls: &[ChildCall]) {
     }
     let full_final_answer = match d.final_call_id.as_deref() {
         Some(cid) => load_call_bodies(conn, cid).and_then(|b| {
-            extract_with_profile(
-                &d.client_kind,
-                None,
-                b.response_body,
-                ExtractKind::Assistant,
-            )
+            extract_with_profile(&d.agent_kind, None, b.response_body, ExtractKind::Assistant)
         }),
         None => None,
     };
@@ -384,7 +379,7 @@ fn print_detail(conn: &Connection, d: &TurnDetail, calls: &[ChildCall]) {
 
     println!("  Calls in this turn ({}):", calls.len());
     if calls.is_empty() {
-        println!("    (none found — call_ids on llm_turns may be empty or calls not persisted)");
+        println!("    (none found — call_ids on agent_turns may be empty or calls not persisted)");
     } else {
         println!(
             "    {:<14}  {:<24}  {:>6}  {:>6}  {:>5}  {}",
@@ -408,7 +403,7 @@ fn print_detail(conn: &Connection, d: &TurnDetail, calls: &[ChildCall]) {
 pub fn run(conn: &Connection, limit: usize) {
     loop {
         clear_screen();
-        println!("─── llm_turns (latest {limit}) ───");
+        println!("─── agent_turns (latest {limit}) ───");
         let turns = list(conn, limit);
         print_list(&turns);
 

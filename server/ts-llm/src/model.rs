@@ -84,27 +84,28 @@ pub struct LlmCall {
     pub response_headers: Vec<(String, String)>,
 }
 
-/// Stable identity of an LLM call once a `ClientProfile` has matched.
-/// The turn shard uses `profile_name` to look up the profile for
-/// per-profile semantics (is_user_turn_start, extract_user_input, ...).
+/// Identity of an LLM call once an `AgentProfile` has matched — i.e. the call
+/// is attributed to a known agent client (claude-cli, codex-cli, …). Non-agent
+/// traffic never produces an `AgentIdentity`.
 #[derive(Debug, Clone)]
-pub struct CallIdentity {
-    pub profile_name: &'static str,
-    pub client_kind: String,
+pub struct AgentIdentity {
+    /// Short stable agent name (e.g. `"claude-cli"`). Doubles as the profile
+    /// selector (look up via `AgentProfileRegistry::find_by_name`) and the
+    /// persisted `AgentTurn.agent_kind` storage value.
+    pub agent_kind: &'static str,
     pub session_id: String,
     /// Explicit turn_id from request body when the profile provides one (e.g. Codex).
     /// `None` when the turn shard will generate the turn_id (Anthropic path).
     pub turn_id_hint: Option<String>,
 }
 
-/// An LlmCall packaged with its extracted identity. The `call` is an `Arc`
-/// because the same `LlmCall` is fanned out to the storage sink and
-/// (for identified calls) the turn shard in parallel — all consumers
-/// read-only, no mutex needed.
+/// An LlmCall attributed to a specific agent. The `call` is an `Arc` because
+/// the same `LlmCall` is fanned out to the storage sink and the turn shard in
+/// parallel — all consumers read-only, no mutex needed.
 #[derive(Debug, Clone)]
-pub struct IdentifiedCall {
+pub struct AgentCall {
     pub call: Arc<LlmCall>,
-    pub identity: CallIdentity,
+    pub agent: AgentIdentity,
 }
 
 /// Input type for a turn shard. Calls flow in hashed by session_id;
@@ -112,7 +113,7 @@ pub struct IdentifiedCall {
 /// clock and sweep idle turns without waiting for a new call.
 #[derive(Debug, Clone)]
 pub enum TurnShardInput {
-    Call(IdentifiedCall),
+    Call(AgentCall),
     Heartbeat { ts: i64, stream_id: String },
 }
 
@@ -122,10 +123,10 @@ pub enum LlmEvent {
     /// A new LLM API request has been detected (for concurrency tracking).
     Start(LlmCallStart),
     /// An LLM API call has been fully completed (request + response paired).
-    /// `identity` is `Some` iff a `ClientProfile` matched and extracted session info.
+    /// `agent` is `Some` iff an `AgentProfile` matched and extracted session info.
     Complete {
         call: Arc<LlmCall>,
-        identity: Option<CallIdentity>,
+        agent: Option<AgentIdentity>,
     },
     /// Time-advancing heartbeat. Carries `wall_ts_us` (Unix-epoch µs).
     /// Broadcast to all metrics shards so each can close stale windows even
@@ -254,20 +255,19 @@ mod extension_tests {
     use std::sync::Arc;
 
     #[test]
-    fn call_identity_round_trips() {
-        let id = CallIdentity {
-            profile_name: "claude-cli",
-            client_kind: "claude-cli".to_string(),
+    fn agent_identity_round_trips() {
+        let id = AgentIdentity {
+            agent_kind: "claude-cli",
             session_id: "sess-1".to_string(),
             turn_id_hint: None,
         };
-        assert_eq!(id.profile_name, "claude-cli");
+        assert_eq!(id.agent_kind, "claude-cli");
         assert_eq!(id.session_id, "sess-1");
         assert!(id.turn_id_hint.is_none());
     }
 
     #[test]
-    fn identified_call_carries_arc_and_identity() {
+    fn agent_call_carries_arc_and_identity() {
         let call = LlmCall {
             stream_id: String::new(),
             id: "c".into(),
@@ -300,18 +300,17 @@ mod extension_tests {
             response_headers: vec![],
         };
         let arc = Arc::new(call);
-        let id = CallIdentity {
-            profile_name: "x",
-            client_kind: "x".into(),
+        let id = AgentIdentity {
+            agent_kind: "x",
             session_id: "s".into(),
             turn_id_hint: None,
         };
-        let ic = IdentifiedCall {
+        let ic = AgentCall {
             call: Arc::clone(&arc),
-            identity: id,
+            agent: id,
         };
         assert_eq!(ic.call.id, "c");
-        assert_eq!(ic.identity.session_id, "s");
+        assert_eq!(ic.agent.session_id, "s");
         assert_eq!(Arc::strong_count(&arc), 2);
     }
 

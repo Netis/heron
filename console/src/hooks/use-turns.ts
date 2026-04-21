@@ -11,10 +11,10 @@ interface UseTurnsParams {
   /** CSV of statuses e.g. "success,error" */
   status?: string
   /** CSV of client kinds */
-  clientKind?: string
+  agentKind?: string
 }
 
-export function useTurns({ page, pageSize, sortBy, sortOrder, status, clientKind }: UseTurnsParams) {
+export function useTurns({ page, pageSize, sortBy, sortOrder, status, agentKind }: UseTurnsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
   const filters = useToolbarStore((s) => s.filters)
@@ -23,7 +23,7 @@ export function useTurns({ page, pageSize, sortBy, sortOrder, status, clientKind
     queryKey: ["turns", {
       start, end, page, pageSize, sortBy, sortOrder,
       wireApi: filters.wireApi, model: filters.model, serverIp: filters.serverIp,
-      status, clientKind,
+      status, agentKind,
     }],
     queryFn: () =>
       apiFetch<TurnsPage>("/api/turns", {
@@ -37,7 +37,7 @@ export function useTurns({ page, pageSize, sortBy, sortOrder, status, clientKind
         model: filters.model || undefined,
         server_ip: filters.serverIp || undefined,
         status: status || undefined,
-        client_kind: clientKind || undefined,
+        agent_kind: agentKind || undefined,
       }),
     placeholderData: (prev) => prev,
   })

@@ -7,7 +7,7 @@ The `ts-storage` crate provides pluggable storage abstraction. All writes are ap
 ## Core Principles
 
 - **Pluggable backend**: DuckDB / PostgreSQL / ClickHouse selected via config at startup
-- **Append-only writes**: all entities (`LlmCall`, `LlmTurn`, `LlmMetric`) are INSERT-only, no UPDATE
+- **Append-only writes**: all entities (`LlmCall`, `AgentTurn`, `LlmMetric`) are INSERT-only, no UPDATE
 - **Batch writes**: `WriteBuffer` collects records in memory, flushes on count or time threshold
 - **Read/write separation**: write path (pipeline → buffer → DB) and read path (API → DB) may have different optimization strategies per backend
 - **Backend-specific queries**: query interface may expose backend-specific capabilities rather than forcing a lowest-common-denominator abstraction
@@ -17,7 +17,7 @@ The `ts-storage` crate provides pluggable storage abstraction. All writes are ap
 
 ```
 LlmCall  ───┐
-LlmTurn  ───┼──▶ Sink ──▶ WriteBuffer ──▶ batched INSERT ──▶ DB
+AgentTurn  ───┼──▶ Sink ──▶ WriteBuffer ──▶ batched INSERT ──▶ DB
 LlmMetric ──┘
 ```
 

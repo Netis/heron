@@ -18,14 +18,14 @@ pub struct TurnsParams {
     pub wire_api: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
-    /// Accepted for API symmetry with calls/metrics but ignored — llm_turns
+    /// Accepted for API symmetry with calls/metrics but ignored — agent_turns
     /// does not store server_ip (turns are client-facing aggregations).
     #[serde(default)]
     pub server_ip: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
-    pub client_kind: Option<String>,
+    pub agent_kind: Option<String>,
     #[serde(default = "default_turns_sort_by")]
     pub sort_by: String,
     #[serde(default = "default_turns_sort_order")]
@@ -59,7 +59,7 @@ pub async fn list(
         time_range: to_time_range(params.start, params.end),
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         statuses: parse_csv(&params.status),
-        client_kinds: parse_csv(&params.client_kind),
+        agent_kinds: parse_csv(&params.agent_kind),
         sort_by: params.sort_by,
         sort_order: params.sort_order,
         page: params.page,

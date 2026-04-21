@@ -391,7 +391,7 @@ mod tests {
                 request_headers: vec![],
                 response_headers: vec![],
             }),
-            identity: None,
+            agent: None,
         }
     }
 
@@ -701,9 +701,9 @@ mod tests {
         let metrics = agg.flush_all();
         let rows_10s: Vec<_> = metrics.iter().filter(|m| m.granularity == "10s").collect();
         assert_eq!(rows_10s.len(), 4);
-        assert!(rows_10s
-            .iter()
-            .any(|m| m.wire_api == wa::OPENAI_CHAT && m.model == "gpt-4" && m.server_ip == "10.0.0.1"));
+        assert!(rows_10s.iter().any(|m| m.wire_api == wa::OPENAI_CHAT
+            && m.model == "gpt-4"
+            && m.server_ip == "10.0.0.1"));
         assert!(rows_10s
             .iter()
             .any(|m| m.wire_api == wa::OPENAI_CHAT && m.model == "gpt-4" && m.server_ip == "*"));

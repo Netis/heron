@@ -282,7 +282,7 @@ function TurnDetailView({ turn, calls }: { turn: TurnDetail; calls: TurnCallItem
   const metadataRows: [string, string][] = [
     ["Turn ID", turn.turn_id],
     ["Session ID", turn.session_id],
-    ["Client", turn.client_kind],
+    ["Agent", turn.agent_kind],
     ["Tenant", turn.tenant_id ?? "—"],
     ["Start", formatDateTimeMs(turn.start_time)],
     ["End", formatDateTimeMs(turn.end_time)],

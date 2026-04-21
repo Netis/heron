@@ -39,15 +39,15 @@ impl fmt::Display for TurnStatus {
     }
 }
 
-/// Aggregated record for one turn (user input → final assistant output).
+/// Aggregated record for one agent turn (user input → final assistant output).
 #[derive(Debug, Clone)]
-pub struct LlmTurn {
+pub struct AgentTurn {
     pub stream_id: String,
     pub turn_id: String,
     pub session_id: String,
     pub tenant_id: Option<String>,
-    pub wire_api: String,    // copied from LlmCall.wire_api
-    pub client_kind: String, // "claude-cli" / "codex-cli" / ...
+    pub wire_api: String,   // copied from LlmCall.wire_api
+    pub agent_kind: String, // "claude-cli" / "codex-cli" / ...
 
     pub start_time_us: i64, // first call's request_time
     pub end_time_us: i64,   // last call's complete_time (or request_time if no resp)
@@ -86,14 +86,14 @@ pub struct LlmTurn {
     pub metadata: serde_json::Value, // future extension point; empty object by default
 }
 
-impl fmt::Display for LlmTurn {
+impl fmt::Display for AgentTurn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "[LlmTurn] turn={} session={} client={} calls={} dur={}ms status={}",
+            "[AgentTurn] turn={} session={} agent={} calls={} dur={}ms status={}",
             self.turn_id,
             self.session_id,
-            self.client_kind,
+            self.agent_kind,
             self.call_count,
             self.duration_ms,
             self.status,
@@ -131,14 +131,14 @@ mod tests {
     }
 
     #[test]
-    fn llm_turn_display_includes_key_fields() {
-        let turn = LlmTurn {
+    fn agent_turn_display_includes_key_fields() {
+        let turn = AgentTurn {
             stream_id: String::new(),
             turn_id: "t1".into(),
             session_id: "s1".into(),
             tenant_id: None,
             wire_api: wa::ANTHROPIC.into(),
-            client_kind: "claude-cli".into(),
+            agent_kind: "claude-cli".into(),
             start_time_us: 0,
             end_time_us: 1_500_000,
             duration_ms: 1500,
@@ -167,14 +167,14 @@ mod tests {
     }
 
     #[test]
-    fn llm_turn_has_call_ids() {
-        let turn = LlmTurn {
+    fn agent_turn_has_call_ids() {
+        let turn = AgentTurn {
             stream_id: String::new(),
             turn_id: "t".into(),
             session_id: "s".into(),
             tenant_id: None,
             wire_api: wa::ANTHROPIC.into(),
-            client_kind: "claude-cli".into(),
+            agent_kind: "claude-cli".into(),
             start_time_us: 0,
             end_time_us: 0,
             duration_ms: 0,

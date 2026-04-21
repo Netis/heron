@@ -119,7 +119,7 @@ capture ──▶ packet_parser (extract flow key from IP/TCP headers)
                     │
             per-capture LlmMetric ──┐
             per-capture LlmCall    ─┤
-            per-capture LlmTurn    ─┤
+            per-capture AgentTurn    ─┤
                                     ▼
                              storage::WriteBuffer (shared)
                                     │

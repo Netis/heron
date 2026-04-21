@@ -263,7 +263,7 @@ pub struct QueueConfig {
     /// llm stage → storage sink (LlmCall records)
     #[serde(default = "default_queue_capacity")]
     pub call_sink: usize,
-    /// turn stage → storage sink (LlmTurn records)
+    /// turn stage → storage sink (AgentTurn records)
     #[serde(default = "default_queue_capacity")]
     pub turn_sink: usize,
     /// metrics stage → storage sink (LlmMetric records)
@@ -324,7 +324,7 @@ pub struct RetentionConfig {
     /// Max age in days for `llm_calls`. `0` (or absent) = never expire.
     #[serde(default)]
     pub calls: u32,
-    /// Max age in days for `llm_turns`. `0` (or absent) = never expire.
+    /// Max age in days for `agent_turns`. `0` (or absent) = never expire.
     #[serde(default)]
     pub turns: u32,
     /// Per-granularity retention for `llm_metrics`, in days. Key = granularity

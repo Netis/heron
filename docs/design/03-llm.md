@@ -123,7 +123,7 @@ ts-llm/
 └── src/
     ├── lib.rs
     ├── model.rs              # LlmCall, FinishReason, WireApi trait, RouteVerdict
-    ├── profile.rs            # ClientProfile trait + ProfileRegistry
+    ├── profile.rs            # AgentProfile trait + AgentProfileRegistry
     ├── processor.rs          # LlmProcessor: ProtocolEvent → LlmEvent
     ├── stage.rs              # spawn_llm_stage (shards + fan-out)
     ├── wire_api_registry.rs  # WireApiRegistry

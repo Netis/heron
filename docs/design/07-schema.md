@@ -174,7 +174,7 @@ Retention is **disabled by default**; operators opt in via `[storage.retention]`
 
 **Cutoff columns** (what "old" means):
 - `llm_calls.request_time`
-- `llm_turns.end_time` (NOT NULL; turn completion — safer than start_time)
+- `agent_turns.end_time` (NOT NULL; turn completion — safer than start_time)
 - `llm_metrics.timestamp`, further keyed by `granularity`
 
 **Recommended defaults** (set explicitly in config; no built-in defaults to avoid surprise deletion):
@@ -184,7 +184,7 @@ Retention is **disabled by default**; operators opt in via `[storage.retention]`
 enabled = true
 check_interval_secs = 3600
 calls = 7     # llm_calls max age in days
-turns = 30    # llm_turns max age in days
+turns = 30    # agent_turns max age in days
 
 [storage.retention.metrics]
 "10s" = 1
@@ -212,3 +212,13 @@ Each backend implements `StorageBackend::apply_retention` with a dialect-appropr
 | Percentile storage | plain DOUBLE | plain f64 | plain f64, or `AggregateFunction(quantilesTDigest, Float64)` for re-aggregation |
 | Batch write | batch INSERT (appender API) | `COPY` | batch INSERT (≥1000 rows per batch) |
 | Data expiry | periodic DELETE | `pg_partman` time partition + DROP | TTL expression |
+
+---
+
+## Upgrade Notes
+
+The `AgentTurn` rename (formerly `LlmTurn`) changed the DuckDB schema:
+- Table `llm_turns` → `agent_turns`
+- Column `client_kind` → `agent_kind`
+
+No online migration is performed. Existing `server/data/tokenscope.duckdb` files from before the rename should be deleted before restart — the backend will recreate the new schema on first run via `CREATE TABLE IF NOT EXISTS`.

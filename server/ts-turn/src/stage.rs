@@ -1,6 +1,6 @@
 //! Turn tracking stage: spawns T parallel TurnTracker tasks, each shard
 //! keyed by hash(session_id) % T. Each shard owns its own tracker and
-//! emits finalized LlmTurns to turns_tx. LlmCalls flow directly from
+//! emits finalized AgentTurns to turns_tx. LlmCalls flow directly from
 //! llm-proc to storage (Arc<LlmCall> shared read-only); this stage does
 //! not forward them.
 
@@ -11,9 +11,9 @@ use tokio::task::JoinHandle;
 
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_llm::model::TurnShardInput;
-use ts_llm::profile::ProfileRegistry;
+use ts_llm::profile::AgentProfileRegistry;
 
-use crate::model::LlmTurn;
+use crate::model::AgentTurn;
 use crate::tracker::{TrackerConfig, TurnEvent, TurnTracker};
 
 /// Spawn one turn-tracker task per shard (inferred from `shard_rxs.len()`).
@@ -21,8 +21,8 @@ use crate::tracker::{TrackerConfig, TurnEvent, TurnTracker};
 pub fn spawn_turn_stage(
     tracker_cfg: TrackerConfig,
     shard_rxs: Vec<mpsc::Receiver<TurnShardInput>>,
-    turns_tx: mpsc::Sender<LlmTurn>,
-    registry: Arc<ProfileRegistry>,
+    turns_tx: mpsc::Sender<AgentTurn>,
+    registry: Arc<AgentProfileRegistry>,
     metrics_sys: &mut MetricsSystem,
 ) -> Vec<JoinHandle<()>> {
     assert!(
@@ -103,8 +103,8 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
     use std::sync::Arc;
-    use ts_llm::model::{ApiType, CallIdentity, FinishReason, IdentifiedCall, LlmCall};
-    use ts_llm::profiles::build_default_registry;
+    use ts_llm::agents::build_default_registry;
+    use ts_llm::model::{AgentCall, AgentIdentity, ApiType, FinishReason, LlmCall};
     use ts_llm::wire_apis as wa;
 
     /// `is_user_start`: true ⇒ text body (new-turn marker); false ⇒ tool_result body (continuation).
@@ -155,10 +155,9 @@ mod tests {
         }
     }
 
-    fn id_for(session: &str) -> CallIdentity {
-        CallIdentity {
-            profile_name: "claude-cli",
-            client_kind: "claude-cli".into(),
+    fn id_for(session: &str) -> AgentIdentity {
+        AgentIdentity {
+            agent_kind: "claude-cli",
             session_id: session.into(),
             turn_id_hint: None,
         }
@@ -167,7 +166,7 @@ mod tests {
     #[tokio::test]
     async fn single_shard_produces_turn() {
         let (shard_tx, shard_rx) = mpsc::channel::<TurnShardInput>(16);
-        let (turns_tx, mut turns_rx) = mpsc::channel::<LlmTurn>(16);
+        let (turns_tx, mut turns_rx) = mpsc::channel::<AgentTurn>(16);
 
         let mut metrics_sys = MetricsSystem::new();
         spawn_turn_stage(
@@ -190,16 +189,16 @@ mod tests {
         let (id1, id2) = (c1.id.clone(), c2.id.clone());
 
         shard_tx
-            .send(TurnShardInput::Call(IdentifiedCall {
+            .send(TurnShardInput::Call(AgentCall {
                 call: c1,
-                identity: id_for("S"),
+                agent: id_for("S"),
             }))
             .await
             .unwrap();
         shard_tx
-            .send(TurnShardInput::Call(IdentifiedCall {
+            .send(TurnShardInput::Call(AgentCall {
                 call: c2,
-                identity: id_for("S"),
+                agent: id_for("S"),
             }))
             .await
             .unwrap();
@@ -222,7 +221,7 @@ mod tests {
             shard_txs.push(tx);
             shard_rxs.push(rx);
         }
-        let (turns_tx, mut turns_rx) = mpsc::channel::<LlmTurn>(64);
+        let (turns_tx, mut turns_rx) = mpsc::channel::<AgentTurn>(64);
 
         let mut metrics_sys = MetricsSystem::new();
         spawn_turn_stage(
@@ -249,15 +248,15 @@ mod tests {
                 FinishReason::Complete,
                 false,
             ));
-            tx.send(TurnShardInput::Call(IdentifiedCall {
+            tx.send(TurnShardInput::Call(AgentCall {
                 call: c1,
-                identity: id_for(&session),
+                agent: id_for(&session),
             }))
             .await
             .unwrap();
-            tx.send(TurnShardInput::Call(IdentifiedCall {
+            tx.send(TurnShardInput::Call(AgentCall {
                 call: c2,
-                identity: id_for(&session),
+                agent: id_for(&session),
             }))
             .await
             .unwrap();
@@ -278,7 +277,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "spawn_turn_stage: shard_rxs must be non-empty")]
     async fn panics_on_empty_shard_rxs() {
-        let (_turns_tx, _turns_rx) = mpsc::channel::<LlmTurn>(1);
+        let (_turns_tx, _turns_rx) = mpsc::channel::<AgentTurn>(1);
         let mut metrics_sys = MetricsSystem::new();
         spawn_turn_stage(
             TrackerConfig::default(),

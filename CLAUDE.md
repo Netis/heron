@@ -59,7 +59,7 @@ TokenScope/
 │   ├── ts-capture/              # libpcap + cloud-probe ZMQ receiver → RawPacket
 │   ├── ts-protocol/             # net (L2-L4) + http (HTTP/SSE) parsing
 │   ├── ts-llm/                  # Wire-API detection + extractors → LlmCall
-│   ├── ts-turn/                 # Client profiles + state machine → LlmTurn
+│   ├── ts-turn/                 # Agent profiles + state machine → AgentTurn
 │   ├── ts-metrics/              # Sliding-window aggregation → LlmMetric
 │   ├── ts-storage/              # StorageBackend trait + DuckDB/PG/ClickHouse + write buffer
 │   ├── ts-api/                  # Axum REST API + WebSocket
@@ -79,7 +79,7 @@ See [docs/design/04-turn.md](docs/design/04-turn.md) for Turn (agent interaction
 
 ## Storage
 
-Three entities: `llm_turns` (agent turn), `llm_calls` (per-call detail + full body), `llm_metrics` (pre-aggregated time-series). Relation: `llm_turns 1─N llm_calls`. Pluggable backends:
+Three entities: `agent_turns` (agent turn), `llm_calls` (per-call detail + full body), `llm_metrics` (pre-aggregated time-series). Relation: `agent_turns 1─N llm_calls`. Pluggable backends:
 
 | Backend | Use case |
 |---------|----------|

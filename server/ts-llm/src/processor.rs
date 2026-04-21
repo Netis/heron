@@ -7,8 +7,8 @@ use ts_protocol::model::{HttpRequestData, HttpResponseData, ProtocolEvent, SseEv
 use ts_protocol::net::FlowKey;
 use uuid::Uuid;
 
-use crate::model::{ApiType, CallIdentity, LlmCall, LlmCallStart, LlmEvent};
-use crate::profile::ProfileRegistry;
+use crate::model::{AgentIdentity, ApiType, LlmCall, LlmCallStart, LlmEvent};
+use crate::profile::AgentProfileRegistry;
 use crate::wire_api_registry::WireApiRegistry;
 
 /// Default stale-pending-call timeout. Pending LLM calls older than this are
@@ -33,14 +33,14 @@ struct PendingCall {
 pub struct LlmProcessor {
     pending: HashMap<FlowKey, PendingCall>,
     wire_apis: Arc<WireApiRegistry>,
-    registry: Arc<ProfileRegistry>,
+    registry: Arc<AgentProfileRegistry>,
     metrics: MetricsWorker,
 }
 
 impl LlmProcessor {
     pub fn new(
         wire_apis: Arc<WireApiRegistry>,
-        registry: Arc<ProfileRegistry>,
+        registry: Arc<AgentProfileRegistry>,
         metrics: MetricsWorker,
     ) -> Self {
         Self {
@@ -61,10 +61,10 @@ impl LlmProcessor {
             }
             ProtocolEvent::HttpResponse(resp) => match self.on_response(resp) {
                 Some(call) => {
-                    let identity = self.build_identity(&call);
+                    let agent = self.build_identity(&call);
                     vec![LlmEvent::Complete {
                         call: Arc::new(call),
-                        identity,
+                        agent,
                     }]
                 }
                 None => Vec::new(),
@@ -242,13 +242,11 @@ impl LlmProcessor {
         self.pending.len()
     }
 
-    fn build_identity(&self, call: &LlmCall) -> Option<CallIdentity> {
+    fn build_identity(&self, call: &LlmCall) -> Option<AgentIdentity> {
         let profile = self.registry.find(call)?;
         let ids = profile.extract_ids(call)?;
-        let name = profile.name();
-        Some(CallIdentity {
-            profile_name: name,
-            client_kind: name.to_string(),
+        Some(AgentIdentity {
+            agent_kind: profile.name(),
             session_id: ids.session_id,
             turn_id_hint: ids.turn_id,
         })
@@ -296,8 +294,8 @@ mod tests {
     use std::net::IpAddr;
     use ts_protocol::net::FlowKey;
 
-    fn empty_registry() -> std::sync::Arc<crate::profile::ProfileRegistry> {
-        std::sync::Arc::new(crate::profile::ProfileRegistry::new())
+    fn empty_registry() -> std::sync::Arc<crate::profile::AgentProfileRegistry> {
+        std::sync::Arc::new(crate::profile::AgentProfileRegistry::new())
     }
 
     fn wire_apis() -> std::sync::Arc<crate::wire_api_registry::WireApiRegistry> {
@@ -732,7 +730,7 @@ mod tests {
 
     #[test]
     fn complete_for_claude_cli_attaches_identity() {
-        use crate::profiles::build_default_registry;
+        use crate::agents::build_default_registry;
         use std::sync::Arc;
 
         let registry = Arc::new(build_default_registry());
@@ -775,10 +773,9 @@ mod tests {
         let events = proc.process(ProtocolEvent::HttpResponse(http_response(&resp_body)));
         assert_eq!(events.len(), 1);
         match &events[0] {
-            LlmEvent::Complete { call, identity } => {
-                let id = identity.as_ref().expect("claude-cli should match");
-                assert_eq!(id.profile_name, "claude-cli");
-                assert_eq!(id.client_kind, "claude-cli");
+            LlmEvent::Complete { call, agent } => {
+                let id = agent.as_ref().expect("claude-cli should match");
+                assert_eq!(id.agent_kind, "claude-cli");
                 assert_eq!(id.session_id, "sess-xyz");
                 assert_eq!(
                     id.turn_id_hint, None,
@@ -792,7 +789,7 @@ mod tests {
 
     #[test]
     fn complete_without_profile_match_has_no_identity() {
-        use crate::profiles::build_default_registry;
+        use crate::agents::build_default_registry;
         use std::sync::Arc;
 
         let registry = Arc::new(build_default_registry());
@@ -812,8 +809,8 @@ mod tests {
         let events = proc.process(ProtocolEvent::HttpResponse(http_response(&resp_body)));
         assert_eq!(events.len(), 1);
         match &events[0] {
-            LlmEvent::Complete { call: _, identity } => {
-                assert!(identity.is_none(), "no profile should match");
+            LlmEvent::Complete { call: _, agent } => {
+                assert!(agent.is_none(), "no profile should match");
             }
             _ => panic!("expected Complete"),
         }

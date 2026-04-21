@@ -2,7 +2,7 @@
 //!
 //! Not part of the ingest pipeline. Runs alongside it in the same process,
 //! receives an `Arc<dyn StorageBackend>` to serve queries against
-//! `llm_calls` / `llm_turns` / `llm_metrics`.
+//! `llm_calls` / `agent_turns` / `llm_metrics`.
 //!
 //! Entry points:
 //!

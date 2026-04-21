@@ -84,7 +84,7 @@ export interface TurnListItem {
   end_time: number
   duration_ms: number
   wire_api: string
-  client_kind: string
+  agent_kind: string
   primary_model: string | null
   models_used: string[]
   call_count: number
@@ -101,7 +101,7 @@ export interface TurnDetail {
   session_id: string
   tenant_id: string | null
   wire_api: string
-  client_kind: string
+  agent_kind: string
   start_time: number
   end_time: number
   duration_ms: number
