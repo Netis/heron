@@ -6,6 +6,11 @@
 //! The joiner is wire-API-agnostic: it pairs HTTP exchanges regardless of
 //! whether they look like LLM traffic. Non-LLM traffic still lands here,
 //! which is the whole point — see proposal 0001.
+//!
+//! `HttpExchange` is a thin carrier of `(id, Arc<HttpRequestData>,
+//! Arc<HttpResponseData>)` — the joiner never reshapes fields into a flat
+//! storage struct. Downstream consumers read transport fields off the two
+//! Arcs directly.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -20,65 +25,107 @@ use ts_common::internal_metrics::{Metric, MetricsWorker};
 use crate::model::{HttpRequestData, HttpResponseData, ProtocolEvent, SseEventData};
 use crate::net::FlowKey;
 
-/// Upper bound on how long an unpaired HTTP request may sit in `pending`
-/// before heartbeats evict it. Covers pathological cases where a response
-/// is never observed (connection abort, capture gap, TLS renegotiation).
+/// Upper bound on how long a pending HTTP exchange may sit **silent** before
+/// heartbeats evict it. The clock is reset by any SSE activity on the flow
+/// (see `Pending.last_activity_us`), so a live streaming response keeps
+/// refreshing itself regardless of total duration. Eviction therefore means
+/// "nothing at all for 10 minutes" — almost always a dead connection
+/// (abort, capture gap, TLS renegotiation).
 ///
-/// This is a transport-layer concern — decoupled from `TurnConfig`'s
-/// agent-level idle timeout, which governs a different question ("when is
-/// an agent conversation considered finished?"). The two happen to share a
-/// 10-minute default by coincidence, not by contract.
+/// 10 minutes is chosen to comfortably exceed realistic non-streaming TTFB
+/// on slow provider paths (Anthropic/OpenAI SDK client defaults sit at the
+/// same order). It is decoupled from `TurnConfig.idle_timeout_secs`, which
+/// answers a different question (when is an agent *conversation* done).
 pub const PENDING_STALE_TIMEOUT_US: i64 = 600_000_000;
 
-/// HTTP exchange — request + (optional) response pair. Authoritative
-/// transport-layer record; persisted to `http_exchanges`.
+/// Paired HTTP exchange carried as two `Arc`s over the original request /
+/// response records. Authoritative transport-layer record; persisted to
+/// `http_exchanges`.
 ///
-/// `sse_events` (the reconstructed content stream) is NOT a field: SSE events
-/// do not land in storage. They travel alongside on the in-flight
-/// `HttpJoinerEvent::Exchange` payload for downstream semantic extraction,
-/// then are dropped.
+/// `id` is a UUIDv7 minted by the joiner at pairing time — the primary key
+/// for `http_exchanges` and the stable correlation id downstream (e.g.
+/// `LlmCall.exchange_id` FK).
+///
+/// SSE events are NOT a field here: the reconstructed content stream does
+/// not land in storage. SSE events travel alongside on the in-flight
+/// `HttpJoinerEvent::Exchange` payload for downstream semantic extraction
+/// and are dropped at the end of that hop.
 #[derive(Debug, Clone)]
 pub struct HttpExchange {
     pub id: String,
-    pub stream_id: String,
-    pub client_ip: IpAddr,
-    pub client_port: u16,
-    pub server_ip: IpAddr,
-    pub server_port: u16,
+    pub request: Arc<HttpRequestData>,
+    pub response: Arc<HttpResponseData>,
+}
 
-    pub method: String,
-    pub uri: String,
-    pub request_headers: Vec<(String, String)>,
-    pub request_body: Bytes,
+impl HttpExchange {
+    pub fn stream_id(&self) -> &str {
+        &self.request.flow_key.stream_id
+    }
 
-    /// `None` = no response received (pending expired before response).
-    pub status: Option<u16>,
-    pub response_headers: Vec<(String, String)>,
-    /// `None` = SSE (body wasn't retained) or response never arrived.
-    /// `Some(Bytes::new())` = real empty body (204/304/HEAD).
-    pub response_body: Option<Bytes>,
-    pub is_sse: bool,
+    pub fn client_addr(&self) -> (IpAddr, u16) {
+        self.request.client_addr
+    }
 
-    pub request_time: i64,
-    pub response_first_byte_time: Option<i64>,
-    pub response_complete_time: Option<i64>,
+    pub fn server_addr(&self) -> (IpAddr, u16) {
+        self.request.server_addr
+    }
+
+    pub fn request_time_us(&self) -> i64 {
+        self.request.timestamp_us
+    }
+
+    pub fn response_first_byte_time_us(&self) -> i64 {
+        self.response.first_byte_timestamp_us
+    }
+
+    pub fn response_complete_time_us(&self) -> i64 {
+        self.response.complete_timestamp_us
+    }
+
+    /// `true` iff the response's `Content-Type` starts with
+    /// `text/event-stream`. Transport-layer decision; the authoritative
+    /// signal for whether to persist a response body (see
+    /// `stored_response_body`).
+    pub fn is_sse(&self) -> bool {
+        self.response
+            .content_type()
+            .map(|ct| ct.starts_with("text/event-stream"))
+            .unwrap_or(false)
+    }
+
+    /// `None` for SSE — the parser emits `Bytes::new()` for SSE response
+    /// bodies (raw bytes are never retained), and persisting that empty
+    /// buffer would store a zero-length blob instead of the semantic NULL
+    /// expected by storage. Callers writing the response body should use
+    /// this accessor rather than `self.response.body` directly.
+    pub fn stored_response_body(&self) -> Option<&Bytes> {
+        if self.is_sse() {
+            None
+        } else {
+            Some(&self.response.body)
+        }
+    }
 }
 
 /// Output event of the `HttpJoiner`. Two downstream-visible phases:
-/// `RequestObserved` fires on request arrival (drives `LlmEvent::Start`
-/// and metrics concurrency +1); `Exchange` fires on response completion
-/// with the paired record plus any SSE events seen on that flow.
+/// `Request` fires on request arrival (drives `LlmEvent::Start` and metrics
+/// concurrency +1); `Exchange` fires on response completion with both Arcs
+/// plus any SSE events seen on that flow.
 #[derive(Debug, Clone)]
 pub enum HttpJoinerEvent {
     /// HTTP request observed; exchange still in-flight. Downstream consumers
     /// (`LlmProcessor`) use this to run wire-API detection and emit
     /// concurrency-tracking `Start` events.
-    RequestObserved(Arc<HttpRequestData>),
+    Request(Arc<HttpRequestData>),
 
-    /// Exchange paired (request + response + any SSE events). `sse_events` is
-    /// non-empty iff `exchange.is_sse`.
+    /// Exchange paired (request + response + any SSE events). `sse_events`
+    /// is non-empty iff the response was SSE-framed.
     Exchange {
-        exchange: HttpExchange,
+        /// UUIDv7 minted at pairing time. Primary key for `http_exchanges`
+        /// and correlation id for downstream records (e.g. LlmCall).
+        id: String,
+        request: Arc<HttpRequestData>,
+        response: Arc<HttpResponseData>,
         sse_events: Vec<SseEventData>,
     },
 
@@ -90,8 +137,12 @@ pub enum HttpJoinerEvent {
 
 /// Per-flow in-flight state.
 struct Pending {
-    request: HttpRequestData,
+    request: Arc<HttpRequestData>,
     sse_events: Vec<SseEventData>,
+    /// Last observed activity on this flow — request arrival or latest SSE
+    /// event. Drives staleness eviction so that long-running streams aren't
+    /// killed by the `PENDING_STALE_TIMEOUT_US` cap.
+    last_activity_us: i64,
 }
 
 /// Pairs HTTP requests + responses across a single flow-worker shard.
@@ -126,38 +177,46 @@ impl HttpJoiner {
 
     fn on_request(&mut self, req: HttpRequestData) -> Vec<HttpJoinerEvent> {
         let flow_key = req.flow_key.clone();
+        let last_activity_us = req.timestamp_us;
 
         // Overwriting a pending on the same flow is only interesting if the
-        // previous request is still "fresh" — that suggests a genuine protocol
-        // anomaly (response lost, pipelined requests we don't understand).
-        // If the previous entry is already past the stale timeout, it's a
-        // long-dead flow being recycled: replace silently.
+        // previous exchange is still "fresh" (had activity within the stale
+        // window) — that suggests a genuine protocol anomaly (response lost,
+        // pipelined requests we don't understand). If the previous entry has
+        // been silent past the stale timeout, it's a long-dead flow being
+        // recycled: replace silently.
         if let Some(prev) = self.pending.get(&flow_key) {
-            let age = req.timestamp_us - prev.request.timestamp_us;
-            if age > PENDING_STALE_TIMEOUT_US {
+            let silence = last_activity_us - prev.last_activity_us;
+            if silence > PENDING_STALE_TIMEOUT_US {
                 self.pending.remove(&flow_key);
             } else {
                 warn!(
                     flow = %flow_key,
-                    age_secs = age as f64 / 1_000_000.0,
+                    silence_secs = silence as f64 / 1_000_000.0,
                     "overwriting pending HTTP exchange — previous request on this flow had no response"
                 );
             }
         }
 
-        let arc_req = Arc::new(req.clone());
+        let arc_req = Arc::new(req);
         self.pending.insert(
             flow_key,
             Pending {
-                request: req,
+                request: Arc::clone(&arc_req),
                 sse_events: Vec::new(),
+                last_activity_us,
             },
         );
-        vec![HttpJoinerEvent::RequestObserved(arc_req)]
+        vec![HttpJoinerEvent::Request(arc_req)]
     }
 
     fn on_sse(&mut self, sse: SseEventData) {
         if let Some(pending) = self.pending.get_mut(&sse.flow_key) {
+            // SSE events should arrive in order, but clamp to max defensively:
+            // an out-of-order event must never roll the clock backwards.
+            if sse.timestamp_us > pending.last_activity_us {
+                pending.last_activity_us = sse.timestamp_us;
+            }
             pending.sse_events.push(sse);
         }
     }
@@ -171,59 +230,34 @@ impl HttpJoiner {
             }
         };
 
-        let is_sse = !pending.sse_events.is_empty()
-            || resp
-                .content_type()
-                .map(|ct| ct.starts_with("text/event-stream"))
-                .unwrap_or(false);
-
-        let exchange = HttpExchange {
-            id: Uuid::now_v7().to_string(),
-            stream_id: pending.request.flow_key.stream_id.clone(),
-            client_ip: pending.request.client_addr.0,
-            client_port: pending.request.client_addr.1,
-            server_ip: pending.request.server_addr.0,
-            server_port: pending.request.server_addr.1,
-
-            method: pending.request.method,
-            uri: pending.request.uri,
-            request_headers: pending.request.headers,
-            request_body: pending.request.body,
-
-            status: Some(resp.status),
-            response_headers: resp.headers,
-            // Parser emits Bytes::new() for SSE (never retained); translate to
-            // None here so the schema reads honestly. Real empty bodies
-            // (204/304/HEAD) still pass through as Some(Bytes::new()).
-            response_body: if is_sse { None } else { Some(resp.body) },
-            is_sse,
-
-            request_time: pending.request.timestamp_us,
-            response_first_byte_time: Some(resp.first_byte_timestamp_us),
-            response_complete_time: Some(resp.complete_timestamp_us),
-        };
+        let response = Arc::new(resp);
+        let id = Uuid::now_v7().to_string();
 
         self.metrics.counter(Metric::HttpExchangesCompleted).inc();
         vec![HttpJoinerEvent::Exchange {
-            exchange,
+            id,
+            request: pending.request,
+            response,
             sse_events: pending.sse_events,
         }]
     }
 
-    /// Remove pending requests on `stream_id` older than `timeout_us`. Only
-    /// the named stream's entries are inspected; per-stream clocks advance
-    /// independently.
+    /// Remove pending entries on `stream_id` whose last activity is older
+    /// than `timeout_us`. Only the named stream's entries are inspected;
+    /// per-stream clocks advance independently. Staleness is measured from
+    /// `last_activity_us`, not request-arrival time, so a live SSE stream
+    /// with recent events is not evicted regardless of its total duration.
     pub fn cleanup_stale(&mut self, stream_id: &str, now_us: i64, timeout_us: i64) -> usize {
         let before = self.pending.len();
         self.pending.retain(|flow_key, pending| {
             if flow_key.stream_id != stream_id {
                 return true;
             }
-            let age = now_us - pending.request.timestamp_us;
-            if age > timeout_us {
+            let silence = now_us - pending.last_activity_us;
+            if silence > timeout_us {
                 warn!(
                     flow = %flow_key,
-                    age_secs = age as f64 / 1_000_000.0,
+                    silence_secs = silence as f64 / 1_000_000.0,
                     "expiring stale pending HTTP exchange"
                 );
                 false
@@ -323,16 +357,16 @@ mod tests {
     }
 
     #[test]
-    fn request_emits_request_observed() {
+    fn request_emits_request_event() {
         let mut joiner = HttpJoiner::new(test_metrics());
         let events = joiner.process(ProtocolEvent::HttpRequest(make_request(flow(5000), 1_000_000)));
         assert_eq!(events.len(), 1);
         match &events[0] {
-            HttpJoinerEvent::RequestObserved(req) => {
+            HttpJoinerEvent::Request(req) => {
                 assert_eq!(req.method, "POST");
                 assert_eq!(req.uri, "/v1/chat");
             }
-            _ => panic!("expected RequestObserved"),
+            _ => panic!("expected Request"),
         }
         assert_eq!(joiner.pending_count(), 1);
     }
@@ -345,13 +379,23 @@ mod tests {
         let events = joiner.process(ProtocolEvent::HttpResponse(make_response(fk, 1_000_000, false)));
         assert_eq!(events.len(), 1);
         match &events[0] {
-            HttpJoinerEvent::Exchange { exchange, sse_events } => {
-                assert!(!exchange.is_sse);
-                assert_eq!(exchange.status, Some(200));
+            HttpJoinerEvent::Exchange {
+                id,
+                request,
+                response,
+                sse_events,
+            } => {
+                let xchg = HttpExchange {
+                    id: id.clone(),
+                    request: request.clone(),
+                    response: response.clone(),
+                };
+                assert!(!xchg.is_sse());
+                assert_eq!(response.status, 200);
                 assert!(sse_events.is_empty());
-                let body = exchange.response_body.as_ref().expect("non-sse has body");
+                let body = xchg.stored_response_body().expect("non-sse has body");
                 assert_eq!(body.as_ref(), b"{\"ok\":true}");
-                assert!(!exchange.id.is_empty());
+                assert!(!id.is_empty());
             }
             _ => panic!("expected Exchange"),
         }
@@ -371,9 +415,19 @@ mod tests {
         )));
         let events = joiner.process(ProtocolEvent::HttpResponse(make_response(fk, 1_000_000, true)));
         match &events[0] {
-            HttpJoinerEvent::Exchange { exchange, sse_events } => {
-                assert!(exchange.is_sse);
-                assert!(exchange.response_body.is_none());
+            HttpJoinerEvent::Exchange {
+                id,
+                request,
+                response,
+                sse_events,
+            } => {
+                let xchg = HttpExchange {
+                    id: id.clone(),
+                    request: request.clone(),
+                    response: response.clone(),
+                };
+                assert!(xchg.is_sse());
+                assert!(xchg.stored_response_body().is_none());
                 assert_eq!(sse_events.len(), 1);
                 assert_eq!(sse_events[0].event_type, "message_start");
             }
@@ -438,7 +492,42 @@ mod tests {
         let mut req2 = make_request(fk, 1_000_000);
         req2.timestamp_us = 1_000_000 + PENDING_STALE_TIMEOUT_US + 1;
         let events = joiner.process(ProtocolEvent::HttpRequest(req2));
-        assert!(matches!(events.as_slice(), [HttpJoinerEvent::RequestObserved(_)]));
+        assert!(matches!(events.as_slice(), [HttpJoinerEvent::Request(_)]));
         assert_eq!(joiner.pending_count(), 1);
+    }
+
+    #[test]
+    fn sse_activity_refreshes_staleness_clock() {
+        // Long-running SSE stream (> PENDING_STALE_TIMEOUT_US total) must not
+        // be evicted as long as SSE events keep arriving. Only silence past
+        // the timeout should trigger cleanup.
+        let mut joiner = HttpJoiner::new(test_metrics());
+        let fk = flow(5000);
+        joiner.process(ProtocolEvent::HttpRequest(make_request(fk.clone(), 1_000_000)));
+
+        // Feed an SSE event well after the raw-request-age timeout — with
+        // activity-based staleness, this keeps the pending alive.
+        let sse_ts = 1_000_000 + PENDING_STALE_TIMEOUT_US + 30_000_000; // +30s past
+        joiner.process(ProtocolEvent::SseEvent(make_sse(
+            fk.clone(),
+            sse_ts,
+            "message_delta",
+            "{}",
+        )));
+
+        // Heartbeat shortly after the SSE event — within the timeout from
+        // last_activity. Must not evict.
+        joiner.process(ProtocolEvent::Heartbeat {
+            ts: sse_ts + 60_000_000, // +60s silence, well under timeout
+            stream_id: String::new(),
+        });
+        assert_eq!(joiner.pending_count(), 1, "live stream must not be evicted");
+
+        // Now silence past the timeout from the last SSE event — evict.
+        joiner.process(ProtocolEvent::Heartbeat {
+            ts: sse_ts + PENDING_STALE_TIMEOUT_US + 1,
+            stream_id: String::new(),
+        });
+        assert_eq!(joiner.pending_count(), 0, "silent past timeout must be evicted");
     }
 }

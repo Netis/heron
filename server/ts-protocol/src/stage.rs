@@ -187,13 +187,25 @@ pub fn spawn_http_joiner_stage(
                     None => break 'main "upstream_eof",
                 };
                 for event in joiner.process(input) {
-                    // Fan out the storage-bound slice first (cheap Clone:
-                    // bodies are `Bytes` which is refcounted). The LLM-bound
-                    // event still owns its sse_events vec.
-                    if let (HttpJoinerEvent::Exchange { exchange, .. }, Some(tx)) =
-                        (&event, exch_tx.as_ref())
+                    // Fan out the storage-bound slice first — constructing
+                    // the storage `HttpExchange` is just Arc::clone (no
+                    // header/body deep copies).
+                    if let (
+                        HttpJoinerEvent::Exchange {
+                            id,
+                            request,
+                            response,
+                            ..
+                        },
+                        Some(tx),
+                    ) = (&event, exch_tx.as_ref())
                     {
-                        if tx.send(exchange.clone()).await.is_err() {
+                        let xchg = HttpExchange {
+                            id: id.clone(),
+                            request: request.clone(),
+                            response: response.clone(),
+                        };
+                        if tx.send(xchg).await.is_err() {
                             break 'main "downstream_closed_exchanges";
                         }
                     }

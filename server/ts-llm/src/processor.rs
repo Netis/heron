@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ts_common::internal_metrics::{Metric, MetricsWorker};
-use ts_protocol::joiner::{HttpExchange, HttpJoinerEvent};
+use ts_protocol::joiner::HttpJoinerEvent;
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 use uuid::Uuid;
 
@@ -34,17 +34,20 @@ impl LlmProcessor {
     /// Complete and/or Heartbeat).
     pub fn process(&mut self, event: HttpJoinerEvent) -> Vec<LlmEvent> {
         match event {
-            HttpJoinerEvent::RequestObserved(req) => self.on_request_observed(&req),
-            HttpJoinerEvent::Exchange { exchange, sse_events } => {
-                self.on_exchange(exchange, sse_events)
-            }
+            HttpJoinerEvent::Request(req) => self.on_request(&req),
+            HttpJoinerEvent::Exchange {
+                id: _,
+                request,
+                response,
+                sse_events,
+            } => self.on_exchange(request, response, sse_events),
             HttpJoinerEvent::Heartbeat { ts, stream_id } => {
                 vec![LlmEvent::Heartbeat { ts, stream_id }]
             }
         }
     }
 
-    fn on_request_observed(&mut self, req: &HttpRequestData) -> Vec<LlmEvent> {
+    fn on_request(&mut self, req: &HttpRequestData) -> Vec<LlmEvent> {
         let Some(extractor) = self.wire_apis.detect(req) else {
             self.metrics.counter(Metric::LlmRequestsIgnored).inc();
             return Vec::new();
@@ -61,30 +64,31 @@ impl LlmProcessor {
         })]
     }
 
-    fn on_exchange(&mut self, exchange: HttpExchange, sse_events: Vec<SseEventData>) -> Vec<LlmEvent> {
-        // Reconstruct an HttpRequestData view over the exchange for wire-API
-        // detection. This keeps the processor stateless — no pending map.
-        let req_view = http_request_view(&exchange);
-        let Some(extractor) = self.wire_apis.detect(&req_view) else {
-            // Already counted LlmRequestsIgnored on RequestObserved; silent here.
+    fn on_exchange(
+        &mut self,
+        request: Arc<HttpRequestData>,
+        response: Arc<HttpResponseData>,
+        sse_events: Vec<SseEventData>,
+    ) -> Vec<LlmEvent> {
+        let Some(extractor) = self.wire_apis.detect(&request) else {
+            // Already counted LlmRequestsIgnored on Request; silent here.
             return Vec::new();
         };
 
-        let req_info = extractor.extract_request(&req_view);
-        let resp_view = http_response_view(&exchange);
+        let req_info = extractor.extract_request(&request);
 
         // resp_info carries tokens / finish_reason / response_id / reconstructed body.
         let resp_info = if !sse_events.is_empty() {
             extractor.extract_sse(&sse_events)
         } else {
-            extractor.extract_response(&resp_view)
+            extractor.extract_response(&response)
         };
 
         let model = resp_info.model.unwrap_or(req_info.model);
 
-        let request_time = exchange.request_time;
-        let response_time = exchange.response_first_byte_time.unwrap_or(request_time);
-        let complete_time = exchange.response_complete_time.unwrap_or(request_time);
+        let request_time = request.timestamp_us;
+        let response_time = response.first_byte_timestamp_us;
+        let complete_time = response.complete_timestamp_us;
 
         let ttfb_ms = if response_time > request_time {
             Some((response_time - request_time) as f64 / 1000.0)
@@ -107,12 +111,12 @@ impl LlmProcessor {
 
         self.metrics.counter(Metric::LlmCallsCompleted).inc();
 
-        let request_body = std::str::from_utf8(&exchange.request_body)
+        let request_body = std::str::from_utf8(&request.body)
             .ok()
             .map(|s| s.to_string());
 
         let call = LlmCall {
-            stream_id: exchange.stream_id.clone(),
+            stream_id: request.flow_key.stream_id.clone(),
             id: Uuid::now_v7().to_string(),
             wire_api: extractor.name(),
             model,
@@ -121,10 +125,10 @@ impl LlmProcessor {
             request_time,
             response_time: Some(response_time),
             complete_time: Some(complete_time),
-            request_path: exchange.uri.clone(),
+            request_path: request.uri.clone(),
             is_stream: req_info.is_stream,
             request_body,
-            status_code: exchange.status,
+            status_code: Some(response.status),
             finish_reason: resp_info.finish_reason,
             response_body: resp_info.response_body,
             input_tokens: resp_info.input_tokens,
@@ -134,13 +138,13 @@ impl LlmProcessor {
             cache_creation_input_tokens: resp_info.cache_creation_input_tokens,
             ttfb_ms,
             e2e_latency_ms,
-            client_ip: exchange.client_ip,
-            client_port: exchange.client_port,
-            server_ip: exchange.server_ip,
-            server_port: exchange.server_port,
+            client_ip: request.client_addr.0,
+            client_port: request.client_addr.1,
+            server_ip: request.server_addr.0,
+            server_port: request.server_addr.1,
             response_id: resp_info.response_id,
-            request_headers: exchange.request_headers,
-            response_headers: exchange.response_headers,
+            request_headers: request.headers.clone(),
+            response_headers: response.headers.clone(),
         };
 
         let agent = self.build_identity(&call);
@@ -161,55 +165,6 @@ impl LlmProcessor {
     }
 }
 
-/// Build an `HttpRequestData` view backed by an `HttpExchange`'s request
-/// side — for wire-API detection + extraction, which accept `HttpRequestData`
-/// by reference.
-fn http_request_view(exchange: &HttpExchange) -> HttpRequestData {
-    use ts_protocol::net::FlowKey;
-    HttpRequestData {
-        flow_key: FlowKey::new(
-            exchange.stream_id.clone(),
-            exchange.client_ip,
-            exchange.client_port,
-            exchange.server_ip,
-            exchange.server_port,
-        ),
-        client_addr: (exchange.client_ip, exchange.client_port),
-        server_addr: (exchange.server_ip, exchange.server_port),
-        method: exchange.method.clone(),
-        uri: exchange.uri.clone(),
-        version: 1,
-        headers: exchange.request_headers.clone(),
-        body: exchange.request_body.clone(),
-        timestamp_us: exchange.request_time,
-    }
-}
-
-/// Build an `HttpResponseData` view for non-SSE extraction. For SSE, the
-/// caller should use `extract_sse` on the accumulated events instead — this
-/// view's body is empty for SSE exchanges (see `HttpExchange.response_body`).
-fn http_response_view(exchange: &HttpExchange) -> HttpResponseData {
-    use bytes::Bytes;
-    use ts_protocol::net::FlowKey;
-    HttpResponseData {
-        flow_key: FlowKey::new(
-            exchange.stream_id.clone(),
-            exchange.client_ip,
-            exchange.client_port,
-            exchange.server_ip,
-            exchange.server_port,
-        ),
-        client_addr: (exchange.client_ip, exchange.client_port),
-        server_addr: (exchange.server_ip, exchange.server_port),
-        status: exchange.status.unwrap_or(0),
-        version: 1,
-        headers: exchange.response_headers.clone(),
-        body: exchange.response_body.clone().unwrap_or_else(Bytes::new),
-        first_byte_timestamp_us: exchange.response_first_byte_time.unwrap_or(exchange.request_time),
-        complete_timestamp_us: exchange.response_complete_time.unwrap_or(exchange.request_time),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,7 +174,7 @@ mod tests {
     use std::net::IpAddr;
     use std::sync::Arc;
     use ts_common::internal_metrics::MetricsSystem;
-    use ts_protocol::model::{HttpRequestData, SseEventData};
+    use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
     use ts_protocol::net::FlowKey;
 
     fn empty_registry() -> Arc<AgentProfileRegistry> {
@@ -267,30 +222,34 @@ mod tests {
         }
     }
 
-    fn exchange_from(req: HttpRequestData, resp_body: Bytes, is_sse: bool) -> HttpExchange {
-        HttpExchange {
-            id: "xchg-1".to_string(),
-            stream_id: req.flow_key.stream_id.clone(),
-            client_ip: req.client_addr.0,
-            client_port: req.client_addr.1,
-            server_ip: req.server_addr.0,
-            server_port: req.server_addr.1,
-            method: req.method.clone(),
-            uri: req.uri.clone(),
-            request_headers: req.headers.clone(),
-            request_body: req.body.clone(),
-            status: Some(200),
-            response_headers: if is_sse {
+    /// Build a paired `(request, response)` suitable for constructing
+    /// `HttpJoinerEvent::Exchange` in tests. The response can be mutated
+    /// before being wrapped in `Arc` if a test wants to tweak headers.
+    fn exchange_parts(
+        req: HttpRequestData,
+        resp_body: Bytes,
+        is_sse: bool,
+    ) -> (Arc<HttpRequestData>, HttpResponseData) {
+        let flow_key = req.flow_key.clone();
+        let client_addr = req.client_addr;
+        let server_addr = req.server_addr;
+        let timestamp_us = req.timestamp_us;
+        let resp = HttpResponseData {
+            flow_key,
+            client_addr,
+            server_addr,
+            status: 200,
+            version: 1,
+            headers: if is_sse {
                 vec![("content-type".to_string(), "text/event-stream".to_string())]
             } else {
                 vec![("content-type".to_string(), "application/json".to_string())]
             },
-            response_body: if is_sse { None } else { Some(resp_body) },
-            is_sse,
-            request_time: req.timestamp_us,
-            response_first_byte_time: Some(req.timestamp_us + 100_000),
-            response_complete_time: Some(req.timestamp_us + 200_000),
-        }
+            body: if is_sse { Bytes::new() } else { resp_body },
+            first_byte_timestamp_us: timestamp_us + 100_000,
+            complete_timestamp_us: timestamp_us + 200_000,
+        };
+        (Arc::new(req), resp)
     }
 
     fn sse_event(event_type: &str, data: &str, ts: i64) -> SseEventData {
@@ -306,11 +265,11 @@ mod tests {
     }
 
     #[test]
-    fn request_observed_detects_and_emits_start() {
+    fn request_detects_and_emits_start() {
         use serde_json::json;
         let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
         let body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
-        let events = proc.process(HttpJoinerEvent::RequestObserved(Arc::new(openai_request(&body))));
+        let events = proc.process(HttpJoinerEvent::Request(Arc::new(openai_request(&body))));
         assert_eq!(events.len(), 1);
         match &events[0] {
             LlmEvent::Start(s) => {
@@ -323,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn non_llm_request_observed_bumps_ignored_no_event() {
+    fn non_llm_request_bumps_ignored_no_event() {
         let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
         let req = HttpRequestData {
@@ -337,7 +296,7 @@ mod tests {
             body: Bytes::new(),
             timestamp_us: 0,
         };
-        let events = proc.process(HttpJoinerEvent::RequestObserved(Arc::new(req)));
+        let events = proc.process(HttpJoinerEvent::Request(Arc::new(req)));
         assert!(events.is_empty());
     }
 
@@ -353,9 +312,11 @@ mod tests {
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
         });
-        let exchange = exchange_from(req, Bytes::from(resp_body.to_string()), false);
+        let (request, response) = exchange_parts(req, Bytes::from(resp_body.to_string()), false);
         let events = proc.process(HttpJoinerEvent::Exchange {
-            exchange,
+            id: "xchg-1".to_string(),
+            request,
+            response: Arc::new(response),
             sse_events: vec![],
         });
         assert_eq!(events.len(), 1);
@@ -380,7 +341,7 @@ mod tests {
         let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
         let req_body = json!({"model": "gpt-4", "stream": true, "messages": [{"role": "user", "content": "hi"}]});
         let req = openai_request(&req_body);
-        let exchange = exchange_from(req, Bytes::new(), true);
+        let (request, response) = exchange_parts(req, Bytes::new(), true);
         let sse = vec![
             sse_event(
                 "",
@@ -398,7 +359,12 @@ mod tests {
                 1_200_000,
             ),
         ];
-        let events = proc.process(HttpJoinerEvent::Exchange { exchange, sse_events: sse });
+        let events = proc.process(HttpJoinerEvent::Exchange {
+            id: "xchg-2".to_string(),
+            request,
+            response: Arc::new(response),
+            sse_events: sse,
+        });
         match &events[0] {
             LlmEvent::Complete { call, .. } => {
                 assert!(call.is_stream);
@@ -461,9 +427,11 @@ mod tests {
             "stop_reason": "end_turn",
             "usage": {"input_tokens": 5, "output_tokens": 3}
         });
-        let exchange = exchange_from(req, Bytes::from(resp_body.to_string()), false);
+        let (request, response) = exchange_parts(req, Bytes::from(resp_body.to_string()), false);
         let events = proc.process(HttpJoinerEvent::Exchange {
-            exchange,
+            id: "xchg-3".to_string(),
+            request,
+            response: Arc::new(response),
             sse_events: vec![],
         });
         match &events[0] {
@@ -490,12 +458,15 @@ mod tests {
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
         });
-        let mut exchange = exchange_from(req, Bytes::from(resp_body.to_string()), false);
-        exchange
-            .response_headers
+        let (request, mut response) =
+            exchange_parts(req, Bytes::from(resp_body.to_string()), false);
+        response
+            .headers
             .push(("x-request-id".to_string(), "rid-42".to_string()));
         let events = proc.process(HttpJoinerEvent::Exchange {
-            exchange,
+            id: "xchg-4".to_string(),
+            request,
+            response: Arc::new(response),
             sse_events: vec![],
         });
         match &events[0] {

@@ -358,24 +358,37 @@ mod tests {
     fn dummy_exchange(i: usize) -> HttpExchange {
         use bytes::Bytes;
         use std::net::IpAddr;
-        HttpExchange {
-            id: format!("x-{i}"),
-            stream_id: String::new(),
-            client_ip: "127.0.0.1".parse::<IpAddr>().unwrap(),
-            client_port: 1000,
-            server_ip: "127.0.0.1".parse::<IpAddr>().unwrap(),
-            server_port: 8080,
+        use std::sync::Arc;
+        use ts_protocol::model::{HttpRequestData, HttpResponseData};
+        use ts_protocol::net::FlowKey;
+        let client_ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let server_ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let request = Arc::new(HttpRequestData {
+            flow_key: FlowKey::new(String::new(), client_ip, 1000, server_ip, 8080),
+            client_addr: (client_ip, 1000),
+            server_addr: (server_ip, 8080),
             method: "GET".into(),
             uri: "/health".into(),
-            request_headers: vec![],
-            request_body: Bytes::new(),
-            status: Some(200),
-            response_headers: vec![],
-            response_body: Some(Bytes::from_static(b"ok")),
-            is_sse: false,
-            request_time: 0,
-            response_first_byte_time: Some(100),
-            response_complete_time: Some(200),
+            version: 1,
+            headers: vec![],
+            body: Bytes::new(),
+            timestamp_us: 0,
+        });
+        let response = Arc::new(HttpResponseData {
+            flow_key: request.flow_key.clone(),
+            client_addr: request.client_addr,
+            server_addr: request.server_addr,
+            status: 200,
+            version: 1,
+            headers: vec![],
+            body: Bytes::from_static(b"ok"),
+            first_byte_timestamp_us: 100,
+            complete_timestamp_us: 200,
+        });
+        HttpExchange {
+            id: format!("x-{i}"),
+            request,
+            response,
         }
     }
 

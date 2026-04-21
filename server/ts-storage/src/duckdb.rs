@@ -726,32 +726,39 @@ struct PreparedExchange {
 }
 
 fn prepare_exchange(x: HttpExchange) -> PreparedExchange {
+    let (client_ip, client_port) = x.client_addr();
+    let (server_ip, server_port) = x.server_addr();
+    let is_sse = x.is_sse();
+    let stored_response_body = x.stored_response_body().map(|b| b.to_vec());
+    let request_body = if x.request.body.is_empty() {
+        None
+    } else {
+        Some(x.request.body.to_vec())
+    };
     PreparedExchange {
         id: x.id,
-        stream_id: x.stream_id,
-        client_ip: x.client_ip.to_string(),
-        client_port: x.client_port,
-        server_ip: x.server_ip.to_string(),
-        server_port: x.server_port,
-        method: x.method,
-        uri: x.uri,
-        request_headers: headers_to_json(&x.request_headers),
-        request_body: if x.request_body.is_empty() {
-            None
-        } else {
-            Some(x.request_body.to_vec())
-        },
-        status: x.status,
-        response_headers: headers_to_json(&x.response_headers),
-        response_body: x.response_body.map(|b| b.to_vec()),
-        is_sse: x.is_sse,
-        request_time: Value::Timestamp(TimeUnit::Microsecond, x.request_time),
-        response_first_byte_time: x
-            .response_first_byte_time
-            .map(|us| Value::Timestamp(TimeUnit::Microsecond, us)),
-        response_complete_time: x
-            .response_complete_time
-            .map(|us| Value::Timestamp(TimeUnit::Microsecond, us)),
+        stream_id: x.request.flow_key.stream_id.clone(),
+        client_ip: client_ip.to_string(),
+        client_port,
+        server_ip: server_ip.to_string(),
+        server_port,
+        method: x.request.method.clone(),
+        uri: x.request.uri.clone(),
+        request_headers: headers_to_json(&x.request.headers),
+        request_body,
+        status: Some(x.response.status),
+        response_headers: headers_to_json(&x.response.headers),
+        response_body: stored_response_body,
+        is_sse,
+        request_time: Value::Timestamp(TimeUnit::Microsecond, x.request.timestamp_us),
+        response_first_byte_time: Some(Value::Timestamp(
+            TimeUnit::Microsecond,
+            x.response.first_byte_timestamp_us,
+        )),
+        response_complete_time: Some(Value::Timestamp(
+            TimeUnit::Microsecond,
+            x.response.complete_timestamp_us,
+        )),
     }
 }
 
@@ -2434,26 +2441,39 @@ mod tests {
     #[tokio::test]
     async fn http_exchange_round_trip() {
         use bytes::Bytes;
+        use std::sync::Arc;
+        use ts_protocol::model::{HttpRequestData, HttpResponseData};
+        use ts_protocol::net::FlowKey;
         let backend = in_memory_backend();
         backend.init().await.unwrap();
-        let exchange = ts_protocol::HttpExchange {
-            id: "xchg-rt-1".to_string(),
-            stream_id: "stream-x".to_string(),
-            client_ip: "10.0.0.1".parse::<IpAddr>().unwrap(),
-            client_port: 54321,
-            server_ip: "10.0.0.2".parse::<IpAddr>().unwrap(),
-            server_port: 443,
+        let client_ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let server_ip: IpAddr = "10.0.0.2".parse().unwrap();
+        let request = Arc::new(HttpRequestData {
+            flow_key: FlowKey::new("stream-x".into(), client_ip, 54321, server_ip, 443),
+            client_addr: (client_ip, 54321),
+            server_addr: (server_ip, 443),
             method: "POST".into(),
             uri: "/v1/chat/completions".into(),
-            request_headers: vec![("content-type".into(), "application/json".into())],
-            request_body: Bytes::from_static(br#"{"model":"gpt-4"}"#),
-            status: Some(200),
-            response_headers: vec![("x-request-id".into(), "req_abc".into())],
-            response_body: Some(Bytes::from_static(br#"{"choices":[]}"#)),
-            is_sse: false,
-            request_time: 1_700_000_000_000_000,
-            response_first_byte_time: Some(1_700_000_000_500_000),
-            response_complete_time: Some(1_700_000_001_000_000),
+            version: 1,
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: Bytes::from_static(br#"{"model":"gpt-4"}"#),
+            timestamp_us: 1_700_000_000_000_000,
+        });
+        let response = Arc::new(HttpResponseData {
+            flow_key: request.flow_key.clone(),
+            client_addr: request.client_addr,
+            server_addr: request.server_addr,
+            status: 200,
+            version: 1,
+            headers: vec![("x-request-id".into(), "req_abc".into())],
+            body: Bytes::from_static(br#"{"choices":[]}"#),
+            first_byte_timestamp_us: 1_700_000_000_500_000,
+            complete_timestamp_us: 1_700_000_001_000_000,
+        });
+        let exchange = ts_protocol::HttpExchange {
+            id: "xchg-rt-1".to_string(),
+            request,
+            response,
         };
         backend
             .write_exchanges(vec![exchange.clone()])
@@ -2476,26 +2496,42 @@ mod tests {
     #[tokio::test]
     async fn http_exchange_sse_round_trip_response_body_none() {
         use bytes::Bytes;
+        use std::sync::Arc;
+        use ts_protocol::model::{HttpRequestData, HttpResponseData};
+        use ts_protocol::net::FlowKey;
         let backend = in_memory_backend();
         backend.init().await.unwrap();
-        let exchange = ts_protocol::HttpExchange {
-            id: "xchg-sse-1".to_string(),
-            stream_id: "stream-sse".to_string(),
-            client_ip: "10.0.0.1".parse::<IpAddr>().unwrap(),
-            client_port: 1,
-            server_ip: "10.0.0.2".parse::<IpAddr>().unwrap(),
-            server_port: 443,
+        let client_ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let server_ip: IpAddr = "10.0.0.2".parse().unwrap();
+        let request = Arc::new(HttpRequestData {
+            flow_key: FlowKey::new("stream-sse".into(), client_ip, 1, server_ip, 443),
+            client_addr: (client_ip, 1),
+            server_addr: (server_ip, 443),
             method: "POST".into(),
             uri: "/v1/messages".into(),
-            request_headers: vec![],
-            request_body: Bytes::new(),
-            status: Some(200),
-            response_headers: vec![],
-            response_body: None,
-            is_sse: true,
-            request_time: 1,
-            response_first_byte_time: Some(2),
-            response_complete_time: Some(3),
+            version: 1,
+            headers: vec![],
+            body: Bytes::new(),
+            timestamp_us: 1,
+        });
+        let response = Arc::new(HttpResponseData {
+            flow_key: request.flow_key.clone(),
+            client_addr: request.client_addr,
+            server_addr: request.server_addr,
+            status: 200,
+            version: 1,
+            // text/event-stream content-type drives is_sse() = true, which
+            // makes `stored_response_body()` return None regardless of the
+            // parser-emitted empty `body`.
+            headers: vec![("content-type".into(), "text/event-stream".into())],
+            body: Bytes::new(),
+            first_byte_timestamp_us: 2,
+            complete_timestamp_us: 3,
+        });
+        let exchange = ts_protocol::HttpExchange {
+            id: "xchg-sse-1".to_string(),
+            request,
+            response,
         };
         backend.write_exchanges(vec![exchange]).await.unwrap();
         let got = backend
