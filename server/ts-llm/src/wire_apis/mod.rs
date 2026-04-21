@@ -45,6 +45,19 @@ pub const ANTHROPIC: &str = "anthropic";
 pub const OPENAI_CHAT: &str = "openai-chat";
 pub const OPENAI_RESPONSES: &str = "openai-responses";
 
+/// Resolve a stored wire-API string back to its `&'static str` constant.
+/// Returns `None` for unknown values — callers that need a static wire_api
+/// (e.g. to rebuild an `LlmCall` from a DB row) should treat this as "drop
+/// the record" rather than invent one.
+pub fn by_name(name: &str) -> Option<&'static str> {
+    match name {
+        ANTHROPIC => Some(ANTHROPIC),
+        OPENAI_CHAT => Some(OPENAI_CHAT),
+        OPENAI_RESPONSES => Some(OPENAI_RESPONSES),
+        _ => None,
+    }
+}
+
 /// Default registry with all built-in wire APIs.
 pub fn build_default_wire_api_registry() -> WireApiRegistry {
     WireApiRegistry::new()

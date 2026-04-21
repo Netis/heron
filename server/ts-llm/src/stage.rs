@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use ts_common::internal_metrics::{Metric, MetricsSystem};
-use ts_protocol::model::ProtocolEvent;
+use ts_protocol::joiner::HttpJoinerEvent;
 
 use crate::model::{AgentCall, LlmCall, LlmEvent, TurnShardInput};
 use crate::processor::LlmProcessor;
@@ -37,7 +37,7 @@ use crate::wire_api_registry::WireApiRegistry;
 /// * `LlmEvent::Complete` with `agent.is_some()` → one turn shard, chosen
 ///   by `hash(session_id) % turn_shard_txs.len()`.
 pub fn spawn_llm_stage(
-    event_rxs: Vec<mpsc::Receiver<ProtocolEvent>>,
+    event_rxs: Vec<mpsc::Receiver<HttpJoinerEvent>>,
     turn_shard_txs: Vec<mpsc::Sender<TurnShardInput>>,
     metrics_shard_txs: Vec<mpsc::Sender<LlmEvent>>,
     calls_tx: mpsc::Sender<Arc<LlmCall>>,
@@ -71,8 +71,6 @@ pub fn spawn_llm_stage(
                 Metric::LlmCallsCompleted,
                 Metric::LlmCallsIdentified,
                 Metric::LlmCallsUnidentified,
-                Metric::LlmResponsesOrphaned,
-                Metric::LlmPendingExpired,
             ],
         );
         handles.push(tokio::spawn(async move {
@@ -170,6 +168,7 @@ mod tests {
     use bytes::Bytes;
     use std::net::IpAddr;
     use std::sync::Arc;
+    use ts_protocol::joiner::HttpJoiner;
     use ts_protocol::model::{HttpRequestData, HttpResponseData, ProtocolEvent};
     use ts_protocol::net::FlowKey;
 
@@ -178,6 +177,26 @@ mod tests {
     use crate::wire_apis as wa;
     use crate::wire_apis::build_default_wire_api_registry;
     use ts_common::internal_metrics::MetricsSystem;
+
+    /// Feed a request + response pair through an ad-hoc HttpJoiner and return
+    /// the resulting `HttpJoinerEvent`s. Mirrors what the real pipeline stage
+    /// does; keeps the tests exercising the paired path end-to-end.
+    fn joiner_events_for(req: HttpRequestData, resp: HttpResponseData) -> Vec<HttpJoinerEvent> {
+        let mut sys = MetricsSystem::new();
+        let w = sys.register_worker(
+            "test-joiner",
+            &[
+                Metric::HttpExchangesCompleted,
+                Metric::HttpExchangesIncomplete,
+                Metric::HttpExchangesExpired,
+            ],
+        );
+        let _svc = sys.start();
+        let mut joiner = HttpJoiner::new(w);
+        let mut out = joiner.process(ProtocolEvent::HttpRequest(req));
+        out.extend(joiner.process(ProtocolEvent::HttpResponse(resp)));
+        out
+    }
 
     fn flow_key(port: u16) -> FlowKey {
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
@@ -275,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn identified_call_fans_out_to_turn_shard_and_calls_tx_and_metrics() {
-        let (event_tx, event_rx) = mpsc::channel::<ProtocolEvent>(16);
+        let (event_tx, event_rx) = mpsc::channel::<HttpJoinerEvent>(16);
         let (turn_tx, mut turn_rx) = mpsc::channel::<TurnShardInput>(16);
         let (metrics_tx, mut metrics_rx) = mpsc::channel::<crate::model::LlmEvent>(16);
         let (calls_tx, mut calls_rx) = mpsc::channel::<Arc<LlmCall>>(16);
@@ -293,20 +312,12 @@ mod tests {
         let _svc = metrics_sys.start();
 
         let fk = flow_key(5000);
-        event_tx
-            .send(ProtocolEvent::HttpRequest(claude_cli_request(
-                fk.clone(),
-                1_000_000,
-                "S1",
-            )))
-            .await
-            .unwrap();
-        event_tx
-            .send(ProtocolEvent::HttpResponse(anthropic_response(
-                fk, 1_000_000,
-            )))
-            .await
-            .unwrap();
+        for ev in joiner_events_for(
+            claude_cli_request(fk.clone(), 1_000_000, "S1"),
+            anthropic_response(fk, 1_000_000),
+        ) {
+            event_tx.send(ev).await.unwrap();
+        }
         drop(event_tx);
 
         let turn_input = turn_rx.recv().await.expect("turn shard should receive");
@@ -336,7 +347,7 @@ mod tests {
 
     #[tokio::test]
     async fn unidentified_call_skips_turn_shard_still_reaches_calls_tx_and_metrics() {
-        let (event_tx, event_rx) = mpsc::channel::<ProtocolEvent>(16);
+        let (event_tx, event_rx) = mpsc::channel::<HttpJoinerEvent>(16);
         // Create an extra turn_tx to keep the channel open during the timeout assertion.
         // Without this, the spawned task drops its turn_tx clone on exit (because event_tx
         // is dropped), closing the channel before the 50 ms window, causing recv() to
@@ -359,17 +370,12 @@ mod tests {
         let _svc = metrics_sys.start();
 
         let fk = flow_key(5000);
-        event_tx
-            .send(ProtocolEvent::HttpRequest(openai_request(
-                fk.clone(),
-                1_000_000,
-            )))
-            .await
-            .unwrap();
-        event_tx
-            .send(ProtocolEvent::HttpResponse(openai_response(fk, 1_000_000)))
-            .await
-            .unwrap();
+        for ev in joiner_events_for(
+            openai_request(fk.clone(), 1_000_000),
+            openai_response(fk, 1_000_000),
+        ) {
+            event_tx.send(ev).await.unwrap();
+        }
         drop(event_tx);
 
         let call = calls_rx.recv().await.expect("calls_tx should receive");
@@ -392,7 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn turn_shard_index_stable_by_session_id_hash() {
-        let (event_tx, event_rx) = mpsc::channel::<ProtocolEvent>(16);
+        let (event_tx, event_rx) = mpsc::channel::<HttpJoinerEvent>(16);
         let mut turn_txs = Vec::with_capacity(4);
         let mut turn_rxs = Vec::with_capacity(4);
         for _ in 0..4 {
@@ -417,35 +423,19 @@ mod tests {
         let _svc = metrics_sys.start();
 
         let fk1 = flow_key(5000);
-        event_tx
-            .send(ProtocolEvent::HttpRequest(claude_cli_request(
-                fk1.clone(),
-                1_000_000,
-                "SAME",
-            )))
-            .await
-            .unwrap();
-        event_tx
-            .send(ProtocolEvent::HttpResponse(anthropic_response(
-                fk1, 1_000_000,
-            )))
-            .await
-            .unwrap();
+        for ev in joiner_events_for(
+            claude_cli_request(fk1.clone(), 1_000_000, "SAME"),
+            anthropic_response(fk1, 1_000_000),
+        ) {
+            event_tx.send(ev).await.unwrap();
+        }
         let fk2 = flow_key(5001);
-        event_tx
-            .send(ProtocolEvent::HttpRequest(claude_cli_request(
-                fk2.clone(),
-                2_000_000,
-                "SAME",
-            )))
-            .await
-            .unwrap();
-        event_tx
-            .send(ProtocolEvent::HttpResponse(anthropic_response(
-                fk2, 2_000_000,
-            )))
-            .await
-            .unwrap();
+        for ev in joiner_events_for(
+            claude_cli_request(fk2.clone(), 2_000_000, "SAME"),
+            anthropic_response(fk2, 2_000_000),
+        ) {
+            event_tx.send(ev).await.unwrap();
+        }
         drop(event_tx);
 
         let mut non_empty = 0;

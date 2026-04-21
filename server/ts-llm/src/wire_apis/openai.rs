@@ -783,6 +783,63 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_input_parses_chat_request() {
+        let ip: IpAddr = IpAddr::from([127, 0, 0, 1]);
+        let body = serde_json::json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        });
+        let req = HttpRequestData {
+            flow_key: FlowKey::new(String::new(), ip, 1234, ip, 8080),
+            client_addr: (ip, 1234),
+            server_addr: (ip, 8080),
+            method: "POST".to_string(),
+            uri: "/v1/chat/completions".to_string(),
+            version: 1,
+            headers: vec![],
+            body: bytes::Bytes::from(body.to_string()),
+            timestamp_us: 0,
+        };
+        let v = OpenAiChatWireApi.normalize_input(&req);
+        assert_eq!(v["model"], "gpt-4");
+        assert_eq!(v["messages"][0]["content"], "hi");
+    }
+
+    #[test]
+    fn test_normalize_output_chat_sse_reconstructs() {
+        let events = vec![
+            make_sse(
+                "",
+                r#"{"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hi"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            ),
+        ];
+        let ip: IpAddr = IpAddr::from([127, 0, 0, 1]);
+        let resp = HttpResponseData {
+            flow_key: FlowKey::new(String::new(), ip, 1234, ip, 8080),
+            client_addr: (ip, 1234),
+            server_addr: (ip, 8080),
+            status: 200,
+            version: 1,
+            headers: vec![("content-type".to_string(), "text/event-stream".to_string())],
+            body: bytes::Bytes::new(),
+            first_byte_timestamp_us: 0,
+            complete_timestamp_us: 0,
+        };
+        let v = OpenAiChatWireApi.normalize_output(&resp, &events);
+        assert_eq!(v["choices"][0]["message"]["content"], "Hi");
+        assert_eq!(v["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[test]
     fn test_extract_response_id_responses_api_streaming() {
         let events = vec![
             make_sse(

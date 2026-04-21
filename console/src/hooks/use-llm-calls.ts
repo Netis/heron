@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
 import { useToolbarStore } from "@/stores/toolbar"
-import type { CallsPage } from "@/types/api"
+import type { LlmCallsPage } from "@/types/api"
 
-interface UseRequestsParams {
+interface UseLlmCallsParams {
   page: number
   pageSize: number
   sortBy: string
@@ -13,19 +13,19 @@ interface UseRequestsParams {
   finishReason?: string
 }
 
-export function useRequests({ page, pageSize, sortBy, sortOrder, statusCode, finishReason }: UseRequestsParams) {
+export function useLlmCalls({ page, pageSize, sortBy, sortOrder, statusCode, finishReason }: UseLlmCallsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
   const filters = useToolbarStore((s) => s.filters)
 
   return useQuery({
-    queryKey: ["calls", {
+    queryKey: ["llm-calls", {
       start, end, page, pageSize, sortBy, sortOrder,
       wireApi: filters.wireApi, model: filters.model, serverIp: filters.serverIp,
       statusCode, finishReason,
     }],
     queryFn: () =>
-      apiFetch<CallsPage>("/api/calls", {
+      apiFetch<LlmCallsPage>("/api/llm-calls", {
         start,
         end,
         page,

@@ -4,12 +4,12 @@ export interface ApiResponse<T> {
   data: T
 }
 
-export interface CallsPage {
+export interface LlmCallsPage {
   total: number
-  items: CallListItem[]
+  items: LlmCallListItem[]
 }
 
-export interface CallListItem {
+export interface LlmCallListItem {
   id: string
   request_time: number
   wire_api: string
@@ -70,14 +70,14 @@ export interface MetricsModelRow {
   tpot_avg: number | null
 }
 
-// Turn list + detail types
+// Agent turn list + detail types
 
-export interface TurnsPage {
+export interface AgentTurnsPage {
   total: number
-  items: TurnListItem[]
+  items: AgentTurnListItem[]
 }
 
-export interface TurnListItem {
+export interface AgentTurnListItem {
   turn_id: string
   session_id: string
   start_time: number
@@ -96,7 +96,7 @@ export interface TurnListItem {
   final_answer_preview: string | null
 }
 
-export interface TurnDetail {
+export interface AgentTurnDetail {
   turn_id: string
   session_id: string
   tenant_id: string | null
@@ -122,7 +122,7 @@ export interface TurnDetail {
   metadata: unknown
 }
 
-export interface TurnCallItem {
+export interface AgentTurnCallItem {
   id: string
   sequence: number
   request_time: number
@@ -139,9 +139,9 @@ export interface TurnCallItem {
   output_tokens: number | null
 }
 
-// Call detail types
+// LLM call detail types
 
-export interface CallDetail {
+export interface LlmCallDetail {
   id: string
   request_time: number
   response_time: number | null
@@ -168,4 +168,46 @@ export interface CallDetail {
   response_body: string | null
   request_headers: string | null
   response_headers: string | null
+}
+
+// HTTP exchange types — /api/http-exchanges
+
+export interface HttpExchangeListItem {
+  id: string
+  stream_id: string
+  request_time: number
+  method: string
+  uri: string
+  client_ip: string
+  server_ip: string
+  server_port: number
+  status: number | null
+  is_sse: boolean
+  duration_ms: number | null
+}
+
+export interface HttpExchangesPage {
+  total: number
+  items: HttpExchangeListItem[]
+}
+
+export interface HttpExchangeDetail {
+  id: string
+  stream_id: string
+  client_ip: string
+  client_port: number
+  server_ip: string
+  server_port: number
+  method: string
+  uri: string
+  /// JSON-encoded `[[header_name, header_value], ...]`
+  request_headers: string
+  request_body: string | null
+  status: number | null
+  response_headers: string
+  response_body: string | null
+  is_sse: boolean
+  request_time: number
+  response_first_byte_time: number | null
+  response_complete_time: number | null
 }

@@ -1,37 +1,17 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use tracing::warn;
 use ts_common::internal_metrics::{Metric, MetricsWorker};
-use ts_protocol::model::{HttpRequestData, HttpResponseData, ProtocolEvent, SseEventData};
-use ts_protocol::net::FlowKey;
+use ts_protocol::joiner::{HttpExchange, HttpJoinerEvent};
+use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 use uuid::Uuid;
 
 use crate::model::{AgentIdentity, ApiType, LlmCall, LlmCallStart, LlmEvent};
 use crate::profile::AgentProfileRegistry;
 use crate::wire_api_registry::WireApiRegistry;
 
-/// Default stale-pending-call timeout. Pending LLM calls older than this are
-/// evicted on every heartbeat and silently replaced (rather than warned)
-/// when the same flow is reused for a new request. 10 minutes matches the
-/// turn-tracker idle timeout.
-const PENDING_STALE_TIMEOUT_US: i64 = 600_000_000;
-
-/// Pending LLM call waiting for response completion.
-struct PendingCall {
-    request: HttpRequestData,
-    /// Stable `WireApi::name()` of the wire API that matched the request.
-    /// Re-resolved against the registry on response arrival.
-    wire_api: &'static str,
-    model: String,
-    is_stream: bool,
-    tenant_id: Option<String>,
-    sse_events: Vec<SseEventData>,
-}
-
-/// Processes ProtocolEvents and extracts LlmCall records.
+/// Processes `HttpJoinerEvent`s and extracts `LlmCall` records. Stateless —
+/// request/response pairing now lives in `ts_protocol::joiner::HttpJoiner`.
 pub struct LlmProcessor {
-    pending: HashMap<FlowKey, PendingCall>,
     wire_apis: Arc<WireApiRegistry>,
     registry: Arc<AgentProfileRegistry>,
     metrics: MetricsWorker,
@@ -44,139 +24,67 @@ impl LlmProcessor {
         metrics: MetricsWorker,
     ) -> Self {
         Self {
-            pending: HashMap::new(),
             wire_apis,
             registry,
             metrics,
         }
     }
 
-    /// Process a single protocol event. Returns LlmEvents (Start and/or Complete).
-    pub fn process(&mut self, event: ProtocolEvent) -> Vec<LlmEvent> {
+    /// Process a single joiner event. Returns LlmEvents (Start and/or
+    /// Complete and/or Heartbeat).
+    pub fn process(&mut self, event: HttpJoinerEvent) -> Vec<LlmEvent> {
         match event {
-            ProtocolEvent::HttpRequest(req) => self.on_request(req),
-            ProtocolEvent::SseEvent(sse) => {
-                self.on_sse(sse);
-                Vec::new()
+            HttpJoinerEvent::RequestObserved(req) => self.on_request_observed(&req),
+            HttpJoinerEvent::Exchange { exchange, sse_events } => {
+                self.on_exchange(exchange, sse_events)
             }
-            ProtocolEvent::HttpResponse(resp) => match self.on_response(resp) {
-                Some(call) => {
-                    let agent = self.build_identity(&call);
-                    vec![LlmEvent::Complete {
-                        call: Arc::new(call),
-                        agent,
-                    }]
-                }
-                None => Vec::new(),
-            },
-            ProtocolEvent::Heartbeat { ts, stream_id } => {
-                self.cleanup_stale(&stream_id, ts, PENDING_STALE_TIMEOUT_US);
+            HttpJoinerEvent::Heartbeat { ts, stream_id } => {
                 vec![LlmEvent::Heartbeat { ts, stream_id }]
             }
         }
     }
 
-    fn on_request(&mut self, req: HttpRequestData) -> Vec<LlmEvent> {
-        let extractor = match self.wire_apis.detect(&req) {
-            Some(p) => p,
-            None => {
-                self.metrics.counter(Metric::LlmRequestsIgnored).inc();
-                return Vec::new();
-            }
+    fn on_request_observed(&mut self, req: &HttpRequestData) -> Vec<LlmEvent> {
+        let Some(extractor) = self.wire_apis.detect(req) else {
+            self.metrics.counter(Metric::LlmRequestsIgnored).inc();
+            return Vec::new();
         };
-        let wire_api_name = extractor.name();
-        let info = extractor.extract_request(&req);
-
-        let flow_key = req.flow_key.clone();
-        let start = LlmCallStart {
+        let info = extractor.extract_request(req);
+        self.metrics.counter(Metric::LlmRequestsDetected).inc();
+        vec![LlmEvent::Start(LlmCallStart {
             stream_id: req.flow_key.stream_id.clone(),
-            wire_api: wire_api_name,
-            model: info.model.clone(),
+            wire_api: extractor.name(),
+            model: info.model,
             is_stream: info.is_stream,
             server_ip: req.server_addr.0,
             timestamp_us: req.timestamp_us,
-        };
-
-        // Overwriting a pending call on the same flow is only interesting
-        // if the previous request is still "fresh" — that suggests a
-        // genuine protocol anomaly (response lost, pipelined requests we
-        // don't understand). If the previous entry is already past the
-        // stale timeout, it's just a long-dead flow being recycled for a
-        // new TCP connection with the same 5-tuple: replace silently.
-        if let Some(prev) = self.pending.get(&flow_key) {
-            let age = req.timestamp_us - prev.request.timestamp_us;
-            if age > PENDING_STALE_TIMEOUT_US {
-                self.pending.remove(&flow_key);
-            } else {
-                warn!(
-                    flow = %flow_key,
-                    age_secs = age as f64 / 1_000_000.0,
-                    "overwriting pending LLM call — previous request on this flow had no response"
-                );
-            }
-        }
-
-        self.pending.insert(
-            flow_key,
-            PendingCall {
-                request: req,
-                wire_api: wire_api_name,
-                model: info.model,
-                is_stream: info.is_stream,
-                tenant_id: info.tenant_id,
-                sse_events: Vec::new(),
-            },
-        );
-
-        self.metrics.counter(Metric::LlmRequestsDetected).inc();
-        vec![LlmEvent::Start(start)]
+        })]
     }
 
-    fn on_sse(&mut self, sse: SseEventData) {
-        if let Some(pending) = self.pending.get_mut(&sse.flow_key) {
-            pending.sse_events.push(sse);
-        }
-    }
-
-    fn on_response(&mut self, resp: HttpResponseData) -> Option<LlmCall> {
-        let pending = match self.pending.remove(&resp.flow_key) {
-            Some(p) => p,
-            None => {
-                self.metrics.counter(Metric::LlmResponsesOrphaned).inc();
-                return None;
-            }
+    fn on_exchange(&mut self, exchange: HttpExchange, sse_events: Vec<SseEventData>) -> Vec<LlmEvent> {
+        // Reconstruct an HttpRequestData view over the exchange for wire-API
+        // detection. This keeps the processor stateless — no pending map.
+        let req_view = http_request_view(&exchange);
+        let Some(extractor) = self.wire_apis.detect(&req_view) else {
+            // Already counted LlmRequestsIgnored on RequestObserved; silent here.
+            return Vec::new();
         };
 
-        let extractor = match self.wire_apis.find_by_name(pending.wire_api) {
-            Some(p) => p,
-            None => {
-                // The registry changed underfoot — impossible today since the
-                // registry is constructed once at startup and Arc-shared, but
-                // guard against future mutability. Drop the call; the storage
-                // sink has the option of re-ingesting if needed.
-                warn!(
-                    wire_api = pending.wire_api,
-                    "pending wire_api vanished from registry — dropping response"
-                );
-                return None;
-            }
-        };
+        let req_info = extractor.extract_request(&req_view);
+        let resp_view = http_response_view(&exchange);
 
-        // SSE path: the event stream is the ground truth. The response body is
-        // raw SSE text (not JSON) and ts-protocol no longer retains it, so
-        // calling extract_response there would always yield Value::Null.
-        // Non-SSE path: parse the response body as JSON.
-        let resp_info = if pending.is_stream && !pending.sse_events.is_empty() {
-            extractor.extract_sse(&pending.sse_events)
+        // resp_info carries tokens / finish_reason / response_id / reconstructed body.
+        let resp_info = if !sse_events.is_empty() {
+            extractor.extract_sse(&sse_events)
         } else {
-            extractor.extract_response(&resp)
+            extractor.extract_response(&resp_view)
         };
 
-        let model = resp_info.model.unwrap_or(pending.model);
+        let model = resp_info.model.unwrap_or(req_info.model);
 
-        let request_time = pending.request.timestamp_us;
-        let response_time = resp.first_byte_timestamp_us;
-        let complete_time = resp.complete_timestamp_us;
+        let request_time = exchange.request_time;
+        let response_time = exchange.response_first_byte_time.unwrap_or(request_time);
+        let complete_time = exchange.response_complete_time.unwrap_or(request_time);
 
         let ttfb_ms = if response_time > request_time {
             Some((response_time - request_time) as f64 / 1000.0)
@@ -198,26 +106,25 @@ impl LlmProcessor {
         }
 
         self.metrics.counter(Metric::LlmCallsCompleted).inc();
-        let id = Uuid::now_v7().to_string();
 
-        let request_body = std::str::from_utf8(&pending.request.body)
+        let request_body = std::str::from_utf8(&exchange.request_body)
             .ok()
             .map(|s| s.to_string());
 
-        Some(LlmCall {
-            stream_id: pending.request.flow_key.stream_id.clone(),
-            id,
-            wire_api: pending.wire_api,
+        let call = LlmCall {
+            stream_id: exchange.stream_id.clone(),
+            id: Uuid::now_v7().to_string(),
+            wire_api: extractor.name(),
             model,
             api_type: ApiType::Chat,
-            tenant_id: pending.tenant_id,
+            tenant_id: req_info.tenant_id,
             request_time,
             response_time: Some(response_time),
             complete_time: Some(complete_time),
-            request_path: pending.request.uri,
-            is_stream: pending.is_stream,
+            request_path: exchange.uri.clone(),
+            is_stream: req_info.is_stream,
             request_body,
-            status_code: Some(resp.status),
+            status_code: exchange.status,
             finish_reason: resp_info.finish_reason,
             response_body: resp_info.response_body,
             input_tokens: resp_info.input_tokens,
@@ -227,19 +134,20 @@ impl LlmProcessor {
             cache_creation_input_tokens: resp_info.cache_creation_input_tokens,
             ttfb_ms,
             e2e_latency_ms,
-            client_ip: pending.request.client_addr.0,
-            client_port: pending.request.client_addr.1,
-            server_ip: pending.request.server_addr.0,
-            server_port: pending.request.server_addr.1,
+            client_ip: exchange.client_ip,
+            client_port: exchange.client_port,
+            server_ip: exchange.server_ip,
+            server_port: exchange.server_port,
             response_id: resp_info.response_id,
-            request_headers: pending.request.headers,
-            response_headers: resp.headers,
-        })
-    }
+            request_headers: exchange.request_headers,
+            response_headers: exchange.response_headers,
+        };
 
-    /// Get the count of pending (unmatched) requests.
-    pub fn pending_count(&self) -> usize {
-        self.pending.len()
+        let agent = self.build_identity(&call);
+        vec![LlmEvent::Complete {
+            call: Arc::new(call),
+            agent,
+        }]
     }
 
     fn build_identity(&self, call: &LlmCall) -> Option<AgentIdentity> {
@@ -251,37 +159,54 @@ impl LlmProcessor {
             turn_id_hint: ids.turn_id,
         })
     }
+}
 
-    /// Remove pending calls on `stream_id` older than `timeout_us` µs.
-    /// Pending calls on other streams are not inspected — each stream's
-    /// own heartbeat (or packet timestamp) is the only thing that should
-    /// advance its cleanup clock. Returns the number of entries removed.
-    pub fn cleanup_stale(&mut self, stream_id: &str, now_us: i64, timeout_us: i64) -> usize {
-        let before = self.pending.len();
-        self.pending.retain(|flow_key, pending| {
-            if flow_key.stream_id != stream_id {
-                return true;
-            }
-            let age = now_us - pending.request.timestamp_us;
-            if age > timeout_us {
-                warn!(
-                    flow = %flow_key,
-                    age_secs = age as f64 / 1_000_000.0,
-                    model = %pending.model,
-                    "expiring stale pending LLM call"
-                );
-                false
-            } else {
-                true
-            }
-        });
-        let expired = before - self.pending.len();
-        if expired > 0 {
-            self.metrics
-                .counter(Metric::LlmPendingExpired)
-                .add(expired as u64);
-        }
-        expired
+/// Build an `HttpRequestData` view backed by an `HttpExchange`'s request
+/// side — for wire-API detection + extraction, which accept `HttpRequestData`
+/// by reference.
+fn http_request_view(exchange: &HttpExchange) -> HttpRequestData {
+    use ts_protocol::net::FlowKey;
+    HttpRequestData {
+        flow_key: FlowKey::new(
+            exchange.stream_id.clone(),
+            exchange.client_ip,
+            exchange.client_port,
+            exchange.server_ip,
+            exchange.server_port,
+        ),
+        client_addr: (exchange.client_ip, exchange.client_port),
+        server_addr: (exchange.server_ip, exchange.server_port),
+        method: exchange.method.clone(),
+        uri: exchange.uri.clone(),
+        version: 1,
+        headers: exchange.request_headers.clone(),
+        body: exchange.request_body.clone(),
+        timestamp_us: exchange.request_time,
+    }
+}
+
+/// Build an `HttpResponseData` view for non-SSE extraction. For SSE, the
+/// caller should use `extract_sse` on the accumulated events instead — this
+/// view's body is empty for SSE exchanges (see `HttpExchange.response_body`).
+fn http_response_view(exchange: &HttpExchange) -> HttpResponseData {
+    use bytes::Bytes;
+    use ts_protocol::net::FlowKey;
+    HttpResponseData {
+        flow_key: FlowKey::new(
+            exchange.stream_id.clone(),
+            exchange.client_ip,
+            exchange.client_port,
+            exchange.server_ip,
+            exchange.server_port,
+        ),
+        client_addr: (exchange.client_ip, exchange.client_port),
+        server_addr: (exchange.server_ip, exchange.server_port),
+        status: exchange.status.unwrap_or(0),
+        version: 1,
+        headers: exchange.response_headers.clone(),
+        body: exchange.response_body.clone().unwrap_or_else(Bytes::new),
+        first_byte_timestamp_us: exchange.response_first_byte_time.unwrap_or(exchange.request_time),
+        complete_timestamp_us: exchange.response_complete_time.unwrap_or(exchange.request_time),
     }
 }
 
@@ -292,18 +217,20 @@ mod tests {
     use crate::wire_apis as wa;
     use bytes::Bytes;
     use std::net::IpAddr;
+    use std::sync::Arc;
+    use ts_common::internal_metrics::MetricsSystem;
+    use ts_protocol::model::{HttpRequestData, SseEventData};
     use ts_protocol::net::FlowKey;
 
-    fn empty_registry() -> std::sync::Arc<crate::profile::AgentProfileRegistry> {
-        std::sync::Arc::new(crate::profile::AgentProfileRegistry::new())
+    fn empty_registry() -> Arc<AgentProfileRegistry> {
+        Arc::new(AgentProfileRegistry::new())
     }
 
-    fn wire_apis() -> std::sync::Arc<crate::wire_api_registry::WireApiRegistry> {
-        std::sync::Arc::new(crate::wire_apis::build_default_wire_api_registry())
+    fn wire_apis() -> Arc<WireApiRegistry> {
+        Arc::new(crate::wire_apis::build_default_wire_api_registry())
     }
 
     fn test_metrics() -> MetricsWorker {
-        use ts_common::internal_metrics::MetricsSystem;
         let mut sys = MetricsSystem::new();
         let w = sys.register_worker(
             "test",
@@ -311,8 +238,6 @@ mod tests {
                 Metric::LlmRequestsDetected,
                 Metric::LlmRequestsIgnored,
                 Metric::LlmCallsCompleted,
-                Metric::LlmResponsesOrphaned,
-                Metric::LlmPendingExpired,
             ],
         );
         let _svc = sys.start();
@@ -324,25 +249,17 @@ mod tests {
         FlowKey::new(String::new(), ip, 5000, ip, 8080)
     }
 
-    fn addr() -> ((IpAddr, u16), (IpAddr, u16)) {
+    fn openai_request(body_json: &serde_json::Value) -> HttpRequestData {
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
-        ((ip, 5000), (ip, 8080))
-    }
-
-    fn openai_chat_request(body_json: &serde_json::Value) -> HttpRequestData {
-        let (client, server) = addr();
         HttpRequestData {
             flow_key: flow(),
-            client_addr: client,
-            server_addr: server,
+            client_addr: (ip, 5000),
+            server_addr: (ip, 8080),
             method: "POST".to_string(),
             uri: "/v1/chat/completions".to_string(),
             version: 1,
             headers: vec![
-                (
-                    "authorization".to_string(),
-                    "Bearer sk-test-key-1234".to_string(),
-                ),
+                ("authorization".to_string(), "Bearer sk-test-key".to_string()),
                 ("content-type".to_string(), "application/json".to_string()),
             ],
             body: Bytes::from(body_json.to_string()),
@@ -350,46 +267,38 @@ mod tests {
         }
     }
 
-    fn anthropic_request(body_json: &serde_json::Value) -> HttpRequestData {
-        let (client, server) = addr();
-        HttpRequestData {
-            flow_key: flow(),
-            client_addr: client,
-            server_addr: server,
-            method: "POST".to_string(),
-            uri: "/v1/messages".to_string(),
-            version: 1,
-            headers: vec![
-                ("anthropic-version".to_string(), "2023-06-01".to_string()),
-                ("x-api-key".to_string(), "sk-ant-api03-test".to_string()),
-                ("content-type".to_string(), "application/json".to_string()),
-            ],
-            body: Bytes::from(body_json.to_string()),
-            timestamp_us: 1_000_000,
-        }
-    }
-
-    fn http_response(body_json: &serde_json::Value) -> HttpResponseData {
-        let (client, server) = addr();
-        HttpResponseData {
-            flow_key: flow(),
-            client_addr: client,
-            server_addr: server,
-            status: 200,
-            version: 1,
-            headers: vec![("content-type".to_string(), "application/json".to_string())],
-            body: Bytes::from(body_json.to_string()),
-            first_byte_timestamp_us: 1_100_000,
-            complete_timestamp_us: 1_200_000,
+    fn exchange_from(req: HttpRequestData, resp_body: Bytes, is_sse: bool) -> HttpExchange {
+        HttpExchange {
+            id: "xchg-1".to_string(),
+            stream_id: req.flow_key.stream_id.clone(),
+            client_ip: req.client_addr.0,
+            client_port: req.client_addr.1,
+            server_ip: req.server_addr.0,
+            server_port: req.server_addr.1,
+            method: req.method.clone(),
+            uri: req.uri.clone(),
+            request_headers: req.headers.clone(),
+            request_body: req.body.clone(),
+            status: Some(200),
+            response_headers: if is_sse {
+                vec![("content-type".to_string(), "text/event-stream".to_string())]
+            } else {
+                vec![("content-type".to_string(), "application/json".to_string())]
+            },
+            response_body: if is_sse { None } else { Some(resp_body) },
+            is_sse,
+            request_time: req.timestamp_us,
+            response_first_byte_time: Some(req.timestamp_us + 100_000),
+            response_complete_time: Some(req.timestamp_us + 200_000),
         }
     }
 
     fn sse_event(event_type: &str, data: &str, ts: i64) -> SseEventData {
-        let (client, server) = addr();
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
         SseEventData {
             flow_key: flow(),
-            client_addr: client,
-            server_addr: server,
+            client_addr: (ip, 5000),
+            server_addr: (ip, 8080),
             event_type: event_type.to_string(),
             data: data.to_string(),
             timestamp_us: ts,
@@ -397,12 +306,11 @@ mod tests {
     }
 
     #[test]
-    fn test_openai_chat_non_streaming() {
+    fn request_observed_detects_and_emits_start() {
         use serde_json::json;
         let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
-
-        let req_body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
-        let events = proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));
+        let body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
+        let events = proc.process(HttpJoinerEvent::RequestObserved(Arc::new(openai_request(&body))));
         assert_eq!(events.len(), 1);
         match &events[0] {
             LlmEvent::Start(s) => {
@@ -410,49 +318,70 @@ mod tests {
                 assert_eq!(s.model, "gpt-4");
                 assert!(!s.is_stream);
             }
-            _ => panic!("expected Start event"),
+            _ => panic!("expected Start"),
         }
+    }
 
+    #[test]
+    fn non_llm_request_observed_bumps_ignored_no_event() {
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let req = HttpRequestData {
+            flow_key: flow(),
+            client_addr: (ip, 5000),
+            server_addr: (ip, 8080),
+            method: "GET".to_string(),
+            uri: "/health".to_string(),
+            version: 1,
+            headers: vec![],
+            body: Bytes::new(),
+            timestamp_us: 0,
+        };
+        let events = proc.process(HttpJoinerEvent::RequestObserved(Arc::new(req)));
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn exchange_non_sse_emits_complete_with_correlation_id() {
+        use serde_json::json;
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
+        let req_body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
+        let req = openai_request(&req_body);
         let resp_body = json!({
+            "id": "chatcmpl-xyz",
             "model": "gpt-4",
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
         });
-        let events = proc.process(ProtocolEvent::HttpResponse(http_response(&resp_body)));
+        let exchange = exchange_from(req, Bytes::from(resp_body.to_string()), false);
+        let events = proc.process(HttpJoinerEvent::Exchange {
+            exchange,
+            sse_events: vec![],
+        });
         assert_eq!(events.len(), 1);
         match &events[0] {
             LlmEvent::Complete { call, .. } => {
                 assert_eq!(call.wire_api, wa::OPENAI_CHAT);
-                assert_eq!(call.model, "gpt-4");
-                assert!(!call.is_stream);
+                assert_eq!(call.request_path, "/v1/chat/completions");
                 assert_eq!(call.finish_reason, Some(FinishReason::Complete));
                 assert_eq!(call.input_tokens, Some(5));
                 assert_eq!(call.output_tokens, Some(3));
                 assert_eq!(call.total_tokens, Some(8));
-                assert_eq!(call.status_code, Some(200));
-                assert!(call.ttfb_ms.unwrap() > 0.0);
-                assert!(call.e2e_latency_ms.unwrap() > 0.0);
+                assert_eq!(call.response_id.as_deref(), Some("chatcmpl-xyz"));
+                assert!(call.response_body.is_some());
             }
-            _ => panic!("expected Complete event"),
+            _ => panic!("expected Complete"),
         }
-        assert_eq!(proc.pending_count(), 0);
     }
 
     #[test]
-    fn test_openai_chat_streaming() {
+    fn exchange_sse_reconstructs_output_and_tokens() {
         use serde_json::json;
         let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
-
         let req_body = json!({"model": "gpt-4", "stream": true, "messages": [{"role": "user", "content": "hi"}]});
-        let events = proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            LlmEvent::Start(s) => assert!(s.is_stream),
-            _ => panic!("expected Start"),
-        }
-
-        // SSE chunks
-        let chunks = vec![
+        let req = openai_request(&req_body);
+        let exchange = exchange_from(req, Bytes::new(), true);
+        let sse = vec![
             sse_event(
                 "",
                 r#"{"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}"#,
@@ -468,30 +397,8 @@ mod tests {
                 r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}"#,
                 1_200_000,
             ),
-            sse_event("", "[DONE]", 1_210_000),
         ];
-        for chunk in chunks {
-            let events = proc.process(ProtocolEvent::SseEvent(chunk));
-            assert!(events.is_empty(), "SSE events should not produce LlmEvents");
-        }
-
-        // Final HTTP response closes the call
-        let resp = {
-            let (client, server) = addr();
-            HttpResponseData {
-                flow_key: flow(),
-                client_addr: client,
-                server_addr: server,
-                status: 200,
-                version: 1,
-                headers: vec![("content-type".to_string(), "text/event-stream".to_string())],
-                body: Bytes::new(),
-                first_byte_timestamp_us: 1_100_000,
-                complete_timestamp_us: 1_250_000,
-            }
-        };
-        let events = proc.process(ProtocolEvent::HttpResponse(resp));
-        assert_eq!(events.len(), 1);
+        let events = proc.process(HttpJoinerEvent::Exchange { exchange, sse_events: sse });
         match &events[0] {
             LlmEvent::Complete { call, .. } => {
                 assert!(call.is_stream);
@@ -505,238 +412,24 @@ mod tests {
     }
 
     #[test]
-    fn test_anthropic_streaming() {
-        use serde_json::json;
+    fn heartbeat_passthrough() {
         let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
-
-        let req_body = json!({"model": "claude-3-opus", "stream": true, "messages": [{"role": "user", "content": "hi"}]});
-        let events = proc.process(ProtocolEvent::HttpRequest(anthropic_request(&req_body)));
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            LlmEvent::Start(s) => {
-                assert_eq!(s.wire_api, wa::ANTHROPIC);
-                assert!(s.is_stream);
-            }
-            _ => panic!("expected Start"),
-        }
-
-        let sse_chunks = vec![
-            sse_event(
-                "message_start",
-                r#"{"type":"message_start","message":{"id":"msg_01","model":"claude-3-opus","role":"assistant","usage":{"input_tokens":10}}}"#,
-                1_100_000,
-            ),
-            sse_event(
-                "content_block_start",
-                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
-                1_110_000,
-            ),
-            sse_event(
-                "content_block_delta",
-                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#,
-                1_120_000,
-            ),
-            sse_event(
-                "content_block_stop",
-                r#"{"type":"content_block_stop","index":0}"#,
-                1_130_000,
-            ),
-            sse_event(
-                "message_delta",
-                r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}"#,
-                1_140_000,
-            ),
-            sse_event("message_stop", r#"{"type":"message_stop"}"#, 1_150_000),
-        ];
-        for chunk in sse_chunks {
-            assert!(proc.process(ProtocolEvent::SseEvent(chunk)).is_empty());
-        }
-
-        let resp = {
-            let (client, server) = addr();
-            HttpResponseData {
-                flow_key: flow(),
-                client_addr: client,
-                server_addr: server,
-                status: 200,
-                version: 1,
-                headers: vec![("content-type".to_string(), "text/event-stream".to_string())],
-                body: Bytes::new(),
-                first_byte_timestamp_us: 1_100_000,
-                complete_timestamp_us: 1_200_000,
-            }
-        };
-        let events = proc.process(ProtocolEvent::HttpResponse(resp));
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            LlmEvent::Complete { call, .. } => {
-                assert_eq!(call.wire_api, wa::ANTHROPIC);
-                assert!(call.is_stream);
-                assert_eq!(call.finish_reason, Some(FinishReason::Complete));
-                assert_eq!(call.input_tokens, Some(10));
-                assert_eq!(call.output_tokens, Some(3));
-                assert_eq!(call.total_tokens, Some(13));
-            }
-            _ => panic!("expected Complete"),
-        }
-    }
-
-    #[test]
-    fn test_response_without_request_ignored() {
-        use serde_json::json;
-        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
-
-        let resp_body = json!({"model": "gpt-4", "choices": [{"finish_reason": "stop"}]});
-        let events = proc.process(ProtocolEvent::HttpResponse(http_response(&resp_body)));
-        assert!(
-            events.is_empty(),
-            "response with no pending request should be ignored"
-        );
-    }
-
-    #[test]
-    fn test_cleanup_stale_pending() {
-        use serde_json::json;
-        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
-
-        let req_body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
-        proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));
-        assert_eq!(proc.pending_count(), 1);
-
-        // Not stale yet (request was at 1_000_000 us = 1s)
-        let expired = proc.cleanup_stale("", 2_000_000, 5_000_000); // now=2s, timeout=5s
-        assert_eq!(expired, 0);
-        assert_eq!(proc.pending_count(), 1);
-
-        // Now stale (request was at 1s, now=7s, timeout=5s)
-        let expired = proc.cleanup_stale("", 7_000_000, 5_000_000);
-        assert_eq!(expired, 1);
-        assert_eq!(proc.pending_count(), 0);
-    }
-
-    #[test]
-    fn cleanup_stale_is_per_stream() {
-        use crate::model::LlmEvent;
-        use serde_json::json;
-        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
-
-        let body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
-
-        // Pending on stream-a (request at t=1s).
-        let mut req_a = openai_chat_request(&body);
-        req_a.flow_key = FlowKey::new(
-            "stream-a".into(),
-            "10.0.0.1".parse::<IpAddr>().unwrap(),
-            5000,
-            "10.0.0.2".parse::<IpAddr>().unwrap(),
-            8080,
-        );
-        proc.process(ProtocolEvent::HttpRequest(req_a));
-
-        // Pending on stream-b (request at t=1s).
-        let mut req_b = openai_chat_request(&body);
-        req_b.flow_key = FlowKey::new(
-            "stream-b".into(),
-            "10.0.0.1".parse::<IpAddr>().unwrap(),
-            5001,
-            "10.0.0.2".parse::<IpAddr>().unwrap(),
-            8080,
-        );
-        proc.process(ProtocolEvent::HttpRequest(req_b));
-        assert_eq!(proc.pending_count(), 2);
-
-        // Stream-a HB well past the stale timeout. Must evict only stream-a's
-        // pending entry; stream-b's pending (same absolute age, different
-        // stream) must survive because stream-b's own clock has not advanced.
-        let events = proc.process(ProtocolEvent::Heartbeat {
-            ts: 1_000_000 + PENDING_STALE_TIMEOUT_US + 1,
-            stream_id: "stream-a".into(),
-        });
-        assert!(matches!(events.as_slice(), [LlmEvent::Heartbeat { .. }]));
-        assert_eq!(
-            proc.pending_count(),
-            1,
-            "only stream-a pending must be evicted"
-        );
-    }
-
-    #[test]
-    fn heartbeat_triggers_stale_cleanup() {
-        use serde_json::json;
-        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
-
-        let req_body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
-        proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));
-        assert_eq!(proc.pending_count(), 1);
-
-        // Heartbeat well inside the timeout window — nothing should evict.
-        let events = proc.process(ProtocolEvent::Heartbeat {
-            ts: 2_000_000,
-            stream_id: String::new(),
+        let events = proc.process(HttpJoinerEvent::Heartbeat {
+            ts: 1_234_567,
+            stream_id: "s1".into(),
         });
         assert!(matches!(
             events.as_slice(),
-            [LlmEvent::Heartbeat { ts: 2_000_000, .. }]
+            [LlmEvent::Heartbeat { ts: 1_234_567, .. }]
         ));
-        assert_eq!(proc.pending_count(), 1);
-
-        // Heartbeat past the 600s timeout — pending must be evicted.
-        let events = proc.process(ProtocolEvent::Heartbeat {
-            ts: 1_000_000 + PENDING_STALE_TIMEOUT_US + 1,
-            stream_id: String::new(),
-        });
-        assert!(matches!(events.as_slice(), [LlmEvent::Heartbeat { .. }]));
-        assert_eq!(proc.pending_count(), 0);
     }
 
     #[test]
-    fn stale_pending_is_replaced_silently_on_reuse() {
-        use serde_json::json;
-        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
-
-        // First request establishes a pending entry at t=1s.
-        let req_body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
-        proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));
-        assert_eq!(proc.pending_count(), 1);
-
-        // Second request on the same flow, well past the stale timeout.
-        // Should silently replace — still exactly one pending entry.
-        let mut req2 = openai_chat_request(&req_body);
-        req2.timestamp_us = 1_000_000 + PENDING_STALE_TIMEOUT_US + 1;
-        let events = proc.process(ProtocolEvent::HttpRequest(req2));
-        assert!(matches!(events.as_slice(), [LlmEvent::Start(_)]));
-        assert_eq!(proc.pending_count(), 1);
-    }
-
-    #[test]
-    fn test_non_llm_request_ignored() {
-        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
-        let (client, server) = addr();
-        let req = HttpRequestData {
-            flow_key: flow(),
-            client_addr: client,
-            server_addr: server,
-            method: "GET".to_string(),
-            uri: "/health".to_string(),
-            version: 1,
-            headers: vec![],
-            body: Bytes::new(),
-            timestamp_us: 0,
-        };
-        let events = proc.process(ProtocolEvent::HttpRequest(req));
-        assert!(events.is_empty());
-        assert_eq!(proc.pending_count(), 0);
-    }
-
-    #[test]
-    fn complete_for_claude_cli_attaches_identity() {
+    fn claude_cli_exchange_attaches_identity() {
         use crate::agents::build_default_registry;
-        use std::sync::Arc;
+        let mut proc = LlmProcessor::new(wire_apis(), Arc::new(build_default_registry()), test_metrics());
 
-        let registry = Arc::new(build_default_registry());
-        let mut proc = LlmProcessor::new(wire_apis(), registry, test_metrics());
-
-        let (client, server) = addr();
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
         let body = serde_json::json!({
             "model": "claude-sonnet",
             "stream": true,
@@ -744,8 +437,8 @@ mod tests {
         });
         let req = HttpRequestData {
             flow_key: flow(),
-            client_addr: client,
-            server_addr: server,
+            client_addr: (ip, 5000),
+            server_addr: (ip, 8080),
             method: "POST".to_string(),
             uri: "/v1/messages".to_string(),
             version: 1,
@@ -761,8 +454,6 @@ mod tests {
             body: Bytes::from(body.to_string()),
             timestamp_us: 1_000_000,
         };
-        proc.process(ProtocolEvent::HttpRequest(req));
-
         let resp_body = serde_json::json!({
             "id": "msg_01",
             "model": "claude-sonnet",
@@ -770,103 +461,52 @@ mod tests {
             "stop_reason": "end_turn",
             "usage": {"input_tokens": 5, "output_tokens": 3}
         });
-        let events = proc.process(ProtocolEvent::HttpResponse(http_response(&resp_body)));
-        assert_eq!(events.len(), 1);
+        let exchange = exchange_from(req, Bytes::from(resp_body.to_string()), false);
+        let events = proc.process(HttpJoinerEvent::Exchange {
+            exchange,
+            sse_events: vec![],
+        });
         match &events[0] {
             LlmEvent::Complete { call, agent } => {
                 let id = agent.as_ref().expect("claude-cli should match");
                 assert_eq!(id.agent_kind, "claude-cli");
                 assert_eq!(id.session_id, "sess-xyz");
-                assert_eq!(
-                    id.turn_id_hint, None,
-                    "anthropic path has no explicit turn_id"
-                );
-                assert_eq!(call.id.len() > 0, true);
+                assert!(!call.id.is_empty());
+                assert_eq!(call.request_path, "/v1/messages");
             }
             _ => panic!("expected Complete"),
         }
     }
 
     #[test]
-    fn complete_without_profile_match_has_no_identity() {
-        use crate::agents::build_default_registry;
-        use std::sync::Arc;
-
-        let registry = Arc::new(build_default_registry());
-        let mut proc = LlmProcessor::new(wire_apis(), registry, test_metrics());
-
-        let req_body = serde_json::json!({
-            "model": "gpt-4",
-            "messages": [{"role": "user", "content": "hi"}]
-        });
-        proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));
-
-        let resp_body = serde_json::json!({
-            "model": "gpt-4",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
-        });
-        let events = proc.process(ProtocolEvent::HttpResponse(http_response(&resp_body)));
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            LlmEvent::Complete { call: _, agent } => {
-                assert!(agent.is_none(), "no profile should match");
-            }
-            _ => panic!("expected Complete"),
-        }
-    }
-
-    #[test]
-    fn test_headers_and_response_id_passed_through() {
+    fn headers_pass_through() {
         use serde_json::json;
         let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
-
         let req_body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
-        proc.process(ProtocolEvent::HttpRequest(openai_chat_request(&req_body)));
-
+        let req = openai_request(&req_body);
         let resp_body = json!({
-            "id": "chatcmpl-xyz789",
+            "id": "chatcmpl-1",
             "model": "gpt-4",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
         });
-        let (client, server) = addr();
-        let resp = HttpResponseData {
-            flow_key: flow(),
-            client_addr: client,
-            server_addr: server,
-            status: 200,
-            version: 1,
-            headers: vec![
-                ("content-type".to_string(), "application/json".to_string()),
-                ("x-request-id".to_string(), "req_test_456".to_string()),
-            ],
-            body: Bytes::from(resp_body.to_string()),
-            first_byte_timestamp_us: 1_100_000,
-            complete_timestamp_us: 1_200_000,
-        };
-        let events = proc.process(ProtocolEvent::HttpResponse(resp));
-        assert_eq!(events.len(), 1);
+        let mut exchange = exchange_from(req, Bytes::from(resp_body.to_string()), false);
+        exchange
+            .response_headers
+            .push(("x-request-id".to_string(), "rid-42".to_string()));
+        let events = proc.process(HttpJoinerEvent::Exchange {
+            exchange,
+            sse_events: vec![],
+        });
         match &events[0] {
             LlmEvent::Complete { call, .. } => {
-                // response_id extracted from body
-                assert_eq!(call.response_id.as_deref(), Some("chatcmpl-xyz789"));
-                // request headers preserved from original request
-                assert!(call
-                    .request_headers
-                    .iter()
-                    .any(|(k, _)| k == "authorization"));
-                assert!(call
-                    .request_headers
-                    .iter()
-                    .any(|(k, _)| k == "content-type"));
-                // response headers preserved
+                assert!(call.request_headers.iter().any(|(k, _)| k == "authorization"));
                 assert!(call
                     .response_headers
                     .iter()
-                    .any(|(k, v)| k == "x-request-id" && v == "req_test_456"));
+                    .any(|(k, v)| k == "x-request-id" && v == "rid-42"));
             }
-            _ => panic!("expected Complete event"),
+            _ => panic!("expected Complete"),
         }
     }
 }

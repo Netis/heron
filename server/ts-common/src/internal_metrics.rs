@@ -147,14 +147,17 @@ define_metrics! {
     HttpResyncEvents             => { kind: Counter, group: Protocol, short: "http_resync"    },
     FlowsTimedOut                => { kind: Counter, group: Protocol, short: "flows_timeout"  },
 
+    // -- HTTP exchange pairing (HttpJoiner) --
+    HttpExchangesCompleted  => { kind: Counter, group: Protocol, short: "xchg_done"     },
+    HttpExchangesIncomplete => { kind: Counter, group: Protocol, short: "xchg_orphan"   },
+    HttpExchangesExpired    => { kind: Counter, group: Protocol, short: "xchg_expired"  },
+
     // -- LLM extraction --
     LlmRequestsDetected     => { kind: Counter, group: Llm, short: "req_detected"    },
     LlmRequestsIgnored      => { kind: Counter, group: Llm, short: "req_ignored"     },
     LlmCallsCompleted       => { kind: Counter, group: Llm, short: "calls_completed" },
     LlmCallsIdentified      => { kind: Counter, group: Llm, short: "calls_identified"},
     LlmCallsUnidentified    => { kind: Counter, group: Llm, short: "calls_unident"   },
-    LlmResponsesOrphaned    => { kind: Counter, group: Llm, short: "resp_orphaned"   },
-    LlmPendingExpired       => { kind: Counter, group: Llm, short: "pending_expired" },
 
     // -- Turn tracking --
     TurnCallsIngested        => { kind: Counter, group: Turn, short: "calls_ingested" },
@@ -181,9 +184,10 @@ define_metrics! {
     QueueDepthEvent        => { kind: Gauge, group: Llm,      short: "q.event"         },
     QueueDepthTurnShard    => { kind: Gauge, group: Turn,     short: "q.turn_shard"    },
     QueueDepthMetricsShard => { kind: Gauge, group: Metrics,  short: "q.metrics_shard" },
-    QueueDepthCalls        => { kind: Gauge, group: Storage,  short: "q.calls"         },
-    QueueDepthTurns        => { kind: Gauge, group: Storage,  short: "q.turns"         },
-    QueueDepthMetricsOut   => { kind: Gauge, group: Storage,  short: "q.metrics_out"   },
+    QueueDepthCalls          => { kind: Gauge, group: Storage,  short: "q.calls"         },
+    QueueDepthTurns          => { kind: Gauge, group: Storage,  short: "q.turns"         },
+    QueueDepthMetricsOut     => { kind: Gauge, group: Storage,  short: "q.metrics_out"   },
+    QueueDepthHttpExchanges  => { kind: Gauge, group: Storage,  short: "q.exchanges"     },
 }
 
 impl Metric {

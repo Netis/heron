@@ -111,6 +111,51 @@ pub struct CallsPage {
 }
 
 #[derive(Debug, Clone)]
+pub struct HttpExchangesQuery {
+    pub time_range: TimeRange,
+    /// Server IPs to filter by. Empty = no filter. Matches
+    /// `DimensionFilter.server_ips` for the Requests page.
+    pub server_ips: Vec<String>,
+    /// Uppercase HTTP method strings (GET, POST, …). Empty = no filter.
+    pub methods: Vec<String>,
+    /// HTTP status codes. Empty = no filter. Exchanges with `status IS NULL`
+    /// are excluded when this filter is non-empty.
+    pub status_codes: Vec<u16>,
+    /// `Some(true)` → SSE only. `Some(false)` → non-SSE only. `None` → any.
+    pub is_sse: Option<bool>,
+    /// One of `"request_time"`, `"status"`, `"duration_ms"`. Validated server-side.
+    pub sort_by: String,
+    /// `"asc"` or `"desc"`.
+    pub sort_order: String,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HttpExchangeListItem {
+    pub id: String,
+    pub stream_id: String,
+    /// µs since epoch.
+    pub request_time: i64,
+    pub method: String,
+    pub uri: String,
+    pub client_ip: String,
+    pub server_ip: String,
+    pub server_port: u16,
+    pub status: Option<u16>,
+    pub is_sse: bool,
+    /// `complete_time - request_time` in milliseconds, or `None` when the
+    /// exchange is incomplete (no response yet / will never arrive).
+    pub duration_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HttpExchangesPage {
+    pub total: u64,
+    pub items: Vec<HttpExchangeListItem>,
+}
+
+#[derive(Debug, Clone)]
 pub struct TurnsQuery {
     pub time_range: TimeRange,
     pub filter: DimensionFilter,
@@ -194,6 +239,35 @@ pub struct TurnCallItem {
     pub e2e_latency_ms: Option<f64>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
+}
+
+/// Detail view of an `http_exchanges` row — used by `GET /api/http-exchanges/:id`
+/// and by the `?include=http` enrichment on `GET /api/llm-calls/:id` (future).
+#[derive(Debug, Clone, Serialize)]
+pub struct HttpExchangeDetail {
+    pub id: String,
+    pub stream_id: String,
+    pub client_ip: String,
+    pub client_port: u16,
+    pub server_ip: String,
+    pub server_port: u16,
+    pub method: String,
+    pub uri: String,
+    /// JSON-encoded array of `[header_name, header_value]` pairs (same shape
+    /// as `llm_calls.request_headers`).
+    pub request_headers: String,
+    /// Raw request body as a UTF-8 string. May be empty for GET/HEAD.
+    pub request_body: Option<String>,
+    pub status: Option<u16>,
+    pub response_headers: String,
+    /// Raw response body as a UTF-8 string. `None` for SSE (body wasn't
+    /// retained) or incomplete exchanges.
+    pub response_body: Option<String>,
+    pub is_sse: bool,
+    /// Microseconds since Unix epoch.
+    pub request_time: i64,
+    pub response_first_byte_time: Option<i64>,
+    pub response_complete_time: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

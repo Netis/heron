@@ -39,17 +39,22 @@ pub async fn bind(config: &ApiConfig) -> Result<TcpListener> {
 /// Build the API router (without serving). Useful for composing with other layers.
 pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
     Router::new()
-        .route("/api/filters/wire_apis", get(routes::filters::wire_apis))
+        .route("/api/filters/wire-apis", get(routes::filters::wire_apis))
         .route("/api/filters/models", get(routes::filters::models))
-        .route("/api/filters/server_ips", get(routes::filters::server_ips))
+        .route("/api/filters/server-ips", get(routes::filters::server_ips))
         .route("/api/metrics/timeseries", get(routes::metrics::timeseries))
         .route("/api/metrics/summary", get(routes::metrics::summary))
         .route("/api/metrics/models", get(routes::metrics::models))
-        .route("/api/calls", get(routes::calls::list))
-        .route("/api/calls/{id}", get(routes::calls::detail))
-        .route("/api/turns", get(routes::turns::list))
-        .route("/api/turns/{id}", get(routes::turns::detail))
-        .route("/api/turns/{id}/calls", get(routes::turns::calls))
+        .route("/api/llm-calls", get(routes::llm_calls::list))
+        .route("/api/llm-calls/{id}", get(routes::llm_calls::detail))
+        .route("/api/http-exchanges", get(routes::http_exchanges::list))
+        .route(
+            "/api/http-exchanges/{id}",
+            get(routes::http_exchanges::detail),
+        )
+        .route("/api/agent-turns", get(routes::agent_turns::list))
+        .route("/api/agent-turns/{id}", get(routes::agent_turns::detail))
+        .route("/api/agent-turns/{id}/calls", get(routes::agent_turns::calls))
         .layer(CorsLayer::permissive())
         .with_state(storage)
 }

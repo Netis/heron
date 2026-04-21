@@ -11,6 +11,7 @@ use ts_llm::agents::build_default_registry;
 use ts_llm::model::{ApiType, LlmCall};
 use ts_llm::wire_apis as wa;
 use ts_metrics::model::LlmMetric;
+use ts_protocol::HttpExchange;
 use ts_turn::AgentTurn;
 
 use crate::query::*;
@@ -35,6 +36,7 @@ pub struct DuckDbBackend {
     write_calls_conn: Arc<StdMutex<Connection>>,
     write_turns_conn: Arc<StdMutex<Connection>>,
     write_metrics_conn: Arc<StdMutex<Connection>>,
+    write_exchanges_conn: Arc<StdMutex<Connection>>,
     read_pool: ReadPool,
 }
 
@@ -53,6 +55,9 @@ impl DuckDbBackend {
         let metrics_writer = calls_writer
             .try_clone()
             .map_err(|e| AppError::Storage(format!("failed to clone metrics writer: {e}")))?;
+        let exchanges_writer = calls_writer
+            .try_clone()
+            .map_err(|e| AppError::Storage(format!("failed to clone exchanges writer: {e}")))?;
 
         let pool_size = read_pool_size.max(1);
         let mut readers = Vec::with_capacity(pool_size);
@@ -64,7 +69,7 @@ impl DuckDbBackend {
         }
 
         info!(
-            "duckdb opened with 3 writer connections + {} readers",
+            "duckdb opened with 4 writer connections + {} readers",
             pool_size
         );
 
@@ -72,6 +77,7 @@ impl DuckDbBackend {
             write_calls_conn: Arc::new(StdMutex::new(calls_writer)),
             write_turns_conn: Arc::new(StdMutex::new(turns_writer)),
             write_metrics_conn: Arc::new(StdMutex::new(metrics_writer)),
+            write_exchanges_conn: Arc::new(StdMutex::new(exchanges_writer)),
             read_pool: ReadPool::new(readers),
         })
     }
@@ -258,6 +264,28 @@ CREATE TABLE IF NOT EXISTS agent_turns (
 );
 ";
 
+const CREATE_HTTP_EXCHANGES: &str = "
+CREATE TABLE IF NOT EXISTS http_exchanges (
+    id                        VARCHAR NOT NULL PRIMARY KEY,
+    stream_id                 VARCHAR NOT NULL DEFAULT '',
+    client_ip                 VARCHAR NOT NULL,
+    client_port               USMALLINT NOT NULL,
+    server_ip                 VARCHAR NOT NULL,
+    server_port               USMALLINT NOT NULL,
+    method                    VARCHAR NOT NULL,
+    uri                       VARCHAR NOT NULL,
+    request_headers           VARCHAR NOT NULL,
+    request_body              BLOB,
+    status                    USMALLINT,
+    response_headers          VARCHAR NOT NULL,
+    response_body             BLOB,
+    is_sse                    BOOLEAN NOT NULL,
+    request_time              TIMESTAMP NOT NULL,
+    response_first_byte_time  TIMESTAMP,
+    response_complete_time    TIMESTAMP
+);
+";
+
 /// Serialize HTTP headers as a JSON array of pairs.
 /// Output format: `[["content-type","application/json"],["x-request-id","req_xxx"]]`
 /// Preserves header order and allows duplicate keys.
@@ -293,6 +321,18 @@ enum ExtractKind {
     Assistant,
 }
 
+/// Render a BLOB body for the HTTP exchange detail API. UTF-8 text passes
+/// through; binary content (gzip, protobuf, …) falls back to a placeholder so
+/// the detail page reflects that bytes were captured rather than showing
+/// blank.
+fn render_body_for_detail(bytes: Option<Vec<u8>>) -> Option<String> {
+    let b = bytes?;
+    match String::from_utf8(b) {
+        Ok(s) => Some(s),
+        Err(e) => Some(format!("[binary, {} bytes]", e.into_bytes().len())),
+    }
+}
+
 /// Load the request_body / response_body of `call_id` from llm_calls and run
 /// it through the `agent_kind`-matched profile to produce the full user_input
 /// or final_answer text. Returns `None` if the call row is missing, the
@@ -308,22 +348,29 @@ fn extract_full_text(
     let profile = registry.find_by_name(agent_kind)?;
 
     let sql = match kind {
-        ExtractKind::User => "SELECT request_body FROM llm_calls WHERE id = ?",
-        ExtractKind::Assistant => "SELECT response_body FROM llm_calls WHERE id = ?",
+        ExtractKind::User => "SELECT request_body, wire_api FROM llm_calls WHERE id = ?",
+        ExtractKind::Assistant => "SELECT response_body, wire_api FROM llm_calls WHERE id = ?",
     };
-    let body: Option<String> = conn
-        .query_row(sql, duckdb::params![call_id], |row| row.get(0))
+    let (body, wire_api_stored): (Option<String>, String) = conn
+        .query_row(sql, duckdb::params![call_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .ok()?;
+    // Resolve the stored value back to its static constant. An unknown value
+    // means the DB has a wire_api this binary no longer knows about — drop
+    // the extraction rather than fabricate one.
+    let wire_api = wa::by_name(&wire_api_stored)?;
     let (request_body, response_body) = match kind {
         ExtractKind::User => (body, None),
         ExtractKind::Assistant => (None, body),
     };
 
-    // Placeholder LlmCall — profile extractors read only the body fields.
+    // Placeholder LlmCall carrying the real wire_api + bodies; other fields
+    // are defaulted because current extractors only read these.
     let call = LlmCall {
         stream_id: String::new(),
         id: String::new(),
-        wire_api: wa::ANTHROPIC,
+        wire_api,
         model: String::new(),
         api_type: ApiType::Chat,
         tenant_id: None,
@@ -658,6 +705,56 @@ fn prepare_call(call: LlmCall) -> PreparedCall {
     }
 }
 
+struct PreparedExchange {
+    id: String,
+    stream_id: String,
+    client_ip: String,
+    client_port: u16,
+    server_ip: String,
+    server_port: u16,
+    method: String,
+    uri: String,
+    request_headers: String,
+    request_body: Option<Vec<u8>>,
+    status: Option<u16>,
+    response_headers: String,
+    response_body: Option<Vec<u8>>,
+    is_sse: bool,
+    request_time: Value,
+    response_first_byte_time: Option<Value>,
+    response_complete_time: Option<Value>,
+}
+
+fn prepare_exchange(x: HttpExchange) -> PreparedExchange {
+    PreparedExchange {
+        id: x.id,
+        stream_id: x.stream_id,
+        client_ip: x.client_ip.to_string(),
+        client_port: x.client_port,
+        server_ip: x.server_ip.to_string(),
+        server_port: x.server_port,
+        method: x.method,
+        uri: x.uri,
+        request_headers: headers_to_json(&x.request_headers),
+        request_body: if x.request_body.is_empty() {
+            None
+        } else {
+            Some(x.request_body.to_vec())
+        },
+        status: x.status,
+        response_headers: headers_to_json(&x.response_headers),
+        response_body: x.response_body.map(|b| b.to_vec()),
+        is_sse: x.is_sse,
+        request_time: Value::Timestamp(TimeUnit::Microsecond, x.request_time),
+        response_first_byte_time: x
+            .response_first_byte_time
+            .map(|us| Value::Timestamp(TimeUnit::Microsecond, us)),
+        response_complete_time: x
+            .response_complete_time
+            .map(|us| Value::Timestamp(TimeUnit::Microsecond, us)),
+    }
+}
+
 struct PreparedTurn {
     turn_id: String,
     stream_id: String,
@@ -754,6 +851,9 @@ impl StorageBackend for DuckDbBackend {
                 .map_err(|e| AppError::Storage(format!("failed to create llm_metrics: {e}")))?;
             conn.execute_batch(CREATE_LLM_TURNS)
                 .map_err(|e| AppError::Storage(format!("failed to create agent_turns: {e}")))?;
+            conn.execute_batch(CREATE_HTTP_EXCHANGES).map_err(|e| {
+                AppError::Storage(format!("failed to create http_exchanges: {e}"))
+            })?;
             info!("storage tables initialized");
             Ok(())
         })
@@ -816,6 +916,257 @@ impl StorageBackend for DuckDbBackend {
                 .flush()
                 .map_err(|e| AppError::Storage(format!("failed to flush calls: {e}")))?;
             Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    async fn write_exchanges(&self, exchanges: Vec<HttpExchange>) -> Result<()> {
+        if exchanges.is_empty() {
+            return Ok(());
+        }
+        let conn = self.write_exchanges_conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let prepared: Vec<PreparedExchange> =
+                exchanges.into_iter().map(prepare_exchange).collect();
+
+            let conn = conn
+                .lock()
+                .map_err(|e| AppError::Storage(format!("failed to lock writer: {e}")))?;
+            let mut appender = conn
+                .appender("http_exchanges")
+                .map_err(|e| AppError::Storage(format!("failed to create appender: {e}")))?;
+            for p in &prepared {
+                appender
+                    .append_row(duckdb::params![
+                        p.id,
+                        p.stream_id,
+                        p.client_ip,
+                        p.client_port,
+                        p.server_ip,
+                        p.server_port,
+                        p.method,
+                        p.uri,
+                        p.request_headers,
+                        p.request_body,
+                        p.status,
+                        p.response_headers,
+                        p.response_body,
+                        p.is_sse,
+                        p.request_time,
+                        p.response_first_byte_time,
+                        p.response_complete_time,
+                    ])
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to append exchange: {e}"))
+                    })?;
+            }
+            appender
+                .flush()
+                .map_err(|e| AppError::Storage(format!("failed to flush exchanges: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    async fn query_http_exchange_by_id(&self, id: &str) -> Result<Option<HttpExchangeDetail>> {
+        let conn = self.read_pool.acquire().await?;
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let sql = "
+                SELECT id, stream_id,
+                    client_ip, client_port, server_ip, server_port,
+                    method, uri,
+                    request_headers, request_body,
+                    status, response_headers, response_body, is_sse,
+                    epoch_ms(request_time),
+                    epoch_ms(response_first_byte_time),
+                    epoch_ms(response_complete_time)
+                FROM http_exchanges
+                WHERE id = ?
+            ";
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| AppError::Storage(format!("failed to prepare exchange query: {e}")))?;
+            let result = stmt.query_row(duckdb::params![id], |row| {
+                let request_body_bytes: Option<Vec<u8>> = row.get(9)?;
+                let response_body_bytes: Option<Vec<u8>> = row.get(12)?;
+                Ok(HttpExchangeDetail {
+                    id: row.get(0)?,
+                    stream_id: row.get(1)?,
+                    client_ip: row.get(2)?,
+                    client_port: row.get(3)?,
+                    server_ip: row.get(4)?,
+                    server_port: row.get(5)?,
+                    method: row.get(6)?,
+                    uri: row.get(7)?,
+                    request_headers: row.get(8)?,
+                    request_body: render_body_for_detail(request_body_bytes),
+                    status: row.get(10)?,
+                    response_headers: row.get(11)?,
+                    response_body: render_body_for_detail(response_body_bytes),
+                    is_sse: row.get(13)?,
+                    request_time: row.get(14)?,
+                    response_first_byte_time: row.get(15)?,
+                    response_complete_time: row.get(16)?,
+                })
+            });
+            match result {
+                Ok(d) => Ok(Some(d)),
+                Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(AppError::Storage(format!(
+                    "failed to query http_exchange by id: {e}"
+                ))),
+            }
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    async fn query_http_exchanges(
+        &self,
+        query: &HttpExchangesQuery,
+    ) -> Result<HttpExchangesPage> {
+        // `duration_ms` is a derived expression; the others are plain columns.
+        const VALID_SORT_FIELDS: &[&str] = &["request_time", "status", "duration_ms"];
+        if !VALID_SORT_FIELDS.contains(&query.sort_by.as_str()) {
+            return Err(AppError::Storage(format!(
+                "invalid sort_by field: {}",
+                query.sort_by
+            )));
+        }
+        let sort_order = if query.sort_order.to_uppercase() == "ASC" {
+            "ASC"
+        } else {
+            "DESC"
+        };
+
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+        let sort_order = sort_order.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+
+            let mut where_parts = vec![
+                "request_time >= ?".to_string(),
+                "request_time < ?".to_string(),
+            ];
+            if !query.server_ips.is_empty() {
+                let list: Vec<String> = query
+                    .server_ips
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!("server_ip IN ({})", list.join(", ")));
+            }
+            if !query.methods.is_empty() {
+                let list: Vec<String> = query
+                    .methods
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!("method IN ({})", list.join(", ")));
+            }
+            if !query.status_codes.is_empty() {
+                let list: Vec<String> = query
+                    .status_codes
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect();
+                where_parts.push(format!("status IN ({})", list.join(", ")));
+            }
+            if let Some(sse) = query.is_sse {
+                where_parts.push(format!("is_sse = {sse}"));
+            }
+
+            let where_sql = where_parts.join(" AND ");
+            // Map virtual field → column/expression for ORDER BY. `duration_ms`
+            // becomes an expression; plain columns pass through. NULLS LAST
+            // keeps incomplete (duration/status=None) rows from dominating
+            // descending sort.
+            let order_expr = match query.sort_by.as_str() {
+                "duration_ms" => {
+                    "epoch_ms(response_complete_time - request_time) NULLS LAST"
+                }
+                "status" => "status NULLS LAST",
+                _ => "request_time",
+            };
+
+            // COUNT
+            let count_sql = format!("SELECT COUNT(*) FROM http_exchanges WHERE {where_sql}");
+            let mut count_stmt = conn
+                .prepare(&count_sql)
+                .map_err(|e| AppError::Storage(format!("failed to prepare count query: {e}")))?;
+            let total: u64 = count_stmt
+                .query_row(duckdb::params![start_ts, end_ts], |row| row.get(0))
+                .map_err(|e| AppError::Storage(format!("failed to execute count query: {e}")))?;
+
+            // Items
+            let offset = (query.page.saturating_sub(1)) as u64 * query.page_size as u64;
+            let limit = query.page_size;
+            let items_sql = format!(
+                "SELECT id, stream_id, epoch_ms(request_time), \
+                 method, uri, client_ip, server_ip, server_port, \
+                 status, is_sse, \
+                 CASE WHEN response_complete_time IS NOT NULL \
+                      THEN epoch_ms(response_complete_time - request_time) \
+                      ELSE NULL END AS duration_ms \
+                 FROM http_exchanges WHERE {where_sql} \
+                 ORDER BY {order_expr} {sort_order} \
+                 LIMIT {limit} OFFSET {offset}"
+            );
+            let mut items_stmt = conn
+                .prepare(&items_sql)
+                .map_err(|e| AppError::Storage(format!("failed to prepare items query: {e}")))?;
+
+            let mut items = Vec::new();
+            let mut rows = items_stmt
+                .query(duckdb::params![start_ts, end_ts])
+                .map_err(|e| AppError::Storage(format!("failed to execute items query: {e}")))?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                items.push(HttpExchangeListItem {
+                    id: row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    stream_id: row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    request_time: row
+                        .get(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    method: row
+                        .get(3)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    uri: row
+                        .get(4)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    client_ip: row
+                        .get(5)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    server_ip: row
+                        .get(6)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    server_port: row
+                        .get(7)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    status: row
+                        .get::<_, Option<u16>>(8)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    is_sse: row
+                        .get(9)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    duration_ms: row
+                        .get::<_, Option<f64>>(10)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                });
+            }
+            Ok(HttpExchangesPage { total, items })
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
@@ -1977,6 +2328,7 @@ impl StorageBackend for DuckDbBackend {
         let calls_conn = self.write_calls_conn.clone();
         let turns_conn = self.write_turns_conn.clone();
         let metrics_conn = self.write_metrics_conn.clone();
+        let exchanges_conn = self.write_exchanges_conn.clone();
 
         tokio::task::spawn_blocking(move || {
             let mut report = RetentionReport::default();
@@ -1993,6 +2345,22 @@ impl StorageBackend for DuckDbBackend {
                     )
                     .map_err(|e| AppError::Storage(format!("failed to delete llm_calls: {e}")))?;
                 report.calls_deleted = n as u64;
+            }
+
+            if let Some(cutoff) = policy.http_exchanges_before {
+                let ts = timestamp_value(cutoff)?;
+                let conn = exchanges_conn.lock().map_err(|e| {
+                    AppError::Storage(format!("failed to lock exchanges writer: {e}"))
+                })?;
+                let n = conn
+                    .execute(
+                        "DELETE FROM http_exchanges WHERE request_time < ?1",
+                        duckdb::params![ts],
+                    )
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to delete http_exchanges: {e}"))
+                    })?;
+                report.http_exchanges_deleted = n as u64;
             }
 
             if let Some(cutoff) = policy.turns_before {
@@ -2061,6 +2429,90 @@ mod tests {
 
     fn in_memory_backend() -> DuckDbBackend {
         DuckDbBackend::open(":memory:").unwrap()
+    }
+
+    #[tokio::test]
+    async fn http_exchange_round_trip() {
+        use bytes::Bytes;
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+        let exchange = ts_protocol::HttpExchange {
+            id: "xchg-rt-1".to_string(),
+            stream_id: "stream-x".to_string(),
+            client_ip: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            client_port: 54321,
+            server_ip: "10.0.0.2".parse::<IpAddr>().unwrap(),
+            server_port: 443,
+            method: "POST".into(),
+            uri: "/v1/chat/completions".into(),
+            request_headers: vec![("content-type".into(), "application/json".into())],
+            request_body: Bytes::from_static(br#"{"model":"gpt-4"}"#),
+            status: Some(200),
+            response_headers: vec![("x-request-id".into(), "req_abc".into())],
+            response_body: Some(Bytes::from_static(br#"{"choices":[]}"#)),
+            is_sse: false,
+            request_time: 1_700_000_000_000_000,
+            response_first_byte_time: Some(1_700_000_000_500_000),
+            response_complete_time: Some(1_700_000_001_000_000),
+        };
+        backend
+            .write_exchanges(vec![exchange.clone()])
+            .await
+            .unwrap();
+        let got = backend
+            .query_http_exchange_by_id("xchg-rt-1")
+            .await
+            .unwrap()
+            .expect("round-tripped exchange");
+        assert_eq!(got.id, "xchg-rt-1");
+        assert_eq!(got.client_port, 54321);
+        assert_eq!(got.method, "POST");
+        assert_eq!(got.status, Some(200));
+        assert!(!got.is_sse);
+        assert_eq!(got.request_body.as_deref(), Some(r#"{"model":"gpt-4"}"#));
+        assert_eq!(got.response_body.as_deref(), Some(r#"{"choices":[]}"#));
+    }
+
+    #[tokio::test]
+    async fn http_exchange_sse_round_trip_response_body_none() {
+        use bytes::Bytes;
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+        let exchange = ts_protocol::HttpExchange {
+            id: "xchg-sse-1".to_string(),
+            stream_id: "stream-sse".to_string(),
+            client_ip: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            client_port: 1,
+            server_ip: "10.0.0.2".parse::<IpAddr>().unwrap(),
+            server_port: 443,
+            method: "POST".into(),
+            uri: "/v1/messages".into(),
+            request_headers: vec![],
+            request_body: Bytes::new(),
+            status: Some(200),
+            response_headers: vec![],
+            response_body: None,
+            is_sse: true,
+            request_time: 1,
+            response_first_byte_time: Some(2),
+            response_complete_time: Some(3),
+        };
+        backend.write_exchanges(vec![exchange]).await.unwrap();
+        let got = backend
+            .query_http_exchange_by_id("xchg-sse-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(got.is_sse);
+        assert!(got.response_body.is_none());
+    }
+
+    #[tokio::test]
+    async fn http_exchange_missing_id_returns_none() {
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+        let got = backend.query_http_exchange_by_id("nope").await.unwrap();
+        assert!(got.is_none());
     }
 
     fn sample_call() -> LlmCall {
@@ -3661,6 +4113,7 @@ mod retention_tests {
         let policy = RetentionPolicy {
             calls_before: Some(now - Duration::from_secs(7 * 86_400)),
             turns_before: Some(now - Duration::from_secs(14 * 86_400)),
+            http_exchanges_before: None,
             metrics_before: vec![
                 ("10s".to_string(), now - Duration::from_secs(86_400)),
                 ("1m".to_string(), now - Duration::from_secs(7 * 86_400)),

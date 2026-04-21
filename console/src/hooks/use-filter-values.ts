@@ -14,7 +14,7 @@ function useFilterValues(endpoint: string) {
 }
 
 export function useWireApis() {
-  return useFilterValues("/api/filters/wire_apis")
+  return useFilterValues("/api/filters/wire-apis")
 }
 
 export function useModelNames() {
@@ -22,5 +22,5 @@ export function useModelNames() {
 }
 
 export function useServerIps() {
-  return useFilterValues("/api/filters/server_ips")
+  return useFilterValues("/api/filters/server-ips")
 }

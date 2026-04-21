@@ -1,110 +1,107 @@
 import { useState, useCallback } from "react"
 import { ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Loader2, Filter } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useRequests } from "@/hooks/use-requests"
+import { useAgentTurns } from "@/hooks/use-agent-turns"
 import { useSearchParamState } from "@/hooks/use-search-param-state"
-import { formatTime, formatMs, formatNumber } from "@/lib/format"
-import { StatusBadge } from "@/components/ui/status-badge"
-import { FinishBadge } from "@/components/ui/finish-badge"
+import { formatTime, formatNumber, formatDuration } from "@/lib/format"
+import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
-import { RequestDetailPanel } from "./request-detail-panel"
-import type { CallListItem } from "@/types/api"
+import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
+import type { AgentTurnListItem } from "@/types/api"
 
-const STATUS_OPTIONS = ["200", "400", "401", "403", "404", "429", "500", "502", "503"]
-const FINISH_OPTIONS = ["complete", "stop", "length", "tool_use", "error", "cancelled"]
+const STATUS_OPTIONS = ["success", "error", "incomplete", "in_progress", "timeout", "cancelled"]
 
 const PAGE_SIZES = [20, 50, 100] as const
 
 const columns = [
-  { key: "request_time", label: "Time", width: "w-[160px]" },
-  { key: "wire_api", label: "Wire API", width: "w-[110px]" },
-  { key: "model", label: "Model", width: "w-[140px]" },
-  { key: "status_code", label: "Status", width: "w-[52px]" },
-  { key: "is_stream", label: "S", width: "w-[32px]" },
-  { key: "finish_reason", label: "Finish", width: "w-[72px]" },
-  { key: "ttfb_ms", label: "TTFB", width: "w-[72px]" },
-  { key: "e2e_latency_ms", label: "E2E", width: "w-[72px]" },
-  { key: "input_tokens", label: "In", width: "w-[56px]" },
-  { key: "output_tokens", label: "Out", width: "w-[56px]" },
+  { key: "start_time", label: "Time", width: "w-[140px]", sortable: true, align: "left" as const },
+  { key: "wire_api", label: "Wire API", width: "w-[120px]", sortable: false, align: "left" as const },
+  { key: "primary_model", label: "Model", width: "w-[180px]", sortable: false, align: "left" as const },
+  { key: "agent_kind", label: "Agent", width: "w-[100px]", sortable: false, align: "left" as const },
+  { key: "status", label: "Status", width: "w-[100px]", sortable: false, align: "left" as const },
+  { key: "call_count", label: "Calls", width: "w-[60px]", sortable: true, align: "right" as const },
+  { key: "total_input_tokens", label: "In", width: "w-[70px]", sortable: true, align: "right" as const },
+  { key: "total_output_tokens", label: "Out", width: "w-[70px]", sortable: true, align: "right" as const },
+  { key: "duration_ms", label: "Duration", width: "w-[90px]", sortable: true, align: "right" as const },
+  { key: "preview", label: "User Input", width: "", sortable: false, align: "left" as const },
 ] as const
-
-type SortKey = (typeof columns)[number]["key"]
 
 function SortIcon({ column, sortBy, sortOrder }: { column: string; sortBy: string; sortOrder: string }) {
   if (column !== sortBy) return <ArrowUpDown className="size-3 opacity-0 group-hover:opacity-50" />
-  return sortOrder === "asc" ? (
-    <ArrowUp className="size-3" />
-  ) : (
-    <ArrowDown className="size-3" />
-  )
+  return sortOrder === "asc" ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />
 }
 
-function CellValue({ item, column }: { item: CallListItem; column: SortKey }) {
+function CellValue({ item, column }: { item: AgentTurnListItem; column: (typeof columns)[number]["key"] }) {
   switch (column) {
-    case "request_time":
-      return <span className="tabular-nums">{formatTime(item.request_time)}</span>
+    case "start_time":
+      return <span className="tabular-nums">{formatTime(item.start_time)}</span>
     case "wire_api":
-      return <span className="truncate">{item.wire_api}</span>
-    case "model":
       return (
-        <span className="truncate" title={item.model}>
-          {item.model}
+        <span className="truncate" title={item.wire_api}>
+          {item.wire_api}
         </span>
       )
-    case "status_code":
-      return <StatusBadge status={item.status_code} />
-    case "is_stream":
+    case "primary_model":
       return (
-        <span className={item.is_stream ? "text-blue-500" : "text-muted-foreground"}>
-          {item.is_stream ? "\u26A1" : "\u2014"}
+        <span className="truncate" title={item.primary_model ?? undefined}>
+          {item.primary_model ?? "—"}
         </span>
       )
-    case "finish_reason":
-      return <FinishBadge reason={item.finish_reason} />
-    case "ttfb_ms":
-      return <span className="tabular-nums">{formatMs(item.ttfb_ms)}</span>
-    case "e2e_latency_ms":
-      return <span className="tabular-nums">{formatMs(item.e2e_latency_ms)}</span>
-    case "input_tokens":
-      return <span className="tabular-nums">{formatNumber(item.input_tokens)}</span>
-    case "output_tokens":
-      return <span className="tabular-nums">{formatNumber(item.output_tokens)}</span>
+    case "agent_kind":
+      return (
+        <span className="truncate" title={item.agent_kind}>
+          {item.agent_kind}
+        </span>
+      )
+    case "status":
+      return <TurnStatusBadge status={item.status} />
+    case "call_count":
+      return <span className="tabular-nums">{item.call_count}</span>
+    case "total_input_tokens":
+      return <span className="tabular-nums">{formatNumber(item.total_input_tokens)}</span>
+    case "total_output_tokens":
+      return <span className="tabular-nums">{formatNumber(item.total_output_tokens)}</span>
+    case "duration_ms":
+      return <span className="tabular-nums">{formatDuration(item.duration_ms)}</span>
+    case "preview":
+      return (
+        <span className="truncate text-muted-foreground" title={item.user_input_preview ?? undefined}>
+          {item.user_input_preview ?? "—"}
+        </span>
+      )
   }
 }
 
-export function RequestsPage() {
+export function AgentTurnsPage() {
   const [pageStr, setPageStr] = useSearchParamState("page", "1")
   const [pageSizeStr, setPageSizeStr] = useSearchParamState("page_size", "50")
-  const [sortBy, setSortBy] = useSearchParamState("sort", "request_time")
+  const [sortBy, setSortBy] = useSearchParamState("sort", "start_time")
   const [sortOrder, setSortOrder] = useSearchParamState("order", "desc")
   const [statusStr, setStatusStr] = useSearchParamState("status", "")
-  const [finishStr, setFinishStr] = useSearchParamState("finish", "")
 
   const page = Number(pageStr) || 1
   const pageSize = Number(pageSizeStr) || 50
   const statusFilter = statusStr ? statusStr.split(",") : []
-  const finishFilter = finishStr ? finishStr.split(",") : []
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [selectedIndex, setSelectedIndex] = useState(-1)
 
-  const { data, isLoading, isError, error } = useRequests({
+  const { data, isLoading, isError, error } = useAgentTurns({
     page,
     pageSize,
     sortBy,
     sortOrder: sortOrder as "asc" | "desc",
-    statusCode: statusStr || undefined,
-    finishReason: finishStr || undefined,
+    status: statusStr || undefined,
   })
 
   const items = data?.items ?? []
   const total = data?.total ?? 0
-  const totalPages = Math.ceil(total / pageSize)
-  const rangeStart = (page - 1) * pageSize + 1
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1
   const rangeEnd = Math.min(page * pageSize, total)
 
   const handleSort = useCallback(
-    (key: string) => {
+    (key: string, sortable: boolean) => {
+      if (!sortable) return
       if (key === sortBy) {
         setSortOrder(sortOrder === "asc" ? "desc" : "asc")
       } else {
@@ -116,27 +113,6 @@ export function RequestsPage() {
     [sortBy, sortOrder, setSortBy, setSortOrder, setPageStr],
   )
 
-  const handleRowClick = useCallback((id: string, index: number) => {
-    setSelectedId(id)
-    setSelectedIndex(index)
-  }, [])
-
-  const handleNavigate = useCallback(
-    (direction: "prev" | "next") => {
-      const newIndex = direction === "prev" ? selectedIndex - 1 : selectedIndex + 1
-      if (newIndex >= 0 && newIndex < items.length) {
-        setSelectedIndex(newIndex)
-        setSelectedId(items[newIndex].id)
-      }
-    },
-    [selectedIndex, items],
-  )
-
-  const handleClose = useCallback(() => {
-    setSelectedId(null)
-    setSelectedIndex(-1)
-  }, [])
-
   return (
     <div className="relative flex h-full flex-col">
       {/* Page-specific filters */}
@@ -147,13 +123,10 @@ export function RequestsPage() {
           label="Status"
           options={STATUS_OPTIONS}
           selected={statusFilter}
-          onChange={(v) => { setStatusStr(v.join(",")); setPageStr("1") }}
-        />
-        <FilterDropdown
-          label="Finish Reason"
-          options={FINISH_OPTIONS}
-          selected={finishFilter}
-          onChange={(v) => { setFinishStr(v.join(",")); setPageStr("1") }}
+          onChange={(v) => {
+            setStatusStr(v.join(","))
+            setPageStr("1")
+          }}
         />
       </div>
 
@@ -165,20 +138,24 @@ export function RequestsPage() {
               {columns.map((col) => (
                 <th
                   key={col.key}
-                  onClick={() => handleSort(col.key)}
+                  onClick={() => handleSort(col.key, col.sortable)}
                   className={cn(
-                    "group cursor-pointer px-3 py-2 text-left text-xs font-medium text-muted-foreground select-none",
+                    "group px-3 py-2 text-xs font-medium text-muted-foreground select-none",
                     col.width,
-                    (col.key === "ttfb_ms" ||
-                      col.key === "e2e_latency_ms" ||
-                      col.key === "input_tokens" ||
-                      col.key === "output_tokens") &&
-                      "text-right",
+                    col.align === "right" ? "text-right" : "text-left",
+                    col.sortable && "cursor-pointer",
                   )}
                 >
-                  <span className="inline-flex items-center gap-1">
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1",
+                      col.align === "right" && "flex-row-reverse",
+                    )}
+                  >
                     {col.label}
-                    <SortIcon column={col.key} sortBy={sortBy} sortOrder={sortOrder} />
+                    {col.sortable && (
+                      <SortIcon column={col.key} sortBy={sortBy} sortOrder={sortOrder} />
+                    )}
                   </span>
                 </th>
               ))}
@@ -194,23 +171,23 @@ export function RequestsPage() {
             ) : isError ? (
               <tr>
                 <td colSpan={columns.length} className="py-20 text-center text-destructive">
-                  Failed to load requests: {error?.message}
+                  Failed to load agent turns: {error?.message}
                 </td>
               </tr>
             ) : items.length === 0 ? (
               <tr>
                 <td colSpan={columns.length} className="py-20 text-center text-muted-foreground">
-                  No requests found in the selected time range
+                  No agent turns found in the selected time range
                 </td>
               </tr>
             ) : (
-              items.map((item, index) => (
+              items.map((item) => (
                 <tr
-                  key={item.id}
-                  onClick={() => handleRowClick(item.id, index)}
+                  key={item.turn_id}
+                  onClick={() => setSelectedId(item.turn_id)}
                   className={cn(
                     "cursor-pointer border-b border-border/50 transition-colors hover:bg-muted/50",
-                    selectedId === item.id && "bg-muted",
+                    selectedId === item.turn_id && "bg-muted",
                   )}
                 >
                   {columns.map((col) => (
@@ -219,11 +196,8 @@ export function RequestsPage() {
                       className={cn(
                         "px-3 py-1.5",
                         col.width,
-                        (col.key === "ttfb_ms" ||
-                          col.key === "e2e_latency_ms" ||
-                          col.key === "input_tokens" ||
-                          col.key === "output_tokens") &&
-                          "text-right",
+                        col.align === "right" && "text-right",
+                        col.key === "preview" && "max-w-0",
                       )}
                     >
                       <CellValue item={item} column={col.key} />
@@ -282,13 +256,7 @@ export function RequestsPage() {
 
       {/* Slide-over detail panel */}
       {selectedId && (
-        <RequestDetailPanel
-          id={selectedId}
-          onClose={handleClose}
-          onNavigate={handleNavigate}
-          hasPrev={selectedIndex > 0}
-          hasNext={selectedIndex < items.length - 1}
-        />
+        <AgentTurnDetailPanel id={selectedId} onClose={() => setSelectedId(null)} />
       )}
     </div>
   )

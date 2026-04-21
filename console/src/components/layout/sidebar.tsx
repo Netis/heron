@@ -5,8 +5,9 @@ import {
   BarChart3,
   AlertTriangle,
   Cpu,
-  List,
-  GitBranch,
+  Sparkles,
+  MessagesSquare,
+  Network,
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react"
@@ -22,8 +23,9 @@ const navItems = [
   { to: "/traffic", icon: BarChart3, label: "Traffic" },
   { to: "/errors", icon: AlertTriangle, label: "Errors" },
   { to: "/models", icon: Cpu, label: "Models" },
-  { to: "/requests", icon: List, label: "Requests" },
-  { to: "/turns", icon: GitBranch, label: "Agent Turns" },
+  { to: "/agent-turns", icon: MessagesSquare, label: "Agent Turns" },
+  { to: "/llm-calls", icon: Sparkles, label: "LLM Calls" },
+  { to: "/http-exchanges", icon: Network, label: "HTTP Exchanges" },
 ]
 
 export function Sidebar() {

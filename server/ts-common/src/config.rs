@@ -327,6 +327,11 @@ pub struct RetentionConfig {
     /// Max age in days for `agent_turns`. `0` (or absent) = never expire.
     #[serde(default)]
     pub turns: u32,
+    /// Max age in days for `http_exchanges`. `0` (or absent) = never expire.
+    /// Defaults to 7 for fresh installs — raw headers + bodies make this the
+    /// bulkiest table, so a short forensics window keeps storage bounded.
+    #[serde(default = "default_http_exchanges_retention_days")]
+    pub http_exchanges: u32,
     /// Per-granularity retention for `llm_metrics`, in days. Key = granularity
     /// label (e.g. `"10s"`, `"1m"`, `"5m"`, `"1h"`). Absent or 0 = never expire.
     #[serde(default)]
@@ -340,9 +345,14 @@ impl Default for RetentionConfig {
             check_interval_secs: default_retention_check_interval_secs(),
             calls: 0,
             turns: 0,
+            http_exchanges: default_http_exchanges_retention_days(),
             metrics: HashMap::new(),
         }
     }
+}
+
+fn default_http_exchanges_retention_days() -> u32 {
+    7
 }
 
 fn default_retention_check_interval_secs() -> u64 {

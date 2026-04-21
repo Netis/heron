@@ -1,0 +1,63 @@
+import { useQuery } from "@tanstack/react-query"
+import { apiFetch } from "@/lib/api"
+import { useToolbarStore } from "@/stores/toolbar"
+import type { HttpExchangesPage } from "@/types/api"
+
+interface UseHttpExchangesParams {
+  page: number
+  pageSize: number
+  sortBy: string
+  sortOrder: "asc" | "desc"
+  /** CSV of HTTP methods; case-insensitive. */
+  method?: string
+  /** CSV of status codes. */
+  status?: string
+  /** Tri-state: true → SSE only, false → non-SSE only, undefined → any. */
+  isSse?: boolean
+}
+
+export function useHttpExchanges({
+  page,
+  pageSize,
+  sortBy,
+  sortOrder,
+  method,
+  status,
+  isSse,
+}: UseHttpExchangesParams) {
+  const start = useToolbarStore((s) => s.start)
+  const end = useToolbarStore((s) => s.end)
+  const filters = useToolbarStore((s) => s.filters)
+
+  return useQuery({
+    queryKey: [
+      "http-exchanges",
+      {
+        start,
+        end,
+        page,
+        pageSize,
+        sortBy,
+        sortOrder,
+        serverIp: filters.serverIp,
+        method,
+        status,
+        isSse,
+      },
+    ],
+    queryFn: () =>
+      apiFetch<HttpExchangesPage>("/api/http-exchanges", {
+        start,
+        end,
+        page,
+        page_size: pageSize,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+        server_ip: filters.serverIp || undefined,
+        method: method || undefined,
+        status: status || undefined,
+        is_sse: isSse === undefined ? undefined : String(isSse),
+      }),
+    placeholderData: (prev) => prev,
+  })
+}

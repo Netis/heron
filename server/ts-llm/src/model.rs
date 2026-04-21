@@ -236,6 +236,33 @@ pub trait WireApi: Send + Sync {
 
     /// Extract fields from accumulated SSE events (streaming response).
     fn extract_sse(&self, events: &[ts_protocol::model::SseEventData]) -> ResponseInfo;
+
+    /// Normalized request payload — provider-native JSON, not cross-provider
+    /// unified. Persisted to `LlmCall.input`. Default implementation parses the
+    /// raw request body as JSON; override if a wire API wants to scrub / reshape.
+    fn normalize_input(&self, req: &ts_protocol::model::HttpRequestData) -> serde_json::Value {
+        serde_json::from_slice(&req.body).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// Normalized response payload — provider-native JSON. Persisted to
+    /// `LlmCall.output`. Absorbs the SSE-vs-non-SSE branch: when `sse_events`
+    /// is non-empty, reuses `extract_sse`'s reconstruction (see
+    /// `ResponseInfo.response_body`) and re-parses it into a `Value`; otherwise
+    /// parses the raw response body as JSON.
+    fn normalize_output(
+        &self,
+        resp: &ts_protocol::model::HttpResponseData,
+        sse_events: &[ts_protocol::model::SseEventData],
+    ) -> serde_json::Value {
+        if !sse_events.is_empty() {
+            self.extract_sse(sse_events)
+                .response_body
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::Value::Null)
+        } else {
+            serde_json::from_slice(&resp.body).unwrap_or(serde_json::Value::Null)
+        }
+    }
 }
 
 /// Truncate a string to max_len characters, appending "..." if truncated.

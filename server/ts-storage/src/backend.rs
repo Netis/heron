@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use ts_llm::model::LlmCall;
 use ts_metrics::model::LlmMetric;
+use ts_protocol::HttpExchange;
 use ts_turn::AgentTurn;
 
 use crate::query::*;
@@ -22,6 +23,21 @@ pub trait StorageBackend: Send + Sync {
 
     /// Batch-write AgentTurn records.
     async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()>;
+
+    /// Batch-write HttpExchange records. Authoritative transport-layer record
+    /// for all HTTP traffic (LLM + non-LLM). Soft-FK'd from `llm_calls` via
+    /// `llm_calls.http_correlation_id`.
+    async fn write_exchanges(&self, exchanges: Vec<HttpExchange>) -> Result<()>;
+
+    /// Fetch a single HTTP exchange by its primary key.
+    async fn query_http_exchange_by_id(&self, id: &str) -> Result<Option<HttpExchangeDetail>>;
+
+    /// Paginated, filterable list of HTTP exchanges. Powers the HTTP
+    /// Exchanges page and mirrors `query_calls`'s shape.
+    async fn query_http_exchanges(
+        &self,
+        query: &HttpExchangesQuery,
+    ) -> Result<HttpExchangesPage>;
 
     async fn query_metrics_timeseries(
         &self,

@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use ts_capture::{CaptureSource, PcapFileSource, RoutingSender};
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_llm::wire_apis as wa;
-use ts_protocol::{spawn_flow_dispatcher, spawn_protocol_stage};
+use ts_protocol::{spawn_flow_dispatcher, spawn_http_joiner_stage, spawn_protocol_stage};
 use ts_turn::tracker::TrackerConfig;
 use ts_turn::TurnStatus;
 
@@ -53,15 +53,21 @@ async fn run_pcap_full_sharded(
     // out of order — exactly the reorder scenario buffer-and-finalize fixes.
     let mut parsed_txs = Vec::with_capacity(flow_shards);
     let mut parsed_rxs = Vec::with_capacity(flow_shards);
-    let mut event_txs = Vec::with_capacity(flow_shards);
-    let mut event_rxs = Vec::with_capacity(flow_shards);
+    let mut protocol_event_txs = Vec::with_capacity(flow_shards);
+    let mut protocol_event_rxs = Vec::with_capacity(flow_shards);
+    let mut joiner_event_txs = Vec::with_capacity(flow_shards);
+    let mut joiner_event_rxs = Vec::with_capacity(flow_shards);
     for _ in 0..flow_shards {
         let (ptx, prx) = mpsc::channel::<ts_protocol::WorkerInput>(queue_size);
         parsed_txs.push(ptx);
         parsed_rxs.push(prx);
-        let (etx, erx) = mpsc::channel(queue_size);
-        event_txs.push(etx);
-        event_rxs.push(erx);
+        let (etx, erx) = mpsc::channel::<ts_protocol::model::ProtocolEvent>(queue_size);
+        protocol_event_txs.push(etx);
+        protocol_event_rxs.push(erx);
+        let (jtx, jrx) =
+            mpsc::channel::<ts_protocol::HttpJoinerEvent>(queue_size);
+        joiner_event_txs.push(jtx);
+        joiner_event_rxs.push(jrx);
     }
 
     let mut turn_shard_txs = Vec::with_capacity(turn_shards);
@@ -85,12 +91,20 @@ async fn run_pcap_full_sharded(
     let (m_out_tx, mut m_out_rx) = mpsc::channel::<ts_metrics::model::LlmMetric>(queue_size);
 
     spawn_flow_dispatcher(raw_rx, parsed_txs, "dispatcher", &mut metrics_sys);
-    spawn_protocol_stage(parsed_rxs, event_txs, &mut metrics_sys);
+    spawn_protocol_stage(parsed_rxs, protocol_event_txs, &mut metrics_sys);
+    // Integration test doesn't assert on http_exchanges — pass None for the
+    // storage-bound channel.
+    spawn_http_joiner_stage(
+        protocol_event_rxs,
+        joiner_event_txs,
+        None,
+        &mut metrics_sys,
+    );
 
     let registry = Arc::new(ts_llm::agents::build_default_registry());
     let wire_api_registry = Arc::new(ts_llm::wire_apis::build_default_wire_api_registry());
     ts_llm::spawn_llm_stage(
-        event_rxs,
+        joiner_event_rxs,
         turn_shard_txs,
         metrics_shard_txs,
         calls_tx,

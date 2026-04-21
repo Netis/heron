@@ -3059,6 +3059,7 @@ dependencies = [
  "tracing",
  "ts-capture",
  "ts-common",
+ "uuid",
 ]
 
 [[package]]
@@ -3066,6 +3067,7 @@ name = "ts-storage"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "chrono",
  "duckdb",
  "serde",
@@ -3077,6 +3079,7 @@ dependencies = [
  "ts-common",
  "ts-llm",
  "ts-metrics",
+ "ts-protocol",
  "ts-turn",
 ]
 

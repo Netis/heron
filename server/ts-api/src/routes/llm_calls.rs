@@ -108,7 +108,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/calls?start=0&end=1&status_code=200,abc")
+                    .uri("/api/llm-calls?start=0&end=1&status_code=200,abc")
                     .body(Body::empty())
                     .unwrap(),
             )

@@ -49,7 +49,10 @@ use ts_common::config::{CaptureSourceConfig, PipelineDef};
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_llm::model::{LlmCall, LlmEvent, TurnShardInput};
 use ts_metrics::model::LlmMetric;
-use ts_protocol::{spawn_flow_dispatcher, spawn_protocol_stage, WorkerInput};
+use ts_protocol::{
+    spawn_flow_dispatcher, spawn_http_joiner_stage, spawn_protocol_stage, HttpExchange,
+    HttpJoinerEvent, WorkerInput,
+};
 use ts_storage::StorageBackend;
 use ts_turn::tracker::TrackerConfig;
 use ts_turn::AgentTurn;
@@ -132,6 +135,8 @@ impl Pipeline {
         let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(sink_capacity);
         let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(sink_capacity);
         let (metrics_out_tx, metrics_out_rx) = mpsc::channel::<LlmMetric>(sink_capacity);
+        let (http_exchanges_tx, http_exchanges_rx) =
+            mpsc::channel::<HttpExchange>(sink_capacity);
 
         let registry = Arc::new(ts_llm::agents::build_default_registry());
         let wire_api_registry = Arc::new(ts_llm::wire_apis::build_default_wire_api_registry());
@@ -160,6 +165,12 @@ impl Pipeline {
                 w.upgrade()
                     .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
             });
+            let w = http_exchanges_tx.downgrade();
+            per_pipeline_metrics[0]
+                .register_queue_probe(Metric::QueueDepthHttpExchanges, move || {
+                    w.upgrade()
+                        .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
+                });
         }
 
         let mut stage_handles: Vec<(StageTask, JoinHandle<()>)> = Vec::new();
@@ -202,6 +213,9 @@ impl Pipeline {
                 make_shard_channels::<ts_protocol::model::ProtocolEvent>(flow_shards, q.flow_event);
             let event_weaks: Vec<WeakSender<ts_protocol::model::ProtocolEvent>> =
                 event_txs.iter().map(|tx| tx.downgrade()).collect();
+            // Joiner output: per-shard HttpJoinerEvent channels into the LLM stage.
+            let (joiner_event_txs, joiner_event_rxs) =
+                make_shard_channels::<HttpJoinerEvent>(flow_shards, q.flow_event);
             let (turn_shard_txs, turn_shard_rxs) =
                 make_shard_channels::<TurnShardInput>(turn_shards, q.turn_event);
             let turn_shard_weaks: Vec<WeakSender<TurnShardInput>> =
@@ -255,12 +269,35 @@ impl Pipeline {
                 ));
             }
 
+            // HTTP joiner stage — `flow_shards` workers per pipeline. Pairs
+            // HTTP request/response/SSE events into `HttpJoinerEvent`s. Each
+            // paired `Exchange` is fanned out to `http_exchanges_tx` (all
+            // traffic goes to storage) and to `joiner_event_txs` (ts-llm
+            // consumes the same stream to extract LLM semantics).
+            let joiner_handles = spawn_http_joiner_stage(
+                event_rxs,
+                joiner_event_txs,
+                Some(http_exchanges_tx.clone()),
+                metrics_sys,
+            );
+            debug_assert_eq!(joiner_handles.len(), flow_shards);
+            for (j, h) in joiner_handles.into_iter().enumerate() {
+                stage_handles.push((
+                    StageTask {
+                        stage: "joiner",
+                        shard: Some(j),
+                        pipeline: Some(name.clone()),
+                    },
+                    h,
+                ));
+            }
+
             // LLM stage — `flow_shards` workers per pipeline. `metrics_shard_txs`
             // is moved in (pipeline-local, never leaves the loop). `calls_tx` is
             // cloned so the shared sink sees EOF only after every pipeline's
             // llm stage drains.
             let llm_handles = ts_llm::spawn_llm_stage(
-                event_rxs,
+                joiner_event_rxs,
                 turn_shard_txs,
                 metrics_shard_txs,
                 calls_tx.clone(),
@@ -372,6 +409,7 @@ impl Pipeline {
         drop(calls_tx);
         drop(turns_tx);
         drop(metrics_out_tx);
+        drop(http_exchanges_tx);
 
         // ---- Shared storage sink ----
         // Register against the first pipeline's MetricsSystem so counters
@@ -389,6 +427,7 @@ impl Pipeline {
             calls_rx,
             turns_rx,
             metrics_out_rx,
+            http_exchanges_rx,
             storage,
             storage_metrics,
         );

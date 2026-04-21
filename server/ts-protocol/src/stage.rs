@@ -17,6 +17,7 @@ use ts_capture::RawPacket;
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 
 use crate::flow::{FlowDispatcher, WorkerInput};
+use crate::joiner::{HttpExchange, HttpJoiner, HttpJoinerEvent};
 use crate::model::ProtocolEvent;
 use crate::tcp::FlowWorker;
 
@@ -128,6 +129,85 @@ pub fn spawn_protocol_stage(
                         reason = r,
                         "protocol worker stopping: downstream closed"
                     );
+                }
+            }
+        }));
+    }
+    handles
+}
+
+/// Spawn N HttpJoiner workers, one per input receiver. Each worker pairs
+/// `ProtocolEvent`s into `HttpJoinerEvent`s (RequestObserved + Exchange +
+/// Heartbeat) and emits them to `joiner_event_txs[i]`.
+///
+/// When `http_exchanges_tx` is `Some`, every paired `Exchange`'s
+/// `HttpExchange` is additionally forwarded to the shared storage channel —
+/// this is how non-LLM traffic reaches `http_exchanges`.
+///
+/// **Backpressure coupling.** For each paired exchange the worker sends to
+/// `http_exchanges_tx` before `joiner_event_txs[i]`. If the exchanges sink
+/// saturates, the LLM pipeline on that shard stalls behind it. This is
+/// observable via `QueueDepthHttpExchanges`; use that metric to detect
+/// storage-induced stalls. The ordering was chosen to keep storage
+/// authoritative for raw transport records — a dropped storage send
+/// followed by a successful LLM send would lose the ground-truth row.
+///
+/// Panics if `worker_rxs.len() != joiner_event_txs.len()` — that is a
+/// wiring bug in the composition root.
+pub fn spawn_http_joiner_stage(
+    worker_rxs: Vec<mpsc::Receiver<ProtocolEvent>>,
+    joiner_event_txs: Vec<mpsc::Sender<HttpJoinerEvent>>,
+    http_exchanges_tx: Option<mpsc::Sender<HttpExchange>>,
+    metrics_sys: &mut MetricsSystem,
+) -> Vec<JoinHandle<()>> {
+    assert_eq!(
+        worker_rxs.len(),
+        joiner_event_txs.len(),
+        "worker_rxs.len() must equal joiner_event_txs.len() (composition-root wiring bug)"
+    );
+
+    let mut handles = Vec::with_capacity(worker_rxs.len());
+    for (i, (mut wrx, ev_tx)) in worker_rxs.into_iter().zip(joiner_event_txs).enumerate() {
+        let worker_metrics = metrics_sys.register_worker(
+            &format!("joiner.{i}"),
+            &[
+                Metric::HttpExchangesCompleted,
+                Metric::HttpExchangesIncomplete,
+                Metric::HttpExchangesExpired,
+            ],
+        );
+        let exch_tx = http_exchanges_tx.clone();
+
+        handles.push(tokio::spawn(async move {
+            let shard = i;
+            let mut joiner = HttpJoiner::new(worker_metrics);
+            let reason = 'main: loop {
+                let input = match wrx.recv().await {
+                    Some(x) => x,
+                    None => break 'main "upstream_eof",
+                };
+                for event in joiner.process(input) {
+                    // Fan out the storage-bound slice first (cheap Clone:
+                    // bodies are `Bytes` which is refcounted). The LLM-bound
+                    // event still owns its sse_events vec.
+                    if let (HttpJoinerEvent::Exchange { exchange, .. }, Some(tx)) =
+                        (&event, exch_tx.as_ref())
+                    {
+                        if tx.send(exchange.clone()).await.is_err() {
+                            break 'main "downstream_closed_exchanges";
+                        }
+                    }
+                    if ev_tx.send(event).await.is_err() {
+                        break 'main "downstream_closed_joiner";
+                    }
+                }
+            };
+            match reason {
+                "upstream_eof" => {
+                    tracing::debug!(shard, "joiner worker stopping: upstream EOF");
+                }
+                r => {
+                    tracing::warn!(shard, reason = r, "joiner worker stopping: downstream closed");
                 }
             }
         }));

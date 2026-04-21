@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 
 use ts_llm::model::LlmCall;
 use ts_metrics::model::LlmMetric;
+use ts_protocol::HttpExchange;
 use ts_turn::AgentTurn;
 
 use ts_common::internal_metrics::{Metric, MetricsWorker};
@@ -39,6 +40,7 @@ pub fn spawn_storage_sink_stage(
     calls_rx: mpsc::Receiver<Arc<LlmCall>>,
     turns_rx: mpsc::Receiver<AgentTurn>,
     metrics_rx: mpsc::Receiver<LlmMetric>,
+    http_exchanges_rx: mpsc::Receiver<HttpExchange>,
     backend: Arc<dyn StorageBackend>,
     metrics: MetricsWorker,
 ) -> JoinHandle<()> {
@@ -123,7 +125,7 @@ pub fn spawn_storage_sink_stage(
         metrics_rx,
         config.batch_size,
         flush_interval,
-        Some(buf_metrics),
+        Some(buf_metrics.clone()),
     );
     let metrics_task = tokio::spawn(async move {
         metrics_buffer
@@ -134,15 +136,34 @@ pub fn spawn_storage_sink_stage(
             .await;
     });
 
+    let exch_storage = backend.clone();
+    let exch_buffer = WriteBuffer::new(
+        "http_exchanges",
+        http_exchanges_rx,
+        config.batch_size,
+        flush_interval,
+        Some(buf_metrics),
+    );
+    let exch_task = tokio::spawn(async move {
+        exch_buffer
+            .run(move |batch| {
+                let b = exch_storage.clone();
+                async move { b.write_exchanges(batch).await }
+            })
+            .await;
+    });
+
     tokio::spawn(async move {
         // Propagate inner-task panics by unwrapping join errors — otherwise
         // the outer task would exit cleanly and hide the failure from
         // supervise().
-        let (ru, rc, rt, rm) = tokio::join!(calls_unwrap, calls_task, turns_task, metrics_task);
+        let (ru, rc, rt, rm, re) =
+            tokio::join!(calls_unwrap, calls_task, turns_task, metrics_task, exch_task);
         ru.expect("storage_sink: calls unwrap task panicked");
         rc.expect("storage_sink: calls writer panicked");
         rt.expect("storage_sink: turns writer panicked");
         rm.expect("storage_sink: metrics writer panicked");
+        re.expect("storage_sink: exchanges writer panicked");
     })
 }
 
@@ -150,9 +171,10 @@ pub fn spawn_storage_sink_stage(
 mod tests {
     use super::*;
     use crate::query::{
-        CallDetail, CallsPage, CallsQuery, MetricsModelRow, MetricsModelsQuery,
-        MetricsSummaryQuery, MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow,
-        TurnCallItem, TurnDetail, TurnsPage, TurnsQuery,
+        CallDetail, CallsPage, CallsQuery, HttpExchangeDetail, HttpExchangesPage,
+        HttpExchangesQuery, MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery,
+        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, TurnCallItem,
+        TurnDetail, TurnsPage, TurnsQuery,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -164,6 +186,7 @@ mod tests {
         calls: Arc<AtomicUsize>,
         turns: Arc<AtomicUsize>,
         metrics: Arc<AtomicUsize>,
+        exchanges: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -182,6 +205,25 @@ mod tests {
         async fn write_metrics(&self, batch: Vec<LlmMetric>) -> Result<()> {
             self.metrics.fetch_add(batch.len(), Ordering::SeqCst);
             Ok(())
+        }
+        async fn write_exchanges(&self, batch: Vec<HttpExchange>) -> Result<()> {
+            self.exchanges.fetch_add(batch.len(), Ordering::SeqCst);
+            Ok(())
+        }
+        async fn query_http_exchange_by_id(
+            &self,
+            _id: &str,
+        ) -> Result<Option<HttpExchangeDetail>> {
+            Ok(None)
+        }
+        async fn query_http_exchanges(
+            &self,
+            _query: &HttpExchangesQuery,
+        ) -> Result<HttpExchangesPage> {
+            Ok(HttpExchangesPage {
+                total: 0,
+                items: vec![],
+            })
         }
         async fn query_metrics_timeseries(
             &self,
@@ -256,17 +298,20 @@ mod tests {
             calls: Arc::new(AtomicUsize::new(0)),
             turns: Arc::new(AtomicUsize::new(0)),
             metrics: Arc::new(AtomicUsize::new(0)),
+            exchanges: Arc::new(AtomicUsize::new(0)),
         };
-        let (calls_count, turns_count, metrics_count) = (
+        let (calls_count, turns_count, metrics_count, exchanges_count) = (
             counts.calls.clone(),
             counts.turns.clone(),
             counts.metrics.clone(),
+            counts.exchanges.clone(),
         );
         let backend: Arc<dyn StorageBackend> = Arc::new(counts);
 
         let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(16);
         let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(16);
         let (metrics_tx, metrics_rx) = mpsc::channel::<LlmMetric>(16);
+        let (exch_tx, exch_rx) = mpsc::channel::<HttpExchange>(16);
 
         let cfg = StorageSinkConfig {
             batch_size: 2,
@@ -287,6 +332,7 @@ mod tests {
             calls_rx,
             turns_rx,
             metrics_rx,
+            exch_rx,
             backend,
             storage_metrics,
         );
@@ -295,15 +341,42 @@ mod tests {
             calls_tx.send(Arc::new(dummy_call(i))).await.unwrap();
             turns_tx.send(dummy_turn(i)).await.unwrap();
             metrics_tx.send(dummy_metric(i)).await.unwrap();
+            exch_tx.send(dummy_exchange(i)).await.unwrap();
         }
         drop(calls_tx);
         drop(turns_tx);
         drop(metrics_tx);
+        drop(exch_tx);
 
         handle.await.unwrap();
         assert_eq!(calls_count.load(Ordering::SeqCst), 3);
         assert_eq!(turns_count.load(Ordering::SeqCst), 3);
         assert_eq!(metrics_count.load(Ordering::SeqCst), 3);
+        assert_eq!(exchanges_count.load(Ordering::SeqCst), 3);
+    }
+
+    fn dummy_exchange(i: usize) -> HttpExchange {
+        use bytes::Bytes;
+        use std::net::IpAddr;
+        HttpExchange {
+            id: format!("x-{i}"),
+            stream_id: String::new(),
+            client_ip: "127.0.0.1".parse::<IpAddr>().unwrap(),
+            client_port: 1000,
+            server_ip: "127.0.0.1".parse::<IpAddr>().unwrap(),
+            server_port: 8080,
+            method: "GET".into(),
+            uri: "/health".into(),
+            request_headers: vec![],
+            request_body: Bytes::new(),
+            status: Some(200),
+            response_headers: vec![],
+            response_body: Some(Bytes::from_static(b"ok")),
+            is_sse: false,
+            request_time: 0,
+            response_first_byte_time: Some(100),
+            response_complete_time: Some(200),
+        }
     }
 
     fn dummy_call(i: usize) -> LlmCall {

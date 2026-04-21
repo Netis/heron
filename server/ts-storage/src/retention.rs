@@ -27,6 +27,7 @@ pub const KNOWN_METRICS_GRANULARITIES: &[&str] = &["10s", "1m", "5m", "1h"];
 pub struct RetentionPolicy {
     pub calls_before: Option<SystemTime>,
     pub turns_before: Option<SystemTime>,
+    pub http_exchanges_before: Option<SystemTime>,
     /// `(granularity_label, cutoff)` pairs. Only listed granularities are swept.
     pub metrics_before: Vec<(String, SystemTime)>,
 }
@@ -34,7 +35,10 @@ pub struct RetentionPolicy {
 impl RetentionPolicy {
     /// True when no tables have a cutoff — used to short-circuit the sweep.
     pub fn is_empty(&self) -> bool {
-        self.calls_before.is_none() && self.turns_before.is_none() && self.metrics_before.is_empty()
+        self.calls_before.is_none()
+            && self.turns_before.is_none()
+            && self.http_exchanges_before.is_none()
+            && self.metrics_before.is_empty()
     }
 }
 
@@ -43,13 +47,17 @@ impl RetentionPolicy {
 pub struct RetentionReport {
     pub calls_deleted: u64,
     pub turns_deleted: u64,
+    pub http_exchanges_deleted: u64,
     /// Per-granularity deletion counts — one entry per swept label.
     pub metrics_deleted: HashMap<String, u64>,
 }
 
 impl RetentionReport {
     pub fn total(&self) -> u64 {
-        self.calls_deleted + self.turns_deleted + self.metrics_deleted.values().sum::<u64>()
+        self.calls_deleted
+            + self.turns_deleted
+            + self.http_exchanges_deleted
+            + self.metrics_deleted.values().sum::<u64>()
     }
 }
 
@@ -89,6 +97,7 @@ pub fn policy_from_config(cfg: &RetentionConfig, now: SystemTime) -> RetentionPo
     RetentionPolicy {
         calls_before: days_to_cutoff(cfg.calls),
         turns_before: days_to_cutoff(cfg.turns),
+        http_exchanges_before: days_to_cutoff(cfg.http_exchanges),
         metrics_before,
     }
 }
@@ -140,6 +149,7 @@ pub fn spawn_retention_task(
                                 info!(
                                     calls = report.calls_deleted,
                                     turns = report.turns_deleted,
+                                    http_exchanges = report.http_exchanges_deleted,
                                     metrics = ?report.metrics_deleted,
                                     "retention: sweep complete"
                                 );
@@ -165,6 +175,11 @@ mod tests {
         cfg.enabled = true;
         cfg.calls = calls;
         cfg.turns = turns;
+        // Tests opt out of http_exchanges by default so existing-shape
+        // assertions (is_empty, policy fields) stay meaningful. The fresh-
+        // install default of 7 days lives on `Default::default()` and is
+        // exercised in dedicated cases below.
+        cfg.http_exchanges = 0;
         cfg.metrics = metrics
             .iter()
             .map(|(k, v)| ((*k).to_string(), *v))
@@ -179,8 +194,35 @@ mod tests {
         let policy = policy_from_config(&cfg, now);
         assert!(policy.calls_before.is_none());
         assert!(policy.turns_before.is_none());
+        assert!(policy.http_exchanges_before.is_none());
         assert!(policy.metrics_before.is_empty());
         assert!(policy.is_empty());
+    }
+
+    #[test]
+    fn http_exchanges_cutoff_applied_when_days_positive() {
+        let mut cfg = make_cfg(0, 0, &[]);
+        cfg.http_exchanges = 7;
+        let now = SystemTime::now();
+        let policy = policy_from_config(&cfg, now);
+        let cutoff = policy
+            .http_exchanges_before
+            .expect("http_exchanges cutoff");
+        let elapsed = now.duration_since(cutoff).expect("cutoff before now");
+        let expected = Duration::from_secs(7 * 86_400);
+        let delta = if elapsed > expected {
+            elapsed - expected
+        } else {
+            expected - elapsed
+        };
+        assert!(delta < Duration::from_secs(1), "delta = {delta:?}");
+        assert!(!policy.is_empty());
+    }
+
+    #[test]
+    fn default_retention_config_has_seven_day_http_exchanges() {
+        let cfg = RetentionConfig::default();
+        assert_eq!(cfg.http_exchanges, 7);
     }
 
     #[test]

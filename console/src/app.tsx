@@ -6,8 +6,9 @@ import { PerformancePage } from "@/pages/performance"
 import { TrafficPage } from "@/pages/traffic"
 import { ErrorsPage } from "@/pages/errors"
 import { ModelsPage } from "@/pages/models"
-import { RequestsPage } from "@/pages/requests"
-import { TurnsPage } from "@/pages/turns"
+import { LlmCallsPage } from "@/pages/llm-calls"
+import { AgentTurnsPage } from "@/pages/agent-turns"
+import { HttpExchangesPage } from "@/pages/http-exchanges"
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,8 +30,9 @@ export default function App() {
             <Route path="/traffic" element={<TrafficPage />} />
             <Route path="/errors" element={<ErrorsPage />} />
             <Route path="/models" element={<ModelsPage />} />
-            <Route path="/requests" element={<RequestsPage />} />
-            <Route path="/turns" element={<TurnsPage />} />
+            <Route path="/agent-turns" element={<AgentTurnsPage />} />
+            <Route path="/llm-calls" element={<LlmCallsPage />} />
+            <Route path="/http-exchanges" element={<HttpExchangesPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

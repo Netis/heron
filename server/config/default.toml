@@ -82,6 +82,8 @@ flush_interval_ms = 1000
 # check_interval_secs = 3600
 # calls = 7
 # turns = 30
+# http_exchanges = 7    # Raw HTTP transport records — bulky (headers + bodies),
+#                       # kept for a short forensics window. Default 7 days.
 # [storage.retention.metrics]
 # "10s" = 1
 # "1m"  = 7

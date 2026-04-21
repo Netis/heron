@@ -1,6 +1,7 @@
 pub mod de;
 pub mod flow;
 pub mod http;
+pub mod joiner;
 pub mod model;
 pub mod net;
 pub mod stage;
@@ -23,4 +24,5 @@ pub enum ProtocolError {
 pub type Result<T> = std::result::Result<T, ProtocolError>;
 
 pub use flow::WorkerInput;
-pub use stage::{spawn_flow_dispatcher, spawn_protocol_stage};
+pub use joiner::{HttpExchange, HttpJoiner, HttpJoinerEvent};
+pub use stage::{spawn_flow_dispatcher, spawn_http_joiner_stage, spawn_protocol_stage};

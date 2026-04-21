@@ -1,15 +1,15 @@
 import { useState, useMemo } from "react"
 import { X, Loader2, ChevronLeft } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useTurnDetail, useTurnCalls } from "@/hooks/use-turns"
-import { useRequestDetail } from "@/hooks/use-request-detail"
+import { useAgentTurnDetail, useAgentTurnCalls } from "@/hooks/use-agent-turns"
+import { useLlmCallDetail } from "@/hooks/use-llm-call-detail"
 import { formatDateTimeMs, formatMs, formatNumber, formatDuration } from "@/lib/format"
 import { StatusBadge } from "@/components/ui/status-badge"
 import { FinishBadge } from "@/components/ui/finish-badge"
 import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
 import { CollapsibleSection } from "@/components/ui/collapsible-section"
 import { Markdown } from "@/components/ui/markdown"
-import type { TurnDetail, TurnCallItem, CallDetail } from "@/types/api"
+import type { AgentTurnDetail, AgentTurnCallItem, LlmCallDetail } from "@/types/api"
 
 type TurnTab = "input" | "answer" | "timeline"
 
@@ -74,7 +74,7 @@ function HeadersTable({ headers }: { headers: [string, string][] }) {
 }
 
 /** Mini timeline bar showing TTFB (amber) + generation (blue) inside a call card */
-function MiniTimelineBar({ call }: { call: TurnCallItem }) {
+function MiniTimelineBar({ call }: { call: AgentTurnCallItem }) {
   const { ttfb_ms, e2e_latency_ms } = call
   if (!e2e_latency_ms || e2e_latency_ms <= 0) {
     return <div className="h-1.5 rounded bg-muted" />
@@ -101,7 +101,7 @@ function CallCard({
   selected,
   onClick,
 }: {
-  call: TurnCallItem
+  call: AgentTurnCallItem
   selected: boolean
   onClick: () => void
 }) {
@@ -146,7 +146,7 @@ function CallCard({
 }
 
 /** Gantt-style timeline showing each call as a bar on a shared time axis */
-function TurnGantt({ calls }: { calls: TurnCallItem[] }) {
+function TurnGantt({ calls }: { calls: AgentTurnCallItem[] }) {
   const { minStart, maxEnd, total } = useMemo(() => {
     if (calls.length === 0) return { minStart: 0, maxEnd: 0, total: 0 }
     let minStart = Infinity
@@ -274,7 +274,7 @@ function EmptyTabContent({ label }: { label: string }) {
   )
 }
 
-function TurnDetailView({ turn, calls }: { turn: TurnDetail; calls: TurnCallItem[] }) {
+function TurnDetailView({ turn, calls }: { turn: AgentTurnDetail; calls: AgentTurnCallItem[] }) {
   // Initial tab: prefer answer if present, else input, else timeline
   const initialTab: TurnTab = turn.final_answer ? "answer" : turn.user_input ? "input" : "timeline"
   const [tab, setTab] = useState<TurnTab>(initialTab)
@@ -381,15 +381,15 @@ function TurnDetailView({ turn, calls }: { turn: TurnDetail; calls: TurnCallItem
   )
 }
 
-function CallDetailView({
+function LlmCallDetailView({
   call,
   detail,
   isLoading,
   isError,
   onBack,
 }: {
-  call: TurnCallItem
-  detail: CallDetail | undefined
+  call: AgentTurnCallItem
+  detail: LlmCallDetail | undefined
   isLoading: boolean
   isError: boolean
   onBack: () => void
@@ -405,7 +405,7 @@ function CallDetailView({
           className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <ChevronLeft className="size-3.5" />
-          Back to turn
+          Back to agent turn
         </button>
         <span className="text-xs text-muted-foreground">
           Call #{call.sequence} of turn
@@ -418,7 +418,7 @@ function CallDetailView({
         </div>
       ) : isError || !detail ? (
         <div className="flex h-40 items-center justify-center text-destructive">
-          Failed to load call detail
+          Failed to load LLM call detail
         </div>
       ) : (
         <>
@@ -518,7 +518,7 @@ function CallDetailView({
   )
 }
 
-function CallTimelineBar({ detail }: { detail: CallDetail }) {
+function CallTimelineBar({ detail }: { detail: LlmCallDetail }) {
   const { request_time, complete_time, ttfb_ms, e2e_latency_ms } = detail
 
   if (!complete_time || !e2e_latency_ms) {
@@ -561,14 +561,14 @@ function CallTimelineBar({ detail }: { detail: CallDetail }) {
   )
 }
 
-export function TurnDetailPanel({ id, onClose }: Props) {
-  const { data: turn, isLoading: loadingTurn, isError: errorTurn } = useTurnDetail(id)
-  const { data: calls = [], isLoading: loadingCalls } = useTurnCalls(id)
+export function AgentTurnDetailPanel({ id, onClose }: Props) {
+  const { data: turn, isLoading: loadingTurn, isError: errorTurn } = useAgentTurnDetail(id)
+  const { data: calls = [], isLoading: loadingCalls } = useAgentTurnCalls(id)
 
   const [selectedCallId, setSelectedCallId] = useState<string | null>(null)
   const selectedCall = calls.find((c) => c.id === selectedCallId) ?? null
-  const { data: callDetail, isLoading: loadingCallDetail, isError: errorCallDetail } =
-    useRequestDetail(selectedCallId)
+  const { data: callDetail, isLoading: loadingLlmCallDetail, isError: errorLlmCallDetail } =
+    useLlmCallDetail(selectedCallId)
 
   return (
     <>
@@ -583,7 +583,7 @@ export function TurnDetailPanel({ id, onClose }: Props) {
           </div>
         ) : errorTurn || !turn ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-4 text-destructive">
-            <span>Failed to load turn detail</span>
+            <span>Failed to load agent turn detail</span>
             <button
               onClick={onClose}
               className="rounded border border-border px-3 py-1 text-sm text-muted-foreground hover:bg-muted"
@@ -642,7 +642,7 @@ export function TurnDetailPanel({ id, onClose }: Props) {
             <section className="flex flex-1 flex-col overflow-hidden">
               <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
                 <h2 className="text-sm font-semibold">
-                  {selectedCall ? "Call Detail" : "Turn Detail"}
+                  {selectedCall ? "LLM Call Detail" : "Agent Turn Detail"}
                 </h2>
                 <button
                   onClick={onClose}
@@ -654,11 +654,11 @@ export function TurnDetailPanel({ id, onClose }: Props) {
 
               {selectedCall ? (
                 <div className="flex-1 overflow-y-auto">
-                  <CallDetailView
+                  <LlmCallDetailView
                     call={selectedCall}
                     detail={callDetail}
-                    isLoading={loadingCallDetail}
-                    isError={errorCallDetail}
+                    isLoading={loadingLlmCallDetail}
+                    isError={errorLlmCallDetail}
                     onBack={() => setSelectedCallId(null)}
                   />
                 </div>

@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
 import { useToolbarStore } from "@/stores/toolbar"
-import type { TurnsPage, TurnDetail, TurnCallItem } from "@/types/api"
+import type { AgentTurnsPage, AgentTurnDetail, AgentTurnCallItem } from "@/types/api"
 
-interface UseTurnsParams {
+interface UseAgentTurnsParams {
   page: number
   pageSize: number
   sortBy: string
@@ -14,19 +14,19 @@ interface UseTurnsParams {
   agentKind?: string
 }
 
-export function useTurns({ page, pageSize, sortBy, sortOrder, status, agentKind }: UseTurnsParams) {
+export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agentKind }: UseAgentTurnsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
   const filters = useToolbarStore((s) => s.filters)
 
   return useQuery({
-    queryKey: ["turns", {
+    queryKey: ["agent-turns", {
       start, end, page, pageSize, sortBy, sortOrder,
       wireApi: filters.wireApi, model: filters.model, serverIp: filters.serverIp,
       status, agentKind,
     }],
     queryFn: () =>
-      apiFetch<TurnsPage>("/api/turns", {
+      apiFetch<AgentTurnsPage>("/api/agent-turns", {
         start,
         end,
         page,
@@ -43,18 +43,18 @@ export function useTurns({ page, pageSize, sortBy, sortOrder, status, agentKind 
   })
 }
 
-export function useTurnDetail(id: string | null) {
+export function useAgentTurnDetail(id: string | null) {
   return useQuery({
-    queryKey: ["turn-detail", id],
-    queryFn: () => apiFetch<TurnDetail>(`/api/turns/${id}`),
+    queryKey: ["agent-turn-detail", id],
+    queryFn: () => apiFetch<AgentTurnDetail>(`/api/agent-turns/${id}`),
     enabled: id != null,
   })
 }
 
-export function useTurnCalls(id: string | null) {
+export function useAgentTurnCalls(id: string | null) {
   return useQuery({
-    queryKey: ["turn-calls", id],
-    queryFn: () => apiFetch<TurnCallItem[]>(`/api/turns/${id}/calls`),
+    queryKey: ["agent-turn-calls", id],
+    queryFn: () => apiFetch<AgentTurnCallItem[]>(`/api/agent-turns/${id}/calls`),
     enabled: id != null,
   })
 }
