@@ -1,0 +1,25 @@
+{
+  "model": "gpt-4o",
+  "messages": [
+    {"role": "user", "content": "Read /src/lib.rs for me."},
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_abc123",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\":\"/src/lib.rs\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_abc123",
+      "content": "pub fn main() {}"
+    }
+  ]
+}

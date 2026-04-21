@@ -103,6 +103,93 @@ impl WireApi for AnthropicWireApi {
     fn extract_sse(&self, events: &[SseEventData]) -> ResponseInfo {
         extract_from_sse(events)
     }
+
+    fn parse_input(&self, body: &Value) -> crate::model::ParsedInput {
+        use crate::model::{ParsedInput, ParsedToolResult};
+        let mut out = ParsedInput::default();
+        let Some(messages) = body.get("messages").and_then(|v| v.as_array()) else {
+            return out;
+        };
+        for msg in messages {
+            let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+            let content = msg.get("content");
+            // Content can be a string OR an array of blocks.
+            if let Some(s) = content.and_then(|v| v.as_str()) {
+                if role == "user" { out.user_message = Some(s.to_string()); }
+                continue;
+            }
+            if let Some(arr) = content.and_then(|v| v.as_array()) {
+                let mut user_text_buf = String::new();
+                for block in arr {
+                    match block.get("type").and_then(|v| v.as_str()) {
+                        Some("text") if role == "user" => {
+                            if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                                if !user_text_buf.is_empty() { user_text_buf.push('\n'); }
+                                user_text_buf.push_str(t);
+                            }
+                        }
+                        Some("tool_result") => {
+                            let tool_use_id = block.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let is_error = block.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let content_str = match block.get("content") {
+                                Some(c) if c.is_string() => c.as_str().unwrap().to_string(),
+                                Some(c) if c.is_array() => {
+                                    c.as_array().unwrap().iter().filter_map(|b| b.get("text").and_then(|v| v.as_str())).collect::<Vec<_>>().join("\n")
+                                }
+                                Some(c) => serde_json::to_string(c).unwrap_or_default(),
+                                None => String::new(),
+                            };
+                            out.tool_results.push(ParsedToolResult { tool_use_id, content: content_str, is_error });
+                        }
+                        _ => {}
+                    }
+                }
+                if role == "user" && !user_text_buf.is_empty() {
+                    // Later user messages override earlier ones — the parser returns the most recent.
+                    out.user_message = Some(user_text_buf);
+                }
+            }
+        }
+        out
+    }
+
+    fn parse_output(&self, body: &Value) -> crate::model::ParsedOutput {
+        use crate::model::{ParsedOutput, ParsedToolCall};
+        let mut out = ParsedOutput::default();
+        let Some(content) = body.get("content").and_then(|v| v.as_array()) else {
+            return out;
+        };
+        let mut reasoning_buf = String::new();
+        let mut message_buf = String::new();
+        for block in content {
+            match block.get("type").and_then(|v| v.as_str()) {
+                Some("thinking") => {
+                    if let Some(t) = block.get("thinking").and_then(|v| v.as_str()) {
+                        if !reasoning_buf.is_empty() { reasoning_buf.push('\n'); }
+                        reasoning_buf.push_str(t);
+                    }
+                }
+                Some("text") => {
+                    if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                        if !message_buf.is_empty() { message_buf.push('\n'); }
+                        message_buf.push_str(t);
+                    }
+                }
+                Some("tool_use") => {
+                    let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let args_json = block.get("input")
+                        .map(|v| serde_json::to_string(v).unwrap_or_default())
+                        .unwrap_or_default();
+                    out.tool_calls.push(ParsedToolCall { id, name, args_json });
+                }
+                _ => {}
+            }
+        }
+        if !reasoning_buf.is_empty() { out.reasoning = Some(reasoning_buf); }
+        if !message_buf.is_empty() { out.message = Some(message_buf); }
+        out
+    }
 }
 
 /// Extract request info from an Anthropic API request.
@@ -731,5 +818,65 @@ mod tests {
         ];
         let info = extract_from_sse(&events);
         assert_eq!(info.response_id.as_deref(), Some("msg_stream_01"));
+    }
+
+    #[test]
+    fn parse_output_text_only() {
+        let body: serde_json::Value = serde_json::from_str(
+            include_str!("../../tests/fixtures/anthropic_output_text_only.json"),
+        )
+        .unwrap();
+        let out = AnthropicWireApi.parse_output(&body);
+        assert_eq!(out.reasoning, None);
+        assert!(out.message.as_deref().map(|s| !s.is_empty()).unwrap_or(false));
+        assert!(out.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn parse_output_tool_use() {
+        let body: serde_json::Value = serde_json::from_str(
+            include_str!("../../tests/fixtures/anthropic_output_tool_use.json"),
+        )
+        .unwrap();
+        let out = AnthropicWireApi.parse_output(&body);
+        assert_eq!(out.tool_calls.len(), 1);
+        let tc = &out.tool_calls[0];
+        assert!(tc.id.starts_with("toolu_"));
+        assert_eq!(tc.name, "read_file");
+        assert!(tc.args_json.contains("\"path\""));
+    }
+
+    #[test]
+    fn parse_output_thinking() {
+        let body: serde_json::Value = serde_json::from_str(
+            include_str!("../../tests/fixtures/anthropic_output_thinking.json"),
+        )
+        .unwrap();
+        let out = AnthropicWireApi.parse_output(&body);
+        assert!(out.reasoning.as_deref().map(|s| !s.is_empty()).unwrap_or(false));
+        assert!(out.message.as_deref().map(|s| !s.is_empty()).unwrap_or(false));
+    }
+
+    #[test]
+    fn parse_input_user_only() {
+        let body: serde_json::Value = serde_json::from_str(
+            include_str!("../../tests/fixtures/anthropic_input_user_only.json"),
+        )
+        .unwrap();
+        let out = AnthropicWireApi.parse_input(&body);
+        assert!(out.user_message.is_some());
+        assert!(out.tool_results.is_empty());
+    }
+
+    #[test]
+    fn parse_input_with_tool_result() {
+        let body: serde_json::Value = serde_json::from_str(
+            include_str!("../../tests/fixtures/anthropic_input_with_tool_result.json"),
+        )
+        .unwrap();
+        let out = AnthropicWireApi.parse_input(&body);
+        assert_eq!(out.tool_results.len(), 1);
+        assert!(out.tool_results[0].tool_use_id.starts_with("toolu_"));
+        assert!(!out.tool_results[0].content.is_empty());
     }
 }

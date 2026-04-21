@@ -1,0 +1,11 @@
+{
+  "id": "msg_02DEF",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4-5",
+  "content": [
+    {"type": "text", "text": "Let me check the file."},
+    {"type": "tool_use", "id": "toolu_01XYZ", "name": "read_file", "input": {"path": "/src/lib.rs"}}
+  ],
+  "stop_reason": "tool_use"
+}

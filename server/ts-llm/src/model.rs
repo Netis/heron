@@ -263,6 +263,18 @@ pub trait WireApi: Send + Sync {
             serde_json::from_slice(&resp.body).unwrap_or(serde_json::Value::Null)
         }
     }
+
+    /// Structured view of the output: reasoning / message / tool_calls.
+    /// Default returns an empty `ParsedOutput`; concrete wire APIs should override.
+    fn parse_output(&self, _body: &serde_json::Value) -> ParsedOutput {
+        ParsedOutput::default()
+    }
+
+    /// Structured view of the input: most-recent user message + tool_results.
+    /// Default returns an empty `ParsedInput`; concrete wire APIs should override.
+    fn parse_input(&self, _body: &serde_json::Value) -> ParsedInput {
+        ParsedInput::default()
+    }
 }
 
 /// Truncate a string to max_len characters, appending "..." if truncated.
@@ -272,6 +284,39 @@ pub fn truncate_str(s: &str, max_len: usize) -> String {
     } else {
         format!("{}...", &s[..max_len])
     }
+}
+
+/// Structured view of an LLM output extracted from a response body.
+/// Per-wire-api implementations of `WireApi::parse_output` produce this.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ParsedOutput {
+    pub reasoning: Option<String>,
+    pub message: Option<String>,
+    pub tool_calls: Vec<ParsedToolCall>,
+}
+
+/// Structured view of an LLM input extracted from a request body.
+/// Per-wire-api implementations of `WireApi::parse_input` produce this.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ParsedInput {
+    /// Most-recent user message in the input, if any.
+    pub user_message: Option<String>,
+    /// Tool results keyed by the `id` / `call_id` they belong to.
+    pub tool_results: Vec<ParsedToolResult>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedToolCall {
+    pub id: String,
+    pub name: String,
+    pub args_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedToolResult {
+    pub tool_use_id: String,
+    pub content: String,
+    pub is_error: bool,
 }
 
 #[cfg(test)]

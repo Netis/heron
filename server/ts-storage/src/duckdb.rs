@@ -2194,7 +2194,8 @@ impl StorageBackend for DuckDbBackend {
                     epoch_ms(c.complete_time),
                     c.wire_api, c.model, c.status_code, c.is_stream,
                     c.finish_reason, c.ttfb_ms, c.e2e_latency_ms,
-                    c.input_tokens, c.output_tokens
+                    c.input_tokens, c.output_tokens,
+                    c.request_body, c.response_body
                 FROM llm_calls c
                 JOIN (SELECT UNNEST(json_extract_string(call_ids, '$[*]')) AS cid
                       FROM agent_turns WHERE turn_id = ?) ids ON c.id = ids.cid
@@ -2256,6 +2257,12 @@ impl StorageBackend for DuckDbBackend {
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     output_tokens: row
                         .get::<_, Option<u32>>(12)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    request_body: row
+                        .get::<_, Option<String>>(13)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    response_body: row
+                        .get::<_, Option<String>>(14)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                 });
             }

@@ -77,6 +77,62 @@ impl WireApi for OpenAiChatWireApi {
     fn extract_sse(&self, events: &[SseEventData]) -> ResponseInfo {
         extract_from_sse(events)
     }
+
+    fn parse_output(&self, body: &Value) -> crate::model::ParsedOutput {
+        use crate::model::{ParsedOutput, ParsedToolCall};
+        let mut out = ParsedOutput::default();
+        let Some(msg) = body.get("choices")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|c| c.get("message")) else { return out; };
+        if let Some(c) = msg.get("content").and_then(|v| v.as_str()) {
+            if !c.is_empty() { out.message = Some(c.to_string()); }
+        }
+        // Newer APIs also expose `reasoning_content` on reasoning models.
+        if let Some(r) = msg.get("reasoning_content").and_then(|v| v.as_str()) {
+            if !r.is_empty() { out.reasoning = Some(r.to_string()); }
+        }
+        if let Some(arr) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+            for tc in arr {
+                let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let function = tc.get("function");
+                let name = function.and_then(|f| f.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let args_json = function.and_then(|f| f.get("arguments")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                out.tool_calls.push(ParsedToolCall { id, name, args_json });
+            }
+        }
+        out
+    }
+
+    fn parse_input(&self, body: &Value) -> crate::model::ParsedInput {
+        use crate::model::{ParsedInput, ParsedToolResult};
+        let mut out = ParsedInput::default();
+        let Some(messages) = body.get("messages").and_then(|v| v.as_array()) else { return out; };
+        for msg in messages {
+            match msg.get("role").and_then(|v| v.as_str()) {
+                Some("user") => {
+                    if let Some(c) = msg.get("content").and_then(|v| v.as_str()) {
+                        out.user_message = Some(c.to_string());
+                    } else if let Some(arr) = msg.get("content").and_then(|v| v.as_array()) {
+                        let text = arr.iter()
+                            .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !text.is_empty() { out.user_message = Some(text); }
+                    }
+                }
+                Some("tool") => {
+                    let tool_use_id = msg.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let content = msg.get("content").and_then(|v| v.as_str()).map(|s| s.to_string())
+                        .or_else(|| msg.get("content").map(|v| v.to_string()))
+                        .unwrap_or_default();
+                    out.tool_results.push(ParsedToolResult { tool_use_id, content, is_error: false });
+                }
+                _ => {}
+            }
+        }
+        out
+    }
 }
 
 /// Wire-API implementation for OpenAI Responses API.
@@ -118,6 +174,90 @@ impl WireApi for OpenAiResponsesWireApi {
     }
     fn extract_sse(&self, events: &[SseEventData]) -> ResponseInfo {
         extract_from_sse(events)
+    }
+
+    fn parse_output(&self, body: &Value) -> crate::model::ParsedOutput {
+        use crate::model::{ParsedOutput, ParsedToolCall};
+        let mut out = ParsedOutput::default();
+        let Some(items) = body.get("output").and_then(|v| v.as_array()) else { return out; };
+        let mut reasoning_buf = String::new();
+        let mut message_buf = String::new();
+        for item in items {
+            match item.get("type").and_then(|v| v.as_str()) {
+                Some("reasoning") => {
+                    // `summary` is an array of { text } in current Responses schema.
+                    if let Some(arr) = item.get("summary").and_then(|v| v.as_array()) {
+                        for s in arr {
+                            if let Some(t) = s.get("text").and_then(|v| v.as_str()) {
+                                if !reasoning_buf.is_empty() { reasoning_buf.push('\n'); }
+                                reasoning_buf.push_str(t);
+                            }
+                        }
+                    }
+                }
+                Some("message") => {
+                    if let Some(arr) = item.get("content").and_then(|v| v.as_array()) {
+                        for part in arr {
+                            if part.get("type").and_then(|v| v.as_str()) == Some("output_text") {
+                                if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                                    if !message_buf.is_empty() { message_buf.push('\n'); }
+                                    message_buf.push_str(t);
+                                }
+                            }
+                        }
+                    }
+                }
+                Some("function_call") => {
+                    let id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let args_json = item.get("arguments").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    out.tool_calls.push(ParsedToolCall { id, name, args_json });
+                }
+                _ => {}
+            }
+        }
+        if !reasoning_buf.is_empty() { out.reasoning = Some(reasoning_buf); }
+        if !message_buf.is_empty() { out.message = Some(message_buf); }
+        out
+    }
+
+    fn parse_input(&self, body: &Value) -> crate::model::ParsedInput {
+        use crate::model::{ParsedInput, ParsedToolResult};
+        let mut out = ParsedInput::default();
+        // `input` may be a string OR an array of items.
+        if let Some(s) = body.get("input").and_then(|v| v.as_str()) {
+            out.user_message = Some(s.to_string());
+            return out;
+        }
+        let Some(items) = body.get("input").and_then(|v| v.as_array()) else { return out; };
+        for item in items {
+            match item.get("type").and_then(|v| v.as_str()) {
+                Some("message") if item.get("role").and_then(|v| v.as_str()) == Some("user") => {
+                    let content = item.get("content");
+                    if let Some(s) = content.and_then(|v| v.as_str()) {
+                        out.user_message = Some(s.to_string());
+                    } else if let Some(arr) = content.and_then(|v| v.as_array()) {
+                        let text = arr.iter()
+                            .filter_map(|b| match b.get("type").and_then(|v| v.as_str()) {
+                                Some("input_text") | Some("text") => b.get("text").and_then(|v| v.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !text.is_empty() { out.user_message = Some(text); }
+                    }
+                }
+                Some("function_call_output") => {
+                    let tool_use_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let content = item.get("output").and_then(|v| v.as_str()).map(|s| s.to_string())
+                        .or_else(|| item.get("output").map(|v| v.to_string()))
+                        .unwrap_or_default();
+                    out.tool_results.push(ParsedToolResult { tool_use_id, content, is_error: false });
+                }
+                _ => {}
+            }
+        }
+        out
     }
 }
 
@@ -853,5 +993,64 @@ mod tests {
         ];
         let info = extract_from_sse(&events);
         assert_eq!(info.response_id.as_deref(), Some("resp_xyz"));
+    }
+
+    #[test]
+    fn chat_parse_output_text() {
+        let body: serde_json::Value = serde_json::from_str(
+            include_str!("../../tests/fixtures/openai_chat_output_text.json"),
+        ).unwrap();
+        let out = OpenAiChatWireApi.parse_output(&body);
+        assert!(out.message.as_deref().map(|s| !s.is_empty()).unwrap_or(false));
+        assert!(out.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn chat_parse_output_tool_calls() {
+        let body: serde_json::Value = serde_json::from_str(
+            include_str!("../../tests/fixtures/openai_chat_output_tool_calls.json"),
+        ).unwrap();
+        let out = OpenAiChatWireApi.parse_output(&body);
+        assert_eq!(out.tool_calls.len(), 1);
+        assert!(out.tool_calls[0].id.starts_with("call_"));
+    }
+
+    #[test]
+    fn chat_parse_input_tool_result() {
+        let body: serde_json::Value = serde_json::from_str(
+            include_str!("../../tests/fixtures/openai_chat_input_with_tool_result.json"),
+        ).unwrap();
+        let out = OpenAiChatWireApi.parse_input(&body);
+        assert_eq!(out.tool_results.len(), 1);
+        assert!(out.tool_results[0].tool_use_id.starts_with("call_"));
+    }
+
+    #[test]
+    fn responses_parse_output_message() {
+        let body: serde_json::Value = serde_json::from_str(
+            include_str!("../../tests/fixtures/openai_responses_output_message.json"),
+        ).unwrap();
+        let out = OpenAiResponsesWireApi.parse_output(&body);
+        assert!(out.message.as_deref().map(|s| !s.is_empty()).unwrap_or(false));
+        assert!(out.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn responses_parse_output_function_call_with_reasoning() {
+        let body: serde_json::Value = serde_json::from_str(
+            include_str!("../../tests/fixtures/openai_responses_output_function_call.json"),
+        ).unwrap();
+        let out = OpenAiResponsesWireApi.parse_output(&body);
+        assert!(out.reasoning.is_some());
+        assert_eq!(out.tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn responses_parse_input_with_function_call_output() {
+        let body: serde_json::Value = serde_json::from_str(
+            include_str!("../../tests/fixtures/openai_responses_input_with_function_call_output.json"),
+        ).unwrap();
+        let out = OpenAiResponsesWireApi.parse_input(&body);
+        assert_eq!(out.tool_results.len(), 1);
     }
 }

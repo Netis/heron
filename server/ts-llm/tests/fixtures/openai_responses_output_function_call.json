@@ -1,0 +1,19 @@
+{
+  "id": "resp_002",
+  "object": "response",
+  "model": "o4-mini",
+  "output": [
+    {
+      "type": "reasoning",
+      "summary": [
+        {"text": "The user wants to read a file. I should use the read_file tool."}
+      ]
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_def456",
+      "name": "read_file",
+      "arguments": "{\"path\":\"/src/lib.rs\"}"
+    }
+  ]
+}

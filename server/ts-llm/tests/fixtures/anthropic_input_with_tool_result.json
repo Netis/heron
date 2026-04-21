@@ -1,0 +1,20 @@
+{
+  "model": "claude-sonnet-4-5",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user", "content": "Read /src/lib.rs for me."},
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "text", "text": "Let me check the file."},
+        {"type": "tool_use", "id": "toolu_01XYZ", "name": "read_file", "input": {"path": "/src/lib.rs"}}
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_01XYZ", "content": "pub fn main() {}"}
+      ]
+    }
+  ]
+}

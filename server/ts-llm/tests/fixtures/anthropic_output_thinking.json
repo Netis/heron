@@ -1,0 +1,11 @@
+{
+  "id": "msg_03GHI",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4-5",
+  "content": [
+    {"type": "thinking", "thinking": "The user wants me to say hello. I should respond warmly."},
+    {"type": "text", "text": "Hello! How can I help you today?"}
+  ],
+  "stop_reason": "end_turn"
+}

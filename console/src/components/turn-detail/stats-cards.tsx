@@ -1,4 +1,5 @@
 import { useMemo } from "react"
+import { Wrench, MessageSquare, Target } from "lucide-react"
 import { formatDuration, formatMs, formatNumber } from "@/lib/format"
 import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
 import { FinishBadge } from "@/components/ui/finish-badge"
@@ -34,11 +35,21 @@ export function StatsCards({ turn, calls, onJumpToSlowest }: Props) {
     return best
   }, [calls])
 
+  const typeCounts = useMemo(() => {
+    const acc = { tool_call: 0, text: 0, final: 0 }
+    for (const c of calls) acc[c.type]++
+    return acc
+  }, [calls])
+
   return (
     <div className="grid grid-cols-4 gap-3">
       <Card label="Calls">
         <div className="text-sm font-medium tabular-nums">{turn.call_count}</div>
-        {/* Phase 2 will add: type breakdown row here */}
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+          <span className="inline-flex items-center gap-0.5"><Wrench className="size-2.5" />{typeCounts.tool_call}</span>
+          <span className="inline-flex items-center gap-0.5"><MessageSquare className="size-2.5" />{typeCounts.text}</span>
+          <span className="inline-flex items-center gap-0.5"><Target className="size-2.5" />{typeCounts.final}</span>
+        </div>
       </Card>
       <Card label="Tokens">
         <div className="flex items-center gap-3 text-sm font-medium tabular-nums">

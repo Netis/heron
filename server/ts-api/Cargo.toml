@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 ts-common.workspace = true
+ts-llm.workspace = true
 ts-storage.workspace = true
 axum.workspace = true
 tokio.workspace = true

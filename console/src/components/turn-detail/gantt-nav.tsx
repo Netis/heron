@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { CircleDot } from "lucide-react"
+import { Wrench, MessageSquare, Target } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatDuration, formatMs } from "@/lib/format"
 import type { AgentTurnCallItem, AgentTurnDetail } from "@/types/api"
@@ -20,11 +20,11 @@ function classifySpeed(call: AgentTurnCallItem): "normal" | "slow" | "error" {
   return "normal"
 }
 
-// Phase 1 has no parsed `type`; fall back to neutral icon.
 function TypeIcon({ call }: { call: AgentTurnCallItem }) {
-  // Type-aware variant switches in Phase 2 (see spec § Left Nav).
-  void call
-  return <CircleDot className="size-3 text-muted-foreground" />
+  const cls = "size-3"
+  if (call.type === "tool_call") return <Wrench className={cn(cls, "text-amber-600")} />
+  if (call.type === "final")     return <Target className={cn(cls, "text-emerald-600")} />
+  return <MessageSquare className={cn(cls, "text-blue-600")} />
 }
 
 export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {

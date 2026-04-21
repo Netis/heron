@@ -2989,6 +2989,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "ts-common",
+ "ts-llm",
  "ts-storage",
 ]
 

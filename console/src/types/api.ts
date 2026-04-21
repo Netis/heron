@@ -122,6 +122,19 @@ export interface AgentTurnDetail {
   metadata: unknown
 }
 
+export type CallType = "tool_call" | "text" | "final"
+
+export interface EnrichedToolCall {
+  id: string
+  name: string
+  args_preview: string
+  result_summary: {
+    size_bytes: number
+    kind: "text" | "json" | "error" | "binary" | "missing"
+    is_error: boolean
+  } | null
+}
+
 export interface AgentTurnCallItem {
   id: string
   sequence: number
@@ -137,6 +150,13 @@ export interface AgentTurnCallItem {
   e2e_latency_ms: number | null
   input_tokens: number | null
   output_tokens: number | null
+
+  // Phase 2+
+  type: CallType
+  tool_calls: EnrichedToolCall[]
+  has_reasoning: boolean
+  reasoning_preview: string | null
+  message_preview: string | null
 }
 
 // LLM call detail types

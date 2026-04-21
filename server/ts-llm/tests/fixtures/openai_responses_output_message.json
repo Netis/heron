@@ -1,0 +1,14 @@
+{
+  "id": "resp_001",
+  "object": "response",
+  "model": "o4-mini",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {"type": "output_text", "text": "Hello! How can I help you today?"}
+      ]
+    }
+  ]
+}

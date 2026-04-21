@@ -1,0 +1,17 @@
+{
+  "model": "o4-mini",
+  "input": [
+    {"role": "user", "content": "Read /src/lib.rs for me."},
+    {
+      "type": "function_call",
+      "call_id": "call_def456",
+      "name": "read_file",
+      "arguments": "{\"path\":\"/src/lib.rs\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_def456",
+      "output": "pub fn main() {}"
+    }
+  ]
+}
