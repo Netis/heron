@@ -89,7 +89,7 @@ pub struct LlmCall {
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
     pub total_tokens: Option<u32>,
-    pub ttfb_ms: Option<f64>,
+    pub ttft_ms: Option<f64>,
     pub e2e_latency_ms: Option<f64>,
     pub client_ip: IpAddr,
     pub client_port: u16,

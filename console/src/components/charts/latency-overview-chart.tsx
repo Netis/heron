@@ -12,8 +12,8 @@ import { formatMs } from "@/lib/format"
 import type { TimeseriesData } from "@/types/api"
 
 const SERIES_CONFIG = [
-  { key: "ttfb_avg", label: "TTFB p50", color: "#f59e0b", dash: undefined },
-  { key: "ttfb_p95", label: "TTFB p95", color: "#f59e0b", dash: "5 3" },
+  { key: "ttft_avg", label: "TTFT p50", color: "#f59e0b", dash: undefined },
+  { key: "ttft_p95", label: "TTFT p95", color: "#f59e0b", dash: "5 3" },
   { key: "e2e_avg", label: "E2E p50", color: "#3b82f6", dash: undefined },
   { key: "e2e_p95", label: "E2E p95", color: "#3b82f6", dash: "5 3" },
 ]

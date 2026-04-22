@@ -32,7 +32,7 @@ use crate::net::FlowKey;
 /// "nothing at all for 10 minutes" — almost always a dead connection
 /// (abort, capture gap, TLS renegotiation).
 ///
-/// 10 minutes is chosen to comfortably exceed realistic non-streaming TTFB
+/// 10 minutes is chosen to comfortably exceed realistic non-streaming TTFT
 /// on slow provider paths (Anthropic/OpenAI SDK client defaults sit at the
 /// same order). It is decoupled from `TurnConfig.idle_timeout_secs`, which
 /// answers a different question (when is an agent *conversation* done).

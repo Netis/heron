@@ -2,10 +2,10 @@ import { useTimeseries } from "@/hooks/use-metrics"
 import { formatMs, formatNumber } from "@/lib/format"
 import { TimeseriesLineChart } from "@/components/charts/timeseries-line-chart"
 
-const TTFB_SERIES = [
-  { key: "ttfb_p50", label: "p50", color: "#f59e0b" },
-  { key: "ttfb_p95", label: "p95", color: "#ef4444" },
-  { key: "ttfb_p99", label: "p99", color: "#dc2626", dash: "5 3" },
+const TTFT_SERIES = [
+  { key: "ttft_p50", label: "p50", color: "#f59e0b" },
+  { key: "ttft_p95", label: "p95", color: "#ef4444" },
+  { key: "ttft_p99", label: "p99", color: "#dc2626", dash: "5 3" },
 ]
 
 const E2E_SERIES = [
@@ -48,7 +48,7 @@ function ChartCard({ title, children }: { title: string; children: React.ReactNo
 }
 
 export function PerformancePage() {
-  const { data: ttfbData } = useTimeseries("ttfb_p50,ttfb_p95,ttfb_p99")
+  const { data: ttftData } = useTimeseries("ttft_p50,ttft_p95,ttft_p99")
   const { data: e2eData } = useTimeseries("e2e_p50,e2e_p95,e2e_p99")
   const { data: tpotData } = useTimeseries("tpot_p50,tpot_p95")
   const { data: concurrencyData } = useTimeseries("concurrency_avg,concurrency_max")
@@ -59,8 +59,8 @@ export function PerformancePage() {
     <div className="flex flex-col gap-4 p-4">
       {/* Top row */}
       <div className="grid grid-cols-2 gap-4">
-        <ChartCard title="TTFB Distribution">
-          <TimeseriesLineChart data={ttfbData ?? null} series={TTFB_SERIES} yFormatter={formatMs} />
+        <ChartCard title="TTFT Distribution">
+          <TimeseriesLineChart data={ttftData ?? null} series={TTFT_SERIES} yFormatter={formatMs} />
         </ChartCard>
         <ChartCard title="E2E Latency Distribution">
           <TimeseriesLineChart data={e2eData ?? null} series={E2E_SERIES} yFormatter={formatMs} />

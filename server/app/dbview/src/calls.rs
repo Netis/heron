@@ -14,7 +14,7 @@ struct CallSummary {
     model: String,
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
-    ttfb_ms: Option<f64>,
+    ttft_ms: Option<f64>,
     status: String,
 }
 
@@ -22,7 +22,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<CallSummary> {
     let sql = format!(
         "SELECT id, strftime(request_time, '%m-%d %H:%M:%S'), \
          client_ip, server_ip || ':' || server_port, wire_api, model, \
-         input_tokens, output_tokens, ttfb_ms, status_code, finish_reason, is_stream \
+         input_tokens, output_tokens, ttft_ms, status_code, finish_reason, is_stream \
          FROM llm_calls ORDER BY request_time DESC LIMIT {limit}"
     );
     let mut stmt = conn.prepare(&sql).expect("failed to prepare query");
@@ -47,7 +47,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<CallSummary> {
                 model: row.get(5)?,
                 input_tokens: row.get(6)?,
                 output_tokens: row.get(7)?,
-                ttfb_ms: row.get(8)?,
+                ttft_ms: row.get(8)?,
                 status,
             })
         })
@@ -84,7 +84,7 @@ fn print_list(calls: &[CallSummary]) {
         "MODEL",
         "INPUT",
         "OUTPUT",
-        "TTFB(ms)",
+        "TTFT(ms)",
         "STATUS"
     );
     for c in calls {
@@ -98,7 +98,7 @@ fn print_list(calls: &[CallSummary]) {
             truncate(&c.model, 16),
             c.input_tokens.map(|t| t.to_string()).unwrap_or("0".into()),
             c.output_tokens.map(|t| t.to_string()).unwrap_or("0".into()),
-            fmt_f64(c.ttfb_ms),
+            fmt_f64(c.ttft_ms),
             c.status,
         );
     }
@@ -125,7 +125,7 @@ struct CallDetail {
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
     total_tokens: Option<u32>,
-    ttfb_ms: Option<f64>,
+    ttft_ms: Option<f64>,
     e2e_latency_ms: Option<f64>,
     request_body: Option<String>,
     response_body: Option<String>,
@@ -141,7 +141,7 @@ fn load_detail(conn: &Connection, id: &str) -> Option<CallDetail> {
                wire_api, model, api_type, is_stream, request_path, \
                status_code, finish_reason, \
                input_tokens, output_tokens, total_tokens, \
-               ttfb_ms, e2e_latency_ms, \
+               ttft_ms, e2e_latency_ms, \
                request_body, response_body, \
                response_id, request_headers, response_headers \
                FROM llm_calls WHERE id = ?";
@@ -167,7 +167,7 @@ fn load_detail(conn: &Connection, id: &str) -> Option<CallDetail> {
             input_tokens: row.get(16)?,
             output_tokens: row.get(17)?,
             total_tokens: row.get(18)?,
-            ttfb_ms: row.get(19)?,
+            ttft_ms: row.get(19)?,
             e2e_latency_ms: row.get(20)?,
             request_body: row.get(21)?,
             response_body: row.get(22)?,
@@ -206,7 +206,7 @@ fn print_detail(d: &CallDetail) {
     println!("  Input Tokens:   {}", fmt_opt(d.input_tokens));
     println!("  Output Tokens:  {}", fmt_opt(d.output_tokens));
     println!("  Total Tokens:   {}", fmt_opt(d.total_tokens));
-    println!("  TTFB (ms):      {}", fmt_f64(d.ttfb_ms));
+    println!("  TTFT (ms):      {}", fmt_f64(d.ttft_ms));
     println!("  E2E (ms):       {}", fmt_f64(d.e2e_latency_ms));
     println!("{}", "-".repeat(80));
 

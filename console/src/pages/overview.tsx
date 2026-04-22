@@ -45,7 +45,7 @@ function errorRateColor(rate: number): "green" | "amber" | "red" {
 export function OverviewPage() {
   const { data: summary, isLoading: summaryLoading } = useMetricsSummary()
   const { data: volumeTs } = useTimeseries("request_count", { groupBy: "wire_api" })
-  const { data: latencyTs } = useTimeseries("ttfb_avg,ttfb_p95,e2e_avg,e2e_p95")
+  const { data: latencyTs } = useTimeseries("ttft_avg,ttft_p95,e2e_avg,e2e_p95")
   const { data: modelsData } = useModels()
 
   if (summaryLoading) {
@@ -72,8 +72,8 @@ export function OverviewPage() {
           value={formatNumber(summary?.request_count ?? 0)}
         />
         <KpiCard
-          title="Avg TTFB"
-          value={formatMs(summary?.ttfb_avg)}
+          title="Avg TTFT"
+          value={formatMs(summary?.ttft_avg)}
         />
         <KpiCard
           title="Avg E2E Latency"

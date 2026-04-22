@@ -22,7 +22,7 @@ const columns = [
   { key: "status_code", label: "Status", width: "w-[52px]" },
   { key: "is_stream", label: "S", width: "w-[32px]" },
   { key: "finish_reason", label: "Finish", width: "w-[72px]" },
-  { key: "ttfb_ms", label: "TTFB", width: "w-[72px]" },
+  { key: "ttft_ms", label: "TTFT", width: "w-[72px]" },
   { key: "e2e_latency_ms", label: "E2E", width: "w-[72px]" },
   { key: "input_tokens", label: "In", width: "w-[56px]" },
   { key: "output_tokens", label: "Out", width: "w-[56px]" },
@@ -61,8 +61,8 @@ function CellValue({ item, column }: { item: LlmCallListItem; column: SortKey })
       )
     case "finish_reason":
       return <FinishBadge reason={item.finish_reason} />
-    case "ttfb_ms":
-      return <span className="tabular-nums">{formatMs(item.ttfb_ms)}</span>
+    case "ttft_ms":
+      return <span className="tabular-nums">{formatMs(item.ttft_ms)}</span>
     case "e2e_latency_ms":
       return <span className="tabular-nums">{formatMs(item.e2e_latency_ms)}</span>
     case "input_tokens":
@@ -169,7 +169,7 @@ export function LlmCallsPage() {
                   className={cn(
                     "group cursor-pointer px-3 py-2 text-left text-xs font-medium text-muted-foreground select-none",
                     col.width,
-                    (col.key === "ttfb_ms" ||
+                    (col.key === "ttft_ms" ||
                       col.key === "e2e_latency_ms" ||
                       col.key === "input_tokens" ||
                       col.key === "output_tokens") &&
@@ -219,7 +219,7 @@ export function LlmCallsPage() {
                       className={cn(
                         "px-3 py-1.5",
                         col.width,
-                        (col.key === "ttfb_ms" ||
+                        (col.key === "ttft_ms" ||
                           col.key === "e2e_latency_ms" ||
                           col.key === "input_tokens" ||
                           col.key === "output_tokens") &&

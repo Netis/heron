@@ -61,7 +61,7 @@ pub struct HttpResponseData {
     pub version: u8,
     pub headers: Vec<(String, String)>,
     pub body: Bytes,
-    /// Timestamp of the first response byte (for TTFB calculation).
+    /// Timestamp of the first response byte (for TTFT calculation).
     pub first_byte_timestamp_us: i64,
     /// Timestamp when the response was fully received (for E2E latency).
     pub complete_timestamp_us: i64,

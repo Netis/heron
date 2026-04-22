@@ -17,7 +17,7 @@ export interface LlmCallListItem {
   status_code: number | null
   is_stream: boolean
   finish_reason: string | null
-  ttfb_ms: number | null
+  ttft_ms: number | null
   e2e_latency_ms: number | null
   input_tokens: number | null
   output_tokens: number | null
@@ -33,7 +33,7 @@ export interface MetricsSummary {
   error_5xx_count: number
   total_input_tokens: number
   total_output_tokens: number
-  ttfb_avg: number | null
+  ttft_avg: number | null
   e2e_avg: number | null
   tpot_avg: number | null
 }
@@ -63,8 +63,8 @@ export interface MetricsModelRow {
   error_5xx_count: number
   total_input_tokens: number
   total_output_tokens: number
-  ttfb_avg: number | null
-  ttfb_p95: number | null
+  ttft_avg: number | null
+  ttft_p95: number | null
   e2e_avg: number | null
   e2e_p95: number | null
   tpot_avg: number | null
@@ -133,7 +133,7 @@ export interface AgentTurnCallItem {
   status_code: number | null
   is_stream: boolean
   finish_reason: string | null
-  ttfb_ms: number | null
+  ttft_ms: number | null
   e2e_latency_ms: number | null
   input_tokens: number | null
   output_tokens: number | null
@@ -167,7 +167,7 @@ export interface LlmCallDetail {
   input_tokens: number | null
   output_tokens: number | null
   total_tokens: number | null
-  ttfb_ms: number | null
+  ttft_ms: number | null
   e2e_latency_ms: number | null
   response_id: string | null
   tenant_id: string | null

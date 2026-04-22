@@ -4,7 +4,7 @@
 
 ## What it is
 
-TokenScope reads LLM API traffic — OpenAI, Anthropic, Azure OpenAI, Gemini, vLLM, Ollama, and other OpenAI-compatible endpoints — from a packet capture or a ZMQ-forwarded probe, decodes the protocol (including streaming SSE), reconstructs agent turns, and emits structured telemetry. Metrics (TTFB, throughput, tokens, cached tokens, errors) land in DuckDB / PostgreSQL / ClickHouse; live sessions stream through a web console.
+TokenScope reads LLM API traffic — OpenAI, Anthropic, Azure OpenAI, Gemini, vLLM, Ollama, and other OpenAI-compatible endpoints — from a packet capture or a ZMQ-forwarded probe, decodes the protocol (including streaming SSE), reconstructs agent turns, and emits structured telemetry. Metrics (TTFT, throughput, tokens, cached tokens, errors) land in DuckDB / PostgreSQL / ClickHouse; live sessions stream through a web console.
 
 Think of it as the Wireshark layer for LLM-era traffic: ground truth, captured once, consumable by many tools.
 

@@ -79,7 +79,7 @@ export function CallCard({ call, nextCall, finalCallId, agentKind, active, defau
             nextCallRequestBody={nextCall?.request_body ?? null}
           />
           <div className="text-muted-foreground">
-            {call.wire_api} · TTFB {formatMs(call.ttfb_ms)} · finish: {call.finish_reason ?? "—"}
+            {call.wire_api} · TTFT {formatMs(call.ttft_ms)} · finish: {call.finish_reason ?? "—"}
           </div>
           <button onClick={() => onOpenRawHttp?.(call.id)} className="text-foreground hover:underline">View raw HTTP →</button>
         </div>

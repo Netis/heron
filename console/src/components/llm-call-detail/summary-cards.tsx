@@ -31,8 +31,8 @@ export function SummaryCards({ detail }: Props) {
           <FinishBadge reason={detail.finish_reason} />
         </div>
       </SummaryCard>
-      <SummaryCard label="TTFB / E2E">
-        <div className="tabular-nums">{formatMs(detail.ttfb_ms)}</div>
+      <SummaryCard label="TTFT / E2E">
+        <div className="tabular-nums">{formatMs(detail.ttft_ms)}</div>
         <div className="text-xs tabular-nums text-muted-foreground">
           {formatMs(detail.e2e_latency_ms)}
         </div>

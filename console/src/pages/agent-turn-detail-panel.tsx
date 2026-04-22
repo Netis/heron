@@ -13,7 +13,7 @@ function toRawHttpData(call: AgentTurnCallItem): RawHttpData {
     model: call.model,
     status_code: call.status_code,
     finish_reason: call.finish_reason,
-    ttfb_ms: call.ttfb_ms,
+    ttft_ms: call.ttft_ms,
     e2e_latency_ms: call.e2e_latency_ms,
     input_tokens: call.input_tokens,
     output_tokens: call.output_tokens,

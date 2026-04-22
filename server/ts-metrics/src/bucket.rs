@@ -98,7 +98,7 @@ pub struct WindowBucket {
     pub finish_cancelled_count: u64,
 
     // Latency distributions (milliseconds).
-    ttfb: DistributionDigest,
+    ttft: DistributionDigest,
     e2e: DistributionDigest,
     // TPOT distribution (ms/token) — streaming requests only.
     tpot: DistributionDigest,
@@ -132,7 +132,7 @@ impl WindowBucket {
             finish_tool_use_count: 0,
             finish_error_count: 0,
             finish_cancelled_count: 0,
-            ttfb: DistributionDigest::new(),
+            ttft: DistributionDigest::new(),
             e2e: DistributionDigest::new(),
             tpot: DistributionDigest::new(),
             complete_count: 0,
@@ -201,8 +201,8 @@ impl WindowBucket {
             }
         }
 
-        if let Some(ttfb) = call.ttfb_ms {
-            self.ttfb.add(ttfb);
+        if let Some(ttft) = call.ttft_ms {
+            self.ttft.add(ttft);
         }
         if let Some(e2e) = call.e2e_latency_ms {
             self.e2e.add(e2e);
@@ -267,11 +267,11 @@ impl WindowBucket {
             finish_tool_use_count: self.finish_tool_use_count,
             finish_error_count: self.finish_error_count,
             finish_cancelled_count: self.finish_cancelled_count,
-            ttfb_sum: self.ttfb.sum(),
-            ttfb_count: self.ttfb.count(),
-            ttfb_p50: self.ttfb.quantile(0.5),
-            ttfb_p95: self.ttfb.quantile(0.95),
-            ttfb_p99: self.ttfb.quantile(0.99),
+            ttft_sum: self.ttft.sum(),
+            ttft_count: self.ttft.count(),
+            ttft_p50: self.ttft.quantile(0.5),
+            ttft_p95: self.ttft.quantile(0.95),
+            ttft_p99: self.ttft.quantile(0.99),
             e2e_sum: self.e2e.sum(),
             e2e_count: self.e2e.count(),
             e2e_p50: self.e2e.quantile(0.5),
@@ -357,7 +357,7 @@ mod tests {
             total_tokens: Some(150),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
-            ttfb_ms: Some(100.0),
+            ttft_ms: Some(100.0),
             e2e_latency_ms: Some(1000.0),
             client_ip: IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)),
             client_port: 12345,
@@ -454,13 +454,13 @@ mod tests {
         assert_eq!(m.input_token_count, 1);
         assert_eq!(m.total_output_tokens, 50);
         assert_eq!(m.output_token_count, 1);
-        assert_eq!(m.ttfb_count, 1);
-        assert!(m.ttfb_sum > 0.0);
+        assert_eq!(m.ttft_count, 1);
+        assert!(m.ttft_sum > 0.0);
         assert_eq!(m.e2e_count, 1);
         assert_eq!(m.tpot_count, 1);
         assert_eq!(m.finish_complete_count, 1);
         // Per-row averages derived from sum/count.
-        assert!(m.ttfb_avg().is_some());
+        assert!(m.ttft_avg().is_some());
         assert!(m.e2e_avg().is_some());
         assert!(m.tpot_avg().is_some());
     }
@@ -485,8 +485,8 @@ mod tests {
         assert_eq!(m.concurrency_max, 0);
         assert_eq!(m.concurrency_sample_count, 0);
         // Complete-side populated — sum/count pair carries latency across SUM.
-        assert_eq!(m.ttfb_count, 1);
-        assert!(m.ttfb_sum > 0.0);
+        assert_eq!(m.ttft_count, 1);
+        assert!(m.ttft_sum > 0.0);
         assert_eq!(m.total_input_tokens, 100);
         assert_eq!(m.input_token_count, 1);
     }

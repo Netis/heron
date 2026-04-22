@@ -109,7 +109,7 @@ mod tests {
                 total_tokens: Some(15),
                 cache_read_input_tokens: None,
                 cache_creation_input_tokens: None,
-                ttfb_ms: Some(100.0),
+                ttft_ms: Some(100.0),
                 e2e_latency_ms: Some(200.0),
                 client_ip: IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)),
                 client_port: 12345,

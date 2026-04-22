@@ -97,7 +97,7 @@ fn anthropic_call(
         total_tokens: Some(15),
         cache_read_input_tokens: None,
         cache_creation_input_tokens: None,
-        ttfb_ms: None,
+        ttft_ms: None,
         e2e_latency_ms: None,
         client_ip: "127.0.0.1".parse::<IpAddr>().unwrap(),
         client_port: 0,

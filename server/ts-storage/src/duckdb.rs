@@ -177,7 +177,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     total_tokens      UINTEGER,
     cache_read_input_tokens   UINTEGER,
     cache_creation_input_tokens UINTEGER,
-    ttfb_ms           DOUBLE,
+    ttft_ms           DOUBLE,
     e2e_latency_ms    DOUBLE,
     request_body      VARCHAR,
     response_body     VARCHAR,
@@ -216,11 +216,11 @@ CREATE TABLE IF NOT EXISTS llm_metrics (
     finish_tool_use_count  UBIGINT NOT NULL,
     finish_error_count     UBIGINT NOT NULL,
     finish_cancelled_count UBIGINT NOT NULL,
-    ttfb_sum            DOUBLE NOT NULL,
-    ttfb_count          UBIGINT NOT NULL,
-    ttfb_p50            DOUBLE,
-    ttfb_p95            DOUBLE,
-    ttfb_p99            DOUBLE,
+    ttft_sum            DOUBLE NOT NULL,
+    ttft_count          UBIGINT NOT NULL,
+    ttft_p50            DOUBLE,
+    ttft_p95            DOUBLE,
+    ttft_p99            DOUBLE,
     e2e_sum             DOUBLE NOT NULL,
     e2e_count           UBIGINT NOT NULL,
     e2e_p50             DOUBLE,
@@ -390,7 +390,7 @@ fn extract_full_text(
         total_tokens: None,
         cache_read_input_tokens: None,
         cache_creation_input_tokens: None,
-        ttfb_ms: None,
+        ttft_ms: None,
         e2e_latency_ms: None,
         client_ip: "0.0.0.0".parse().unwrap(),
         client_port: 0,
@@ -435,12 +435,12 @@ const VALID_METRIC_FIELDS: &[&str] = &[
     "finish_tool_use_count",
     "finish_error_count",
     "finish_cancelled_count",
-    "ttfb_avg",
-    "ttfb_sum",
-    "ttfb_count",
-    "ttfb_p50",
-    "ttfb_p95",
-    "ttfb_p99",
+    "ttft_avg",
+    "ttft_sum",
+    "ttft_count",
+    "ttft_p50",
+    "ttft_p95",
+    "ttft_p99",
     "e2e_avg",
     "e2e_sum",
     "e2e_count",
@@ -497,7 +497,7 @@ fn avg_pair(f: &str) -> Option<(&'static str, &'static str)> {
         "concurrency_avg" => Some(("concurrency_sum", "concurrency_sample_count")),
         "input_tokens_avg" => Some(("total_input_tokens", "input_token_count")),
         "output_tokens_avg" => Some(("total_output_tokens", "output_token_count")),
-        "ttfb_avg" => Some(("ttfb_sum", "ttfb_count")),
+        "ttft_avg" => Some(("ttft_sum", "ttft_count")),
         "e2e_avg" => Some(("e2e_sum", "e2e_count")),
         "tpot_avg" => Some(("tpot_sum", "tpot_count")),
         _ => None,
@@ -506,8 +506,8 @@ fn avg_pair(f: &str) -> Option<(&'static str, &'static str)> {
 
 /// Weight column for percentile weighted-avg aggregation.
 fn percentile_weight(field: &str) -> &'static str {
-    if field.starts_with("ttfb") {
-        "ttfb_count"
+    if field.starts_with("ttft") {
+        "ttft_count"
     } else if field.starts_with("e2e") {
         "e2e_count"
     } else if field.starts_with("tpot") {
@@ -540,8 +540,8 @@ const SUM_FIELDS: &[&str] = &[
     "finish_tool_use_count",
     "finish_error_count",
     "finish_cancelled_count",
-    "ttfb_sum",
-    "ttfb_count",
+    "ttft_sum",
+    "ttft_count",
     "e2e_sum",
     "e2e_count",
     "tpot_sum",
@@ -660,7 +660,7 @@ struct PreparedCall {
     total_tokens: Option<u32>,
     cache_read_input_tokens: Option<u32>,
     cache_creation_input_tokens: Option<u32>,
-    ttfb_ms: Option<f64>,
+    ttft_ms: Option<f64>,
     e2e_latency_ms: Option<f64>,
     request_body: Option<String>,
     response_body: Option<String>,
@@ -697,7 +697,7 @@ fn prepare_call(call: LlmCall) -> PreparedCall {
         total_tokens: call.total_tokens,
         cache_read_input_tokens: call.cache_read_input_tokens,
         cache_creation_input_tokens: call.cache_creation_input_tokens,
-        ttfb_ms: call.ttfb_ms,
+        ttft_ms: call.ttft_ms,
         e2e_latency_ms: call.e2e_latency_ms,
         request_body: call.request_body,
         response_body: call.response_body,
@@ -914,7 +914,7 @@ impl StorageBackend for DuckDbBackend {
                         p.total_tokens,
                         p.cache_read_input_tokens,
                         p.cache_creation_input_tokens,
-                        p.ttfb_ms,
+                        p.ttft_ms,
                         p.e2e_latency_ms,
                         p.request_body,
                         p.response_body,
@@ -1223,11 +1223,11 @@ impl StorageBackend for DuckDbBackend {
                         m.finish_tool_use_count,
                         m.finish_error_count,
                         m.finish_cancelled_count,
-                        m.ttfb_sum,
-                        m.ttfb_count,
-                        m.ttfb_p50,
-                        m.ttfb_p95,
-                        m.ttfb_p99,
+                        m.ttft_sum,
+                        m.ttft_count,
+                        m.ttft_p50,
+                        m.ttft_p95,
+                        m.ttft_p99,
                         m.e2e_sum,
                         m.e2e_count,
                         m.e2e_p50,
@@ -1442,8 +1442,8 @@ impl StorageBackend for DuckDbBackend {
                     COALESCE(SUM(error_5xx_count), 0),
                     COALESCE(SUM(total_input_tokens), 0),
                     COALESCE(SUM(total_output_tokens), 0),
-                    CASE WHEN SUM(ttfb_count) > 0
-                         THEN SUM(ttfb_sum) / SUM(ttfb_count) ELSE NULL END,
+                    CASE WHEN SUM(ttft_count) > 0
+                         THEN SUM(ttft_sum) / SUM(ttft_count) ELSE NULL END,
                     CASE WHEN SUM(e2e_count) > 0
                          THEN SUM(e2e_sum) / SUM(e2e_count) ELSE NULL END,
                     CASE WHEN SUM(tpot_count) > 0
@@ -1468,7 +1468,7 @@ impl StorageBackend for DuckDbBackend {
                         error_5xx_count: row.get::<_, u64>(4)?,
                         total_input_tokens: row.get::<_, u64>(5)?,
                         total_output_tokens: row.get::<_, u64>(6)?,
-                        ttfb_avg: row.get::<_, Option<f64>>(7)?,
+                        ttft_avg: row.get::<_, Option<f64>>(7)?,
                         e2e_avg: row.get::<_, Option<f64>>(8)?,
                         tpot_avg: row.get::<_, Option<f64>>(9)?,
                     })
@@ -1490,8 +1490,8 @@ impl StorageBackend for DuckDbBackend {
             "error_count",
             "total_input_tokens",
             "total_output_tokens",
-            "ttfb_avg",
-            "ttfb_p95",
+            "ttft_avg",
+            "ttft_p95",
             "e2e_avg",
             "e2e_p95",
             "tpot_avg",
@@ -1533,12 +1533,12 @@ impl StorageBackend for DuckDbBackend {
                         COALESCE(SUM(error_5xx_count), 0) AS error_5xx_count,
                         COALESCE(SUM(total_input_tokens), 0) AS total_input_tokens,
                         COALESCE(SUM(total_output_tokens), 0) AS total_output_tokens,
-                        CASE WHEN SUM(ttfb_count) > 0
-                             THEN SUM(ttfb_sum) / SUM(ttfb_count)
-                             ELSE NULL END AS ttfb_avg,
-                        CASE WHEN SUM(ttfb_count) > 0
-                             THEN SUM(ttfb_p95 * ttfb_count) / SUM(ttfb_count)
-                             ELSE NULL END AS ttfb_p95,
+                        CASE WHEN SUM(ttft_count) > 0
+                             THEN SUM(ttft_sum) / SUM(ttft_count)
+                             ELSE NULL END AS ttft_avg,
+                        CASE WHEN SUM(ttft_count) > 0
+                             THEN SUM(ttft_p95 * ttft_count) / SUM(ttft_count)
+                             ELSE NULL END AS ttft_p95,
                         CASE WHEN SUM(e2e_count) > 0
                              THEN SUM(e2e_sum) / SUM(e2e_count)
                              ELSE NULL END AS e2e_avg,
@@ -1600,10 +1600,10 @@ impl StorageBackend for DuckDbBackend {
                     total_output_tokens: row
                         .get(8)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    ttfb_avg: row
+                    ttft_avg: row
                         .get(9)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    ttfb_p95: row
+                    ttft_p95: row
                         .get(10)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     e2e_avg: row
@@ -1628,7 +1628,7 @@ impl StorageBackend for DuckDbBackend {
         const VALID_SORT_FIELDS: &[&str] = &[
             "request_time",
             "status_code",
-            "ttfb_ms",
+            "ttft_ms",
             "e2e_latency_ms",
             "input_tokens",
             "output_tokens",
@@ -1717,7 +1717,7 @@ impl StorageBackend for DuckDbBackend {
             let limit = query.page_size;
             let items_sql = format!(
                 "SELECT id, stream_id, epoch_ms(request_time), wire_api, model, status_code, is_stream, \
-                 finish_reason, ttfb_ms, e2e_latency_ms, input_tokens, output_tokens \
+                 finish_reason, ttft_ms, e2e_latency_ms, input_tokens, output_tokens \
                  FROM llm_calls WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
@@ -1761,7 +1761,7 @@ impl StorageBackend for DuckDbBackend {
                     finish_reason: row
                         .get::<_, Option<String>>(7)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    ttfb_ms: row
+                    ttft_ms: row
                         .get::<_, Option<f64>>(8)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     e2e_latency_ms: row
@@ -1799,7 +1799,7 @@ impl StorageBackend for DuckDbBackend {
                     c.wire_api, c.model, c.api_type, c.is_stream, c.request_path,
                     c.status_code, c.finish_reason,
                     c.input_tokens, c.output_tokens, c.total_tokens,
-                    c.ttfb_ms, c.e2e_latency_ms,
+                    c.ttft_ms, c.e2e_latency_ms,
                     c.response_id, c.tenant_id,
                     c.client_ip, c.client_port, c.server_ip, c.server_port,
                     c.request_body, c.response_body,
@@ -1836,7 +1836,7 @@ impl StorageBackend for DuckDbBackend {
                     input_tokens: row.get(12)?,
                     output_tokens: row.get(13)?,
                     total_tokens: row.get(14)?,
-                    ttfb_ms: row.get(15)?,
+                    ttft_ms: row.get(15)?,
                     e2e_latency_ms: row.get(16)?,
                     response_id: row.get(17)?,
                     tenant_id: row.get(18)?,
@@ -2203,7 +2203,7 @@ impl StorageBackend for DuckDbBackend {
                     epoch_ms(c.response_time),
                     epoch_ms(c.complete_time),
                     c.wire_api, c.model, c.status_code, c.is_stream,
-                    c.finish_reason, c.ttfb_ms, c.e2e_latency_ms,
+                    c.finish_reason, c.ttft_ms, c.e2e_latency_ms,
                     c.input_tokens, c.output_tokens,
                     c.request_path, c.client_ip, c.client_port,
                     c.server_ip, c.server_port,
@@ -2259,7 +2259,7 @@ impl StorageBackend for DuckDbBackend {
                     finish_reason: row
                         .get::<_, Option<String>>(8)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    ttfb_ms: row
+                    ttft_ms: row
                         .get::<_, Option<f64>>(9)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     e2e_latency_ms: row
@@ -2620,7 +2620,7 @@ mod tests {
             total_tokens: Some(150),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
-            ttfb_ms: Some(500.0),
+            ttft_ms: Some(500.0),
             e2e_latency_ms: Some(1000.0),
             client_ip: "10.0.0.1".parse::<IpAddr>().unwrap(),
             client_port: 54321,
@@ -2771,12 +2771,12 @@ mod tests {
             finish_tool_use_count: 2,
             finish_error_count: 1,
             finish_cancelled_count: 1,
-            // ttfb_avg 150 × 42 = 6300.
-            ttfb_sum: 6300.0,
-            ttfb_count: 42,
-            ttfb_p50: Some(120.0),
-            ttfb_p95: Some(350.0),
-            ttfb_p99: Some(500.0),
+            // ttft_avg 150 × 42 = 6300.
+            ttft_sum: 6300.0,
+            ttft_count: 42,
+            ttft_p50: Some(120.0),
+            ttft_p95: Some(350.0),
+            ttft_p99: Some(500.0),
             // e2e_avg 1200 × 42 = 50400.
             e2e_sum: 50_400.0,
             e2e_count: 42,
@@ -2802,7 +2802,7 @@ mod tests {
 
         let conn = backend.test_conn().lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT granularity, model, request_count, ttfb_p50 FROM llm_metrics")
+            .prepare("SELECT granularity, model, request_count, ttft_p50 FROM llm_metrics")
             .unwrap();
         let row = stmt
             .query_row([], |row| {
@@ -2966,8 +2966,8 @@ mod tests {
         m1.wire_api = "*".to_string();
         m1.model = "*".to_string();
         m1.server_ip = "*".to_string();
-        m1.ttfb_p50 = Some(100.0);
-        m1.ttfb_p95 = Some(200.0);
+        m1.ttft_p50 = Some(100.0);
+        m1.ttft_p95 = Some(200.0);
 
         let mut m2 = sample_metric();
         m2.timestamp_us = 1_700_000_060_000_000; // +60s
@@ -2975,8 +2975,8 @@ mod tests {
         m2.wire_api = "*".to_string();
         m2.model = "*".to_string();
         m2.server_ip = "*".to_string();
-        m2.ttfb_p50 = Some(150.0);
-        m2.ttfb_p95 = Some(300.0);
+        m2.ttft_p50 = Some(150.0);
+        m2.ttft_p95 = Some(300.0);
 
         backend.write_metrics(vec![m1, m2]).await.unwrap();
 
@@ -2987,7 +2987,7 @@ mod tests {
             },
             granularity: "1m".to_string(),
             filter: DimensionFilter::default(),
-            fields: vec!["ttfb_p50".to_string(), "ttfb_p95".to_string()],
+            fields: vec!["ttft_p50".to_string(), "ttft_p95".to_string()],
             group_by: None,
         };
 
@@ -3057,7 +3057,7 @@ mod tests {
 
     // With per-stream aggregators, the sink receives one row per (stream_id,
     // ts, dim). The ungrouped timeseries query MUST GROUP BY timestamp so
-    // the caller sees one point per timestamp (request_count summed, ttfb
+    // the caller sees one point per timestamp (request_count summed, ttft
     // weighted-averaged by request_count). Before this fix the branch had
     // no GROUP BY and returned N overlapping rows per timestamp.
     #[tokio::test]
@@ -3075,8 +3075,8 @@ mod tests {
         stream0.model = "*".into();
         stream0.server_ip = "*".into();
         stream0.request_count = 10;
-        stream0.ttfb_count = 10;
-        stream0.ttfb_p50 = Some(100.0);
+        stream0.ttft_count = 10;
+        stream0.ttft_p50 = Some(100.0);
         stream0.error_count = 1;
 
         let mut stream1 = sample_metric();
@@ -3087,8 +3087,8 @@ mod tests {
         stream1.model = "*".into();
         stream1.server_ip = "*".into();
         stream1.request_count = 30;
-        stream1.ttfb_count = 30;
-        stream1.ttfb_p50 = Some(200.0);
+        stream1.ttft_count = 30;
+        stream1.ttft_p50 = Some(200.0);
         stream1.error_count = 3;
 
         backend.write_metrics(vec![stream0, stream1]).await.unwrap();
@@ -3102,7 +3102,7 @@ mod tests {
             filter: DimensionFilter::default(),
             fields: vec![
                 "request_count".to_string(),
-                "ttfb_p50".to_string(),
+                "ttft_p50".to_string(),
                 "error_count".to_string(),
             ],
             group_by: None,
@@ -3116,7 +3116,7 @@ mod tests {
             rows.len()
         );
         assert_eq!(rows[0].values[0], Some(40.0), "request_count SUM = 10 + 30");
-        // weighted avg by ttfb_count: (100*10 + 200*30) / 40 = 175
+        // weighted avg by ttft_count: (100*10 + 200*30) / 40 = 175
         let p50 = rows[0].values[1].unwrap();
         assert!((p50 - 175.0).abs() < 0.01, "weighted p50 ≈ 175, got {p50}");
         assert_eq!(rows[0].values[2], Some(4.0), "error_count SUM = 1 + 3");
@@ -3190,9 +3190,9 @@ mod tests {
         m1.error_5xx_count = 2;
         m1.total_input_tokens = 10_000;
         m1.total_output_tokens = 5_000;
-        // ttfb avg 100 over 100 samples → sum 10_000
-        m1.ttfb_sum = 10_000.0;
-        m1.ttfb_count = 100;
+        // ttft avg 100 over 100 samples → sum 10_000
+        m1.ttft_sum = 10_000.0;
+        m1.ttft_count = 100;
         m1.e2e_sum = 50_000.0;
         m1.e2e_count = 100;
         // tpot avg 40 over 80 streaming samples → sum 3200
@@ -3213,9 +3213,9 @@ mod tests {
         m2.error_5xx_count = 4;
         m2.total_input_tokens = 20_000;
         m2.total_output_tokens = 10_000;
-        // ttfb avg 200 over 200 samples → sum 40_000
-        m2.ttfb_sum = 40_000.0;
-        m2.ttfb_count = 200;
+        // ttft avg 200 over 200 samples → sum 40_000
+        m2.ttft_sum = 40_000.0;
+        m2.ttft_count = 200;
         m2.e2e_sum = 200_000.0;
         m2.e2e_count = 200;
         // tpot avg 60 over 160 streaming samples → sum 9600
@@ -3241,10 +3241,10 @@ mod tests {
         assert_eq!(summary.total_input_tokens, 30_000);
         assert_eq!(summary.total_output_tokens, 15_000);
         // Exact avg via sum+count: (10000 + 40000) / 300 = 166.666...
-        let ttfb_avg = summary.ttfb_avg.unwrap();
+        let ttft_avg = summary.ttft_avg.unwrap();
         assert!(
-            (ttfb_avg - 500.0 / 3.0).abs() < 0.01,
-            "expected ~166.67, got {ttfb_avg}"
+            (ttft_avg - 500.0 / 3.0).abs() < 0.01,
+            "expected ~166.67, got {ttft_avg}"
         );
         // tpot exact avg: (3200 + 9600) / 240 = 53.33
         let tpot_avg = summary.tpot_avg.unwrap();
@@ -3271,10 +3271,10 @@ mod tests {
         m_gpt4.server_ip = "*".to_string();
         m_gpt4.request_count = 100;
         m_gpt4.stream_count = 80;
-        // ttfb avg 150 over 100 → sum 15000
-        m_gpt4.ttfb_sum = 15_000.0;
-        m_gpt4.ttfb_count = 100;
-        m_gpt4.ttfb_p95 = Some(400.0);
+        // ttft avg 150 over 100 → sum 15000
+        m_gpt4.ttft_sum = 15_000.0;
+        m_gpt4.ttft_count = 100;
+        m_gpt4.ttft_p95 = Some(400.0);
         m_gpt4.e2e_sum = 100_000.0;
         m_gpt4.e2e_count = 100;
         m_gpt4.e2e_p95 = Some(3000.0);
@@ -3290,10 +3290,10 @@ mod tests {
         m_claude.server_ip = "*".to_string();
         m_claude.request_count = 200;
         m_claude.stream_count = 150;
-        // ttfb avg 120 over 200 → sum 24000
-        m_claude.ttfb_sum = 24_000.0;
-        m_claude.ttfb_count = 200;
-        m_claude.ttfb_p95 = Some(300.0);
+        // ttft avg 120 over 200 → sum 24000
+        m_claude.ttft_sum = 24_000.0;
+        m_claude.ttft_count = 200;
+        m_claude.ttft_p95 = Some(300.0);
         m_claude.e2e_sum = 160_000.0;
         m_claude.e2e_count = 200;
         m_claude.e2e_p95 = Some(2000.0);
@@ -3500,7 +3500,7 @@ mod turn_tests {
             total_tokens: Some(15),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
-            ttfb_ms: Some(100.0),
+            ttft_ms: Some(100.0),
             e2e_latency_ms: Some(500.0),
             client_ip: "10.0.0.1".parse::<IpAddr>().unwrap(),
             client_port: 1000,
@@ -3874,7 +3874,7 @@ mod concurrent_tests {
             total_tokens: Some(15),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
-            ttfb_ms: None,
+            ttft_ms: None,
             e2e_latency_ms: None,
             client_ip: "10.0.0.1".parse::<IpAddr>().unwrap(),
             client_port: 1000,
@@ -3945,11 +3945,11 @@ mod concurrent_tests {
             finish_tool_use_count: 0,
             finish_error_count: 0,
             finish_cancelled_count: 0,
-            ttfb_sum: 0.0,
-            ttfb_count: 0,
-            ttfb_p50: None,
-            ttfb_p95: None,
-            ttfb_p99: None,
+            ttft_sum: 0.0,
+            ttft_count: 0,
+            ttft_p50: None,
+            ttft_p95: None,
+            ttft_p99: None,
             e2e_sum: 0.0,
             e2e_count: 0,
             e2e_p50: None,
@@ -4057,7 +4057,7 @@ mod retention_tests {
             total_tokens: Some(15),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
-            ttfb_ms: Some(100.0),
+            ttft_ms: Some(100.0),
             e2e_latency_ms: Some(500.0),
             client_ip: "10.0.0.1".parse::<IpAddr>().unwrap(),
             client_port: 1000,
@@ -4128,11 +4128,11 @@ mod retention_tests {
             finish_tool_use_count: 0,
             finish_error_count: 0,
             finish_cancelled_count: 0,
-            ttfb_sum: 0.0,
-            ttfb_count: 0,
-            ttfb_p50: None,
-            ttfb_p95: None,
-            ttfb_p99: None,
+            ttft_sum: 0.0,
+            ttft_count: 0,
+            ttft_p50: None,
+            ttft_p95: None,
+            ttft_p99: None,
             e2e_sum: 0.0,
             e2e_count: 0,
             e2e_p50: None,

@@ -381,7 +381,7 @@ mod tests {
                 total_tokens: Some(150),
                 cache_read_input_tokens: None,
                 cache_creation_input_tokens: None,
-                ttfb_ms: Some(100.0),
+                ttft_ms: Some(100.0),
                 e2e_latency_ms: Some(500.0),
                 client_ip: IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)),
                 client_port: 12345,
@@ -432,8 +432,8 @@ mod tests {
             .expect("finest dim present");
         assert_eq!(finest.request_count, 1);
         assert_eq!(finest.total_input_tokens, 100);
-        assert_eq!(finest.ttfb_count, 1);
-        assert!(finest.ttfb_sum > 0.0);
+        assert_eq!(finest.ttft_count, 1);
+        assert!(finest.ttft_sum > 0.0);
         assert_eq!(finest.finish_complete_count, 1);
     }
 
@@ -460,8 +460,8 @@ mod tests {
             .expect("start row for t0");
         assert_eq!(start_row.request_count, 1);
         assert_eq!(start_row.total_input_tokens, 0);
-        assert_eq!(start_row.ttfb_count, 0);
-        assert_eq!(start_row.ttfb_sum, 0.0);
+        assert_eq!(start_row.ttft_count, 0);
+        assert_eq!(start_row.ttft_sum, 0.0);
 
         // Complete returns late.
         all.extend(agg.process(&make_complete(t0, t0 + 35_000_000, "gpt-4")));
@@ -489,8 +489,8 @@ mod tests {
             .expect("late complete row");
         assert_eq!(late.request_count, 0, "late complete row has zero traffic");
         assert_eq!(late.total_input_tokens, 100);
-        assert_eq!(late.ttfb_count, 1);
-        assert!(late.ttfb_sum > 0.0);
+        assert_eq!(late.ttft_count, 1);
+        assert!(late.ttft_sum > 0.0);
     }
 
     #[test]

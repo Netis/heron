@@ -263,7 +263,7 @@ fn extract_with_profile(
         total_tokens: None,
         cache_read_input_tokens: None,
         cache_creation_input_tokens: None,
-        ttfb_ms: None,
+        ttft_ms: None,
         e2e_latency_ms: None,
         client_ip: "0.0.0.0".parse().unwrap(),
         client_port: 0,

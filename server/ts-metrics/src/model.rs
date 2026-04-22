@@ -60,18 +60,18 @@ pub struct LlmMetric {
     pub finish_error_count: u64,
     pub finish_cancelled_count: u64,
 
-    // TTFB distribution (milliseconds).
+    // TTFT distribution (milliseconds).
     //
     // `*_sum` and `*_count` give exact averages under query-time SUM; the
     // per-row `*_p50/p95/p99` are t-digest estimates over *this row's slice
     // only*, re-weighted by `*_count` across rows at query time (an
     // approximation until sum+count is extended with serialized t-digest
     // bytes in a follow-up schema change).
-    pub ttfb_sum: f64,
-    pub ttfb_count: u64,
-    pub ttfb_p50: Option<f64>,
-    pub ttfb_p95: Option<f64>,
-    pub ttfb_p99: Option<f64>,
+    pub ttft_sum: f64,
+    pub ttft_count: u64,
+    pub ttft_p50: Option<f64>,
+    pub ttft_p95: Option<f64>,
+    pub ttft_p99: Option<f64>,
 
     // E2E latency distribution (milliseconds)
     pub e2e_sum: f64,
@@ -115,8 +115,8 @@ impl LlmMetric {
         safe_avg(self.total_output_tokens as f64, self.output_token_count)
     }
 
-    pub fn ttfb_avg(&self) -> Option<f64> {
-        safe_avg(self.ttfb_sum, self.ttfb_count)
+    pub fn ttft_avg(&self) -> Option<f64> {
+        safe_avg(self.ttft_sum, self.ttft_count)
     }
 
     pub fn e2e_avg(&self) -> Option<f64> {
@@ -184,11 +184,11 @@ impl fmt::Display for LlmMetric {
         )?;
         writeln!(
             f,
-            "  ttfb: avg={} p50={} p95={} p99={}",
-            fmt_opt(self.ttfb_avg(), "ms"),
-            fmt_opt(self.ttfb_p50, "ms"),
-            fmt_opt(self.ttfb_p95, "ms"),
-            fmt_opt(self.ttfb_p99, "ms"),
+            "  ttft: avg={} p50={} p95={} p99={}",
+            fmt_opt(self.ttft_avg(), "ms"),
+            fmt_opt(self.ttft_p50, "ms"),
+            fmt_opt(self.ttft_p95, "ms"),
+            fmt_opt(self.ttft_p99, "ms"),
         )?;
         writeln!(
             f,

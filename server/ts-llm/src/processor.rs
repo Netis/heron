@@ -90,7 +90,7 @@ impl LlmProcessor {
         let response_time = response.first_byte_timestamp_us;
         let complete_time = response.complete_timestamp_us;
 
-        let ttfb_ms = if response_time > request_time {
+        let ttft_ms = if response_time > request_time {
             Some((response_time - request_time) as f64 / 1000.0)
         } else {
             None
@@ -136,7 +136,7 @@ impl LlmProcessor {
             total_tokens,
             cache_read_input_tokens: resp_info.cache_read_input_tokens,
             cache_creation_input_tokens: resp_info.cache_creation_input_tokens,
-            ttfb_ms,
+            ttft_ms,
             e2e_latency_ms,
             client_ip: request.client_addr.0,
             client_port: request.client_addr.1,

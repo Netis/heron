@@ -11,8 +11,8 @@ type SortKey =
   | "wire_api"
   | "request_count"
   | "error_rate"
-  | "ttfb_avg"
-  | "ttfb_p95"
+  | "ttft_avg"
+  | "ttft_p95"
   | "e2e_avg"
   | "e2e_p95"
   | "tpot_avg"
@@ -31,8 +31,8 @@ function getSortValue(m: MetricsModelRow, key: SortKey): number | string {
 }
 
 const LATENCY_SERIES = [
-  { key: "ttfb_avg", label: "TTFB avg", color: "#f59e0b" },
-  { key: "ttfb_p95", label: "TTFB p95", color: "#f59e0b", dash: "5 3" },
+  { key: "ttft_avg", label: "TTFT avg", color: "#f59e0b" },
+  { key: "ttft_p95", label: "TTFT p95", color: "#f59e0b", dash: "5 3" },
   { key: "e2e_avg", label: "E2E avg", color: "#3b82f6" },
   { key: "e2e_p95", label: "E2E p95", color: "#3b82f6", dash: "5 3" },
 ]
@@ -55,7 +55,7 @@ function filterByModel(data: TimeseriesData | undefined, model: string): Timeser
 }
 
 function ModelDetailCharts({ model }: { model: string }) {
-  const { data: latencyData } = useTimeseries("ttfb_avg,ttfb_p95,e2e_avg,e2e_p95", {
+  const { data: latencyData } = useTimeseries("ttft_avg,ttft_p95,e2e_avg,e2e_p95", {
     groupBy: "model",
   })
   const { data: volumeData } = useTimeseries("request_count,error_count", {
@@ -142,8 +142,8 @@ export function ModelsPage() {
                 <th className="px-3 py-3 text-left"><SortHeader label="Wire API" field="wire_api" align="left" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="Requests" field="request_count" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="Error %" field="error_rate" align="right" /></th>
-                <th className="px-3 py-3 text-right"><SortHeader label="TTFB avg" field="ttfb_avg" align="right" /></th>
-                <th className="px-3 py-3 text-right"><SortHeader label="TTFB p95" field="ttfb_p95" align="right" /></th>
+                <th className="px-3 py-3 text-right"><SortHeader label="TTFT avg" field="ttft_avg" align="right" /></th>
+                <th className="px-3 py-3 text-right"><SortHeader label="TTFT p95" field="ttft_p95" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="E2E avg" field="e2e_avg" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="E2E p95" field="e2e_p95" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="TPOT" field="tpot_avg" align="right" /></th>
@@ -192,8 +192,8 @@ export function ModelsPage() {
                           {errRate.toFixed(1)}%
                         </span>
                       </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">{formatMs(m.ttfb_avg)}</td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">{formatMs(m.ttfb_p95)}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">{formatMs(m.ttft_avg)}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">{formatMs(m.ttft_p95)}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums">{formatMs(m.e2e_avg)}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums">{formatMs(m.e2e_p95)}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums">

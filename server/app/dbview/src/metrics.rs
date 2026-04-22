@@ -15,7 +15,7 @@ struct MetricRow {
     error_count: u64,
     total_input_tokens: u64,
     total_output_tokens: u64,
-    ttfb_p95: Option<f64>,
+    ttft_p95: Option<f64>,
     e2e_p95: Option<f64>,
     tpot_avg: Option<f64>,
 }
@@ -26,7 +26,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<MetricRow> {
          wire_api, model, server_ip, \
          request_count, error_count, \
          total_input_tokens, total_output_tokens, \
-         ttfb_p95, e2e_p95, tpot_avg \
+         ttft_p95, e2e_p95, tpot_avg \
          FROM llm_metrics ORDER BY timestamp DESC LIMIT {limit}"
     );
     let mut stmt = conn.prepare(&sql).expect("failed to prepare metrics query");
@@ -43,7 +43,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<MetricRow> {
                 error_count: row.get(6)?,
                 total_input_tokens: row.get(7)?,
                 total_output_tokens: row.get(8)?,
-                ttfb_p95: row.get(9)?,
+                ttft_p95: row.get(9)?,
                 e2e_p95: row.get(10)?,
                 tpot_avg: row.get(11)?,
             })
@@ -74,7 +74,7 @@ fn print_list(rows: &[MetricRow]) {
     println!(
         "{:>4}  {:<14}  {:<4}  {:<10}  {:<20}  {:<15}  {:>5}  {:>5}  {:>6}  {:>6}  {:>9}  {:>9}  {:>10}",
         "#", "TIMESTAMP", "GR", "WIRE_API", "MODEL", "SERVER_IP",
-        "REQ", "ERR", "IN", "OUT", "TTFB_P95", "E2E_P95", "TPOT_AVG"
+        "REQ", "ERR", "IN", "OUT", "TTFT_P95", "E2E_P95", "TPOT_AVG"
     );
     for m in rows {
         println!(
@@ -89,7 +89,7 @@ fn print_list(rows: &[MetricRow]) {
             m.error_count,
             fmt_tokens(m.total_input_tokens),
             fmt_tokens(m.total_output_tokens),
-            fmt_f64(m.ttfb_p95),
+            fmt_f64(m.ttft_p95),
             fmt_f64(m.e2e_p95),
             fmt_f64(m.tpot_avg),
         );

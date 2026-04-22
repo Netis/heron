@@ -49,7 +49,7 @@ llm_calls
 │   └── cache_creation_input_tokens: u32? # Anthropic cache_creation; None for OpenAI
 │
 ├── Performance Metrics (computed at write time)
-│   ├── ttfb_ms: f64?               # Time To First Byte (response_time - request_time)
+│   ├── ttft_ms: f64?               # Time To First Token (response_time - request_time)
 │   └── e2e_latency_ms: f64?        # End-to-end latency (complete_time - request_time)
 │
 ├── Wire-API IDs
@@ -73,7 +73,7 @@ Indexes:
 
 ### Design Notes
 
-- **Performance metrics in requests table**: `ttfb_ms` and `e2e_latency_ms` are computed at write time for fast single-record queries. Per-request throughput can be derived: `output_tokens / (complete_time - response_time)` (tokens/s).
+- **Performance metrics in requests table**: `ttft_ms` and `e2e_latency_ms` are computed at write time for fast single-record queries. Per-request throughput can be derived: `output_tokens / (complete_time - response_time)` (tokens/s).
 - **Full body storage**: `request_body` and `response_body` store complete JSON. For streaming responses, `response_body` contains the concatenated final content.
 - **Headers storage**: `request_headers` and `response_headers` store complete HTTP headers as JSON arrays of `[key, value]` pairs, preserving order and allowing duplicate keys. Rate limit info, request IDs, processing time, etc. can be queried from stored headers without top-level extraction.
 - **`response_id`**: Wire API's response/message ID (e.g., OpenAI `chatcmpl-xxx`, Anthropic `msg_xxx`). Promoted to top-level for fast cross-referencing with vendor logs.
@@ -125,12 +125,12 @@ llm_metrics
 │   ├── finish_error_count: u64      # Generation error
 │   └── finish_cancelled_count: u64  # Client cancelled
 │
-├── TTFB Distribution (milliseconds)
-│   ├── ttfb_sum: f64                # Σ TTFB samples (exact)
-│   ├── ttfb_count: u64              # # TTFB samples (exact)
-│   ├── ttfb_p50: f64?               # Per-row t-digest estimate over this slice
-│   ├── ttfb_p95: f64?
-│   └── ttfb_p99: f64?
+├── TTFT Distribution (milliseconds)
+│   ├── ttft_sum: f64                # Σ TTFT samples (exact)
+│   ├── ttft_count: u64              # # TTFT samples (exact)
+│   ├── ttft_p50: f64?               # Per-row t-digest estimate over this slice
+│   ├── ttft_p95: f64?
+│   └── ttft_p99: f64?
 │
 ├── E2E Latency Distribution (milliseconds)
 │   ├── e2e_sum: f64

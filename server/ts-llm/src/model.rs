@@ -70,7 +70,7 @@ pub struct LlmCall {
     pub total_tokens: Option<u32>,
     pub cache_read_input_tokens: Option<u32>,
     pub cache_creation_input_tokens: Option<u32>,
-    pub ttfb_ms: Option<f64>,
+    pub ttft_ms: Option<f64>,
     pub e2e_latency_ms: Option<f64>,
     pub client_ip: IpAddr,
     pub client_port: u16,
@@ -289,7 +289,7 @@ mod extension_tests {
             total_tokens: None,
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
-            ttfb_ms: None,
+            ttft_ms: None,
             e2e_latency_ms: None,
             client_ip: "127.0.0.1".parse::<IpAddr>().unwrap(),
             client_port: 0,
@@ -337,7 +337,7 @@ mod extension_tests {
             total_tokens: None,
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
-            ttfb_ms: None,
+            ttft_ms: None,
             e2e_latency_ms: None,
             client_ip: "127.0.0.1".parse::<IpAddr>().unwrap(),
             client_port: 0,
@@ -405,11 +405,11 @@ impl fmt::Display for LlmCall {
                 )?;
             }
         }
-        if self.ttfb_ms.is_some() || self.e2e_latency_ms.is_some() {
+        if self.ttft_ms.is_some() || self.e2e_latency_ms.is_some() {
             write!(
                 f,
-                " | ttfb={:.1}ms e2e={:.1}ms",
-                self.ttfb_ms.unwrap_or(0.0),
+                " | ttft={:.1}ms e2e={:.1}ms",
+                self.ttft_ms.unwrap_or(0.0),
                 self.e2e_latency_ms.unwrap_or(0.0),
             )?;
         }

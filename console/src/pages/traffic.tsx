@@ -34,7 +34,7 @@ function ChartCard({ title, children }: { title: string; children: React.ReactNo
   )
 }
 
-type SortKey = "request_count" | "total_input_tokens" | "total_output_tokens" | "ttfb_avg" | "e2e_avg" | "error_rate"
+type SortKey = "request_count" | "total_input_tokens" | "total_output_tokens" | "ttft_avg" | "e2e_avg" | "error_rate"
 type SortOrder = "asc" | "desc"
 
 function getErrorRate(m: MetricsModelRow): number {
@@ -97,7 +97,7 @@ function TopModelsTable({ models }: { models: MetricsModelRow[] }) {
             <th className="px-2 py-2 text-right"><SortHeader label="Requests" field="request_count" /></th>
             <th className="px-2 py-2 text-right"><SortHeader label="In Tokens" field="total_input_tokens" /></th>
             <th className="px-2 py-2 text-right"><SortHeader label="Out Tokens" field="total_output_tokens" /></th>
-            <th className="px-2 py-2 text-right"><SortHeader label="Avg TTFB" field="ttfb_avg" /></th>
+            <th className="px-2 py-2 text-right"><SortHeader label="Avg TTFT" field="ttft_avg" /></th>
             <th className="px-2 py-2 text-right"><SortHeader label="Avg E2E" field="e2e_avg" /></th>
             <th className="px-2 py-2 text-right"><SortHeader label="Error %" field="error_rate" /></th>
           </tr>
@@ -112,7 +112,7 @@ function TopModelsTable({ models }: { models: MetricsModelRow[] }) {
               <td className="px-2 py-2 text-right tabular-nums">{formatNumber(m.request_count)}</td>
               <td className="px-2 py-2 text-right tabular-nums">{formatNumber(m.total_input_tokens)}</td>
               <td className="px-2 py-2 text-right tabular-nums">{formatNumber(m.total_output_tokens)}</td>
-              <td className="px-2 py-2 text-right tabular-nums">{formatMs(m.ttfb_avg)}</td>
+              <td className="px-2 py-2 text-right tabular-nums">{formatMs(m.ttft_avg)}</td>
               <td className="px-2 py-2 text-right tabular-nums">{formatMs(m.e2e_avg)}</td>
               <td className="px-2 py-2 text-right tabular-nums">
                 <span className={getErrorRate(m) > 5 ? "text-red-500" : getErrorRate(m) > 1 ? "text-amber-500" : ""}>

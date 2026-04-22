@@ -9,7 +9,7 @@ The `ts-metrics` crate receives `LlmEvent` values from the pipeline, aggregates 
 The aggregator consumes three kinds of `LlmEvent`:
 
 - **`Start`** — emitted when request headers are parsed. Carries `stream_id`, timestamp, `wire_api`, `model`, `is_stream`, `server_ip`. Writes Start-side fields (traffic counts, concurrency sample) into the bucket.
-- **`Complete`** — emitted when the full LLM call has been assembled. Carries the full `LlmCall`. Writes Complete-side fields (tokens, errors, finish reason, TTFB / E2E / TPOT samples) into the bucket.
+- **`Complete`** — emitted when the full LLM call has been assembled. Carries the full `LlmCall`. Writes Complete-side fields (tokens, errors, finish reason, TTFT / E2E / TPOT samples) into the bucket.
 - **`Heartbeat`** — synthetic event-time advance, broadcast from capture to every shard. Does not write data; only advances the per-stream watermark so the drain cadence fires on idle streams.
 
 ## Aggregation Model
@@ -89,13 +89,13 @@ pub struct WindowBucket {
     finish_cancelled_count: u64,
 
     // Latency: exact running sum+count + t-digest for per-row percentiles
-    ttfb: DistributionDigest,  // sum, count, p50/p95/p99
+    ttft: DistributionDigest,  // sum, count, p50/p95/p99
     e2e:  DistributionDigest,
     tpot: DistributionDigest,  // streaming only
 }
 ```
 
-`DistributionDigest` tracks `sum` and `count` exactly (untouched by digest compaction) so query-time `SUM(ttfb_sum) / SUM(ttfb_count)` produces an exact average over any multi-row aggregation. Percentiles are per-row t-digest estimates over that row's slice; cross-row aggregation is a weighted average by the row's `*_count` (approximate until the schema adopts serialized t-digest bytes).
+`DistributionDigest` tracks `sum` and `count` exactly (untouched by digest compaction) so query-time `SUM(ttft_sum) / SUM(ttft_count)` produces an exact average over any multi-row aggregation. Percentiles are per-row t-digest estimates over that row's slice; cross-row aggregation is a weighted average by the row's `*_count` (approximate until the schema adopts serialized t-digest bytes).
 
 ## Concurrency Tracking
 

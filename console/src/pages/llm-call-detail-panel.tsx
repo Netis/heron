@@ -15,7 +15,7 @@ function toRawHttpData(detail: LlmCallDetail): RawHttpData {
     model: detail.model,
     status_code: detail.status_code,
     finish_reason: detail.finish_reason,
-    ttfb_ms: detail.ttfb_ms,
+    ttft_ms: detail.ttft_ms,
     e2e_latency_ms: detail.e2e_latency_ms,
     input_tokens: detail.input_tokens,
     output_tokens: detail.output_tokens,

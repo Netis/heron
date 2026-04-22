@@ -10,7 +10,7 @@ export interface RawHttpData {
   model: string
   status_code: number | null
   finish_reason: string | null
-  ttfb_ms: number | null
+  ttft_ms: number | null
   e2e_latency_ms: number | null
   input_tokens: number | null
   output_tokens: number | null
@@ -88,8 +88,8 @@ function RawHttpBody({ data }: { data: RawHttpData }) {
           </div>
         </div>
         <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
-          <div className="text-muted-foreground">TTFB / E2E</div>
-          <div className="tabular-nums">{formatMs(data.ttfb_ms)} / {formatMs(data.e2e_latency_ms)}</div>
+          <div className="text-muted-foreground">TTFT / E2E</div>
+          <div className="tabular-nums">{formatMs(data.ttft_ms)} / {formatMs(data.e2e_latency_ms)}</div>
         </div>
         <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
           <div className="text-muted-foreground">Tokens</div>
