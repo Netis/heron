@@ -39,7 +39,7 @@ pub struct PcapLiveSource {
     interface: String,
     bpf_filter: Option<String>,
     snaplen: u32,
-    stream_id: String,
+    source_id: String,
     dump_cfg: Option<PacketDumperConfig>,
 }
 
@@ -48,14 +48,14 @@ impl PcapLiveSource {
         interface: String,
         bpf_filter: Option<String>,
         snaplen: u32,
-        stream_id: String,
+        source_id: String,
         dump_cfg: Option<PacketDumperConfig>,
     ) -> Self {
         Self {
             interface,
             bpf_filter,
             snaplen,
-            stream_id,
+            source_id,
             dump_cfg,
         }
     }
@@ -72,7 +72,7 @@ impl CaptureSource for PcapLiveSource {
         let interface = self.interface.clone();
         let bpf_filter = self.bpf_filter.clone();
         let snaplen = self.snaplen;
-        let stream_id = self.stream_id.clone();
+        let source_id = self.source_id.clone();
         let dump_cfg = self.dump_cfg.clone();
         let dumper_metrics = metrics.clone();
 
@@ -153,7 +153,7 @@ impl CaptureSource for PcapLiveSource {
                             wirelen: packet.header.len,
                             link_type,
                             data: Bytes::copy_from_slice(packet.data),
-                            stream_id: stream_id.clone(),
+                            source_id: source_id.clone(),
                         };
 
                         // Packet-driven heartbeat: if event-time has advanced a
@@ -163,7 +163,7 @@ impl CaptureSource for PcapLiveSource {
                         if last_hb_ts == 0 {
                             last_hb_ts = raw.timestamp_us;
                         } else if raw.timestamp_us - last_hb_ts >= HEARTBEAT_INTERVAL_US {
-                            let hb = RawPacket::heartbeat(raw.timestamp_us, stream_id.clone());
+                            let hb = RawPacket::heartbeat(raw.timestamp_us, source_id.clone());
                             if tx.blocking_send(hb).is_err() {
                                 tracing::debug!("pcap-live: channel closed, stopping");
                                 break;
@@ -203,7 +203,7 @@ impl CaptureSource for PcapLiveSource {
                             let wall_us = wall_clock_us();
                             if wall_us - last_hb_ts >= HEARTBEAT_INTERVAL_US {
                                 let hb_ts = (wall_us - SAFETY_MARGIN_US).max(last_hb_ts + 1);
-                                let hb = RawPacket::heartbeat(hb_ts, stream_id.clone());
+                                let hb = RawPacket::heartbeat(hb_ts, source_id.clone());
                                 if tx.blocking_send(hb).is_err() {
                                     tracing::debug!("pcap-live: channel closed, stopping");
                                     break;

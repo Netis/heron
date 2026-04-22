@@ -16,15 +16,15 @@ use crate::source::CaptureSource;
 /// Reads packets from a pcap file on a blocking thread.
 pub struct PcapFileSource {
     path: PathBuf,
-    stream_id: String,
+    source_id: String,
     dump_cfg: Option<PacketDumperConfig>,
 }
 
 impl PcapFileSource {
-    pub fn new(path: PathBuf, stream_id: String, dump_cfg: Option<PacketDumperConfig>) -> Self {
+    pub fn new(path: PathBuf, source_id: String, dump_cfg: Option<PacketDumperConfig>) -> Self {
         Self {
             path,
-            stream_id,
+            source_id,
             dump_cfg,
         }
     }
@@ -39,7 +39,7 @@ impl CaptureSource for PcapFileSource {
         cancel: CancellationToken,
     ) -> crate::Result<()> {
         let path = self.path.clone();
-        let stream_id = self.stream_id.clone();
+        let source_id = self.source_id.clone();
         let dump_cfg = self.dump_cfg.clone();
         let dumper_metrics = metrics.clone();
 
@@ -79,7 +79,7 @@ impl CaptureSource for PcapFileSource {
                             wirelen: packet.header.len,
                             link_type,
                             data: Bytes::copy_from_slice(packet.data),
-                            stream_id: stream_id.clone(),
+                            source_id: source_id.clone(),
                         };
 
                         if let Some(d) = dumper.as_mut() {

@@ -12,7 +12,7 @@ use ts_capture::RawPacket;
 #[derive(Debug, Clone)]
 pub enum WorkerInput {
     Packet(ParsedPacket),
-    Heartbeat { ts: i64, stream_id: String },
+    Heartbeat { ts: i64, source_id: String },
 }
 
 /// Parses raw packets and distributes them to workers by flow key hash.
@@ -35,7 +35,7 @@ impl FlowDispatcher {
     /// Returns false if all worker channels are closed.
     pub async fn dispatch(&self, raw: RawPacket) -> bool {
         if raw.is_heartbeat() {
-            self.broadcast_heartbeat(raw.timestamp_us, raw.stream_id);
+            self.broadcast_heartbeat(raw.timestamp_us, raw.source_id);
             return true;
         }
         self.dispatch_packet(&raw).await
@@ -46,7 +46,7 @@ impl FlowDispatcher {
             &raw.data,
             raw.link_type,
             raw.timestamp_us,
-            raw.stream_id.clone(),
+            raw.source_id.clone(),
         ) {
             Some(p) => p,
             None => return true, // Non-TCP packet, skip.
@@ -65,12 +65,12 @@ impl FlowDispatcher {
     /// head-of-line blocking if one shard is momentarily full — dropping a
     /// heartbeat only delays that shard's sweep by one interval, which is
     /// acceptable.
-    fn broadcast_heartbeat(&self, ts: i64, stream_id: String) {
+    fn broadcast_heartbeat(&self, ts: i64, source_id: String) {
         for tx in &self.worker_txs {
             if tx
                 .try_send(WorkerInput::Heartbeat {
                     ts,
-                    stream_id: stream_id.clone(),
+                    source_id: source_id.clone(),
                 })
                 .is_err()
             {

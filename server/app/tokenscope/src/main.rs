@@ -160,7 +160,7 @@ async fn main() {
             sources: vec![CaptureSourceConfig::PcapFile {
                 path: pcap_file.to_string_lossy().to_string(),
                 realtime: false,
-                stream_id: None,
+                source_id: None,
             }],
             ..PipelineDef::default()
         }]
@@ -171,7 +171,7 @@ async fn main() {
                 interface: interface.clone(),
                 bpf_filter: args.bpf_filter.clone(),
                 snaplen: args.snaplen,
-                stream_id: None,
+                source_id: None,
             }],
             ..PipelineDef::default()
         }]
@@ -179,14 +179,14 @@ async fn main() {
         config.pipelines.clone()
     };
 
-    // Validate no duplicate stream_ids across all pipeline sources.
+    // Validate no duplicate source_ids across all pipeline sources.
     {
         let mut seen = std::collections::HashSet::new();
         for def in &effective_pipelines {
             for cfg in &def.sources {
-                if let Some(sid) = cfg.resolved_stream_id() {
+                if let Some(sid) = cfg.resolved_source_id() {
                     if !seen.insert(sid.clone()) {
-                        tracing::error!("duplicate stream_id '{sid}' across capture sources");
+                        tracing::error!("duplicate source_id '{sid}' across capture sources");
                         std::process::exit(1);
                     }
                 }

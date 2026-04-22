@@ -2,9 +2,9 @@
 //! each shard keyed by hash(wire_api, model, server_ip) % M. Window close
 //! is purely event-timestamp driven (no wall-clock tick).
 //!
-//! Each aggregator handles multiple streams (identified by `stream_id` on
-//! each event). Per-stream watermarks ensure window close is independent
-//! across streams.
+//! Each aggregator handles multiple sources (identified by `source_id` on
+//! each event). Per-source watermarks ensure window close is independent
+//! across sources.
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -77,7 +77,7 @@ mod tests {
 
     fn start_event(ts_us: i64, model: &str) -> LlmEvent {
         LlmEvent::Start(LlmCallStart {
-            stream_id: String::new(),
+            source_id: String::new(),
             wire_api: wa::OPENAI_CHAT,
             model: model.into(),
             is_stream: true,
@@ -89,7 +89,7 @@ mod tests {
     fn complete_event(ts_us: i64, model: &str) -> LlmEvent {
         LlmEvent::Complete {
             call: std::sync::Arc::new(LlmCall {
-                stream_id: String::new(),
+                source_id: String::new(),
                 id: format!("c-{ts_us}"),
                 wire_api: wa::OPENAI_CHAT,
                 model: model.into(),

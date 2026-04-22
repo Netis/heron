@@ -95,7 +95,7 @@ CLAUDE.md is loaded every conversation but must stay concise. `docs/design/` hol
 
 ## Data Pipeline Architecture
 
-Each capture source runs its own independent sub-pipeline — dispatcher → protocol → llm → turn → **metrics** — all the way through aggregation. Only the storage sink is shared. Giving every capture its own metrics aggregator means each stream owns its event-time watermark, so inter-source clock skew (cloud-probe vs. local pcap, different hosts) cannot re-open already-flushed windows and produce duplicate rows. Every emitted `LlmMetric` carries a `stream_id` (today = capture-source index) so the sink / query layer can merge per-stream rows explicitly at read time.
+Each capture source runs its own independent sub-pipeline — dispatcher → protocol → llm → turn → **metrics** — all the way through aggregation. Only the storage sink is shared. Giving every capture its own metrics aggregator means each source owns its event-time watermark, so inter-source clock skew (cloud-probe vs. local pcap, different hosts) cannot re-open already-flushed windows and produce duplicate rows. Every emitted `LlmMetric` carries a `source_id` (today = capture-source index) so the sink / query layer can merge per-source rows explicitly at read time.
 
 ```
 Per-source pipeline:
@@ -113,7 +113,7 @@ capture ──▶ packet_parser (extract flow key from IP/TCP headers)
           │     protocol::net  (TCP reassembly for assigned flows)
           │     protocol::http (HTTP/SSE parsing)
           │     llm            (wire-API detection + extraction)
-          │       ├──▶ CallStart event ──▶ metrics::Aggregator(stream_id)
+          │       ├──▶ CallStart event ──▶ metrics::Aggregator(source_id)
           │       └──▶ LlmCall            (per-capture; own watermark)
           └─────────┼─────────┘
                     │
@@ -127,7 +127,7 @@ capture ──▶ packet_parser (extract flow key from IP/TCP headers)
                                    DB
 
 Multiple sources (pcap, cloud-probe) run in parallel, each with its own
-aggregator group; the sink stamps stream_id on every metrics row so
+aggregator group; the sink stamps source_id on every metrics row so
 downstream queries can merge streams back together at read time.
 ```
 
@@ -145,7 +145,7 @@ Worker count is configurable (default: number of CPU cores or a fixed value like
 - **capture::cloud-probe**: Tokio task — native async ZMQ
 - **packet_parser + flow_dispatcher**: Tokio task — lightweight header parsing + channel dispatch
 - **workers**: each worker is a Tokio task — runs the full protocol → llm pipeline for its flow subset
-- **metrics::Aggregator**: one Tokio task group *per capture source* — each owns an independent event-time watermark, keyed by `stream_id`; all emit into the shared storage sink
+- **metrics::Aggregator**: one Tokio task group *per capture source* — each owns an independent event-time watermark, keyed by `source_id`; all emit into the shared storage sink
 - **storage::WriteBuffer**: single Tokio task — batches writes from all workers
 
 Stages are connected by `tokio::sync::mpsc` channels with bounded capacity, providing natural backpressure propagation.

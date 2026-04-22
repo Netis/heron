@@ -30,10 +30,10 @@ const GRANULARITIES: &[GranularityConfig] = &[
     },
 ];
 
-/// Composite key for a metrics bucket: (stream, granularity, window_start, dim).
+/// Composite key for a metrics bucket: (source, granularity, window_start, dim).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BucketKey {
-    stream_id: String,
+    source_id: String,
     granularity_idx: usize,
     window_start_us: i64,
     wire_api: String,
@@ -44,7 +44,7 @@ struct BucketKey {
 /// Dimension key for concurrency tracking (no window or granularity).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DimensionKey {
-    stream_id: String,
+    source_id: String,
     wire_api: String,
     model: String,
     server_ip: String,
@@ -52,10 +52,10 @@ struct DimensionKey {
 
 /// Aggregates LlmEvents into time-windowed LlmMetric records.
 ///
-/// Each `(stream, granularity, window_start(request_time), dim)` key maps
+/// Each `(source, granularity, window_start(request_time), dim)` key maps
 /// to one `WindowBucket` that receives writes from both `LlmEvent::Start`
 /// (traffic/concurrency) and `LlmEvent::Complete` (tokens/errors/latency).
-/// The bucket is drained on a per-`(stream, granularity)` cadence aligned
+/// The bucket is drained on a per-`(source, granularity)` cadence aligned
 /// to the window boundary (first drain at `window_start + window_secs`,
 /// subsequent drains every `window_secs` of event-time) and then dropped.
 /// A late Complete whose bucket was already drained opens a fresh bucket for
@@ -68,9 +68,9 @@ struct DimensionKey {
 pub struct MetricsAggregator {
     buckets: HashMap<BucketKey, WindowBucket>,
     concurrency: HashMap<DimensionKey, i64>,
-    /// Per-stream event-time watermark, advanced by every event.
+    /// Per-source event-time watermark, advanced by every event.
     latest_ts: HashMap<String, i64>,
-    /// Per-(stream, granularity_idx) cadence anchor for bucket drain.
+    /// Per-(source, granularity_idx) cadence anchor for bucket drain.
     /// Initialized on first write to the bucket with `window_start(ts, gran)`
     /// so the first drain fires at `window_end` instead of emitting a
     /// single-sample row the moment the first event arrives mid-window.
@@ -93,7 +93,7 @@ impl MetricsAggregator {
     pub fn process(&mut self, event: &LlmEvent) -> Vec<LlmMetric> {
         self.metrics.counter(Metric::MetricsEventsReceived).inc();
 
-        let (stream_id, ts) = event_clock(event);
+        let (source_id, ts) = event_clock(event);
 
         match event {
             LlmEvent::Start(start) => self.on_call_start(start),
@@ -102,12 +102,12 @@ impl MetricsAggregator {
         }
 
         let watermark = {
-            let entry = self.latest_ts.entry(stream_id.clone()).or_insert(0);
+            let entry = self.latest_ts.entry(source_id.clone()).or_insert(0);
             *entry = (*entry).max(ts);
             *entry
         };
 
-        self.maybe_drain(&stream_id, watermark)
+        self.maybe_drain(&source_id, watermark)
     }
 
     /// Flush all remaining buckets. Call at end of capture.
@@ -119,7 +119,7 @@ impl MetricsAggregator {
                 if bucket.has_data() {
                     metrics.push(bucket.flush(
                         key.window_start_us,
-                        &key.stream_id,
+                        &key.source_id,
                         GRANULARITIES[key.granularity_idx].label,
                         key.wire_api,
                         key.model,
@@ -142,7 +142,7 @@ impl MetricsAggregator {
 
     fn on_call_start(&mut self, start: &LlmCallStart) {
         let dim_keys = dimension_keys(
-            &start.stream_id,
+            &start.source_id,
             &start.wire_api.to_string(),
             &start.model,
             &start.server_ip.to_string(),
@@ -158,11 +158,11 @@ impl MetricsAggregator {
         for (gi, gran) in GRANULARITIES.iter().enumerate() {
             let ws = window_start(start.timestamp_us, gran.window_secs);
             self.last_flush_ts
-                .entry((start.stream_id.clone(), gi))
+                .entry((start.source_id.clone(), gi))
                 .or_insert(ws);
             for (di, dk) in dim_keys.iter().enumerate() {
                 let bk = BucketKey {
-                    stream_id: start.stream_id.clone(),
+                    source_id: start.source_id.clone(),
                     granularity_idx: gi,
                     window_start_us: ws,
                     wire_api: dk.wire_api.clone(),
@@ -178,7 +178,7 @@ impl MetricsAggregator {
 
     fn on_call_complete(&mut self, call: &LlmCall) {
         let dim_keys = dimension_keys(
-            &call.stream_id,
+            &call.source_id,
             &call.wire_api.to_string(),
             &call.model,
             &call.server_ip.to_string(),
@@ -194,11 +194,11 @@ impl MetricsAggregator {
             // Same cadence-anchor init as on_call_start — covers captures
             // that start mid-flow and see Complete without a prior Start.
             self.last_flush_ts
-                .entry((call.stream_id.clone(), gi))
+                .entry((call.source_id.clone(), gi))
                 .or_insert(ws);
             for dk in &dim_keys {
                 let bk = BucketKey {
-                    stream_id: call.stream_id.clone(),
+                    source_id: call.source_id.clone(),
                     granularity_idx: gi,
                     window_start_us: ws,
                     wire_api: dk.wire_api.clone(),
@@ -211,15 +211,15 @@ impl MetricsAggregator {
         }
     }
 
-    /// Per-granularity cadence drain. For each `(stream, gran)` pair where
+    /// Per-granularity cadence drain. For each `(source, gran)` pair where
     /// at least `gran.window_secs` of event-time have elapsed since the
     /// anchor, emit and clear all dirty buckets for that pair.
-    fn maybe_drain(&mut self, stream_id: &str, now_ts: i64) -> Vec<LlmMetric> {
+    fn maybe_drain(&mut self, source_id: &str, now_ts: i64) -> Vec<LlmMetric> {
         let mut metrics = Vec::new();
 
         for (gi, gran) in GRANULARITIES.iter().enumerate() {
             let interval_us = gran.window_secs * 1_000_000;
-            let last = match self.last_flush_ts.get(&(stream_id.to_string(), gi)) {
+            let last = match self.last_flush_ts.get(&(source_id.to_string(), gi)) {
                 Some(&t) => t,
                 None => continue,
             };
@@ -227,12 +227,12 @@ impl MetricsAggregator {
                 continue;
             }
             self.last_flush_ts
-                .insert((stream_id.to_string(), gi), now_ts);
+                .insert((source_id.to_string(), gi), now_ts);
 
             let dirty_keys: Vec<_> = self
                 .buckets
                 .keys()
-                .filter(|k| k.stream_id == stream_id && k.granularity_idx == gi)
+                .filter(|k| k.source_id == source_id && k.granularity_idx == gi)
                 .cloned()
                 .collect();
 
@@ -241,7 +241,7 @@ impl MetricsAggregator {
                     if bucket.has_data() {
                         metrics.push(bucket.flush(
                             key.window_start_us,
-                            &key.stream_id,
+                            &key.source_id,
                             gran.label,
                             key.wire_api,
                             key.model,
@@ -257,7 +257,7 @@ impl MetricsAggregator {
     }
 }
 
-/// Extract `(stream_id, event_time_us)` from an event. Event time:
+/// Extract `(source_id, event_time_us)` from an event. Event time:
 /// * `Start` — `timestamp_us` (packet time of the request).
 /// * `Complete` — `complete_time.unwrap_or(request_time)` (latest real
 ///   event-time we have for this call; `request_time` is only a fallback
@@ -265,12 +265,12 @@ impl MetricsAggregator {
 /// * `Heartbeat` — `ts` (synthetic packet time from capture).
 fn event_clock(event: &LlmEvent) -> (String, i64) {
     match event {
-        LlmEvent::Start(s) => (s.stream_id.clone(), s.timestamp_us),
+        LlmEvent::Start(s) => (s.source_id.clone(), s.timestamp_us),
         LlmEvent::Complete { call, .. } => (
-            call.stream_id.clone(),
+            call.source_id.clone(),
             call.complete_time.unwrap_or(call.request_time),
         ),
-        LlmEvent::Heartbeat { ts, stream_id } => (stream_id.clone(), *ts),
+        LlmEvent::Heartbeat { ts, source_id } => (source_id.clone(), *ts),
     }
 }
 
@@ -282,32 +282,32 @@ fn window_start(timestamp_us: i64, window_secs: i64) -> i64 {
 
 /// Generate the 4 dimension keys for a single event.
 fn dimension_keys(
-    stream_id: &str,
+    source_id: &str,
     wire_api: &str,
     model: &str,
     server_ip: &str,
 ) -> [DimensionKey; 4] {
     [
         DimensionKey {
-            stream_id: stream_id.to_string(),
+            source_id: source_id.to_string(),
             wire_api: wire_api.to_string(),
             model: model.to_string(),
             server_ip: server_ip.to_string(),
         },
         DimensionKey {
-            stream_id: stream_id.to_string(),
+            source_id: source_id.to_string(),
             wire_api: wire_api.to_string(),
             model: model.to_string(),
             server_ip: "*".to_string(),
         },
         DimensionKey {
-            stream_id: stream_id.to_string(),
+            source_id: source_id.to_string(),
             wire_api: "*".to_string(),
             model: "*".to_string(),
             server_ip: server_ip.to_string(),
         },
         DimensionKey {
-            stream_id: stream_id.to_string(),
+            source_id: source_id.to_string(),
             wire_api: "*".to_string(),
             model: "*".to_string(),
             server_ip: "*".to_string(),
@@ -335,12 +335,12 @@ mod tests {
     }
 
     fn make_start(ts_us: i64, model: &str, is_stream: bool) -> LlmEvent {
-        make_start_with_stream(ts_us, model, is_stream, "")
+        make_start_with_source(ts_us, model, is_stream, "")
     }
 
-    fn make_start_with_stream(ts_us: i64, model: &str, is_stream: bool, sid: &str) -> LlmEvent {
+    fn make_start_with_source(ts_us: i64, model: &str, is_stream: bool, sid: &str) -> LlmEvent {
         LlmEvent::Start(LlmCallStart {
-            stream_id: sid.to_string(),
+            source_id: sid.to_string(),
             wire_api: wa::OPENAI_CHAT,
             model: model.to_string(),
             is_stream,
@@ -350,10 +350,10 @@ mod tests {
     }
 
     fn make_complete(request_time: i64, complete_time: i64, model: &str) -> LlmEvent {
-        make_complete_with_stream(request_time, complete_time, model, "")
+        make_complete_with_source(request_time, complete_time, model, "")
     }
 
-    fn make_complete_with_stream(
+    fn make_complete_with_source(
         request_time: i64,
         complete_time: i64,
         model: &str,
@@ -361,7 +361,7 @@ mod tests {
     ) -> LlmEvent {
         LlmEvent::Complete {
             call: Arc::new(LlmCall {
-                stream_id: sid.to_string(),
+                source_id: sid.to_string(),
                 id: format!("c-{request_time}-{complete_time}"),
                 wire_api: wa::OPENAI_CHAT,
                 model: model.to_string(),
@@ -398,7 +398,7 @@ mod tests {
     fn make_heartbeat(ts_us: i64, sid: &str) -> LlmEvent {
         LlmEvent::Heartbeat {
             ts: ts_us,
-            stream_id: sid.to_string(),
+            source_id: sid.to_string(),
         }
     }
 
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn drain_by_own_complete_event_without_heartbeat() {
-        // A stream that never sees heartbeats still drains itself via its
+        // A source that never sees heartbeats still drains itself via its
         // own Complete events crossing the cadence boundary.
         let mut agg = MetricsAggregator::new(test_metrics());
         let t0 = 1_700_000_000_000_000i64;
@@ -628,29 +628,29 @@ mod tests {
     }
 
     #[test]
-    fn multi_stream_independent_watermarks() {
+    fn multi_source_independent_watermarks() {
         let mut agg = MetricsAggregator::new(test_metrics());
         let t0 = 1_700_000_000_000_000i64;
         let t1 = t0 + 15_000_000;
 
         // Stream s0 advances past 10s boundary.
-        agg.process(&make_start_with_stream(t0, "gpt-4", true, "s0"));
-        agg.process(&make_complete_with_stream(t0, t0 + 500_000, "gpt-4", "s0"));
-        let s0_flushed = agg.process(&make_start_with_stream(t1, "gpt-4", true, "s0"));
+        agg.process(&make_start_with_source(t0, "gpt-4", true, "s0"));
+        agg.process(&make_complete_with_source(t0, t0 + 500_000, "gpt-4", "s0"));
+        let s0_flushed = agg.process(&make_start_with_source(t1, "gpt-4", true, "s0"));
 
         let s0_rows: Vec<_> = s0_flushed
             .iter()
-            .filter(|m| m.granularity == "10s" && m.stream_id == "s0" && m.timestamp_us == t0)
+            .filter(|m| m.granularity == "10s" && m.source_id == "s0" && m.timestamp_us == t0)
             .collect();
         assert_eq!(s0_rows.len(), 4, "s0 drains for t0");
 
         // Stream s1 still inside [t0, t0+10s) — its window must not drain.
-        agg.process(&make_start_with_stream(t0, "gpt-4", true, "s1"));
-        let s1_flushed = agg.process(&make_complete_with_stream(t0, t0 + 500_000, "gpt-4", "s1"));
+        agg.process(&make_start_with_source(t0, "gpt-4", true, "s1"));
+        let s1_flushed = agg.process(&make_complete_with_source(t0, t0 + 500_000, "gpt-4", "s1"));
         assert_eq!(
             s1_flushed
                 .iter()
-                .filter(|m| m.granularity == "10s" && m.stream_id == "s1")
+                .filter(|m| m.granularity == "10s" && m.source_id == "s1")
                 .count(),
             0
         );

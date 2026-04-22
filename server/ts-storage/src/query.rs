@@ -91,7 +91,7 @@ pub struct MetricsModelRow {
 #[derive(Debug, Clone, Serialize)]
 pub struct CallListItem {
     pub id: String,
-    pub stream_id: String,
+    pub source_id: String,
     pub request_time: i64,
     pub wire_api: String,
     pub model: String,
@@ -134,7 +134,7 @@ pub struct HttpExchangesQuery {
 #[derive(Debug, Clone, Serialize)]
 pub struct HttpExchangeListItem {
     pub id: String,
-    pub stream_id: String,
+    pub source_id: String,
     /// µs since epoch.
     pub request_time: i64,
     pub method: String,
@@ -170,7 +170,7 @@ pub struct TurnsQuery {
 #[derive(Debug, Clone, Serialize)]
 pub struct TurnListItem {
     pub turn_id: String,
-    pub stream_id: String,
+    pub source_id: String,
     pub session_id: String,
     pub start_time: i64,
     pub end_time: i64,
@@ -197,7 +197,7 @@ pub struct TurnsPage {
 #[derive(Debug, Clone, Serialize)]
 pub struct TurnDetail {
     pub turn_id: String,
-    pub stream_id: String,
+    pub source_id: String,
     pub session_id: String,
     pub tenant_id: Option<String>,
     pub wire_api: String,
@@ -258,7 +258,7 @@ pub struct TurnCallItem {
 #[derive(Debug, Clone, Serialize)]
 pub struct HttpExchangeDetail {
     pub id: String,
-    pub stream_id: String,
+    pub source_id: String,
     pub client_ip: String,
     pub client_port: u16,
     pub server_ip: String,
@@ -290,7 +290,7 @@ pub struct HttpExchangeDetail {
 #[derive(Debug, Clone, Serialize)]
 pub struct CallDetail {
     pub id: String,
-    pub stream_id: String,
+    pub source_id: String,
     pub request_time: i64,
     pub response_time: Option<i64>,
     pub complete_time: Option<i64>,

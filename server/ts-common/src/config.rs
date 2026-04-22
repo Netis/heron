@@ -149,14 +149,14 @@ pub enum CaptureSourceConfig {
         #[serde(default = "default_snaplen")]
         snaplen: u32,
         #[serde(default)]
-        stream_id: Option<String>,
+        source_id: Option<String>,
     },
     PcapFile {
         path: String,
         #[serde(default)]
         realtime: bool,
         #[serde(default)]
-        stream_id: Option<String>,
+        source_id: Option<String>,
     },
     CloudProbe {
         #[serde(default = "default_cloud_probe_endpoint")]
@@ -167,25 +167,25 @@ pub enum CaptureSourceConfig {
 }
 
 impl CaptureSourceConfig {
-    /// Resolve the stream_id for this source. Returns `Some` for static sources
+    /// Resolve the source_id for this source. Returns `Some` for static sources
     /// (pcap, pcap-file) with a default derived from interface/filename.
-    /// Returns `None` for cloud-probe (stream_id comes from batch UUID at runtime).
-    pub fn resolved_stream_id(&self) -> Option<String> {
+    /// Returns `None` for cloud-probe (source_id comes from batch UUID at runtime).
+    pub fn resolved_source_id(&self) -> Option<String> {
         match self {
             Self::Pcap {
-                stream_id,
+                source_id,
                 interface,
                 ..
-            } => Some(stream_id.clone().unwrap_or_else(|| interface.clone())),
+            } => Some(source_id.clone().unwrap_or_else(|| interface.clone())),
             Self::PcapFile {
-                stream_id, path, ..
+                source_id, path, ..
             } => {
                 let base = std::path::Path::new(path)
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or(path)
                     .to_string();
-                Some(stream_id.clone().unwrap_or(base))
+                Some(source_id.clone().unwrap_or(base))
             }
             Self::CloudProbe { .. } => None,
         }
@@ -493,8 +493,8 @@ fn default_metrics_shard_count() -> usize {
 
 /// Per-pipeline packet dump. When enabled, every non-heartbeat `RawPacket`
 /// captured by this pipeline's sources is written to a pcap file, grouped
-/// by `stream_id` — one file per stream, lazily created on first packet.
-/// Files are Wireshark-openable classic pcap with the stream's observed
+/// by `source_id` — one file per source, lazily created on first packet.
+/// Files are Wireshark-openable classic pcap with the source's observed
 /// link type. Off by default.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PcapDumpConfig {
@@ -521,7 +521,7 @@ fn default_pcap_dump_dir() -> String {
 }
 
 fn default_pcap_dump_template() -> String {
-    "{stream_id}.pcap".to_string()
+    "{source_id}.pcap".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -651,45 +651,45 @@ mod phase2_tests {
     }
 
     #[test]
-    fn pcap_config_with_custom_stream_id() {
+    fn pcap_config_with_custom_source_id() {
         let toml = r#"
             [[capture.sources]]
             type = "pcap"
             interface = "eth0"
-            stream_id = "my-stream"
+            source_id = "my-source"
         "#;
         let cfg = AppConfig::from_toml(toml);
         assert_eq!(cfg.pipelines.len(), 1);
         match &cfg.pipelines[0].sources[0] {
-            CaptureSourceConfig::Pcap { stream_id, .. } => {
-                assert_eq!(stream_id.as_deref(), Some("my-stream"));
+            CaptureSourceConfig::Pcap { source_id, .. } => {
+                assert_eq!(source_id.as_deref(), Some("my-source"));
             }
             _ => panic!("expected Pcap"),
         }
     }
 
     #[test]
-    fn resolved_stream_id_defaults() {
+    fn resolved_source_id_defaults() {
         let pcap = CaptureSourceConfig::Pcap {
             interface: "eth1".to_string(),
             bpf_filter: None,
             snaplen: 65535,
-            stream_id: None,
+            source_id: None,
         };
-        assert_eq!(pcap.resolved_stream_id(), Some("eth1".to_string()));
+        assert_eq!(pcap.resolved_source_id(), Some("eth1".to_string()));
 
         let pcap_file = CaptureSourceConfig::PcapFile {
             path: "/data/captures/test.pcap".to_string(),
             realtime: false,
-            stream_id: None,
+            source_id: None,
         };
-        assert_eq!(pcap_file.resolved_stream_id(), Some("test".to_string()));
+        assert_eq!(pcap_file.resolved_source_id(), Some("test".to_string()));
 
         let cloud = CaptureSourceConfig::CloudProbe {
             endpoint: "tcp://0.0.0.0:5555".to_string(),
             recv_hwm: 1000,
         };
-        assert_eq!(cloud.resolved_stream_id(), None);
+        assert_eq!(cloud.resolved_source_id(), None);
     }
 
     #[test]
@@ -783,7 +783,7 @@ mod phase2_tests {
         assert_eq!(cfg.pipelines[0].pcap_dump.dir, "data/dumps");
         assert_eq!(
             cfg.pipelines[0].pcap_dump.filename_template,
-            "{stream_id}.pcap"
+            "{source_id}.pcap"
         );
     }
 
@@ -796,7 +796,7 @@ mod phase2_tests {
             [pipeline.pcap_dump]
             enabled = true
             dir = "/tmp/dumps"
-            filename_template = "{stream_id}_x.pcap"
+            filename_template = "{source_id}_x.pcap"
 
             [[pipeline.sources]]
             type = "pcap"
@@ -806,6 +806,6 @@ mod phase2_tests {
         let d = &cfg.pipelines[0].pcap_dump;
         assert!(d.enabled);
         assert_eq!(d.dir, "/tmp/dumps");
-        assert_eq!(d.filename_template, "{stream_id}_x.pcap");
+        assert_eq!(d.filename_template, "{source_id}_x.pcap");
     }
 }

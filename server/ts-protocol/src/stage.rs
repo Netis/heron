@@ -27,7 +27,7 @@ use crate::tcp::FlowWorker;
 ///
 /// When a pipeline has multiple dispatchers, the composition root creates
 /// one channel per dispatcher and wraps the senders in a `RoutingSender`
-/// that routes by `hash(stream_id)`. Each dispatcher receives its own
+/// that routes by `hash(source_id)`. Each dispatcher receives its own
 /// clone of `worker_txs` (all pointing to the same set of protocol
 /// workers).
 pub fn spawn_flow_dispatcher(

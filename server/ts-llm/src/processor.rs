@@ -41,8 +41,8 @@ impl LlmProcessor {
                 response,
                 sse_events,
             } => self.on_exchange(request, response, sse_events),
-            HttpJoinerEvent::Heartbeat { ts, stream_id } => {
-                vec![LlmEvent::Heartbeat { ts, stream_id }]
+            HttpJoinerEvent::Heartbeat { ts, source_id } => {
+                vec![LlmEvent::Heartbeat { ts, source_id }]
             }
         }
     }
@@ -55,7 +55,7 @@ impl LlmProcessor {
         let info = extractor.extract_request(req);
         self.metrics.counter(Metric::LlmRequestsDetected).inc();
         vec![LlmEvent::Start(LlmCallStart {
-            stream_id: req.flow_key.stream_id.clone(),
+            source_id: req.flow_key.source_id.clone(),
             wire_api: extractor.name(),
             model: info.model,
             is_stream: info.is_stream,
@@ -116,7 +116,7 @@ impl LlmProcessor {
             .map(|s| s.to_string());
 
         let call = LlmCall {
-            stream_id: request.flow_key.stream_id.clone(),
+            source_id: request.flow_key.source_id.clone(),
             id: Uuid::now_v7().to_string(),
             wire_api: extractor.name(),
             model,
@@ -385,7 +385,7 @@ mod tests {
         let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
         let events = proc.process(HttpJoinerEvent::Heartbeat {
             ts: 1_234_567,
-            stream_id: "s1".into(),
+            source_id: "s1".into(),
         });
         assert!(matches!(
             events.as_slice(),

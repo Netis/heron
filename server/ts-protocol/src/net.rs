@@ -7,14 +7,14 @@ use bytes::Bytes;
 /// always `addr_a`, ensuring both directions hash to the same key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlowKey {
-    pub stream_id: String,
+    pub source_id: String,
     pub addr_a: (IpAddr, u16),
     pub addr_b: (IpAddr, u16),
 }
 
 impl FlowKey {
     pub fn new(
-        stream_id: String,
+        source_id: String,
         src_ip: IpAddr,
         src_port: u16,
         dst_ip: IpAddr,
@@ -24,13 +24,13 @@ impl FlowKey {
         let b = (dst_ip, dst_port);
         if (src_ip, src_port) <= (dst_ip, dst_port) {
             Self {
-                stream_id,
+                source_id,
                 addr_a: a,
                 addr_b: b,
             }
         } else {
             Self {
-                stream_id,
+                source_id,
                 addr_a: b,
                 addr_b: a,
             }
@@ -47,7 +47,7 @@ impl FlowKey {
 
 impl Hash for FlowKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.stream_id.hash(state);
+        self.source_id.hash(state);
         self.addr_a.0.hash(state);
         self.addr_a.1.hash(state);
         self.addr_b.0.hash(state);
@@ -60,7 +60,7 @@ impl std::fmt::Display for FlowKey {
         write!(
             f,
             "[{}] {}:{} <-> {}:{}",
-            self.stream_id, self.addr_a.0, self.addr_a.1, self.addr_b.0, self.addr_b.1
+            self.source_id, self.addr_a.0, self.addr_a.1, self.addr_b.0, self.addr_b.1
         )
     }
 }
@@ -139,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn flow_key_different_stream_id_not_equal() {
+    fn flow_key_different_source_id_not_equal() {
         let ip_a: IpAddr = "10.0.0.1".parse().unwrap();
         let ip_b: IpAddr = "10.0.0.2".parse().unwrap();
         let fk1 = FlowKey::new("s1".to_string(), ip_a, 1000, ip_b, 80);

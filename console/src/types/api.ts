@@ -187,7 +187,7 @@ export interface LlmCallDetail {
 
 export interface HttpExchangeListItem {
   id: string
-  stream_id: string
+  source_id: string
   request_time: number
   method: string
   uri: string
@@ -206,7 +206,7 @@ export interface HttpExchangesPage {
 
 export interface HttpExchangeDetail {
   id: string
-  stream_id: string
+  source_id: string
   client_ip: string
   client_port: number
   server_ip: string

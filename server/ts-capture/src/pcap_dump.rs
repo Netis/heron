@@ -1,10 +1,10 @@
 //! Optional packet dump to pcap files.
 //!
 //! Writes every non-heartbeat [`RawPacket`] a source produces to a
-//! Wireshark-openable classic pcap file, grouped by `stream_id` (one file per
-//! stream, lazily created on first packet). Disabled by default; enabled per
+//! Wireshark-openable classic pcap file, grouped by `source_id` (one file per
+//! source, lazily created on first packet). Disabled by default; enabled per
 //! pipeline via `[pipeline.pcap_dump]`. Dump failures are logged and the
-//! offending stream is muted — capture never fails on behalf of the dumper.
+//! offending source is muted — capture never fails on behalf of the dumper.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -37,19 +37,19 @@ impl PacketDumperConfig {
     }
 }
 
-/// Lazily opens one [`Savefile`] per `stream_id`, each pinned to the link type
-/// of the first packet seen on that stream. Packets whose link type disagrees
+/// Lazily opens one [`Savefile`] per `source_id`, each pinned to the link type
+/// of the first packet seen on that source. Packets whose link type disagrees
 /// with the pinned value are dropped (throttled warn).
 pub struct PacketDumper {
     cfg: PacketDumperConfig,
-    writers: HashMap<String, StreamWriter>,
+    writers: HashMap<String, SourceWriter>,
     disabled: HashSet<String>,
     err_throttle: ThrottledWarn,
     metrics: MetricsWorker,
     start_iso: String,
 }
 
-struct StreamWriter {
+struct SourceWriter {
     file: Savefile,
     link_type: u32,
 }
@@ -69,32 +69,32 @@ impl PacketDumper {
     }
 
     /// Write one packet. Heartbeats are silently skipped. All I/O errors are
-    /// swallowed — the offending stream is muted so capture can continue.
+    /// swallowed — the offending source is muted so capture can continue.
     pub fn write(&mut self, pkt: &RawPacket) {
         if pkt.is_heartbeat() {
             return;
         }
-        if self.disabled.contains(&pkt.stream_id) {
+        if self.disabled.contains(&pkt.source_id) {
             return;
         }
 
-        if !self.writers.contains_key(&pkt.stream_id) {
-            match self.open_stream(pkt) {
+        if !self.writers.contains_key(&pkt.source_id) {
+            match self.open_source(pkt) {
                 Some(w) => {
-                    self.writers.insert(pkt.stream_id.clone(), w);
+                    self.writers.insert(pkt.source_id.clone(), w);
                 }
-                None => return, // open_stream already logged + disabled stream
+                None => return, // open_source already logged + disabled source
             }
         }
 
-        let entry = self.writers.get_mut(&pkt.stream_id).expect("just inserted");
+        let entry = self.writers.get_mut(&pkt.source_id).expect("just inserted");
 
         if entry.link_type != pkt.link_type {
             let pinned = entry.link_type;
             let got = pkt.link_type;
-            let sid = pkt.stream_id.clone();
+            let sid = pkt.source_id.clone();
             self.note_error(&format!(
-                "pcap-dump: link_type mismatch on stream '{sid}' (pinned={pinned}, got={got}); dropping packet"
+                "pcap-dump: link_type mismatch on source '{sid}' (pinned={pinned}, got={got}); dropping packet"
             ));
             return;
         }
@@ -113,7 +113,7 @@ impl PacketDumper {
         entry.file.write(&packet);
     }
 
-    /// Flush every open stream's stdio buffer to the kernel. Cheap; safe to
+    /// Flush every open source's stdio buffer to the kernel. Cheap; safe to
     /// call from the shutdown path to bound data loss on hard termination.
     /// Flush errors are logged+counted like any other dump error but never
     /// propagated.
@@ -125,16 +125,16 @@ impl PacketDumper {
             }
         }
         for (sid, e) in errs {
-            self.note_error(&format!("pcap-dump: flush failed for stream '{sid}': {e}"));
+            self.note_error(&format!("pcap-dump: flush failed for source '{sid}': {e}"));
         }
     }
 
-    fn open_stream(&mut self, pkt: &RawPacket) -> Option<StreamWriter> {
-        let path = match self.resolve_path(&pkt.stream_id) {
+    fn open_source(&mut self, pkt: &RawPacket) -> Option<SourceWriter> {
+        let path = match self.resolve_path(&pkt.source_id) {
             Ok(p) => p,
             Err(e) => {
-                let sid = pkt.stream_id.clone();
-                self.note_error(&format!("pcap-dump: refusing to open stream '{sid}': {e}"));
+                let sid = pkt.source_id.clone();
+                self.note_error(&format!("pcap-dump: refusing to open source '{sid}': {e}"));
                 self.disabled.insert(sid);
                 return None;
             }
@@ -144,9 +144,9 @@ impl PacketDumper {
         let cap = match Capture::dead(Linktype(lt)) {
             Ok(c) => c,
             Err(e) => {
-                let sid = pkt.stream_id.clone();
+                let sid = pkt.source_id.clone();
                 self.note_error(&format!(
-                    "pcap-dump: pcap_open_dead failed for stream '{sid}' (link_type={lt}): {e}"
+                    "pcap-dump: pcap_open_dead failed for source '{sid}' (link_type={lt}): {e}"
                 ));
                 self.disabled.insert(sid);
                 return None;
@@ -155,10 +155,10 @@ impl PacketDumper {
         let file = match cap.savefile(&path) {
             Ok(f) => f,
             Err(e) => {
-                let sid = pkt.stream_id.clone();
+                let sid = pkt.source_id.clone();
                 let p = path.display().to_string();
                 self.note_error(&format!(
-                    "pcap-dump: failed to open '{p}' for stream '{sid}': {e}"
+                    "pcap-dump: failed to open '{p}' for source '{sid}': {e}"
                 ));
                 self.disabled.insert(sid);
                 return None;
@@ -166,20 +166,20 @@ impl PacketDumper {
         };
 
         tracing::info!(
-            "pcap-dump: writing stream '{}' → {} (link_type={})",
-            pkt.stream_id,
+            "pcap-dump: writing source '{}' → {} (link_type={})",
+            pkt.source_id,
             path.display(),
             pkt.link_type,
         );
 
-        Some(StreamWriter {
+        Some(SourceWriter {
             file,
             link_type: pkt.link_type,
         })
     }
 
-    fn resolve_path(&self, stream_id: &str) -> Result<PathBuf, String> {
-        let safe = sanitize(stream_id).ok_or_else(|| format!("invalid stream_id '{stream_id}'"))?;
+    fn resolve_path(&self, source_id: &str) -> Result<PathBuf, String> {
+        let safe = sanitize(source_id).ok_or_else(|| format!("invalid source_id '{source_id}'"))?;
         let filename = render_template(&self.cfg.filename_template, &safe, &self.start_iso);
         let out = self.cfg.dir.join(&filename);
         // Defence-in-depth: even if a template or sanitization bug lets a
@@ -207,11 +207,11 @@ impl PacketDumper {
 
 /// Replace any byte outside `[A-Za-z0-9._-]` with `_`. Rejects empty, `.`,
 /// and `..` entirely — those would create ambiguous or traversal-prone paths.
-fn sanitize(stream_id: &str) -> Option<String> {
-    if stream_id.is_empty() {
+fn sanitize(source_id: &str) -> Option<String> {
+    if source_id.is_empty() {
         return None;
     }
-    let out: String = stream_id
+    let out: String = source_id
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
@@ -227,9 +227,9 @@ fn sanitize(stream_id: &str) -> Option<String> {
     Some(out)
 }
 
-fn render_template(template: &str, stream_id: &str, start_iso: &str) -> String {
+fn render_template(template: &str, source_id: &str, start_iso: &str) -> String {
     template
-        .replace("{stream_id}", stream_id)
+        .replace("{source_id}", source_id)
         .replace("{start_iso}", start_iso)
 }
 
@@ -277,21 +277,21 @@ mod tests {
         sys.register_worker("test", &[Metric::CaptureDumpErrors])
     }
 
-    fn make_pkt(stream_id: &str, ts_us: i64, data: &[u8]) -> RawPacket {
+    fn make_pkt(source_id: &str, ts_us: i64, data: &[u8]) -> RawPacket {
         RawPacket {
             timestamp_us: ts_us,
             caplen: data.len() as u32,
             wirelen: data.len() as u32,
             link_type: 1,
             data: Bytes::copy_from_slice(data),
-            stream_id: stream_id.to_string(),
+            source_id: source_id.to_string(),
         }
     }
 
     fn cfg(dir: &Path) -> PacketDumperConfig {
         PacketDumperConfig {
             dir: dir.to_path_buf(),
-            filename_template: "{stream_id}.pcap".to_string(),
+            filename_template: "{source_id}.pcap".to_string(),
         }
     }
 
@@ -307,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_two_streams() {
+    fn round_trip_two_sources() {
         let dir = tempfile::tempdir().unwrap();
         let mut d = PacketDumper::new(cfg(dir.path()), test_metrics()).unwrap();
 
@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_id_is_sanitized_and_stays_in_dir() {
+    fn source_id_is_sanitized_and_stays_in_dir() {
         let dir = tempfile::tempdir().unwrap();
         let mut d = PacketDumper::new(cfg(dir.path()), test_metrics()).unwrap();
 
@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_stream_id_disables_that_stream() {
+    fn empty_source_id_disables_that_source() {
         let dir = tempfile::tempdir().unwrap();
         let mut d = PacketDumper::new(cfg(dir.path()), test_metrics()).unwrap();
 
@@ -389,7 +389,7 @@ mod tests {
     fn start_iso_template_produces_timestamped_filename() {
         let dir = tempfile::tempdir().unwrap();
         let mut c = cfg(dir.path());
-        c.filename_template = "{stream_id}_{start_iso}.pcap".to_string();
+        c.filename_template = "{source_id}_{start_iso}.pcap".to_string();
         let mut d = PacketDumper::new(c, test_metrics()).unwrap();
         d.write(&make_pkt("s", 1_000_000, &[0x01]));
         drop(d);

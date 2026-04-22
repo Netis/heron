@@ -8,9 +8,9 @@ The `ts-metrics` crate receives `LlmEvent` values from the pipeline, aggregates 
 
 The aggregator consumes three kinds of `LlmEvent`:
 
-- **`Start`** — emitted when request headers are parsed. Carries `stream_id`, timestamp, `wire_api`, `model`, `is_stream`, `server_ip`. Writes Start-side fields (traffic counts, concurrency sample) into the bucket.
+- **`Start`** — emitted when request headers are parsed. Carries `source_id`, timestamp, `wire_api`, `model`, `is_stream`, `server_ip`. Writes Start-side fields (traffic counts, concurrency sample) into the bucket.
 - **`Complete`** — emitted when the full LLM call has been assembled. Carries the full `LlmCall`. Writes Complete-side fields (tokens, errors, finish reason, TTFT / E2E / TPOT samples) into the bucket.
-- **`Heartbeat`** — synthetic event-time advance, broadcast from capture to every shard. Does not write data; only advances the per-stream watermark so the drain cadence fires on idle streams.
+- **`Heartbeat`** — synthetic event-time advance, broadcast from capture to every shard. Does not write data; only advances the per-source watermark so the drain cadence fires on idle sources.
 
 ## Aggregation Model
 
@@ -20,11 +20,11 @@ LlmEvent::Complete  ──┼──▶ MetricsAggregator ──▶ Vec<LlmMetric
 LlmEvent::Heartbeat ──┘
 ```
 
-For each `(stream_id, granularity, window_start(request_time), dim)` key the aggregator owns one `WindowBucket`. Both Start and Complete for the same call key by `window_start(request_time)`, so a late Complete always lands in the same window as its originating Start — the口径 is strictly request-time.
+For each `(source_id, granularity, window_start(request_time), dim)` key the aggregator owns one `WindowBucket`. Both Start and Complete for the same call key by `window_start(request_time)`, so a late Complete always lands in the same window as its originating Start — the口径 is strictly request-time.
 
 ## Drain Cadence (not watermark close)
 
-Buckets do not close the instant the watermark crosses `window_end`. Each `(stream, granularity)` pair owns a **drain anchor** (`last_flush_ts`) that is initialized on the first bucket write to `window_start(ts, gran)`. On every processed event the aggregator checks, for each granularity: if `watermark - last_flush_ts ≥ gran.window_secs` (event-time), every non-empty bucket for that `(stream, gran)` is flushed and removed, and the anchor advances to the current watermark.
+Buckets do not close the instant the watermark crosses `window_end`. Each `(source, granularity)` pair owns a **drain anchor** (`last_flush_ts`) that is initialized on the first bucket write to `window_start(ts, gran)`. On every processed event the aggregator checks, for each granularity: if `watermark - last_flush_ts ≥ gran.window_secs` (event-time), every non-empty bucket for that `(source, gran)` is flushed and removed, and the anchor advances to the current watermark.
 
 Two consequences:
 
@@ -106,15 +106,15 @@ Concurrency requires overlapping-request counting, not a post-hoc derivation.
 
 Per-row avg is `concurrency_sum / concurrency_sample_count`; cross-row avg is `SUM(concurrency_sum) / SUM(concurrency_sample_count)`. `concurrency_max` uses `MAX()` across rows.
 
-## Per-Stream Watermark
+## Per-Source Watermark
 
-`latest_ts[stream_id]` tracks the maximum event-time seen for that stream. Advanced by:
+`latest_ts[source_id]` tracks the maximum event-time seen for that source. Advanced by:
 
 - `Start.timestamp_us`
 - `Complete.complete_time.unwrap_or(request_time)`
 - `Heartbeat.ts`
 
-A busy stream advances its own watermark without needing heartbeats; heartbeats only matter for streams that would otherwise be idle between events. One stream's watermark never advances another's — session isolation across streams is preserved.
+A busy source advances its own watermark without needing heartbeats; heartbeats only matter for sources that would otherwise be idle between events. One source's watermark never advances another's — session isolation across sources is preserved.
 
 ## Derivable Metrics (not stored)
 
@@ -134,7 +134,7 @@ ts-metrics/
 ├── Cargo.toml
 └── src/
     ├── lib.rs
-    ├── aggregator.rs      # MetricsAggregator — per-stream watermark, cadence drain
+    ├── aggregator.rs      # MetricsAggregator — per-source watermark, cadence drain
     ├── bucket.rs          # WindowBucket + DistributionDigest
     ├── stage.rs           # Tokio-task wiring (one aggregator per shard)
     └── model.rs           # LlmMetric + derived avg accessors

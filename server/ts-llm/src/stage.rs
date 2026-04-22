@@ -83,17 +83,17 @@ pub fn spawn_llm_stage(
                 };
                 for llm_event in processor.process(event) {
                     match llm_event {
-                        LlmEvent::Heartbeat { ts, ref stream_id } => {
+                        LlmEvent::Heartbeat { ts, ref source_id } => {
                             for tx in metrics_txs.iter() {
                                 let _ = tx.try_send(LlmEvent::Heartbeat {
                                     ts,
-                                    stream_id: stream_id.clone(),
+                                    source_id: source_id.clone(),
                                 });
                             }
                             for tx in turn_txs.iter() {
                                 let _ = tx.try_send(TurnShardInput::Heartbeat {
                                     ts,
-                                    stream_id: stream_id.clone(),
+                                    source_id: source_id.clone(),
                                 });
                             }
                         }
@@ -113,7 +113,7 @@ pub fn spawn_llm_stage(
                                 }
                                 if let Some(id) = agent {
                                     let idx = turn_shard_index(
-                                        &call.stream_id,
+                                        &call.source_id,
                                         &id.session_id,
                                         turn_txs.len(),
                                     );
@@ -140,9 +140,9 @@ pub fn spawn_llm_stage(
     handles
 }
 
-fn turn_shard_index(stream_id: &str, session_id: &str, n: usize) -> usize {
+fn turn_shard_index(source_id: &str, session_id: &str, n: usize) -> usize {
     let mut h = DefaultHasher::new();
-    stream_id.hash(&mut h);
+    source_id.hash(&mut h);
     session_id.hash(&mut h);
     (h.finish() as usize) % n
 }

@@ -47,7 +47,7 @@ impl fmt::Display for FinishReason {
 /// A fully extracted LLM API call record.
 #[derive(Debug, Clone)]
 pub struct LlmCall {
-    pub stream_id: String,
+    pub source_id: String,
     pub id: String,
     /// Stable wire-API identifier (e.g. "anthropic", "openai-chat",
     /// "openai-responses"). Sourced from `WireApi::name()`; persisted verbatim
@@ -114,7 +114,7 @@ pub struct AgentCall {
 #[derive(Debug, Clone)]
 pub enum TurnShardInput {
     Call(AgentCall),
-    Heartbeat { ts: i64, stream_id: String },
+    Heartbeat { ts: i64, source_id: String },
 }
 
 /// Event emitted by the LLM processor for downstream consumption.
@@ -133,14 +133,14 @@ pub enum LlmEvent {
     /// during traffic idle. (Turn shards receive their heartbeats through a
     /// separate `TurnShardInput` so the channel type can stay untyped-call
     /// flavored.)
-    Heartbeat { ts: i64, stream_id: String },
+    Heartbeat { ts: i64, source_id: String },
 }
 
 /// Emitted when an LLM API request is first detected (headers parsed).
 /// Used by MetricsAggregator to track concurrency (+1 on start, -1 on complete).
 #[derive(Debug, Clone)]
 pub struct LlmCallStart {
-    pub stream_id: String,
+    pub source_id: String,
     /// Stable wire-API identifier (see `LlmCall::wire_api`).
     pub wire_api: &'static str,
     pub model: String,
@@ -269,7 +269,7 @@ mod extension_tests {
     #[test]
     fn agent_call_carries_arc_and_identity() {
         let call = LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: "c".into(),
             wire_api: wa::ANTHROPIC,
             model: "claude".into(),
@@ -317,7 +317,7 @@ mod extension_tests {
     #[test]
     fn llm_call_fields_are_present() {
         let call = LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: "c1".into(),
             wire_api: wa::ANTHROPIC,
             model: "claude-sonnet".into(),

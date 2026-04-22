@@ -9,7 +9,7 @@
 //!
 //! Sources implement the [`CaptureSource`] trait and emit into a
 //! [`RoutingSender`] that transparently routes packets to one of D dispatcher
-//! channels by `hash(stream_id) % D`. When `dispatcher_count = 1` (default)
+//! channels by `hash(source_id) % D`. When `dispatcher_count = 1` (default)
 //! the routing is a no-op. This crate performs no protocol parsing; it is
 //! strictly an I/O boundary.
 

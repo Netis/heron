@@ -9,7 +9,7 @@ use crate::routing::RoutingSender;
 ///
 /// Each source runs as a long-lived task, pushing [`RawPacket`]s into a
 /// [`RoutingSender`] which transparently routes packets to one of N dispatcher
-/// channels by `hash(stream_id)`. When there is only one dispatcher the
+/// channels by `hash(source_id)`. When there is only one dispatcher the
 /// routing is a no-op. Heartbeats are emitted as sentinel `RawPacket`s
 /// (all-zero MACs + `ether_type = 0xFFFF`) — see [`RawPacket::is_heartbeat`].
 /// The source is consumed when `run()` is called.

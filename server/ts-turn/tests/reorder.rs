@@ -3,7 +3,7 @@
 //! - Cases A–F cover the out-of-order arrival scenarios catalogued in
 //!   `docs/design/04-turn.md` ("Motivation"). They started life as failing
 //!   reproductions and are now green under buffer-and-finalize.
-//! - Cases F1–F3 guard the two-clock split (per-stream event-time watermark
+//! - Cases F1–F3 guard the two-clock split (per-source event-time watermark
 //!   + wall-clock grace) against the three collapse modes it replaces.
 //! - `finalize_by_grace_counter_does_not_double_count_*` pins the fix that
 //!   made `emit_or_discard` return whether it actually emitted, so
@@ -77,7 +77,7 @@ fn anthropic_call(
         response_text.map(|t| format!(r#"{{"content":[{{"type":"text","text":"{t}"}}]}}"#));
 
     LlmCall {
-        stream_id: String::new(),
+        source_id: String::new(),
         id: format!("c-{request_time_us}"),
         wire_api: wa::ANTHROPIC,
         model: "claude".into(),
@@ -361,7 +361,7 @@ fn bug_d_late_call_after_finalize_is_orphan_not_phantom() {
         },
         t0,
     ));
-    events.extend(t.advance_time_at(c2.complete_time.unwrap() + 1, &c2.stream_id, past_grace));
+    events.extend(t.advance_time_at(c2.complete_time.unwrap() + 1, &c2.source_id, past_grace));
     events.extend(t.ingest_at(
         AgentCall {
             call: Arc::new(c0.clone()),
@@ -422,7 +422,7 @@ fn bug_e_partition_without_user_start_is_discarded() {
 
 #[test]
 fn bug_f_heartbeat_advance_does_not_open_phantom_for_late_call() {
-    // Cleanly finalize a turn, then push the stream's event-time watermark
+    // Cleanly finalize a turn, then push the source's event-time watermark
     // far ahead via advance_time (plus wall-clock past grace). A subsequent
     // late call (request_time older than the finalized high-water) must NOT
     // create a new turn — the orphan guard on last_finalized_request_time
@@ -463,7 +463,7 @@ fn bug_f_heartbeat_advance_does_not_open_phantom_for_late_call() {
         t0,
     ));
     // Heartbeat well past the finalized turn (wall-clock drives grace).
-    events.extend(t.advance_time_at(60_000_000, &c2.stream_id, past_grace));
+    events.extend(t.advance_time_at(60_000_000, &c2.source_id, past_grace));
 
     // Now the straggler shows up.
     let c0 = anthropic_call(
@@ -496,11 +496,11 @@ fn bug_f_heartbeat_advance_does_not_open_phantom_for_late_call() {
 
 // -------- watermark isolation regressions (F1/F2/F3) --------------------
 
-/// Anthropic call with explicit `stream_id` — the default `anthropic_call`
-/// hard-codes an empty `stream_id`, but the watermark-isolation tests need
-/// multiple streams.
-fn anthropic_call_on_stream(
-    stream: &str,
+/// Anthropic call with explicit `source_id` — the default `anthropic_call`
+/// hard-codes an empty `source_id`, but the watermark-isolation tests need
+/// multiple sources.
+fn anthropic_call_on_source(
+    source: &str,
     session: &str,
     request_time_us: i64,
     body_kind: &str,
@@ -516,7 +516,7 @@ fn anthropic_call_on_stream(
         tools,
         response_text,
     );
-    c.stream_id = stream.to_string();
+    c.source_id = source.to_string();
     c
 }
 
@@ -533,27 +533,27 @@ fn unique_call(mut c: LlmCall) -> LlmCall {
     c
 }
 
-// -------- F1: cross-flow-worker HB within one stream must not orphan a
+// -------- F1: cross-flow-worker HB within one source must not orphan a
 // same-session laggard whose processing path happens to be slower -------------
 
 #[test]
-fn f1_intra_stream_hb_does_not_orphan_same_session_laggard() {
+fn f1_intra_source_hb_does_not_orphan_same_session_laggard() {
     // Scenario: session S spans two TCP connections that hash to different
-    // flow-workers in the same stream. Fast worker Y forwards its HBs to the
+    // flow-workers in the same source. Fast worker Y forwards its HBs to the
     // turn-shard ahead of slow worker X's still-in-flight call. Under an
     // event-time grace, Y's HB would fast-forward the session's grace
     // timeline past `terminal.arrived_at + grace` and finalize before X's
     // laggard ever arrived — turning the laggard into a TurnReorderOrphan
     // and splitting one turn into two.
     //
-    // Under the wall-clock grace in place, HBs only bump the per-stream
+    // Under the wall-clock grace in place, HBs only bump the per-source
     // event-time watermark; grace only fires when wall-clock moves. As long
     // as ingest / advance_time happen at the same `Instant`, the laggard
     // joins the turn.
     let mut t = mk_tracker();
 
     // Terminal T (user-start + Complete) already lands.
-    let terminal = unique_call(anthropic_call_on_stream(
+    let terminal = unique_call(anthropic_call_on_source(
         "sA",
         "S",
         10_000_000,
@@ -564,7 +564,7 @@ fn f1_intra_stream_hb_does_not_orphan_same_session_laggard() {
     ));
     // Laggard L (continuation) with earlier request_time — it arrives *after*
     // an aggressive heartbeat tries to fast-forward the clock.
-    let laggard = unique_call(anthropic_call_on_stream(
+    let laggard = unique_call(anthropic_call_on_source(
         "sA",
         "S",
         5_000_000,
@@ -586,7 +586,7 @@ fn f1_intra_stream_hb_does_not_orphan_same_session_laggard() {
         t0,
     ));
 
-    // Aggressive HB from a fast worker on the same stream — event-time jumps
+    // Aggressive HB from a fast worker on the same source — event-time jumps
     // far past any reasonable event-time grace. Wall-clock stays at t0.
     events.extend(t.advance_time_at(terminal.complete_time.unwrap() + 60_000_000, "sA", t0));
 
@@ -628,14 +628,14 @@ fn f1_intra_stream_hb_does_not_orphan_same_session_laggard() {
 fn f2_cross_session_ingest_does_not_collapse_other_session_grace() {
     // Session A has a pending terminal; grace has NOT yet elapsed by wall-clock.
     // Session B ingests a brand-new call whose event-time is far in the future
-    // — enough that a shared (non-per-stream, event-time) watermark would have
+    // — enough that a shared (non-per-source, event-time) watermark would have
     // jumped past `A.terminal.arrived + grace` and finalized A prematurely.
     // Then session A receives a same-turn laggard.
     //
     // Expected: A finalizes as one turn with both calls, not split.
     let mut t = mk_tracker();
 
-    let a_terminal = unique_call(anthropic_call_on_stream(
+    let a_terminal = unique_call(anthropic_call_on_source(
         "sA",
         "A",
         10_000_000,
@@ -644,7 +644,7 @@ fn f2_cross_session_ingest_does_not_collapse_other_session_grace() {
         &["Agent", "Bash"],
         Some("a-final"),
     ));
-    let a_laggard = unique_call(anthropic_call_on_stream(
+    let a_laggard = unique_call(anthropic_call_on_source(
         "sA",
         "A",
         5_000_000,
@@ -653,8 +653,8 @@ fn f2_cross_session_ingest_does_not_collapse_other_session_grace() {
         &["Agent", "Bash"],
         None,
     ));
-    // Session B on the SAME stream, with a wildly newer event-time.
-    let b_call = unique_call(anthropic_call_on_stream(
+    // Session B on the SAME source, with a wildly newer event-time.
+    let b_call = unique_call(anthropic_call_on_source(
         "sA",
         "B",
         10_000_000_000, // 10^10 us = 10_000 s
@@ -711,19 +711,19 @@ fn f2_cross_session_ingest_does_not_collapse_other_session_grace() {
     );
 }
 
-// -------- F3: one stream's heartbeat must not trigger finalize in another ----
+// -------- F3: one source's heartbeat must not trigger finalize in another ----
 
 #[test]
-fn f3_cross_stream_hb_does_not_expire_other_stream_grace() {
+fn f3_cross_source_hb_does_not_expire_other_source_grace() {
     // Stream sA has a terminal pending. Stream sB heartbeats aggressively —
     // its ts alone would have shoved a global event-time watermark past
     // `sA.terminal.arrived + grace` and finalized sA.
     //
-    // Per-stream watermark: sB's HB only bumps sB. sA's wall-clock also
+    // Per-source watermark: sB's HB only bumps sB. sA's wall-clock also
     // hasn't crossed grace. Therefore sA must still be pending.
     let mut t = mk_tracker();
 
-    let a_terminal = unique_call(anthropic_call_on_stream(
+    let a_terminal = unique_call(anthropic_call_on_source(
         "sA",
         "SA",
         10_000_000,
@@ -755,7 +755,7 @@ fn f3_cross_stream_hb_does_not_expire_other_stream_grace() {
     assert_eq!(
         t.active_count(),
         1,
-        "sA's terminal should still be pending after unrelated-stream heartbeats"
+        "sA's terminal should still be pending after unrelated-source heartbeats"
     );
 
     // Wall-clock crosses grace → sA finalizes.

@@ -2,7 +2,7 @@
 //!
 //! Builds **one pipeline per [`PipelineDef`]** — D dispatchers → protocol →
 //! llm → turn → **metrics** — with N sources fan-in through a
-//! [`RoutingSender`] that routes by `hash(stream_id) % D` to D dispatcher
+//! [`RoutingSender`] that routes by `hash(source_id) % D` to D dispatcher
 //! channels (default D=1). Flow keys, HTTP reassembly state,
 //! `LlmCall`/`AgentTurn` state, and the metrics aggregator's event-time
 //! watermark never leak between pipelines. Only the storage sink is shared
@@ -10,10 +10,10 @@
 //!
 //! Per-pipeline metrics matter because pipelines (local pcap + cloud-probe,
 //! different hosts, etc.) have skewed clocks. Each aggregator maintains
-//! per-stream watermarks keyed by the `stream_id` carried on every event.
-//! For pcap sources one pipeline == one stream; for cloud-probe sources a
-//! single pipeline may carry many streams (one per remote probe UUID).
-//! The storage sink / query layer can merge per-stream rows explicitly.
+//! per-source watermarks keyed by the `source_id` carried on every event.
+//! For pcap sources one pipeline == one source; for cloud-probe sources a
+//! single pipeline may carry many sources (one per remote probe UUID).
+//! The storage sink / query layer can merge per-source rows explicitly.
 //!
 //! Exposes:
 //!
@@ -89,7 +89,7 @@ pub struct Pipeline {
     /// `pipeline_defs` slice passed to [`Pipeline::build`]. Each capture
     /// source must push into the sender of the pipeline that owns it.
     /// The `RoutingSender` transparently routes packets to one of D
-    /// dispatcher channels by `hash(stream_id) % D`. When `dispatcher_count = 1`
+    /// dispatcher channels by `hash(source_id) % D`. When `dispatcher_count = 1`
     /// (the default) the routing is a no-op.
     pub pipeline_txs: Vec<(String, RoutingSender)>,
     /// The capture sources for each pipeline, matching `pipeline_txs` order.
@@ -187,7 +187,7 @@ impl Pipeline {
         // cloned here, not moved; the outer clones are dropped after the
         // loop so the sink observes EOF once every pipeline finishes.
         // The metrics stage is inside this loop so each pipeline gets its
-        // own aggregator with per-stream watermarks, avoiding cross-source
+        // own aggregator with per-source watermarks, avoiding cross-source
         // clock-skew re-emit.
         for (def, metrics_sys) in pipeline_defs.iter().zip(per_pipeline_metrics.iter_mut()) {
             let name = &def.name;
@@ -230,7 +230,7 @@ impl Pipeline {
             // channel. All dispatchers share the same `parsed_txs` (cloned)
             // so packets from any dispatcher reach the correct flow shard.
             // The `RoutingSender` routes packets to dispatchers by
-            // `hash(stream_id) % D`.
+            // `hash(source_id) % D`.
             let mut disp_txs = Vec::with_capacity(dispatcher_count);
             for i in 0..dispatcher_count {
                 let (dtx, drx) = mpsc::channel::<RawPacket>(q.raw);
@@ -274,7 +274,7 @@ impl Pipeline {
             // HTTP request/response/SSE events into `HttpJoinerEvent`s. Each
             // paired `Exchange` is fanned out to `http_exchanges_tx` (all
             // traffic goes to storage) and to `joiner_event_txs` (ts-llm
-            // consumes the same stream to extract LLM semantics).
+            // consumes the same source to extract LLM semantics).
             let joiner_handles = spawn_http_joiner_stage(
                 event_rxs,
                 joiner_event_txs,

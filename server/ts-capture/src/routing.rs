@@ -1,5 +1,5 @@
 //! Transparent routing sender that distributes [`RawPacket`]s across multiple
-//! dispatcher channels by `hash(stream_id)`. When there is only one channel
+//! dispatcher channels by `hash(source_id)`. When there is only one channel
 //! (the common case with `dispatcher_count = 1`), the hash is skipped entirely.
 
 use std::collections::hash_map::DefaultHasher;
@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use crate::RawPacket;
 
 /// A sender that routes [`RawPacket`]s to one of N underlying channels,
-/// chosen by `hash(stream_id) % N`. Implements the same `send` / `blocking_send`
+/// chosen by `hash(source_id) % N`. Implements the same `send` / `blocking_send`
 /// interface as `mpsc::Sender<RawPacket>` so capture sources are unaware of
 /// the routing.
 #[derive(Clone, Debug)]
@@ -33,15 +33,15 @@ impl RoutingSender {
         Self { txs: vec![tx] }
     }
 
-    /// Send a packet, routing by `stream_id` hash.
+    /// Send a packet, routing by `source_id` hash.
     pub async fn send(&self, pkt: RawPacket) -> Result<(), mpsc::error::SendError<RawPacket>> {
-        let tx = &self.txs[self.index(&pkt.stream_id)];
+        let tx = &self.txs[self.index(&pkt.source_id)];
         tx.send(pkt).await
     }
 
     /// Blocking variant for use inside `spawn_blocking` tasks (pcap sources).
     pub fn blocking_send(&self, pkt: RawPacket) -> Result<(), mpsc::error::SendError<RawPacket>> {
-        let tx = &self.txs[self.index(&pkt.stream_id)];
+        let tx = &self.txs[self.index(&pkt.source_id)];
         tx.blocking_send(pkt)
     }
 
@@ -51,12 +51,12 @@ impl RoutingSender {
     }
 
     #[inline]
-    fn index(&self, stream_id: &str) -> usize {
+    fn index(&self, source_id: &str) -> usize {
         if self.txs.len() == 1 {
             return 0;
         }
         let mut h = DefaultHasher::new();
-        stream_id.hash(&mut h);
+        source_id.hash(&mut h);
         (h.finish() as usize) % self.txs.len()
     }
 }
@@ -70,18 +70,18 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let router = RoutingSender::single(tx);
 
-        let pkt = RawPacket::heartbeat(1_000_000, "stream-a".into());
+        let pkt = RawPacket::heartbeat(1_000_000, "source-a".into());
         router.send(pkt).await.unwrap();
 
-        let pkt = RawPacket::heartbeat(2_000_000, "stream-b".into());
+        let pkt = RawPacket::heartbeat(2_000_000, "source-b".into());
         router.send(pkt).await.unwrap();
 
-        assert_eq!(rx.recv().await.unwrap().stream_id, "stream-a");
-        assert_eq!(rx.recv().await.unwrap().stream_id, "stream-b");
+        assert_eq!(rx.recv().await.unwrap().source_id, "source-a");
+        assert_eq!(rx.recv().await.unwrap().source_id, "source-b");
     }
 
     #[tokio::test]
-    async fn same_stream_id_always_routes_to_same_channel() {
+    async fn same_source_id_always_routes_to_same_channel() {
         let mut txs = Vec::new();
         let mut rxs = Vec::new();
         for _ in 0..4 {
@@ -92,7 +92,7 @@ mod tests {
         let router = RoutingSender::new(txs);
 
         for _ in 0..10 {
-            let pkt = RawPacket::heartbeat(1_000_000, "same-stream".into());
+            let pkt = RawPacket::heartbeat(1_000_000, "same-source".into());
             router.send(pkt).await.unwrap();
         }
 
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn different_stream_ids_can_route_to_different_channels() {
+    async fn different_source_ids_can_route_to_different_channels() {
         let mut txs = Vec::new();
         let mut rxs = Vec::new();
         for _ in 0..4 {
@@ -119,9 +119,9 @@ mod tests {
         }
         let router = RoutingSender::new(txs);
 
-        // Send packets with many distinct stream_ids.
+        // Send packets with many distinct source_ids.
         for i in 0..100 {
-            let pkt = RawPacket::heartbeat(1_000_000, format!("stream-{i}"));
+            let pkt = RawPacket::heartbeat(1_000_000, format!("source-{i}"));
             router.send(pkt).await.unwrap();
         }
 
@@ -134,7 +134,7 @@ mod tests {
         let non_zero = counts.iter().filter(|&&c| c > 0).count();
         assert!(
             non_zero > 1,
-            "100 distinct stream_ids should spread across multiple channels, got counts={counts:?}"
+            "100 distinct source_ids should spread across multiple channels, got counts={counts:?}"
         );
         assert_eq!(counts.iter().sum::<usize>(), 100);
     }
@@ -153,7 +153,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(rx.recv().await.unwrap().stream_id, "test");
+        assert_eq!(rx.recv().await.unwrap().source_id, "test");
     }
 
     #[test]

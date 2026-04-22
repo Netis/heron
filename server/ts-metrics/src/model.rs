@@ -2,7 +2,7 @@ use std::fmt;
 
 /// A pre-aggregated metrics record for one time window + dimension combination.
 ///
-/// The aggregator drains each `(stream, granularity, window_start, dims)`
+/// The aggregator drains each `(source, granularity, window_start, dims)`
 /// bucket on a fixed per-granularity cadence. One call typically produces
 /// one row; a call whose response straddles cadence boundaries produces
 /// multiple rows against the same key (each carrying the increment observed
@@ -14,11 +14,11 @@ pub struct LlmMetric {
     /// the call's `request_time` so late-arriving Complete data lands in the
     /// same window as the originating Start.
     pub timestamp_us: i64,
-    /// Per-source dimension: one stream == one independent aggregator. Today
-    /// corresponds 1:1 with a configured capture source index, but the metrics
-    /// data model treats it as a stable `stream` abstraction so captures and
-    /// streams can diverge later without schema churn.
-    pub stream_id: String,
+    /// Per-source dimension: one source == one independent aggregator. Today
+    /// corresponds 1:1 with a configured capture source index; the data
+    /// model keeps it as a first-class dimension so the physical capture ↔
+    /// logical source mapping can diverge later without schema churn.
+    pub source_id: String,
     /// Aggregation granularity.
     pub granularity: &'static str,
     /// Dimension values ("*" = wildcard / all).
@@ -148,10 +148,10 @@ impl fmt::Display for LlmMetric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "[Metric] {} | {} | stream={} | {} / {} / {}",
+            "[Metric] {} | {} | source={} | {} / {} / {}",
             self.granularity,
             format_ts(self.timestamp_us),
-            self.stream_id,
+            self.source_id,
             self.wire_api,
             self.model,
             self.server_ip,

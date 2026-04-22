@@ -26,10 +26,10 @@ pub struct RawPacket {
     pub link_type: u32,
     /// Raw packet data starting at the link layer.
     pub data: Bytes,
-    /// Identifies the logical stream this packet belongs to. For pcap sources
+    /// Identifies the logical source this packet belongs to. For pcap sources
     /// this is the interface name (or user-configured override); for cloud-probe
     /// it is the UUID extracted from the batch header.
-    pub stream_id: String,
+    pub source_id: String,
 }
 
 impl RawPacket {
@@ -55,7 +55,7 @@ impl RawPacket {
 
     /// Build a synthetic heartbeat sentinel packet. Used by pcap-live when
     /// the interface is idle and no native heartbeat is available.
-    pub fn heartbeat(timestamp_us: i64, stream_id: String) -> Self {
+    pub fn heartbeat(timestamp_us: i64, source_id: String) -> Self {
         let mut buf = [0u8; HEARTBEAT_PACKET_LEN];
         buf[12] = 0xFF;
         buf[13] = 0xFF;
@@ -65,7 +65,7 @@ impl RawPacket {
             wirelen: HEARTBEAT_PACKET_LEN as u32,
             link_type: 1,
             data: Bytes::copy_from_slice(&buf),
-            stream_id,
+            source_id,
         }
     }
 }
@@ -95,7 +95,7 @@ mod tests {
             wirelen: 14,
             link_type: 1,
             data: Bytes::copy_from_slice(&buf),
-            stream_id: String::new(),
+            source_id: String::new(),
         };
         assert!(!pkt.is_heartbeat());
     }
@@ -111,7 +111,7 @@ mod tests {
             wirelen: 14,
             link_type: 1,
             data: Bytes::copy_from_slice(&buf),
-            stream_id: String::new(),
+            source_id: String::new(),
         };
         assert!(!pkt.is_heartbeat());
     }
@@ -127,7 +127,7 @@ mod tests {
             wirelen: 14,
             link_type: 101, // Raw IP
             data: Bytes::copy_from_slice(&buf),
-            stream_id: String::new(),
+            source_id: String::new(),
         };
         assert!(!pkt.is_heartbeat());
     }

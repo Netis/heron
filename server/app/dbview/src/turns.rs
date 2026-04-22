@@ -243,7 +243,7 @@ fn extract_with_profile(
     let registry = build_default_registry();
     let profile = registry.find_by_name(agent_kind)?;
     let call = LlmCall {
-        stream_id: String::new(),
+        source_id: String::new(),
         id: String::new(),
         wire_api: wa::ANTHROPIC,
         model: String::new(),

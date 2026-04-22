@@ -69,8 +69,8 @@ pub fn spawn_turn_stage(
                             }
                         }
                     }
-                    TurnShardInput::Heartbeat { ts, stream_id } => {
-                        for ev in tracker.advance_time(ts, &stream_id) {
+                    TurnShardInput::Heartbeat { ts, source_id } => {
+                        for ev in tracker.advance_time(ts, &source_id) {
                             let TurnEvent::Completed(t) = ev;
                             if turns_tx.send(t).await.is_err() {
                                 break 'main "downstream_closed";
@@ -120,7 +120,7 @@ mod tests {
             r#"{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}]}"#
         };
         LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: format!("c-{ts_us}"),
             wire_api: wa::ANTHROPIC,
             model: "claude".into(),

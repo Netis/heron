@@ -1,6 +1,6 @@
 //! Buffer-and-finalize turn tracker. See `docs/design/04-turn.md`.
 //!
-//! Each `(stream_id, session_id)` owns a `SessionBuffer` that holds calls
+//! Each `(source_id, session_id)` owns a `SessionBuffer` that holds calls
 //! sorted by `request_time` until a main-agent terminal call appears and its
 //! grace window elapses. On grace expiry the buffer is partitioned at each
 //! terminal and every partition becomes one `AgentTurn`. Partitions that
@@ -32,11 +32,11 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
 
 /// Tracker configuration. Two clocks:
 /// * `idle_timeout_us` and `sweep_interval_us` are in **event-time**
-///   microseconds (matching `LlmCall.request_time`), driven by per-stream
+///   microseconds (matching `LlmCall.request_time`), driven by per-source
 ///   watermarks so pcap replay still works.
 /// * `grace` is **wall-clock**, measured via `Instant`. Grace is a pipeline
 ///   fan-in jitter budget — physical-time is the correct unit. Using
-///   event-time here would let any other stream's heartbeat or any other
+///   event-time here would let any other source's heartbeat or any other
 ///   session's ingest fast-forward an unrelated session's grace.
 #[derive(Debug, Clone, Copy)]
 pub struct TrackerConfig {
@@ -90,7 +90,7 @@ struct SessionBuffer {
     /// partition for this session. New arrivals strictly older than this are
     /// orphaned at the entry guard.
     last_finalized_request_time: Option<i64>,
-    /// Latest per-stream `virtual_now` observed for this buffer, in
+    /// Latest per-source `virtual_now` observed for this buffer, in
     /// event-time µs. Used as the idle reference by `sweep` / `gc_buffers`.
     last_activity_us: i64,
 }
@@ -99,18 +99,18 @@ struct SessionBuffer {
 /// `ingest`, `advance_time`, `sweep`, `flush_all`.
 ///
 /// Two clocks by design:
-/// * `virtual_now_by_stream` — per-stream event-time watermark. Bumped by
-///   each stream's own heartbeats and ingested calls. Used for idle sweep,
-///   gc, and the orphan guard. Per-stream so one stream's activity cannot
-///   fast-forward another stream's idle/gc horizon.
+/// * `virtual_now_by_source` — per-source event-time watermark. Bumped by
+///   each source's own heartbeats and ingested calls. Used for idle sweep,
+///   gc, and the orphan guard. Per-source so one source's activity cannot
+///   fast-forward another source's idle/gc horizon.
 /// * `Instant` taken at ingest / advance — wall-clock. Used only for grace.
 pub struct TurnTracker {
     registry: Arc<AgentProfileRegistry>,
     config: TrackerConfig,
     buffers: HashMap<(String, String), SessionBuffer>,
-    /// Event-time watermark, keyed by `stream_id`. `0` ≡ "never seen".
-    virtual_now_by_stream: HashMap<String, i64>,
-    /// Global sweep-interval throttle, in event-time µs. Not per-stream — it
+    /// Event-time watermark, keyed by `source_id`. `0` ≡ "never seen".
+    virtual_now_by_source: HashMap<String, i64>,
+    /// Global sweep-interval throttle, in event-time µs. Not per-source — it
     /// only controls how often `sweep` iterates buffers, not correctness.
     last_sweep_us: i64,
     metrics: MetricsWorker,
@@ -126,7 +126,7 @@ impl TurnTracker {
             registry,
             config,
             buffers: HashMap::new(),
-            virtual_now_by_stream: HashMap::new(),
+            virtual_now_by_source: HashMap::new(),
             last_sweep_us: 0,
             metrics,
         }
@@ -140,12 +140,12 @@ impl TurnTracker {
             .sum()
     }
 
-    /// Bump the per-stream event-time watermark to `max(current, ts)` and
+    /// Bump the per-source event-time watermark to `max(current, ts)` and
     /// return the new value.
-    fn bump_event_time(&mut self, stream_id: &str, ts: i64) -> i64 {
+    fn bump_event_time(&mut self, source_id: &str, ts: i64) -> i64 {
         let e = self
-            .virtual_now_by_stream
-            .entry(stream_id.to_string())
+            .virtual_now_by_source
+            .entry(source_id.to_string())
             .or_insert(0);
         *e = (*e).max(ts);
         *e
@@ -158,17 +158,17 @@ impl TurnTracker {
 
     /// Ingest with an injectable wall-clock (tests).
     ///
-    /// Event-time watermark is bumped on the **call's own `stream_id`** only;
+    /// Event-time watermark is bumped on the **call's own `source_id`** only;
     /// grace timestamps are wall-clock. Together this ensures that no activity
-    /// outside this `(stream_id, session_id)` can shrink its grace window.
+    /// outside this `(source_id, session_id)` can shrink its grace window.
     pub fn ingest_at(&mut self, ic: AgentCall, now_wall: Instant) -> Vec<TurnEvent> {
         let arrival_ts = ic
             .call
             .complete_time
             .or(ic.call.response_time)
             .unwrap_or(ic.call.request_time);
-        let stream_id = ic.call.stream_id.clone();
-        let virtual_now = self.bump_event_time(&stream_id, arrival_ts);
+        let source_id = ic.call.source_id.clone();
+        let virtual_now = self.bump_event_time(&source_id, arrival_ts);
         self.metrics.counter(Metric::TurnCallsIngested).inc();
 
         let registry = Arc::clone(&self.registry);
@@ -184,7 +184,7 @@ impl TurnTracker {
             return self.flush_ready_buffers(now_wall);
         }
 
-        let key = (stream_id, ic.agent.session_id.clone());
+        let key = (source_id, ic.agent.session_id.clone());
         let buf = self.buffers.entry(key).or_default();
 
         if let Some(hw) = buf.last_finalized_request_time {
@@ -260,15 +260,15 @@ impl TurnTracker {
     }
 
     /// Drop fully-drained buffers whose `last_activity_us` is well past the
-    /// idle horizon (measured against **their own stream's** virtual_now, so
-    /// a quiet stream's old buffers aren't gc'd because another stream has
+    /// idle horizon (measured against **their own source's** virtual_now, so
+    /// a quiet source's old buffers aren't gc'd because another source has
     /// moved on). Past `2 × idle_timeout_us` we lose the orphan guard for
     /// that session — far longer than any plausible reorder.
     fn gc_buffers(&mut self) {
         let cfg_idle = self.config.idle_timeout_us;
-        let vn_by_stream = &self.virtual_now_by_stream;
-        self.buffers.retain(|(stream_id, _), b| {
-            let vn = vn_by_stream.get(stream_id).copied().unwrap_or(0);
+        let vn_by_source = &self.virtual_now_by_source;
+        self.buffers.retain(|(source_id, _), b| {
+            let vn = vn_by_source.get(source_id).copied().unwrap_or(0);
             let cutoff = vn.saturating_sub(2 * cfg_idle);
             !(b.pending.is_empty()
                 && b.last_finalized_request_time.is_some()
@@ -277,21 +277,21 @@ impl TurnTracker {
     }
 
     /// Advance virtual time using a heartbeat forwarded through the pipeline.
-    /// Bumps only the event-time watermark of **this stream**; grace is
-    /// evaluated against wall-clock, so a busy stream cannot fast-forward a
-    /// quiet stream's grace window.
-    pub fn advance_time(&mut self, ts: i64, stream_id: &str) -> Vec<TurnEvent> {
-        self.advance_time_at(ts, stream_id, Instant::now())
+    /// Bumps only the event-time watermark of **this source**; grace is
+    /// evaluated against wall-clock, so a busy source cannot fast-forward a
+    /// quiet source's grace window.
+    pub fn advance_time(&mut self, ts: i64, source_id: &str) -> Vec<TurnEvent> {
+        self.advance_time_at(ts, source_id, Instant::now())
     }
 
     /// Same as [`advance_time`], with an injectable wall-clock (tests).
     pub fn advance_time_at(
         &mut self,
         ts: i64,
-        stream_id: &str,
+        source_id: &str,
         now_wall: Instant,
     ) -> Vec<TurnEvent> {
-        self.bump_event_time(stream_id, ts);
+        self.bump_event_time(source_id, ts);
         let mut events = self.flush_ready_buffers(now_wall);
         // Sweep is pure event-time logic — no wall-clock variant needed.
         events.extend(self.sweep());
@@ -299,18 +299,18 @@ impl TurnTracker {
     }
 
     /// Idle fallback: drain buffers that hold no terminal call and whose
-    /// newest call is older than `idle_timeout_us` in their own stream's
+    /// newest call is older than `idle_timeout_us` in their own source's
     /// event-time. Discard rule applies.
     ///
     /// Event-time only — no wall-clock input. Callers with a wall-clock in
     /// hand (test-driven `advance_time_at`) don't need an `_at` variant
     /// because sweep never consults wall-clock.
     pub fn sweep(&mut self) -> Vec<TurnEvent> {
-        // Throttle: use the max across all per-stream watermarks. sweep only
+        // Throttle: use the max across all per-source watermarks. sweep only
         // runs at most once per `sweep_interval_us` of global progress — this
         // is a coarse rate limiter, not a correctness-critical clock.
         let global_virtual_now = self
-            .virtual_now_by_stream
+            .virtual_now_by_source
             .values()
             .copied()
             .max()
@@ -323,11 +323,11 @@ impl TurnTracker {
         let registry = Arc::clone(&self.registry);
 
         let candidates: Vec<(String, String)> = {
-            let vn_by_stream = &self.virtual_now_by_stream;
+            let vn_by_source = &self.virtual_now_by_source;
             self.buffers
                 .iter()
-                .filter(|((stream_id, _), b)| {
-                    let vn = vn_by_stream.get(stream_id).copied().unwrap_or(0);
+                .filter(|((source_id, _), b)| {
+                    let vn = vn_by_source.get(source_id).copied().unwrap_or(0);
                     !b.pending.is_empty()
                         && !b.pending.values().flatten().any(|bc| bc.is_terminal)
                         && b.last_activity_us < vn - cfg_idle
@@ -476,7 +476,7 @@ enum FinalizeKind {
 #[allow(clippy::too_many_arguments)]
 fn finalize_session(
     profile: &dyn AgentProfile,
-    stream_id: &str,
+    source_id: &str,
     session_id: &str,
     buf: &mut SessionBuffer,
     now_wall: Instant,
@@ -526,7 +526,7 @@ fn finalize_session(
         // discarded partition.
         let emitted = emit_or_discard(
             profile,
-            stream_id,
+            source_id,
             session_id,
             &turn_calls,
             metrics,
@@ -553,7 +553,7 @@ fn finalize_session(
 #[must_use]
 fn emit_or_discard(
     profile: &dyn AgentProfile,
-    stream_id: &str,
+    source_id: &str,
     session_id: &str,
     calls: &[BufferedCall],
     metrics: &MetricsWorker,
@@ -574,10 +574,10 @@ fn emit_or_discard(
     let refs: Vec<&AgentCall> = calls.iter().map(|bc| &bc.ic).collect();
     let status = derive_status(profile, &refs);
     let mut turn = build_turn(profile, &refs, status);
-    // The buffer key is authoritative for stream/session — call.stream_id
+    // The buffer key is authoritative for source/session — call.source_id
     // can legitimately be empty in tests; identity.session_id may differ
     // from a future cross-bucket scheme. Using the key keeps us consistent.
-    turn.stream_id = stream_id.to_string();
+    turn.source_id = source_id.to_string();
     turn.session_id = session_id.to_string();
     events.push(TurnEvent::Completed(turn));
     metrics.counter(Metric::TurnsCompleted).inc();
@@ -638,7 +638,7 @@ fn push_unique(list: &mut Vec<String>, value: String) {
 fn build_turn(profile: &dyn AgentProfile, calls: &[&AgentCall], status: TurnStatus) -> AgentTurn {
     assert!(!calls.is_empty(), "build_turn requires at least one call");
     let first = calls[0];
-    let stream_id = first.call.stream_id.clone();
+    let source_id = first.call.source_id.clone();
     let session_id = first.agent.session_id.clone();
     let agent_kind = first.agent.agent_kind.to_string();
     let wire_api = first.call.wire_api.to_string();
@@ -732,7 +732,7 @@ fn build_turn(profile: &dyn AgentProfile, calls: &[&AgentCall], status: TurnStat
     };
 
     AgentTurn {
-        stream_id,
+        source_id,
         turn_id,
         session_id,
         tenant_id,
@@ -845,7 +845,7 @@ mod tests {
             _ => unreachable!(),
         }.to_string();
         LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: format!("c-{request_time_us}"),
             wire_api: wa::ANTHROPIC,
             model: "claude".into(),
@@ -894,7 +894,7 @@ mod tests {
             other => format!(r#"{{"input":[{{"type":"{other}"}}]}}"#),
         };
         LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: format!("c-{turn}"),
             wire_api: wa::OPENAI_RESPONSES,
             model: "gpt-5.4".into(),
@@ -1246,7 +1246,7 @@ mod tests {
         );
         // Non-terminal call (ToolUse) — sits in buffer with no grace.
         let c = anthropic_call("S", 1_000_000, "text", FinishReason::ToolUse);
-        let stream_id = c.stream_id.clone();
+        let source_id = c.source_id.clone();
         let id = identity_for_anthropic(&c);
         let arrival = c.complete_time.unwrap();
         t.ingest(ic(c, id));
@@ -1254,7 +1254,7 @@ mod tests {
 
         // Idle sweep is event-time driven; wall-clock arg doesn't matter here.
         let swept =
-            drain_completed(t.advance_time_at(arrival + 1_000_000, &stream_id, Instant::now()));
+            drain_completed(t.advance_time_at(arrival + 1_000_000, &source_id, Instant::now()));
         assert_eq!(swept.len(), 1);
         assert_eq!(swept[0].status, TurnStatus::Incomplete);
         assert_eq!(t.active_count(), 0);

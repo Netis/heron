@@ -181,7 +181,7 @@ mod tests {
         body: Option<&str>,
     ) -> LlmCall {
         LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: "c".into(),
             wire_api,
             model: "claude".into(),

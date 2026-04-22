@@ -373,10 +373,10 @@ const FLOW_TIMEOUT_US: i64 = 120_000_000;
 pub struct FlowWorker {
     flows: HashMap<FlowKey, TcpFlow>,
     metrics: MetricsWorker,
-    /// Per-stream event-time of the last cleanup sweep (µs). Keyed by
-    /// `stream_id` so a fast-clock stream's trigger cannot force a sweep —
-    /// or evict flows — in a slow-clock stream.
-    last_cleanup_by_stream: HashMap<String, i64>,
+    /// Per-source event-time of the last cleanup sweep (µs). Keyed by
+    /// `source_id` so a fast-clock source's trigger cannot force a sweep —
+    /// or evict flows — in a slow-clock source.
+    last_cleanup_by_source: HashMap<String, i64>,
 }
 
 impl FlowWorker {
@@ -384,7 +384,7 @@ impl FlowWorker {
         Self {
             flows: HashMap::new(),
             metrics,
-            last_cleanup_by_stream: HashMap::new(),
+            last_cleanup_by_source: HashMap::new(),
         }
     }
 
@@ -394,8 +394,8 @@ impl FlowWorker {
         let mut out = Vec::new();
         match input {
             WorkerInput::Packet(pkt) => self.process_packet(pkt, &mut out),
-            WorkerInput::Heartbeat { ts, stream_id } => {
-                self.process_heartbeat(ts, stream_id, &mut out)
+            WorkerInput::Heartbeat { ts, source_id } => {
+                self.process_heartbeat(ts, source_id, &mut out)
             }
         }
         out
@@ -437,7 +437,7 @@ impl FlowWorker {
         }
 
         // Periodic timeout cleanup driven by packet timestamps.
-        self.maybe_cleanup_stale_flows(&flow_key.stream_id, pkt.timestamp_us, out);
+        self.maybe_cleanup_stale_flows(&flow_key.source_id, pkt.timestamp_us, out);
     }
 
     /// Advance event time using an upstream heartbeat. Drives stale-flow
@@ -446,30 +446,30 @@ impl FlowWorker {
     fn process_heartbeat(
         &mut self,
         wall_ts_us: i64,
-        stream_id: String,
+        source_id: String,
         out: &mut Vec<ProtocolEvent>,
     ) {
-        self.maybe_cleanup_stale_flows(&stream_id, wall_ts_us, out);
+        self.maybe_cleanup_stale_flows(&source_id, wall_ts_us, out);
         out.push(ProtocolEvent::Heartbeat {
             ts: wall_ts_us,
-            stream_id,
+            source_id,
         });
     }
 
-    /// Remove flows on `stream_id` that have not received any packet within
+    /// Remove flows on `source_id` that have not received any packet within
     /// `FLOW_TIMEOUT_US`. Only runs when at least `CLEANUP_INTERVAL_US` has
-    /// elapsed (by that stream's event time) since its own last sweep. Flows
-    /// on other streams are never inspected — their clocks advance on their
+    /// elapsed (by that source's event time) since its own last sweep. Flows
+    /// on other sources are never inspected — their clocks advance on their
     /// own triggers.
     fn maybe_cleanup_stale_flows(
         &mut self,
-        stream_id: &str,
+        source_id: &str,
         now_ts: i64,
         out: &mut Vec<ProtocolEvent>,
     ) {
         let last = self
-            .last_cleanup_by_stream
-            .entry(stream_id.to_string())
+            .last_cleanup_by_source
+            .entry(source_id.to_string())
             .or_insert(0);
         if now_ts - *last < CLEANUP_INTERVAL_US {
             return;
@@ -480,7 +480,7 @@ impl FlowWorker {
             .flows
             .iter()
             .filter(|(key, flow)| {
-                key.stream_id == stream_id && now_ts - flow.last_pkt_ts() > FLOW_TIMEOUT_US
+                key.source_id == source_id && now_ts - flow.last_pkt_ts() > FLOW_TIMEOUT_US
             })
             .map(|(k, _)| k.clone())
             .collect();
@@ -813,30 +813,30 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_is_per_stream() {
-        // Two flows on different streams. Stream-A advances past the 120s
-        // timeout via heartbeat; stream-B has never seen a new event, so its
+    fn test_cleanup_is_per_source() {
+        // Two flows on different sources. source-a advances past the 120s
+        // timeout via heartbeat; source-b has never seen a new event, so its
         // flow must survive even though the wall age since creation exceeds
         // the timeout.
         let (mut worker, metrics) = new_test_worker();
         let req = b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n";
 
         let fk_a = FlowKey::new(
-            "stream-a".into(),
+            "source-a".into(),
             "10.0.0.1".parse().unwrap(),
             5000,
             "10.0.0.2".parse().unwrap(),
             8080,
         );
         let fk_b = FlowKey::new(
-            "stream-b".into(),
+            "source-b".into(),
             "10.0.0.1".parse().unwrap(),
             5000,
             "10.0.0.2".parse().unwrap(),
             8080,
         );
 
-        // Both flows created at T=0 on their own stream.
+        // Both flows created at T=0 on their own source.
         let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
             &fk_a,
             Direction::AtoB,
@@ -855,19 +855,19 @@ mod tests {
         )));
         assert_eq!(worker.flows.len(), 2);
 
-        // Heartbeat on stream-a at T=200s. Only stream-a's flow should be
-        // evicted; stream-b's flow has no trigger on its own clock yet.
+        // Heartbeat on source-a at T=200s. Only source-a's flow should be
+        // evicted; source-b's flow has no trigger on its own clock yet.
         let _ = worker.process(WorkerInput::Heartbeat {
             ts: 200_000_000,
-            stream_id: "stream-a".into(),
+            source_id: "source-a".into(),
         });
         assert!(
             worker.flows.contains_key(&fk_b),
-            "stream-b flow must survive a foreign stream's heartbeat"
+            "source-b flow must survive a foreign source's heartbeat"
         );
         assert!(
             !worker.flows.contains_key(&fk_a),
-            "stream-a flow must be evicted by its own stream's heartbeat"
+            "source-a flow must be evicted by its own source's heartbeat"
         );
         assert_eq!(metrics.counter(Metric::FlowsTimedOut).get(), 1);
     }

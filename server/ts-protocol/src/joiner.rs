@@ -74,8 +74,8 @@ pub fn sse_summary(events: &[SseEventData]) -> (u32, u64) {
 }
 
 impl HttpExchange {
-    pub fn stream_id(&self) -> &str {
-        &self.request.flow_key.stream_id
+    pub fn source_id(&self) -> &str {
+        &self.request.flow_key.source_id
     }
 
     pub fn client_addr(&self) -> (IpAddr, u16) {
@@ -148,7 +148,7 @@ pub enum HttpJoinerEvent {
     /// Time-advancing heartbeat. Forwarded from upstream `ProtocolEvent`.
     /// Downstream consumers (metrics, turn tracker) use these to close stale
     /// windows during traffic idle.
-    Heartbeat { ts: i64, stream_id: String },
+    Heartbeat { ts: i64, source_id: String },
 }
 
 /// Per-flow in-flight state.
@@ -184,9 +184,9 @@ impl HttpJoiner {
                 Vec::new()
             }
             ProtocolEvent::HttpResponse(resp) => self.on_response(resp),
-            ProtocolEvent::Heartbeat { ts, stream_id } => {
-                self.cleanup_stale(&stream_id, ts, PENDING_STALE_TIMEOUT_US);
-                vec![HttpJoinerEvent::Heartbeat { ts, stream_id }]
+            ProtocolEvent::Heartbeat { ts, source_id } => {
+                self.cleanup_stale(&source_id, ts, PENDING_STALE_TIMEOUT_US);
+                vec![HttpJoinerEvent::Heartbeat { ts, source_id }]
             }
         }
     }
@@ -258,15 +258,15 @@ impl HttpJoiner {
         }]
     }
 
-    /// Remove pending entries on `stream_id` whose last activity is older
-    /// than `timeout_us`. Only the named stream's entries are inspected;
-    /// per-stream clocks advance independently. Staleness is measured from
+    /// Remove pending entries on `source_id` whose last activity is older
+    /// than `timeout_us`. Only the named source's entries are inspected;
+    /// per-source clocks advance independently. Staleness is measured from
     /// `last_activity_us`, not request-arrival time, so a live SSE stream
     /// with recent events is not evicted regardless of its total duration.
-    pub fn cleanup_stale(&mut self, stream_id: &str, now_us: i64, timeout_us: i64) -> usize {
+    pub fn cleanup_stale(&mut self, source_id: &str, now_us: i64, timeout_us: i64) -> usize {
         let before = self.pending.len();
         self.pending.retain(|flow_key, pending| {
-            if flow_key.stream_id != stream_id {
+            if flow_key.source_id != source_id {
                 return true;
             }
             let silence = now_us - pending.last_activity_us;
@@ -494,7 +494,7 @@ mod tests {
 
         let events = joiner.process(ProtocolEvent::Heartbeat {
             ts: 2_000_000,
-            stream_id: String::new(),
+            source_id: String::new(),
         });
         assert!(matches!(
             events.as_slice(),
@@ -504,7 +504,7 @@ mod tests {
 
         let events = joiner.process(ProtocolEvent::Heartbeat {
             ts: 1_000_000 + PENDING_STALE_TIMEOUT_US + 1,
-            stream_id: String::new(),
+            source_id: String::new(),
         });
         assert!(matches!(
             events.as_slice(),
@@ -514,24 +514,24 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_is_per_stream() {
+    fn cleanup_is_per_source() {
         let mut joiner = HttpJoiner::new(test_metrics());
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
 
         let mut req_a = make_request(flow(5000), 1_000_000);
-        req_a.flow_key = FlowKey::new("stream-a".into(), ip, 5000, ip, 8080);
+        req_a.flow_key = FlowKey::new("source-a".into(), ip, 5000, ip, 8080);
         joiner.process(ProtocolEvent::HttpRequest(req_a));
 
         let mut req_b = make_request(flow(5001), 1_000_000);
-        req_b.flow_key = FlowKey::new("stream-b".into(), ip, 5001, ip, 8080);
+        req_b.flow_key = FlowKey::new("source-b".into(), ip, 5001, ip, 8080);
         joiner.process(ProtocolEvent::HttpRequest(req_b));
         assert_eq!(joiner.pending_count(), 2);
 
         joiner.process(ProtocolEvent::Heartbeat {
             ts: 1_000_000 + PENDING_STALE_TIMEOUT_US + 1,
-            stream_id: "stream-a".into(),
+            source_id: "source-a".into(),
         });
-        assert_eq!(joiner.pending_count(), 1, "only stream-a evicted");
+        assert_eq!(joiner.pending_count(), 1, "only source-a evicted");
     }
 
     #[test]
@@ -575,14 +575,14 @@ mod tests {
         // last_activity. Must not evict.
         joiner.process(ProtocolEvent::Heartbeat {
             ts: sse_ts + 60_000_000, // +60s silence, well under timeout
-            stream_id: String::new(),
+            source_id: String::new(),
         });
         assert_eq!(joiner.pending_count(), 1, "live stream must not be evicted");
 
         // Now silence past the timeout from the last SSE event — evict.
         joiner.process(ProtocolEvent::Heartbeat {
             ts: sse_ts + PENDING_STALE_TIMEOUT_US + 1,
-            stream_id: String::new(),
+            source_id: String::new(),
         });
         assert_eq!(
             joiner.pending_count(),

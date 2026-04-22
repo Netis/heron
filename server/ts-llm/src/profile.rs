@@ -124,7 +124,7 @@ mod tests {
 
     fn stub_call(ua: &str) -> LlmCall {
         LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: "c".into(),
             wire_api: wa::ANTHROPIC,
             model: "m".into(),

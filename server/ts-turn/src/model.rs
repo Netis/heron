@@ -7,7 +7,7 @@ use std::fmt;
 /// session_id comes from the X-Claude-Code-Session-Id header.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TurnKey {
-    pub stream_id: String,
+    pub source_id: String,
     pub session_id: String,
     pub turn_id: String,
 }
@@ -42,7 +42,7 @@ impl fmt::Display for TurnStatus {
 /// Aggregated record for one agent turn (user input → final assistant output).
 #[derive(Debug, Clone)]
 pub struct AgentTurn {
-    pub stream_id: String,
+    pub source_id: String,
     pub turn_id: String,
     pub session_id: String,
     pub tenant_id: Option<String>,
@@ -110,12 +110,12 @@ mod tests {
     fn turn_key_equality_and_hash() {
         use std::collections::HashSet;
         let k1 = TurnKey {
-            stream_id: String::new(),
+            source_id: String::new(),
             session_id: "s".into(),
             turn_id: "t".into(),
         };
         let k2 = TurnKey {
-            stream_id: String::new(),
+            source_id: String::new(),
             session_id: "s".into(),
             turn_id: "t".into(),
         };
@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn agent_turn_display_includes_key_fields() {
         let turn = AgentTurn {
-            stream_id: String::new(),
+            source_id: String::new(),
             turn_id: "t1".into(),
             session_id: "s1".into(),
             tenant_id: None,
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn agent_turn_has_call_ids() {
         let turn = AgentTurn {
-            stream_id: String::new(),
+            source_id: String::new(),
             turn_id: "t".into(),
             session_id: "s".into(),
             tenant_id: None,

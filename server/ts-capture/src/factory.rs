@@ -11,7 +11,7 @@ use crate::source::CaptureSource;
 /// `pcap_dump` is forwarded to every source built from this config: when
 /// `Some(...)`, the source will open a [`PacketDumper`](crate::PacketDumper)
 /// inside `run()` and mirror every non-heartbeat packet to disk, grouped by
-/// `stream_id`.
+/// `source_id`.
 pub fn build_source(
     config: &CaptureSourceConfig,
     pcap_dump: Option<PacketDumperConfig>,
@@ -21,9 +21,9 @@ pub fn build_source(
             interface,
             bpf_filter,
             snaplen,
-            stream_id,
+            source_id,
         } => {
-            let sid = stream_id.clone().unwrap_or_else(|| interface.clone());
+            let sid = source_id.clone().unwrap_or_else(|| interface.clone());
             Ok(Box::new(PcapLiveSource::new(
                 interface.clone(),
                 bpf_filter.clone(),
@@ -33,9 +33,9 @@ pub fn build_source(
             )))
         }
         CaptureSourceConfig::PcapFile {
-            path, stream_id, ..
+            path, source_id, ..
         } => {
-            let sid = stream_id.clone().unwrap_or_else(|| {
+            let sid = source_id.clone().unwrap_or_else(|| {
                 std::path::Path::new(path)
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -59,7 +59,7 @@ mod tests {
         let config = CaptureSourceConfig::PcapFile {
             path: "/tmp/test.pcap".to_string(),
             realtime: false,
-            stream_id: None,
+            source_id: None,
         };
         assert!(build_source(&config, None).is_ok());
     }
@@ -70,7 +70,7 @@ mod tests {
             interface: "lo0".to_string(),
             bpf_filter: None,
             snaplen: 65535,
-            stream_id: None,
+            source_id: None,
         };
         assert!(build_source(&config, None).is_ok());
     }

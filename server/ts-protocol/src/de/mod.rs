@@ -51,7 +51,7 @@ pub fn decode(
     data: &[u8],
     link_type: u32,
     timestamp_us: i64,
-    stream_id: String,
+    source_id: String,
 ) -> Option<ParsedPacket> {
     let mut buf = PacketBuf::new(data);
 
@@ -61,7 +61,7 @@ pub fn decode(
 
     let payload = Bytes::copy_from_slice(buf.remaining_slice());
 
-    let flow_key = FlowKey::new(stream_id, l3.src_ip, l4.src_port, l3.dst_ip, l4.dst_port);
+    let flow_key = FlowKey::new(source_id, l3.src_ip, l4.src_port, l3.dst_ip, l4.dst_port);
     let direction = if (l3.src_ip, l4.src_port) <= (l3.dst_ip, l4.dst_port) {
         Direction::AtoB
     } else {

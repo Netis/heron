@@ -104,7 +104,7 @@ pub(crate) fn parse_batch(bytes: &[u8]) -> Result<(String, Vec<RawPacket>), Batc
             wirelen,
             link_type: LINKTYPE_ETHERNET,
             data,
-            stream_id: String::new(),
+            source_id: String::new(),
         });
     }
 
@@ -205,7 +205,7 @@ impl CaptureSource for CloudProbeSource {
                                     metrics.counter(Metric::CaptureBatchesReceived).inc();
                                     batch_count += 1;
                                     for mut pkt in pkts {
-                                        pkt.stream_id = uuid.clone();
+                                        pkt.source_id = uuid.clone();
                                         let is_hb = pkt.is_heartbeat();
 
                                         // Synthesize per-uuid HB if interval
@@ -452,13 +452,13 @@ mod tests {
             wirelen: 14,
             link_type: LINKTYPE_ETHERNET,
             data: Bytes::from_static(&[0xAA, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x00]),
-            stream_id: "u1".to_string(),
+            source_id: "u1".to_string(),
         };
         assert!(t.on_packet(&p).is_none());
         p.timestamp_us += HEARTBEAT_INTERVAL_US;
         let hb = t.on_packet(&p).expect("interval reached → HB");
         assert!(hb.is_heartbeat());
-        assert_eq!(hb.stream_id, "u1");
+        assert_eq!(hb.source_id, "u1");
     }
 
     #[test]

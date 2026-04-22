@@ -156,7 +156,7 @@ impl std::ops::Deref for PooledConn {
 const CREATE_LLM_CALLS: &str = "
 CREATE TABLE IF NOT EXISTS llm_calls (
     id                VARCHAR NOT NULL PRIMARY KEY,
-    stream_id         VARCHAR NOT NULL DEFAULT '',
+    source_id         VARCHAR NOT NULL DEFAULT '',
     tenant_id         VARCHAR,
     client_ip         VARCHAR NOT NULL,
     client_port       USMALLINT NOT NULL,
@@ -190,7 +190,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
 const CREATE_LLM_METRICS: &str = "
 CREATE TABLE IF NOT EXISTS llm_metrics (
     timestamp           TIMESTAMP NOT NULL,
-    stream_id           VARCHAR NOT NULL,
+    source_id           VARCHAR NOT NULL,
     granularity         VARCHAR NOT NULL,
     wire_api            VARCHAR NOT NULL,
     model               VARCHAR NOT NULL,
@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS llm_metrics (
 const CREATE_LLM_TURNS: &str = "
 CREATE TABLE IF NOT EXISTS agent_turns (
     turn_id                   VARCHAR NOT NULL PRIMARY KEY,
-    stream_id                 VARCHAR NOT NULL DEFAULT '',
+    source_id                 VARCHAR NOT NULL DEFAULT '',
     session_id                VARCHAR NOT NULL,
     tenant_id                 VARCHAR,
     wire_api                  VARCHAR NOT NULL,
@@ -267,7 +267,7 @@ CREATE TABLE IF NOT EXISTS agent_turns (
 const CREATE_HTTP_EXCHANGES: &str = "
 CREATE TABLE IF NOT EXISTS http_exchanges (
     id                        VARCHAR NOT NULL PRIMARY KEY,
-    stream_id                 VARCHAR NOT NULL DEFAULT '',
+    source_id                 VARCHAR NOT NULL DEFAULT '',
     client_ip                 VARCHAR NOT NULL,
     client_port               USMALLINT NOT NULL,
     server_ip                 VARCHAR NOT NULL,
@@ -370,7 +370,7 @@ fn extract_full_text(
     // Placeholder LlmCall carrying the real wire_api + bodies; other fields
     // are defaulted because current extractors only read these.
     let call = LlmCall {
-        stream_id: String::new(),
+        source_id: String::new(),
         id: String::new(),
         wire_api,
         model: String::new(),
@@ -460,7 +460,7 @@ const VALID_METRIC_FIELDS: &[&str] = &[
 /// * Additive fields (counts, totals, `*_sum`, `*_count`) → plain `SUM`.
 /// * Averages (`*_avg`) → exact ratio `SUM(*_sum) / SUM(*_count)`, derived
 ///   from the additive sum+count pair so multi-row aggregation (slow-response
-///   windows, cross-stream merging) stays correct.
+///   windows, cross-source merging) stays correct.
 /// * Per-row percentiles (`*_p50/p95/p99`) → weighted average by the matching
 ///   `*_count` (number of samples contributing to the row's digest). This is
 ///   an approximation until serialized t-digest bytes land; weighting by the
@@ -639,7 +639,7 @@ fn build_dimension_where_for_group(filter: &DimensionFilter, group_by: &str) -> 
 /// timestamp wrapping) happen before the lock is acquired.
 struct PreparedCall {
     id: String,
-    stream_id: String,
+    source_id: String,
     tenant_id: Option<String>,
     client_ip: String,
     client_port: u16,
@@ -672,7 +672,7 @@ struct PreparedCall {
 fn prepare_call(call: LlmCall) -> PreparedCall {
     PreparedCall {
         id: call.id,
-        stream_id: call.stream_id,
+        source_id: call.source_id,
         tenant_id: call.tenant_id,
         client_ip: call.client_ip.to_string(),
         client_port: call.client_port,
@@ -709,7 +709,7 @@ fn prepare_call(call: LlmCall) -> PreparedCall {
 
 struct PreparedExchange {
     id: String,
-    stream_id: String,
+    source_id: String,
     client_ip: String,
     client_port: u16,
     server_ip: String,
@@ -741,7 +741,7 @@ fn prepare_exchange(x: HttpExchange) -> PreparedExchange {
     };
     PreparedExchange {
         id: x.id,
-        stream_id: x.request.flow_key.stream_id.clone(),
+        source_id: x.request.flow_key.source_id.clone(),
         client_ip: client_ip.to_string(),
         client_port,
         server_ip: server_ip.to_string(),
@@ -770,7 +770,7 @@ fn prepare_exchange(x: HttpExchange) -> PreparedExchange {
 
 struct PreparedTurn {
     turn_id: String,
-    stream_id: String,
+    source_id: String,
     session_id: String,
     tenant_id: Option<String>,
     wire_api: String,
@@ -799,7 +799,7 @@ struct PreparedTurn {
 fn prepare_turn(t: AgentTurn) -> PreparedTurn {
     PreparedTurn {
         turn_id: t.turn_id,
-        stream_id: t.stream_id,
+        source_id: t.source_id,
         session_id: t.session_id,
         tenant_id: t.tenant_id,
         wire_api: t.wire_api,
@@ -828,7 +828,7 @@ fn prepare_turn(t: AgentTurn) -> PreparedTurn {
 
 struct PreparedMetric {
     timestamp: Value,
-    stream_id: String,
+    source_id: String,
     granularity: &'static str,
     wire_api: String,
     model: String,
@@ -839,7 +839,7 @@ struct PreparedMetric {
 fn prepare_metric(m: LlmMetric) -> PreparedMetric {
     PreparedMetric {
         timestamp: Value::Timestamp(TimeUnit::Microsecond, m.timestamp_us),
-        stream_id: m.stream_id.clone(),
+        source_id: m.source_id.clone(),
         granularity: m.granularity,
         wire_api: m.wire_api.clone(),
         model: m.model.clone(),
@@ -893,7 +893,7 @@ impl StorageBackend for DuckDbBackend {
                 appender
                     .append_row(duckdb::params![
                         p.id,
-                        p.stream_id,
+                        p.source_id,
                         p.tenant_id,
                         p.client_ip,
                         p.client_port,
@@ -952,7 +952,7 @@ impl StorageBackend for DuckDbBackend {
                 appender
                     .append_row(duckdb::params![
                         p.id,
-                        p.stream_id,
+                        p.source_id,
                         p.client_ip,
                         p.client_port,
                         p.server_ip,
@@ -987,7 +987,7 @@ impl StorageBackend for DuckDbBackend {
         let id = id.to_string();
         tokio::task::spawn_blocking(move || {
             let sql = "
-                SELECT id, stream_id,
+                SELECT id, source_id,
                     client_ip, client_port, server_ip, server_port,
                     method, uri,
                     request_headers, request_body,
@@ -1007,7 +1007,7 @@ impl StorageBackend for DuckDbBackend {
                 let response_body_bytes: Option<Vec<u8>> = row.get(12)?;
                 Ok(HttpExchangeDetail {
                     id: row.get(0)?,
-                    stream_id: row.get(1)?,
+                    source_id: row.get(1)?,
                     client_ip: row.get(2)?,
                     client_port: row.get(3)?,
                     server_ip: row.get(4)?,
@@ -1114,7 +1114,7 @@ impl StorageBackend for DuckDbBackend {
             let offset = (query.page.saturating_sub(1)) as u64 * query.page_size as u64;
             let limit = query.page_size;
             let items_sql = format!(
-                "SELECT id, stream_id, epoch_ms(request_time), \
+                "SELECT id, source_id, epoch_ms(request_time), \
                  method, uri, client_ip, server_ip, server_port, \
                  status, is_sse, \
                  CASE WHEN response_complete_time IS NOT NULL \
@@ -1140,7 +1140,7 @@ impl StorageBackend for DuckDbBackend {
                     id: row
                         .get(0)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    stream_id: row
+                    source_id: row
                         .get(1)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     request_time: row
@@ -1197,7 +1197,7 @@ impl StorageBackend for DuckDbBackend {
                 appender
                     .append_row(duckdb::params![
                         p.timestamp,
-                        p.stream_id,
+                        p.source_id,
                         p.granularity,
                         p.wire_api,
                         p.model,
@@ -1268,7 +1268,7 @@ impl StorageBackend for DuckDbBackend {
                 appender
                     .append_row(duckdb::params![
                         p.turn_id,
-                        p.stream_id,
+                        p.source_id,
                         p.session_id,
                         p.tenant_id,
                         p.wire_api,
@@ -1325,7 +1325,7 @@ impl StorageBackend for DuckDbBackend {
             let field_exprs = build_field_exprs(&query.fields);
             let fields_sql = field_exprs.join(", ");
             let rows = if let Some(ref group_by) = query.group_by {
-                // Grouped query: aggregate across the group dimension plus stream_id.
+                // Grouped query: aggregate across the group dimension plus source_id.
                 let dim_where = build_dimension_where_for_group(&query.filter, group_by);
                 let sql = format!(
                     "SELECT epoch(timestamp) AS ts, {group_by}, {fields_sql} \
@@ -1371,7 +1371,7 @@ impl StorageBackend for DuckDbBackend {
                 rows
             } else {
                 // Ungrouped query: still must GROUP BY timestamp because the
-                // per-stream aggregators emit one row per stream per (ts,
+                // per-source aggregators emit one row per source per (ts,
                 // dim). Without the GROUP BY we'd return N overlapping rows
                 // at each timestamp (N = number of capture sources).
                 let dim_where = build_dimension_where(&query.filter);
@@ -1716,7 +1716,7 @@ impl StorageBackend for DuckDbBackend {
             let offset = (query.page.saturating_sub(1)) as u64 * query.page_size as u64;
             let limit = query.page_size;
             let items_sql = format!(
-                "SELECT id, stream_id, epoch_ms(request_time), wire_api, model, status_code, is_stream, \
+                "SELECT id, source_id, epoch_ms(request_time), wire_api, model, status_code, is_stream, \
                  finish_reason, ttft_ms, e2e_latency_ms, input_tokens, output_tokens \
                  FROM llm_calls WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
@@ -1740,7 +1740,7 @@ impl StorageBackend for DuckDbBackend {
                     id: row
                         .get(0)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    stream_id: row
+                    source_id: row
                         .get(1)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     request_time: row
@@ -1792,7 +1792,7 @@ impl StorageBackend for DuckDbBackend {
             // do not belong to any turn still return with agent_kind = NULL.
             let sql = "
                 SELECT
-                    c.id, c.stream_id,
+                    c.id, c.source_id,
                     epoch_ms(c.request_time),
                     epoch_ms(c.response_time),
                     epoch_ms(c.complete_time),
@@ -1822,7 +1822,7 @@ impl StorageBackend for DuckDbBackend {
             let result = stmt.query_row(duckdb::params![id], |row| {
                 Ok(CallDetail {
                     id: row.get(0)?,
-                    stream_id: row.get(1)?,
+                    source_id: row.get(1)?,
                     request_time: row.get(2)?,
                     response_time: row.get(3)?,
                     complete_time: row.get(4)?,
@@ -1950,7 +1950,7 @@ impl StorageBackend for DuckDbBackend {
             let offset = (query.page.saturating_sub(1)) as u64 * query.page_size as u64;
             let limit = query.page_size;
             let items_sql = format!(
-                "SELECT turn_id, stream_id, session_id, \
+                "SELECT turn_id, source_id, session_id, \
                  epoch_ms(start_time), epoch_ms(end_time), duration_ms, \
                  wire_api, agent_kind, models_used, call_count, \
                  total_input_tokens, total_output_tokens, status, \
@@ -1982,7 +1982,7 @@ impl StorageBackend for DuckDbBackend {
                     turn_id: row
                         .get(0)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    stream_id: row
+                    source_id: row
                         .get(1)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     session_id: row
@@ -2042,7 +2042,7 @@ impl StorageBackend for DuckDbBackend {
         tokio::task::spawn_blocking(move || {
             let sql = "
                 SELECT
-                    turn_id, stream_id, session_id, tenant_id, wire_api, agent_kind,
+                    turn_id, source_id, session_id, tenant_id, wire_api, agent_kind,
                     epoch_ms(start_time), epoch_ms(end_time), duration_ms, call_count,
                     models_used, subagents_used,
                     total_input_tokens, total_output_tokens,
@@ -2063,7 +2063,7 @@ impl StorageBackend for DuckDbBackend {
             let result = stmt.query_row(duckdb::params![turn_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,          // turn_id
-                    row.get::<_, String>(1)?,          // stream_id
+                    row.get::<_, String>(1)?,          // source_id
                     row.get::<_, String>(2)?,          // session_id
                     row.get::<_, Option<String>>(3)?,  // tenant_id
                     row.get::<_, String>(4)?,          // wire_api
@@ -2102,7 +2102,7 @@ impl StorageBackend for DuckDbBackend {
 
             let (
                 turn_id,
-                stream_id,
+                source_id,
                 session_id,
                 tenant_id,
                 wire_api,
@@ -2161,7 +2161,7 @@ impl StorageBackend for DuckDbBackend {
 
             Ok(Some(TurnDetail {
                 turn_id,
-                stream_id,
+                source_id,
                 session_id,
                 tenant_id,
                 wire_api,
@@ -2490,7 +2490,7 @@ mod tests {
         let client_ip: IpAddr = "10.0.0.1".parse().unwrap();
         let server_ip: IpAddr = "10.0.0.2".parse().unwrap();
         let request = Arc::new(HttpRequestData {
-            flow_key: FlowKey::new("stream-x".into(), client_ip, 54321, server_ip, 443),
+            flow_key: FlowKey::new("source-x".into(), client_ip, 54321, server_ip, 443),
             client_addr: (client_ip, 54321),
             server_addr: (server_ip, 443),
             method: "POST".into(),
@@ -2547,7 +2547,7 @@ mod tests {
         let client_ip: IpAddr = "10.0.0.1".parse().unwrap();
         let server_ip: IpAddr = "10.0.0.2".parse().unwrap();
         let request = Arc::new(HttpRequestData {
-            flow_key: FlowKey::new("stream-sse".into(), client_ip, 1, server_ip, 443),
+            flow_key: FlowKey::new("source-sse".into(), client_ip, 1, server_ip, 443),
             client_addr: (client_ip, 1),
             server_addr: (server_ip, 443),
             method: "POST".into(),
@@ -2600,7 +2600,7 @@ mod tests {
 
     fn sample_call() -> LlmCall {
         LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: "01912345-6789-7abc-def0-123456789abc".to_string(),
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".to_string(),
@@ -2744,7 +2744,7 @@ mod tests {
     fn sample_metric() -> LlmMetric {
         LlmMetric {
             timestamp_us: 1_700_000_000_000_000,
-            stream_id: String::new(),
+            source_id: String::new(),
             granularity: "1m",
             wire_api: wa::OPENAI_CHAT.to_string(),
             model: "gpt-4".to_string(),
@@ -3055,43 +3055,43 @@ mod tests {
         assert_eq!(openai_row.values[0], Some(300.0)); // 200 + 100
     }
 
-    // With per-stream aggregators, the sink receives one row per (stream_id,
+    // With per-source aggregators, the sink receives one row per (source_id,
     // ts, dim). The ungrouped timeseries query MUST GROUP BY timestamp so
     // the caller sees one point per timestamp (request_count summed, ttft
     // weighted-averaged by request_count). Before this fix the branch had
     // no GROUP BY and returned N overlapping rows per timestamp.
     #[tokio::test]
-    async fn test_multi_stream_ungrouped_timeseries_merges() {
+    async fn test_multi_source_ungrouped_timeseries_merges() {
         let backend = in_memory_backend();
         backend.init().await.unwrap();
 
         let ts = 1_700_000_000_000_000i64;
 
-        let mut stream0 = sample_metric();
-        stream0.timestamp_us = ts;
-        stream0.stream_id = "s0".into();
-        stream0.granularity = "1m";
-        stream0.wire_api = "*".into();
-        stream0.model = "*".into();
-        stream0.server_ip = "*".into();
-        stream0.request_count = 10;
-        stream0.ttft_count = 10;
-        stream0.ttft_p50 = Some(100.0);
-        stream0.error_count = 1;
+        let mut source0 = sample_metric();
+        source0.timestamp_us = ts;
+        source0.source_id = "s0".into();
+        source0.granularity = "1m";
+        source0.wire_api = "*".into();
+        source0.model = "*".into();
+        source0.server_ip = "*".into();
+        source0.request_count = 10;
+        source0.ttft_count = 10;
+        source0.ttft_p50 = Some(100.0);
+        source0.error_count = 1;
 
-        let mut stream1 = sample_metric();
-        stream1.timestamp_us = ts;
-        stream1.stream_id = "s1".into();
-        stream1.granularity = "1m";
-        stream1.wire_api = "*".into();
-        stream1.model = "*".into();
-        stream1.server_ip = "*".into();
-        stream1.request_count = 30;
-        stream1.ttft_count = 30;
-        stream1.ttft_p50 = Some(200.0);
-        stream1.error_count = 3;
+        let mut source1 = sample_metric();
+        source1.timestamp_us = ts;
+        source1.source_id = "s1".into();
+        source1.granularity = "1m";
+        source1.wire_api = "*".into();
+        source1.model = "*".into();
+        source1.server_ip = "*".into();
+        source1.request_count = 30;
+        source1.ttft_count = 30;
+        source1.ttft_p50 = Some(200.0);
+        source1.error_count = 3;
 
-        backend.write_metrics(vec![stream0, stream1]).await.unwrap();
+        backend.write_metrics(vec![source0, source1]).await.unwrap();
 
         let query = MetricsTimeseriesQuery {
             time_range: TimeRange {
@@ -3112,7 +3112,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             1,
-            "ungrouped query must return 1 row per timestamp across streams, got {}",
+            "ungrouped query must return 1 row per timestamp across sources, got {}",
             rows.len()
         );
         assert_eq!(rows[0].values[0], Some(40.0), "request_count SUM = 10 + 30");
@@ -3123,7 +3123,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_multi_stream_grouped_timeseries_merges() {
+    async fn test_multi_source_grouped_timeseries_merges() {
         let backend = in_memory_backend();
         backend.init().await.unwrap();
 
@@ -3131,7 +3131,7 @@ mod tests {
 
         let mut s0 = sample_metric();
         s0.timestamp_us = ts;
-        s0.stream_id = "s0".into();
+        s0.source_id = "s0".into();
         s0.granularity = "1m";
         s0.wire_api = wa::OPENAI_CHAT.into();
         s0.model = "gpt-4".into();
@@ -3140,7 +3140,7 @@ mod tests {
 
         let mut s1 = sample_metric();
         s1.timestamp_us = ts;
-        s1.stream_id = "s1".into();
+        s1.source_id = "s1".into();
         s1.granularity = "1m";
         s1.wire_api = wa::OPENAI_CHAT.into();
         s1.model = "gpt-4".into();
@@ -3163,7 +3163,7 @@ mod tests {
         let rows = backend.query_metrics_timeseries(&query).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].group.as_deref(), Some(wa::OPENAI_CHAT));
-        assert_eq!(rows[0].values[0], Some(50.0), "grouped SUM across streams");
+        assert_eq!(rows[0].values[0], Some(50.0), "grouped SUM across sources");
     }
 
     // ===== Task 5: query_metrics_summary tests =====
@@ -3450,7 +3450,7 @@ mod turn_tests {
         status: TurnStatus,
     ) -> AgentTurn {
         AgentTurn {
-            stream_id: String::new(),
+            source_id: String::new(),
             turn_id: turn_id.into(),
             session_id: session_id.into(),
             tenant_id: None,
@@ -3480,7 +3480,7 @@ mod turn_tests {
 
     fn mk_call_with_time(id: &str, request_time_us: i64) -> LlmCall {
         LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: id.into(),
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
@@ -3854,7 +3854,7 @@ mod concurrent_tests {
 
     fn mk_call(i: usize) -> LlmCall {
         LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: format!("call-{i:08}"),
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
@@ -3888,7 +3888,7 @@ mod concurrent_tests {
 
     fn mk_turn(i: usize) -> AgentTurn {
         AgentTurn {
-            stream_id: String::new(),
+            source_id: String::new(),
             turn_id: format!("turn-{i:08}"),
             session_id: format!("session-{}", i % 10),
             tenant_id: None,
@@ -3919,7 +3919,7 @@ mod concurrent_tests {
     fn mk_metric(i: usize) -> LlmMetric {
         LlmMetric {
             timestamp_us: 1_700_000_000_000_000 + i as i64 * 10_000_000,
-            stream_id: String::new(),
+            source_id: String::new(),
             granularity: "10s",
             wire_api: wa::OPENAI_CHAT.into(),
             model: "gpt-4".into(),
@@ -4037,7 +4037,7 @@ mod retention_tests {
 
     fn mk_call(id: &str, request_time_us: i64) -> LlmCall {
         LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: id.into(),
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
@@ -4071,7 +4071,7 @@ mod retention_tests {
 
     fn mk_turn(id: &str, start_us: i64, duration_ms: u64) -> AgentTurn {
         AgentTurn {
-            stream_id: String::new(),
+            source_id: String::new(),
             turn_id: id.into(),
             session_id: "s".into(),
             tenant_id: None,
@@ -4102,7 +4102,7 @@ mod retention_tests {
     fn mk_metric(granularity: &'static str, ts_us: i64) -> LlmMetric {
         LlmMetric {
             timestamp_us: ts_us,
-            stream_id: String::new(),
+            source_id: String::new(),
             granularity,
             wire_api: wa::OPENAI_CHAT.into(),
             model: "gpt-4".into(),

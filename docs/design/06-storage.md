@@ -11,7 +11,7 @@ The `ts-storage` crate provides pluggable storage abstraction. All writes are ap
 - **Batch writes**: `WriteBuffer` collects records in memory, flushes on count or time threshold
 - **Read/write separation**: write path (pipeline → buffer → DB) and read path (API → DB) may have different optimization strategies per backend
 - **Backend-specific queries**: query interface may expose backend-specific capabilities rather than forcing a lowest-common-denominator abstraction
-- **Metrics rows are additive**: `llm_metrics` rows carry sum+count pairs for every average/percentile-input so cross-row SUM reassembles correct totals. The aggregator may emit multiple rows at the same `(timestamp, stream, granularity, dims)` key when a slow response straddles a cadence boundary (see `05-metrics.md`); queries use `SUM()` + weighted merges to collapse them.
+- **Metrics rows are additive**: `llm_metrics` rows carry sum+count pairs for every average/percentile-input so cross-row SUM reassembles correct totals. The aggregator may emit multiple rows at the same `(timestamp, source, granularity, dims)` key when a slow response straddles a cadence boundary (see `05-metrics.md`); queries use `SUM()` + weighted merges to collapse them.
 
 ## Write Path
 

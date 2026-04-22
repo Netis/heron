@@ -1,6 +1,6 @@
 //! Heartbeat timing constants + the cloud-probe per-uuid tracker.
 //!
-//! `pcap-live` uses only the constants — its single-stream logic lives
+//! `pcap-live` uses only the constants — its single-source logic lives
 //! inline in the capture loop. `cloud-probe` uses `HeartbeatTracker` because
 //! it multiplexes many uuids on one socket.
 
@@ -37,16 +37,16 @@ impl HeartbeatTracker {
     /// must forward *before* `pkt`.
     ///
     /// Rules:
-    /// * If `pkt.is_heartbeat()`: bump `last_hb_ts[stream] = max(…, pkt.ts)`
+    /// * If `pkt.is_heartbeat()`: bump `last_hb_ts[source] = max(…, pkt.ts)`
     ///   and return `None` (caller still forwards the upstream HB).
-    /// * Else if the stream has no entry yet: initialize `last_hb_ts =
+    /// * Else if the source has no entry yet: initialize `last_hb_ts =
     ///   pkt.ts` and return `None` (baseline, no synthesis).
     /// * Else if `pkt.ts - last_hb_ts >= HEARTBEAT_INTERVAL_US`:
     ///   synthesize a heartbeat at `pkt.ts`, update `last_hb_ts = pkt.ts`,
     ///   return it.
     /// * Else: return `None`.
     pub fn on_packet(&mut self, pkt: &RawPacket) -> Option<RawPacket> {
-        let slot = self.last_hb_ts.entry(pkt.stream_id.clone()).or_insert(0);
+        let slot = self.last_hb_ts.entry(pkt.source_id.clone()).or_insert(0);
 
         if pkt.is_heartbeat() {
             if pkt.timestamp_us > *slot {
@@ -67,7 +67,7 @@ impl HeartbeatTracker {
         *slot = pkt.timestamp_us;
         Some(RawPacket::heartbeat(
             pkt.timestamp_us,
-            pkt.stream_id.clone(),
+            pkt.source_id.clone(),
         ))
     }
 }
@@ -77,7 +77,7 @@ mod tests {
     use super::*;
     use bytes::Bytes;
 
-    fn real_pkt(stream_id: &str, ts_us: i64) -> RawPacket {
+    fn real_pkt(source_id: &str, ts_us: i64) -> RawPacket {
         let mut buf = [0u8; 14];
         buf[0] = 0xAA;
         buf[12] = 0x08;
@@ -88,12 +88,12 @@ mod tests {
             wirelen: 14,
             link_type: 1,
             data: Bytes::copy_from_slice(&buf),
-            stream_id: stream_id.to_string(),
+            source_id: source_id.to_string(),
         }
     }
 
-    fn upstream_hb(stream_id: &str, ts_us: i64) -> RawPacket {
-        RawPacket::heartbeat(ts_us, stream_id.to_string())
+    fn upstream_hb(source_id: &str, ts_us: i64) -> RawPacket {
+        RawPacket::heartbeat(ts_us, source_id.to_string())
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
             .expect("interval reached → HB expected");
         assert!(hb.is_heartbeat());
         assert_eq!(hb.timestamp_us, 2_000_000);
-        assert_eq!(hb.stream_id, "u1");
+        assert_eq!(hb.source_id, "u1");
     }
 
     #[test]
@@ -131,8 +131,8 @@ mod tests {
         t.on_packet(&real_pkt("b", 1_000_000));
         let hb_a = t.on_packet(&real_pkt("a", 2_000_000));
         let hb_b = t.on_packet(&real_pkt("b", 2_000_000));
-        assert_eq!(hb_a.as_ref().unwrap().stream_id, "a");
-        assert_eq!(hb_b.as_ref().unwrap().stream_id, "b");
+        assert_eq!(hb_a.as_ref().unwrap().source_id, "a");
+        assert_eq!(hb_b.as_ref().unwrap().source_id, "b");
     }
 
     #[test]

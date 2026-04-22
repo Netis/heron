@@ -42,13 +42,13 @@
 # realtime = false
 #
 # # Optional: persist captured packets to Wireshark-openable pcap files, one
-# # per stream_id (interface name for pcap/pcap-file, probe UUID for
+# # per source_id (interface name for pcap/pcap-file, probe UUID for
 # # cloud-probe). Off by default — enable only when you need offline replay
 # # or traffic capture for support.
 # [pipeline.pcap_dump]
 # enabled = false
 # dir = "data/dumps/local"
-# filename_template = "{stream_id}.pcap"   # "{stream_id}_{start_iso}.pcap" keeps prior runs on restart
+# filename_template = "{source_id}.pcap"   # "{source_id}_{start_iso}.pcap" keeps prior runs on restart
 
 # Bounded channel capacities between pipeline stages. All default to 4096.
 # Override per-pipeline under [[pipeline]].

@@ -15,7 +15,7 @@ This design is implemented by the `ts-turn` crate (see `server/ts-turn/`).
   `AgentProfile` impl in `server/ts-llm/src/agents/`.
 - Currently supported clients: `claude-cli` (Anthropic), `codex_cli_rs` /
   `codex-tui` (OpenAI Responses).
-- **Assembly model:** buffer-and-finalize. Each `(stream_id, session_id)` owns
+- **Assembly model:** buffer-and-finalize. Each `(source_id, session_id)` owns
   a `SessionBuffer` keyed by `request_time`. When a main-agent terminal call
   arrives, a small grace window (`grace_ms`, default 1000) starts; on grace
   expiry the buffer is partitioned at each terminal and one `AgentTurn` is
@@ -62,14 +62,14 @@ Based on analysis of real traffic captures from Claude Code (Anthropic) and Code
 - `X-Claude-Code-Session-Id: <uuid>` — same across all calls in a session, used to correlate calls across connections
 
 **Turn association strategy:**
-1. Group by `X-Claude-Code-Session-Id` into a `(stream_id, session_id)` buffer.
+1. Group by `X-Claude-Code-Session-Id` into a `(source_id, session_id)` buffer.
 2. A request whose body's last user message is a `text` block flags
    `is_user_turn_start = Some(true)` (continuation `tool_result` blocks flag
    `Some(false)`); the user-start flag is what makes a partition emittable.
 3. A response with `stop_reason = end_turn` (`FinishReason::Complete` /
    `Length`) is the main-agent terminal that starts the buffer's grace clock.
-4. Without the session header → calls bucket as `(stream_id, "")` — they'll
-   still group by stream, but cross-connection same-session calls won't merge.
+4. Without the session header → calls bucket as `(source_id, "")` — they'll
+   still group by source, but cross-connection same-session calls won't merge.
 
 ### OpenAI Responses API (Codex) — capture3.pcap, capture5.pcap
 
@@ -94,7 +94,7 @@ Based on analysis of real traffic captures from Claude Code (Anthropic) and Code
 
 **Turn association strategy:**
 1. Extract `session_id` (header/body) and `turn_id` (header) and bucket by
-   `(stream_id, session_id)`. `turn_id` is recorded as `turn_id_hint` but
+   `(source_id, session_id)`. `turn_id` is recorded as `turn_id_hint` but
    does NOT drive turn boundaries on its own — Codex's `status` is always
    `completed` and `finish_reason = Complete` only means "API call succeeded."
 2. The main-agent terminal predicate is `profile.is_turn_terminal`, which
@@ -158,7 +158,7 @@ user-start being first to arrive.
   parallel state machines.
 
 **Non-goals**
-- Cross-shard ordering. Shards are isolated by `hash(stream, session)`; we
+- Cross-shard ordering. Shards are isolated by `hash(source, session)`; we
   only fix intra-shard order.
 - Wall-clock-driven timeouts. All timing remains driven by `virtual_now_us`
   (packet-time / heartbeat) so pcap replay still works.
@@ -167,7 +167,7 @@ user-start being first to arrive.
 
 ### One-line intuition
 
-> Buffer all calls per `(stream, session)`. When a main-agent terminal call
+> Buffer all calls per `(source, session)`. When a main-agent terminal call
 > appears, start a small per-session grace timer. On grace expiry, sort the
 > buffer by `request_time` and emit one or more turns by partitioning at
 > each terminal call.
@@ -188,7 +188,7 @@ struct BufferedCall {
     is_terminal: bool,  // cached is_main_terminal(profile, call)
 }
 
-/// Per (stream_id, session_id) buffer.
+/// Per (source_id, session_id) buffer.
 struct SessionBuffer {
     /// Calls awaiting finalize, keyed and ordered by request_time.
     /// Vec handles request_time ties (rare but i64 µs is not collision-free).
@@ -226,7 +226,7 @@ is no in-progress turn state, so `Started` / `CallAdded` are unnecessary.
 2. profile = registry.find_by_name(call.agent.agent_kind)
    if None: return flush_ready_buffers()
 3. if profile.is_auxiliary(call): return flush_ready_buffers()    # aux never enters buffer
-4. buf = buffers.entry((stream_id, session_id)).or_default()
+4. buf = buffers.entry((source_id, session_id)).or_default()
 5. Orphan guard: if request_time < buf.last_finalized_request_time
                  → drop (TurnReorderOrphan++) and flush
 6. is_terminal = is_main_terminal(profile, call)
@@ -393,11 +393,11 @@ sweep_interval_s = 10
 
 | # | Case | Handling |
 |---|---|---|
-| 1 | Cross-connection turns (Anthropic) | Group by `(stream_id, session_id)`, not by TCP 4-tuple |
+| 1 | Cross-connection turns (Anthropic) | Group by `(source_id, session_id)`, not by TCP 4-tuple |
 | 2 | No finish_reason (truncated capture) | Call stays in buffer; idle sweep emits `Incomplete` (or discards) |
 | 3 | HTTP errors mid-turn | `Error`/`Cancelled` excluded from `is_main_terminal`; retry joins the same partition, else idle → Incomplete |
 | 4 | Multiple turns on same connection (Anthropic) | capture4 shows 2 turns on 1 connection — `end_turn` marks boundary, next request starts next turn |
-| 5 | No client headers (generic clients) | Fall back to `(stream_id, "")` + finish_reason. Cross-connection same-session won't merge. |
+| 5 | No client headers (generic clients) | Fall back to `(source_id, "")` + finish_reason. Cross-connection same-session won't merge. |
 | 6 | Parallel calls within a turn | All share the same buffer; sort-then-partition is order-independent |
 | 7 | Sub-agent Complete before main-agent terminal | Sub-agent excluded from `is_main_terminal`; grace not started; no spurious finalize |
 | 8 | Sub-agent assistant text leaking to parent | `build_turn` picks final-call from main-agent only |
@@ -407,7 +407,7 @@ sweep_interval_s = 10
 | 12 | No terminal ever | Idle sweep emits Incomplete (or discards if no user-start) |
 | 13 | pcap replay (no heartbeats) | Last buffered batch waits for the next call to advance `virtual_now`, or for EOF `flush_all` |
 | 14 | Buffer memory growth (long-lived idle sessions) | GC after `2 · idle_timeout` past last finalize |
-| 15 | Empty session_id from profile | `(stream, "")` key; not special-cased |
+| 15 | Empty session_id from profile | `(source, "")` key; not special-cased |
 | 16 | Codex new turn_id arrives mid-grace of old turn_id | Same buffer; old's terminal triggers grace; finalize old at grace; new turn_id calls remain for their own terminal |
 | 17 | Continuation/sub-agent calls without user-start in their partition | Discarded at finalize/sweep/flush; `TurnDiscardedNoUserStart` |
 
@@ -430,7 +430,7 @@ terminal signal (see table above).
 The aggregated `AgentTurn` (see `ts-turn/src/model.rs`) is built at finalize
 time from the sorted partition:
 
-- `turn_id: String` (UUIDv7), `session_id`, `stream_id`, `agent_kind`,
+- `turn_id: String` (UUIDv7), `session_id`, `source_id`, `agent_kind`,
   `wire_api`, `tenant_id`
 - `start_time_us`, `end_time_us`, `duration_ms`, `call_count`, `call_ids`
 - `models_used`, `subagents_used`
@@ -447,4 +447,4 @@ time from the sorted partition:
 - **Sub-agent isolation.** Sub-agent calls never trigger main-agent grace, and their assistant text never appears in the parent's `final_answer_preview`.
 - **No new profile methods.** Uses only existing predicates (`subagent`, `is_turn_terminal`, `is_user_turn_start`, `extract_user_input`, `extract_assistant_text`, `is_auxiliary`). New profiles slot in without changing the trait.
 - **No-user-start partitions discarded.** A finalized partition with zero `is_user_turn_start = Some(true)` calls is dropped, not emitted. Covers stray continuations, sub-agent leftovers from missing parents, and late stragglers that get past the orphan check but represent no real turn.
-- **Cross-stream independence.** `(stream_id, session_id)` is the buffer key; same `session_id` under different `stream_id` is treated as independent sessions by design. Clients don't share sessions across streams.
+- **Cross-source independence.** `(source_id, session_id)` is the buffer key; same `session_id` under different `source_id` is treated as independent sessions by design. Clients don't share sessions across sources.

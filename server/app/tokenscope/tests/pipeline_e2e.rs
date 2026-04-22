@@ -78,7 +78,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
             sources: vec![CaptureSourceConfig::PcapFile {
                 path: p.to_string_lossy().to_string(),
                 realtime: false,
-                stream_id: None,
+                source_id: None,
             }],
             ..PipelineDef::default()
         })
@@ -134,12 +134,12 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
     {
         let cancel = CancellationToken::new();
         src_tasks.push(tokio::spawn(async move {
-            let stream_id = path
+            let source_id = path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let source = Box::new(PcapFileSource::new(path, stream_id, None));
+            let source = Box::new(PcapFileSource::new(path, source_id, None));
             let _ = source.run(tx, metrics, cancel).await;
         }));
     }
@@ -271,7 +271,7 @@ async fn claude_cli_pcap_populates_all_three_tables() {
 /// * The anthropic-only fixture produces exactly 1 complete anthropic turn
 ///   (matches the single-source E2E's ground truth), which rules out
 ///   turn-state leakage from the concurrent openai-responses capture.
-/// * `llm_metrics` contains rows from **both** streams (keyed by pcap file
+/// * `llm_metrics` contains rows from **both** sources (keyed by pcap file
 ///   basename), proving per-capture metrics stages run end-to-end and both
 ///   land in the shared sink.
 #[tokio::test]
@@ -333,7 +333,7 @@ async fn two_pcaps_isolated_but_metrics_merged() {
     );
 
     // Per-capture metrics: both wire APIs must appear in llm_metrics and
-    // each must have been emitted by its own stream. Stream IDs are derived
+    // each must have been emitted by its own source. Source IDs are derived
     // from the pcap file basenames.
     let metric_wire_apis: Vec<String> = conn
         .prepare("SELECT DISTINCT wire_api FROM llm_metrics ORDER BY 1")
@@ -351,24 +351,24 @@ async fn two_pcaps_isolated_but_metrics_merged() {
         "expected openai-responses in llm_metrics wire_apis, got {metric_wire_apis:?}"
     );
 
-    let stream_ids: Vec<String> = conn
-        .prepare("SELECT DISTINCT stream_id FROM llm_metrics ORDER BY 1")
+    let source_ids: Vec<String> = conn
+        .prepare("SELECT DISTINCT source_id FROM llm_metrics ORDER BY 1")
         .unwrap()
         .query_map([], |r| r.get::<_, String>(0))
         .unwrap()
         .map(Result::unwrap)
         .collect();
     assert_eq!(
-        stream_ids.len(),
+        source_ids.len(),
         2,
-        "expected 2 distinct stream_ids in llm_metrics, got {stream_ids:?}"
+        "expected 2 distinct source_ids in llm_metrics, got {source_ids:?}"
     );
     assert!(
-        stream_ids.iter().any(|s| s == "claude-cli-messages"),
-        "expected 'claude-cli-messages' stream_id, got {stream_ids:?}"
+        source_ids.iter().any(|s| s == "claude-cli-messages"),
+        "expected 'claude-cli-messages' source_id, got {source_ids:?}"
     );
     assert!(
-        stream_ids.iter().any(|s| s == "codex-cli-messages-multi"),
-        "expected 'codex-cli-messages-multi' stream_id, got {stream_ids:?}"
+        source_ids.iter().any(|s| s == "codex-cli-messages-multi"),
+        "expected 'codex-cli-messages-multi' source_id, got {source_ids:?}"
     );
 }

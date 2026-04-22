@@ -62,7 +62,7 @@ function MetadataGrid({ detail }: { detail: HttpExchangeDetail }) {
       : null
   const rows: [string, string][] = [
     ["ID", detail.id],
-    ["Stream", detail.stream_id || "—"],
+    ["Source", detail.source_id || "—"],
     ["Method", detail.method],
     ["URI", detail.uri],
     ["Client", `${detail.client_ip}:${detail.client_port}`],

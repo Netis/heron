@@ -401,7 +401,7 @@ mod tests {
         use ts_llm::model::ApiType;
         use ts_llm::wire_apis as wa;
         LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: format!("c-{i}"),
             wire_api: wa::OPENAI_CHAT,
             model: "m".into(),
@@ -435,7 +435,7 @@ mod tests {
 
     fn dummy_turn(i: usize) -> AgentTurn {
         AgentTurn {
-            stream_id: String::new(),
+            source_id: String::new(),
             turn_id: format!("t-{i}"),
             session_id: "s".into(),
             tenant_id: None,
@@ -466,7 +466,7 @@ mod tests {
     fn dummy_metric(i: usize) -> LlmMetric {
         LlmMetric {
             timestamp_us: i as i64,
-            stream_id: String::new(),
+            source_id: String::new(),
             granularity: "10s",
             wire_api: ts_llm::wire_apis::OPENAI_CHAT.into(),
             model: "m".into(),

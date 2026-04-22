@@ -17,7 +17,7 @@ pub enum ProtocolEvent {
     /// heartbeat. Downstream stages that are driven by packet timestamps
     /// (turn sweep, metrics window close) use these to make progress during
     /// idle traffic without needing a separate wall-clock ticker.
-    Heartbeat { ts: i64, stream_id: String },
+    Heartbeat { ts: i64, source_id: String },
 }
 
 /// A single Server-Sent Event parsed from a `text/event-stream` response.
@@ -139,8 +139,8 @@ impl std::fmt::Display for ProtocolEvent {
                     data_preview,
                 )
             }
-            ProtocolEvent::Heartbeat { ts, stream_id } => {
-                write!(f, "[HB]   wall_ts_us={ts} stream={stream_id}")
+            ProtocolEvent::Heartbeat { ts, source_id } => {
+                write!(f, "[HB]   wall_ts_us={ts} source={source_id}")
             }
         }
     }

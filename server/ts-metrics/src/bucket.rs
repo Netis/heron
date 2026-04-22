@@ -64,7 +64,7 @@ impl DistributionDigest {
     }
 }
 
-/// One (stream, granularity, window_start, dim) bucket. Accepts writes from
+/// One (source, granularity, window_start, dim) bucket. Accepts writes from
 /// both `LlmEvent::Start` (traffic/concurrency) and `LlmEvent::Complete`
 /// (tokens/errors/latency) over the life of a single cadence slice, then is
 /// drained and dropped. Subsequent late-arriving Completes for the same window
@@ -233,7 +233,7 @@ impl WindowBucket {
     pub fn flush(
         &mut self,
         timestamp_us: i64,
-        stream_id: &str,
+        source_id: &str,
         granularity: &'static str,
         wire_api: String,
         model: String,
@@ -241,7 +241,7 @@ impl WindowBucket {
     ) -> LlmMetric {
         LlmMetric {
             timestamp_us,
-            stream_id: stream_id.to_string(),
+            source_id: source_id.to_string(),
             granularity,
             wire_api,
             model,
@@ -337,7 +337,7 @@ mod tests {
 
     fn test_call() -> LlmCall {
         LlmCall {
-            stream_id: String::new(),
+            source_id: String::new(),
             id: "test".to_string(),
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".to_string(),
