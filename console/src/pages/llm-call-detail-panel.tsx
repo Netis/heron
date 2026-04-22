@@ -1,12 +1,11 @@
-import { useMemo, useState } from "react"
+import { useState } from "react"
 import { X, ChevronUp, ChevronDown, Loader2 } from "lucide-react"
 import { useLlmCallDetail } from "@/hooks/use-llm-call-detail"
 import { RawHttpDrawer, type RawHttpData } from "@/components/turn-detail/raw-http-drawer"
 import { SummaryCards } from "@/components/llm-call-detail/summary-cards"
 import { TimelineBar } from "@/components/llm-call-detail/timeline-bar"
 import { MetadataGrid } from "@/components/llm-call-detail/metadata-grid"
-import { getCallRenderer } from "@/components/llm-call-detail/renderers"
-import { joinToolResults, parseCall } from "@/lib/wire-api-parsers"
+import { CallRendererDispatch } from "@/components/call-renderers/dispatch"
 import type { LlmCallDetail } from "@/types/api"
 
 function toRawHttpData(detail: LlmCallDetail): RawHttpData {
@@ -46,17 +45,6 @@ export function LlmCallDetailPanel({ id, onClose, onNavigate, hasPrev, hasNext }
   const { data: detail, isLoading, isError } = useLlmCallDetail(id)
   const [rawOpen, setRawOpen] = useState(false)
 
-  const rendered = useMemo(() => {
-    if (!detail) return null
-    const parsed = parseCall(detail.wire_api, detail.request_body, detail.response_body)
-    // Standalone call detail has no "next call" context — tool_use blocks render
-    // without joined results. Users who want the full conversation open turn detail.
-    const joined = joinToolResults(parsed.output.tool_calls, [])
-    return { parsed, joined }
-  }, [detail])
-
-  const Renderer = detail ? getCallRenderer(detail.wire_api) : null
-
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose} />
@@ -93,7 +81,7 @@ export function LlmCallDetailPanel({ id, onClose, onNavigate, hasPrev, hasNext }
             <div className="flex h-40 items-center justify-center">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
-          ) : isError || !detail || !rendered || !Renderer ? (
+          ) : isError || !detail ? (
             <div className="flex h-40 items-center justify-center text-destructive">
               Failed to load LLM call detail
             </div>
@@ -102,23 +90,14 @@ export function LlmCallDetailPanel({ id, onClose, onNavigate, hasPrev, hasNext }
               <SummaryCards detail={detail} />
               <TimelineBar detail={detail} />
               <MetadataGrid detail={detail} />
-
-              <Renderer
-                parsed={rendered.parsed}
-                joinedToolCalls={rendered.joined}
+              <CallRendererDispatch
                 wireApi={detail.wire_api}
+                agentKind={detail.agent_kind}
+                requestBody={detail.request_body}
+                responseBody={detail.response_body}
                 hasRequestBody={detail.request_body != null}
                 onOpenRawHttp={() => setRawOpen(true)}
               />
-
-              <div className="flex justify-end border-t border-border pt-3">
-                <button
-                  onClick={() => setRawOpen(true)}
-                  className="text-xs text-muted-foreground hover:text-foreground hover:underline"
-                >
-                  View raw HTTP →
-                </button>
-              </div>
             </div>
           )}
         </div>

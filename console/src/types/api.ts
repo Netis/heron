@@ -150,18 +150,8 @@ export interface AgentTurnCallItem {
   response_headers: string | null
 }
 
-// Parsed domain types live in @/lib/wire-api-parsers (single source of truth).
-// Re-exported here so existing call sites can migrate gradually.
-export type {
-  ParsedContentBlock,
-  ParsedInput,
-  ParsedMessage,
-  ParsedRole,
-  ParsedSampling,
-  ParsedToolDef,
-} from "@/lib/wire-api-parsers"
-
-// LLM call detail — raw payload. Frontend parses via @/lib/wire-api-parsers.
+// LLM call detail — raw payload. Frontend parses per-wire_api via
+// @/lib/wire-apis/<provider>/index.ts.
 export interface LlmCallDetail {
   id: string
   request_time: number
@@ -189,6 +179,8 @@ export interface LlmCallDetail {
   response_body: string | null
   request_headers: string | null
   response_headers: string | null
+  /** Populated via LEFT JOIN on agent_turns — null when the call is not part of a turn. */
+  agent_kind: string | null
 }
 
 // HTTP exchange types — /api/http-exchanges

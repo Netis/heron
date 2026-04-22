@@ -74,6 +74,7 @@ function TurnDetailView({
                 call={c}
                 nextCall={calls[i + 1] ?? null}
                 finalCallId={turn.final_call_id}
+                agentKind={turn.agent_kind ?? null}
                 active={c.sequence === activeSeq}
                 defaultExpanded={c.sequence === activeSeq}
                 onOpenRawHttp={onOpenRawHttp}

@@ -1,8 +1,8 @@
 import { useMemo } from "react"
-import { Wrench, MessageSquare, Target } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatDuration, formatMs } from "@/lib/format"
-import { deriveCallPreview, type CallType } from "@/lib/wire-api-parsers"
+import { classifyType } from "@/lib/wire-apis/dispatch"
+import { GanttCallTypeIcon } from "@/components/call-renderers/chips/dispatch"
 import type { AgentTurnCallItem, AgentTurnDetail } from "@/types/api"
 
 interface Props {
@@ -21,12 +21,6 @@ function classifySpeed(call: AgentTurnCallItem): "normal" | "slow" | "error" {
   return "normal"
 }
 
-function TypeIcon({ type }: { type: CallType }) {
-  const cls = "size-3"
-  if (type === "tool_call") return <Wrench className={cn(cls, "text-amber-600")} />
-  if (type === "final")     return <Target className={cn(cls, "text-emerald-600")} />
-  return <MessageSquare className={cn(cls, "text-blue-600")} />
-}
 
 export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
   const { minStart, total } = useMemo(() => {
@@ -37,7 +31,7 @@ export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
   }, [calls, turn])
 
   const types = useMemo(
-    () => calls.map((c) => deriveCallPreview(c.wire_api, c.response_body, c.id, turn.final_call_id).type),
+    () => calls.map((c) => classifyType(c.wire_api, c.response_body, c.id, turn.final_call_id)),
     [calls, turn.final_call_id],
   )
 
@@ -68,7 +62,7 @@ export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
                 )}
               >
                 <span className="tabular-nums text-muted-foreground">{c.sequence}</span>
-                <TypeIcon type={types[i]} />
+                <GanttCallTypeIcon callType={types[i]} />
                 <div className="relative h-2 rounded bg-muted">
                   <div
                     className={cn(

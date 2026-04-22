@@ -3,7 +3,7 @@ import { Wrench, MessageSquare, Target } from "lucide-react"
 import { formatDuration, formatMs, formatNumber } from "@/lib/format"
 import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
 import { FinishBadge } from "@/components/ui/finish-badge"
-import { deriveCallPreview } from "@/lib/wire-api-parsers"
+import { classifyType } from "@/lib/wire-apis/dispatch"
 import type { AgentTurnCallItem, AgentTurnDetail } from "@/types/api"
 import { cn } from "@/lib/utils"
 
@@ -39,7 +39,7 @@ export function StatsCards({ turn, calls, onJumpToSlowest }: Props) {
   const typeCounts = useMemo(() => {
     const acc = { tool_call: 0, text: 0, final: 0 }
     for (const c of calls) {
-      const t = deriveCallPreview(c.wire_api, c.response_body, c.id, turn.final_call_id).type
+      const t = classifyType(c.wire_api, c.response_body, c.id, turn.final_call_id)
       acc[t]++
     }
     return acc

@@ -1776,22 +1776,32 @@ impl StorageBackend for DuckDbBackend {
         let id = id.to_string();
 
         tokio::task::spawn_blocking(move || {
+            // agent_kind comes from the agent_turn that contains this call_id
+            // (call_ids is a JSON array on agent_turns). LEFT JOIN so calls that
+            // do not belong to any turn still return with agent_kind = NULL.
             let sql = "
                 SELECT
-                    id, stream_id,
-                    epoch_ms(request_time),
-                    epoch_ms(response_time),
-                    epoch_ms(complete_time),
-                    wire_api, model, api_type, is_stream, request_path,
-                    status_code, finish_reason,
-                    input_tokens, output_tokens, total_tokens,
-                    ttfb_ms, e2e_latency_ms,
-                    response_id, tenant_id,
-                    client_ip, client_port, server_ip, server_port,
-                    request_body, response_body,
-                    request_headers, response_headers
-                FROM llm_calls
-                WHERE id = ?
+                    c.id, c.stream_id,
+                    epoch_ms(c.request_time),
+                    epoch_ms(c.response_time),
+                    epoch_ms(c.complete_time),
+                    c.wire_api, c.model, c.api_type, c.is_stream, c.request_path,
+                    c.status_code, c.finish_reason,
+                    c.input_tokens, c.output_tokens, c.total_tokens,
+                    c.ttfb_ms, c.e2e_latency_ms,
+                    c.response_id, c.tenant_id,
+                    c.client_ip, c.client_port, c.server_ip, c.server_port,
+                    c.request_body, c.response_body,
+                    c.request_headers, c.response_headers,
+                    t.agent_kind
+                FROM llm_calls c
+                LEFT JOIN agent_turns t
+                    ON list_contains(
+                        CAST(json_extract_string(t.call_ids, '$[*]') AS VARCHAR[]),
+                        c.id
+                    )
+                WHERE c.id = ?
+                LIMIT 1
             ";
 
             let mut stmt = conn.prepare(sql).map_err(|e| {
@@ -1827,6 +1837,7 @@ impl StorageBackend for DuckDbBackend {
                     response_body: row.get(24)?,
                     request_headers: row.get(25)?,
                     response_headers: row.get(26)?,
+                    agent_kind: row.get(27)?,
                 })
             });
 

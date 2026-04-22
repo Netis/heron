@@ -311,4 +311,8 @@ pub struct CallDetail {
     pub response_body: Option<String>,
     pub request_headers: Option<String>,
     pub response_headers: Option<String>,
+    /// Agent kind (claude-cli / codex-cli / …) of the enclosing agent_turn, if any.
+    /// Populated by a LEFT JOIN on agent_turns.call_ids; `None` when the call
+    /// does not belong to any turn (header-explicit profiles only).
+    pub agent_kind: Option<String>,
 }
