@@ -7,6 +7,7 @@ interface Props {
 export function MetadataGrid({ detail }: Props) {
   const rows: [string, string][] = [
     ["ID", detail.id],
+    ["Source", detail.source_id || "—"],
     ["Response ID", detail.response_id ?? "—"],
     ["Path", detail.request_path],
     ["Client", `${detail.client_ip}:${detail.client_port}`],

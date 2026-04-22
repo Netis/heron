@@ -98,6 +98,7 @@ export interface AgentTurnListItem {
 
 export interface AgentTurnDetail {
   turn_id: string
+  source_id: string
   session_id: string
   tenant_id: string | null
   wire_api: string
@@ -154,6 +155,7 @@ export interface AgentTurnCallItem {
 // @/lib/wire-apis/<provider>/index.ts.
 export interface LlmCallDetail {
   id: string
+  source_id: string
   request_time: number
   response_time: number | null
   complete_time: number | null

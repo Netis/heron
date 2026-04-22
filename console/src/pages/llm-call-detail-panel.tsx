@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { X, ChevronUp, ChevronDown, Loader2 } from "lucide-react"
+import { X, ChevronUp, ChevronDown, Loader2, FileCode2 } from "lucide-react"
 import { useLlmCallDetail } from "@/hooks/use-llm-call-detail"
 import { RawHttpDrawer, type RawHttpData } from "@/components/turn-detail/raw-http-drawer"
 import { SummaryCards } from "@/components/llm-call-detail/summary-cards"
@@ -53,6 +53,14 @@ export function LlmCallDetailPanel({ id, onClose, onNavigate, hasPrev, hasNext }
         <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold">LLM Call Detail</h2>
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => setRawOpen(true)}
+              disabled={!detail}
+              className="mr-2 flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted disabled:opacity-30"
+            >
+              <FileCode2 className="size-3.5" />
+              Raw HTTP
+            </button>
             <button
               onClick={() => onNavigate("prev")}
               disabled={!hasPrev}

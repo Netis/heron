@@ -399,6 +399,7 @@ async fn main() {
                 while capture_tasks.join_next().await.is_some() {}
             } => {
                 tracing::info!("all capture sources finished");
+                cancel.cancel();
             }
             res = &mut supervisor => {
                 match res {

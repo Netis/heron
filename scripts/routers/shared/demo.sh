@@ -68,8 +68,8 @@ show_help() {
     echo "   just demo stop         Kill tmux session"
     echo "   just demo restart      Restart (stop + start)"
     echo "   just demo status       Show TokenScope tmux + process status"
-    echo "   just demo log          Tail TokenScope log"
-    echo "   just demo attach       Attach to tmux session (SSH + tmux attach)"
+    echo "   just demo log          Show last 100 lines of TokenScope log"
+    echo "   just demo log -f       Follow the log (Ctrl-C to exit)"
     echo "   just demo config       Show deploy config"
     echo ""
     echo "  Traffic:"
@@ -588,11 +588,17 @@ cmd_start() {
             exit 1
         fi
         mkdir -p data
-        tmux new-session -d -s ${TMUX_SESSION} '${REMOTE_BINARY} --config ${REMOTE_CONFIG} 2>&1 | tee tokenscope.log' < /dev/null
+        # Redirect stdout/stderr to the log file directly (no '| tee'). Piping
+        # through tee means tokenscope's fd1/fd2 are a pipe whose reader (tee)
+        # dies when tmux closes the PTY on kill-session. Subsequent tracing
+        # writes can then block a tokio worker thread, which starves the
+        # signal driver and makes SIGTERM appear to be ignored — the
+        # classic 'kill -9 only' symptom just-demo-stop reproduces.
+        tmux new-session -d -s ${TMUX_SESSION} '${REMOTE_BINARY} --config ${REMOTE_CONFIG} >> tokenscope.log 2>&1' < /dev/null
         sleep 1
         if tmux has-session -t ${TMUX_SESSION} 2>/dev/null; then
             echo 'TokenScope started (tmux session: ${TMUX_SESSION})'
-            echo '  attach: tmux attach -t ${TMUX_SESSION}   (Ctrl-b d to detach)'
+            echo '  logs:  just demo log'
         else
             echo 'TokenScope failed to start — see tokenscope.log'
             tail -30 tokenscope.log 2>/dev/null || true
@@ -602,28 +608,37 @@ cmd_start() {
 }
 
 cmd_stop() {
-    # Match by exact process name (pkill -x), NOT -f. The remote shell running
-    # this script has the pattern in its own argv, and pkill -f would kill it
-    # mid-SSH — aborting the connection with exit 255.
+    # Send SIGTERM directly to tokenscope rather than relying on tmux's
+    # SIGHUP propagating through the pane shell — that path is fragile when
+    # anything sits between tmux and the binary (see cmd_start comment).
     #
-    # tmux kill-session sends SIGHUP asynchronously; the child takes a tick to
-    # exit. Poll briefly before deciding the process is a foreign lingerer,
-    # and only warn when a post-pkill pgrep still sees it alive.
+    # Graceful shutdown budget in main.rs is ~14s worst case (capture 3s +
+    # pipeline drain 5s + API 3s + retention 3s, each with force-exit on
+    # timeout). Poll up to 20s before escalating to SIGKILL.
+    #
+    # Match by exact process name (-x), not -f: the remote shell running
+    # this script has the pattern in its own argv and pkill -f would kill it
+    # mid-SSH, aborting the connection with exit 255.
     run_ssh "
-        stopped=0
-        if tmux has-session -t ${TMUX_SESSION} 2>/dev/null; then
-            tmux kill-session -t ${TMUX_SESSION} && echo 'tmux session killed: ${TMUX_SESSION}'
-            stopped=1
+        running=0
+        pgrep -x ${BINARY_NAME} >/dev/null 2>&1 && running=1
+        if [ \$running -eq 1 ]; then
+            pkill -TERM -x ${BINARY_NAME} 2>/dev/null || true
+            for _ in \$(seq 1 40); do
+                pgrep -x ${BINARY_NAME} >/dev/null 2>&1 || break
+                sleep 0.5
+            done
         fi
-        for _ in 1 2 3 4 5 6; do
-            pgrep -x ${BINARY_NAME} >/dev/null 2>&1 || break
-            sleep 0.5
-        done
+        if tmux has-session -t ${TMUX_SESSION} 2>/dev/null; then
+            tmux kill-session -t ${TMUX_SESSION} >/dev/null 2>&1 || true
+            echo 'tmux session killed: ${TMUX_SESSION}'
+        fi
         if pgrep -x ${BINARY_NAME} >/dev/null 2>&1; then
-            pkill -x ${BINARY_NAME} 2>/dev/null || true
+            echo 'WARN: ${BINARY_NAME} did not exit within 20s after SIGTERM; sending SIGKILL'
+            pkill -KILL -x ${BINARY_NAME} 2>/dev/null || true
             sleep 0.5
             if pgrep -x ${BINARY_NAME} >/dev/null 2>&1; then
-                echo 'WARN: ${BINARY_NAME} still running after pkill (likely owned by another user).'
+                echo 'Still running after SIGKILL — likely owned by another user:'
                 pgrep -x ${BINARY_NAME} | while read pid; do
                     owner=\$(ps -p \$pid -o user= 2>/dev/null | xargs)
                     echo \"  pid=\$pid owner=\$owner\"
@@ -631,10 +646,12 @@ cmd_stop() {
                 echo 'Kill it as root:  just demo kill-root'
                 exit 1
             fi
-            echo 'Killed lingering ${BINARY_NAME} process(es)'
-            stopped=1
+            echo 'Killed (SIGKILL).'
+        elif [ \$running -eq 1 ]; then
+            echo 'TokenScope stopped cleanly.'
+        else
+            echo 'TokenScope was not running'
         fi
-        [ \$stopped -eq 1 ] || echo 'TokenScope was not running'
     "
 }
 
@@ -657,14 +674,15 @@ cmd_status() {
 }
 
 cmd_log() {
-    run_ssh "cd '${DEMO_REMOTE_DIR}' && tail -100 tokenscope.log 2>/dev/null || echo 'No log file yet'"
-}
-
-cmd_attach() {
-    _ssh_base
-    echo -e "${CYAN}Attaching to tmux session '${TMUX_SESSION}' (Ctrl-b d to detach)...${NC}"
-    exec ssh "${SSH_ARGS[@]}" -t -o IdentitiesOnly=yes -i "$DEMO_SSH_KEY" \
-        "${DEMO_USER}@${DEMO_HOST}" "tmux attach -t ${TMUX_SESSION}"
+    if [[ "${1:-}" == "-f" ]]; then
+        _ssh_base
+        echo -e "${CYAN}Tailing tokenscope.log — Ctrl-C to exit${NC}"
+        exec ssh "${SSH_ARGS[@]}" -t -o IdentitiesOnly=yes -i "$DEMO_SSH_KEY" \
+            "${DEMO_USER}@${DEMO_HOST}" \
+            "cd '${DEMO_REMOTE_DIR}' && tail -n 100 -F tokenscope.log"
+    else
+        run_ssh "cd '${DEMO_REMOTE_DIR}' && tail -100 tokenscope.log 2>/dev/null || echo 'No log file yet'"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -801,8 +819,7 @@ case "${1:-help}" in
     stop)         cmd_stop ;;
     restart)      cmd_restart ;;
     status)       cmd_status ;;
-    log)          cmd_log ;;
-    attach)       cmd_attach ;;
+    log)          shift; cmd_log "$@" ;;
     # Nested
     traffic)      shift; cmd_traffic "$@" ;;
     env)          shift; cmd_env "$@" ;;

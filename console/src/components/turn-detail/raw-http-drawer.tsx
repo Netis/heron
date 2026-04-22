@@ -54,17 +54,20 @@ export function RawHttpDrawer({ data, onClose }: Props) {
   if (!data) return null
 
   return (
-    <div className="fixed top-0 right-0 z-[60] flex h-full w-[min(720px,50vw)] flex-col border-l border-border bg-background shadow-2xl animate-in slide-in-from-right duration-200">
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-border px-4">
-        <h3 className="text-sm font-semibold">Raw HTTP</h3>
-        <button onClick={onClose} className="rounded p-1 hover:bg-muted">
-          <X className="size-4" />
-        </button>
+    <>
+      <div className="fixed inset-0 z-[55] bg-black/40" onClick={onClose} />
+      <div className="fixed top-0 right-0 z-[60] flex h-full w-[min(720px,50vw)] flex-col border-l border-border bg-background shadow-2xl animate-in slide-in-from-right duration-200">
+        <div className="flex h-10 shrink-0 items-center justify-between border-b border-border px-4">
+          <h3 className="text-sm font-semibold">Raw HTTP</h3>
+          <button onClick={onClose} className="rounded p-1 hover:bg-muted">
+            <X className="size-4" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <RawHttpBody data={data} />
+        </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        <RawHttpBody data={data} />
-      </div>
-    </div>
+    </>
   )
 }
 

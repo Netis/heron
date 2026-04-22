@@ -10,6 +10,7 @@ interface Props {
 export function MetadataPopover({ turn, onClose }: Props) {
   const rows: [string, string][] = [
     ["Turn ID", turn.turn_id],
+    ["Source", turn.source_id || "—"],
     ["Session ID", turn.session_id],
     ["Agent", turn.agent_kind],
     ["Tenant", turn.tenant_id ?? "—"],
