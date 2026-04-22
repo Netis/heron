@@ -14,6 +14,11 @@ use ts_common::config::{AppConfig, CaptureSourceConfig, PipelineDef};
 use ts_common::internal_metrics::{Metric, MetricsReporter, MetricsSystem};
 use ts_storage::create_backend;
 
+const CAPTURE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+const PIPELINE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const API_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+const RETENTION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+
 #[cfg(feature = "console")]
 mod console {
     use axum::http::{header, StatusCode};
@@ -121,6 +126,10 @@ async fn wait_shutdown_signal() -> &'static str {
     "Ctrl+C"
 }
 
+async fn join_capture_tasks(capture_tasks: &mut JoinSet<()>) {
+    while capture_tasks.join_next().await.is_some() {}
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -226,22 +235,29 @@ async fn main() {
     );
 
     // Bind API server (warn and continue if port is occupied)
-    match ts_api::bind(&config.api).await {
+    let api_handle = match ts_api::bind(&config.api).await {
         Ok(listener) => {
             let api_storage = storage.clone();
-            tokio::spawn(async move {
+            let api_cancel = cancel.clone();
+            Some(tokio::spawn(async move {
                 let router = ts_api::router(api_storage);
                 #[cfg(feature = "console")]
                 let router = router.fallback(console::static_handler);
-                if let Err(e) = axum::serve(listener, router).await {
+                let server = axum::serve(listener, router).with_graceful_shutdown(async move {
+                    api_cancel.cancelled().await;
+                });
+                if let Err(e) = server.await {
                     tracing::error!("API server error: {e}");
+                } else {
+                    tracing::info!("API server stopped");
                 }
-            });
+            }))
         }
         Err(e) => {
             tracing::warn!("API server disabled: {e}");
+            None
         }
-    }
+    };
 
     if !effective_pipelines.is_empty() && effective_pipelines.iter().any(|d| !d.sources.is_empty())
     {
@@ -311,7 +327,7 @@ async fn main() {
         // Start each per-pipeline MetricsSystem and, if enabled, one
         // reporter per pipeline. Reporter handles are held in a Vec so they
         // stay alive for the duration of the run.
-        let _reporter_handles: Vec<_> = per_pipeline_metrics
+        let reporter_handles: Vec<_> = per_pipeline_metrics
             .into_iter()
             .zip(effective_pipelines.iter())
             .filter_map(|(sys, def)| {
@@ -382,40 +398,77 @@ async fn main() {
             _ = async {
                 while capture_tasks.join_next().await.is_some() {}
             } => {
-                tracing::debug!("all capture sources finished");
+                tracing::info!("all capture sources finished");
             }
             res = &mut supervisor => {
                 match res {
                     Ok(Some((label, err))) => tracing::error!(
                         "pipeline stage '{label}' exited abnormally: {err}; cancelling capture"
                     ),
-                    Ok(None) => tracing::debug!("all pipeline stages exited cleanly"),
+                    Ok(None) => tracing::info!("all pipeline stages exited cleanly"),
                     Err(e) => tracing::error!("supervisor join error: {e}"),
                 }
                 cancel.cancel();
             }
         }
 
-        // Wait for any remaining capture tasks briefly, then await pipeline drain.
-        tokio::select! {
-            _ = async {
-                while capture_tasks.join_next().await.is_some() {}
-            } => {}
-            _ = tokio::time::sleep(Duration::from_secs(3)) => {
-                tracing::warn!("capture source(s) did not stop in time; aborting");
-                capture_tasks.abort_all();
-            }
+        for stop_tx in &reporter_handles {
+            let _ = stop_tx.send(());
+        }
+
+        let mut force_exit = false;
+
+        // Graceful capture shutdown is best-effort. If a blocking capture
+        // worker ignores cancellation and keeps a RawPacket sender alive,
+        // the pipeline can never observe EOF; after the timeout we stop
+        // waiting and force the whole process down below.
+        if tokio::time::timeout(
+            CAPTURE_SHUTDOWN_TIMEOUT,
+            join_capture_tasks(&mut capture_tasks),
+        )
+        .await
+        .is_err()
+        {
+            tracing::error!(
+                timeout_secs = CAPTURE_SHUTDOWN_TIMEOUT.as_secs(),
+                "capture source(s) did not stop in time; forcing shutdown"
+            );
+            capture_tasks.abort_all();
+            force_exit = true;
         }
 
         tracing::info!("waiting for pipeline (incl. storage sink) to drain...");
-        match supervisor.await {
-            Ok(Some((label, err))) => {
-                tracing::error!("pipeline stage '{label}' exited abnormally: {err}")
-            }
-            Ok(None) => tracing::debug!("all pipeline stages drained cleanly"),
-            Err(e) => tracing::error!("supervisor join error: {e}"),
+        let pipeline_drained =
+            match tokio::time::timeout(PIPELINE_DRAIN_TIMEOUT, &mut supervisor).await {
+                Ok(Ok(Some((label, err)))) => {
+                    tracing::error!("pipeline stage '{label}' exited abnormally: {err}");
+                    true
+                }
+                Ok(Ok(None)) => {
+                    tracing::info!("all pipeline stages drained cleanly");
+                    true
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("supervisor join error: {e}");
+                    true
+                }
+                Err(_) => {
+                    tracing::error!(
+                        timeout_secs = PIPELINE_DRAIN_TIMEOUT.as_secs(),
+                        "pipeline drain timed out; forcing shutdown"
+                    );
+                    force_exit = true;
+                    false
+                }
+            };
+        if pipeline_drained {
+            tracing::info!("pipeline drained");
         }
-        tracing::info!("pipeline drained");
+
+        if force_exit {
+            tracing::error!("graceful shutdown stalled; exiting forcefully");
+            std::process::exit(1);
+        }
     } else {
         // No pipelines with sources → no pipeline, no MetricsSystem, no
         // reporter. Just park on ctrl-c so the API server stays up.
@@ -429,9 +482,31 @@ async fn main() {
         cancel.cancel();
     }
 
+    if let Some(api_handle) = api_handle {
+        match tokio::time::timeout(API_SHUTDOWN_TIMEOUT, api_handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!("API server task join error: {e}"),
+            Err(_) => {
+                tracing::error!(
+                    timeout_secs = API_SHUTDOWN_TIMEOUT.as_secs(),
+                    "API server did not stop in time; exiting forcefully"
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Let the retention sweeper observe cancellation and exit cleanly.
-    if let Err(e) = retention_handle.await {
-        tracing::warn!("retention task join error: {e}");
+    match tokio::time::timeout(RETENTION_SHUTDOWN_TIMEOUT, retention_handle).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!("retention task join error: {e}"),
+        Err(_) => {
+            tracing::error!(
+                timeout_secs = RETENTION_SHUTDOWN_TIMEOUT.as_secs(),
+                "retention task did not stop in time; exiting forcefully"
+            );
+            std::process::exit(1);
+        }
     }
 
     tracing::info!("tokenscope stopped");

@@ -34,3 +34,4 @@ console = ["dep:rust-embed", "dep:mime_guess"]
 tempfile = "3"
 duckdb = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+libc = { workspace = true }

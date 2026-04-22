@@ -2747,6 +2747,7 @@ dependencies = [
  "axum",
  "clap",
  "duckdb",
+ "libc",
  "mime_guess",
  "rust-embed",
  "tempfile",
