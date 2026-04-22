@@ -71,7 +71,7 @@ export function AgentTurnDetailPanel({ id, onClose }: Props) {
   const { data: turn, isLoading: loadingTurn, isError: errorTurn } = useAgentTurnDetail(id)
   const { data: calls = [], isLoading: loadingCalls } = useAgentTurnCalls(id)
 
-  const { call: activeSeq, raw: urlRaw, setCall, setRaw } = useTurnUrlState()
+  const { call: activeSeq, raw: urlRaw, setCall, setRaw, openRaw } = useTurnUrlState()
 
   const rawHttpCallId = urlRaw && activeSeq != null
     ? calls.find((c) => c.sequence === activeSeq)?.id ?? null
@@ -84,10 +84,7 @@ export function AgentTurnDetailPanel({ id, onClose }: Props) {
 
   const openRawHttp = (id: string) => {
     const call = calls.find((c) => c.id === id)
-    if (call) {
-      setCall(call.sequence)
-      setRaw(true)
-    }
+    if (call) openRaw(call.sequence)
   }
 
   const closeRawHttp = () => {

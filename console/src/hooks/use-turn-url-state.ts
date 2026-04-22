@@ -7,19 +7,35 @@ export function useTurnUrlState() {
   const raw = params.get("raw") === "1"
 
   const setCall = useCallback((seq: number | null) => {
-    const next = new URLSearchParams(params)
-    if (seq == null) next.delete("call")
-    else next.set("call", String(seq))
-    if (seq == null) next.delete("raw")
-    setParams(next, { replace: true })
-  }, [params, setParams])
+    setParams((prev) => {
+      const next = new URLSearchParams(prev)
+      if (seq == null) {
+        next.delete("call")
+        next.delete("raw")
+      } else {
+        next.set("call", String(seq))
+      }
+      return next
+    }, { replace: true })
+  }, [setParams])
 
   const setRaw = useCallback((on: boolean) => {
-    const next = new URLSearchParams(params)
-    if (on) next.set("raw", "1")
-    else next.delete("raw")
-    setParams(next, { replace: true })
-  }, [params, setParams])
+    setParams((prev) => {
+      const next = new URLSearchParams(prev)
+      if (on) next.set("raw", "1")
+      else next.delete("raw")
+      return next
+    }, { replace: true })
+  }, [setParams])
 
-  return { call, raw, setCall, setRaw }
+  const openRaw = useCallback((seq: number) => {
+    setParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set("call", String(seq))
+      next.set("raw", "1")
+      return next
+    }, { replace: true })
+  }, [setParams])
+
+  return { call, raw, setCall, setRaw, openRaw }
 }
