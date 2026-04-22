@@ -220,6 +220,10 @@ export interface HttpExchangeDetail {
   response_headers: string
   response_body: string | null
   is_sse: boolean
+  /** Number of SSE events observed. 0 for non-SSE. */
+  sse_event_count: number
+  /** Sum of SSE `data:` payload bytes. Frame overhead excluded. 0 for non-SSE. */
+  sse_data_bytes: number
   request_time: number
   response_first_byte_time: number | null
   response_complete_time: number | null

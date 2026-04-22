@@ -280,6 +280,8 @@ CREATE TABLE IF NOT EXISTS http_exchanges (
     response_headers          VARCHAR NOT NULL,
     response_body             BLOB,
     is_sse                    BOOLEAN NOT NULL,
+    sse_event_count           UINTEGER NOT NULL DEFAULT 0,
+    sse_data_bytes            UBIGINT NOT NULL DEFAULT 0,
     request_time              TIMESTAMP NOT NULL,
     response_first_byte_time  TIMESTAMP,
     response_complete_time    TIMESTAMP
@@ -720,6 +722,8 @@ struct PreparedExchange {
     response_headers: String,
     response_body: Option<Vec<u8>>,
     is_sse: bool,
+    sse_event_count: u32,
+    sse_data_bytes: u64,
     request_time: Value,
     response_first_byte_time: Option<Value>,
     response_complete_time: Option<Value>,
@@ -750,6 +754,8 @@ fn prepare_exchange(x: HttpExchange) -> PreparedExchange {
         response_headers: headers_to_json(&x.response.headers),
         response_body: stored_response_body,
         is_sse,
+        sse_event_count: x.sse_event_count,
+        sse_data_bytes: x.sse_data_bytes,
         request_time: Value::Timestamp(TimeUnit::Microsecond, x.request.timestamp_us),
         response_first_byte_time: Some(Value::Timestamp(
             TimeUnit::Microsecond,
@@ -959,6 +965,8 @@ impl StorageBackend for DuckDbBackend {
                         p.response_headers,
                         p.response_body,
                         p.is_sse,
+                        p.sse_event_count,
+                        p.sse_data_bytes,
                         p.request_time,
                         p.response_first_byte_time,
                         p.response_complete_time,
@@ -984,6 +992,7 @@ impl StorageBackend for DuckDbBackend {
                     method, uri,
                     request_headers, request_body,
                     status, response_headers, response_body, is_sse,
+                    sse_event_count, sse_data_bytes,
                     epoch_ms(request_time),
                     epoch_ms(response_first_byte_time),
                     epoch_ms(response_complete_time)
@@ -1011,9 +1020,11 @@ impl StorageBackend for DuckDbBackend {
                     response_headers: row.get(11)?,
                     response_body: render_body_for_detail(response_body_bytes),
                     is_sse: row.get(13)?,
-                    request_time: row.get(14)?,
-                    response_first_byte_time: row.get(15)?,
-                    response_complete_time: row.get(16)?,
+                    sse_event_count: row.get(14)?,
+                    sse_data_bytes: row.get(15)?,
+                    request_time: row.get(16)?,
+                    response_first_byte_time: row.get(17)?,
+                    response_complete_time: row.get(18)?,
                 })
             });
             match result {
@@ -2504,6 +2515,8 @@ mod tests {
             id: "xchg-rt-1".to_string(),
             request,
             response,
+            sse_event_count: 0,
+            sse_data_bytes: 0,
         };
         backend
             .write_exchanges(vec![exchange.clone()])
@@ -2562,6 +2575,8 @@ mod tests {
             id: "xchg-sse-1".to_string(),
             request,
             response,
+            sse_event_count: 3,
+            sse_data_bytes: 42,
         };
         backend.write_exchanges(vec![exchange]).await.unwrap();
         let got = backend
@@ -2571,6 +2586,8 @@ mod tests {
             .unwrap();
         assert!(got.is_sse);
         assert!(got.response_body.is_none());
+        assert_eq!(got.sse_event_count, 3);
+        assert_eq!(got.sse_data_bytes, 42);
     }
 
     #[tokio::test]

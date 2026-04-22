@@ -391,6 +391,8 @@ mod tests {
             id: format!("x-{i}"),
             request,
             response,
+            sse_event_count: 0,
+            sse_data_bytes: 0,
         }
     }
 

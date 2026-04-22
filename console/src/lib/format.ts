@@ -53,3 +53,11 @@ export function formatNumber(n: number | null | undefined): string {
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return String(n)
 }
+
+export function formatBytes(n: number | null | undefined): string {
+  if (n == null) return "—"
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MiB`
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GiB`
+}

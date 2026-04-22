@@ -1,6 +1,6 @@
 import { X, ChevronUp, ChevronDown, Loader2 } from "lucide-react"
 import { useHttpExchange } from "@/hooks/use-http-exchange"
-import { formatDateTime, formatMs } from "@/lib/format"
+import { formatBytes, formatDateTime, formatMs, formatNumber } from "@/lib/format"
 import { StatusBadge } from "@/components/ui/status-badge"
 import { CollapsibleSection } from "@/components/ui/collapsible-section"
 import type { HttpExchangeDetail } from "@/types/api"
@@ -79,6 +79,12 @@ function MetadataGrid({ detail }: { detail: HttpExchangeDetail }) {
     ["Duration", duration != null ? formatMs(duration) : "—"],
     ["SSE", detail.is_sse ? "Yes" : "No"],
   ]
+  if (detail.is_sse) {
+    rows.push(
+      ["SSE Events", formatNumber(detail.sse_event_count)],
+      ["SSE Data Bytes", formatBytes(detail.sse_data_bytes)],
+    )
+  }
 
   return (
     <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 px-4 py-3 text-sm">
@@ -162,9 +168,17 @@ export function HttpExchangeDetailPanel({ id, onClose, onNavigate, hasPrev, hasN
                   )}
                 </SummaryCard>
                 <SummaryCard label="SSE">
-                  <span className={detail.is_sse ? "text-blue-500" : "text-muted-foreground"}>
-                    {detail.is_sse ? "Yes" : "No"}
-                  </span>
+                  {detail.is_sse ? (
+                    <div className="flex flex-col">
+                      <span className="text-blue-500">Yes</span>
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        {formatNumber(detail.sse_event_count)} events ·{" "}
+                        {formatBytes(detail.sse_data_bytes)}
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground">No</span>
+                  )}
                 </SummaryCard>
                 <SummaryCard label="Duration">
                   <div className="tabular-nums">
@@ -208,7 +222,10 @@ export function HttpExchangeDetailPanel({ id, onClose, onNavigate, hasPrev, hasN
               <CollapsibleSection title="Response Body">
                 {detail.is_sse && detail.response_body == null ? (
                   <p className="text-sm text-muted-foreground">
-                    SSE response — raw stream not persisted.
+                    SSE response — raw stream not persisted.{" "}
+                    {formatNumber(detail.sse_event_count)} events received,{" "}
+                    {formatBytes(detail.sse_data_bytes)} of <code>data:</code> payload
+                    (frame overhead excluded).
                   </p>
                 ) : detail.response_body ? (
                   <pre className="max-h-[400px] overflow-auto rounded-md bg-muted p-3 font-mono text-xs">

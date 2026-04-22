@@ -152,7 +152,7 @@ export function AgentTurnDetailPanel({ id, onClose }: Props) {
       <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose} />
 
       {/* Panel */}
-      <div className="fixed top-0 right-0 z-50 flex h-full w-[92%] min-w-[720px] flex-col border-l border-border bg-background shadow-xl animate-in slide-in-from-right duration-200">
+      <div className="fixed top-0 right-0 z-50 flex h-full w-[70%] min-w-[560px] flex-col border-l border-border bg-background shadow-xl animate-in slide-in-from-right duration-200">
         {loadingTurn && !turn ? (
           <div className="flex flex-1 items-center justify-center">
             <Loader2 className="size-5 animate-spin text-muted-foreground" />

@@ -195,15 +195,19 @@ pub fn spawn_http_joiner_stage(
                             id,
                             request,
                             response,
-                            ..
+                            sse_events,
                         },
                         Some(tx),
                     ) = (&event, exch_tx.as_ref())
                     {
+                        let (sse_event_count, sse_data_bytes) =
+                            crate::joiner::sse_summary(sse_events);
                         let xchg = HttpExchange {
                             id: id.clone(),
                             request: request.clone(),
                             response: response.clone(),
+                            sse_event_count,
+                            sse_data_bytes,
                         };
                         if tx.send(xchg).await.is_err() {
                             break 'main "downstream_closed_exchanges";

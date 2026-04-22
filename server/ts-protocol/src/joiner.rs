@@ -55,6 +55,22 @@ pub struct HttpExchange {
     pub id: String,
     pub request: Arc<HttpRequestData>,
     pub response: Arc<HttpResponseData>,
+    /// Number of SSE events observed on this exchange. `0` for non-SSE.
+    /// Sourced from `HttpJoinerEvent::Exchange.sse_events.len()` at the
+    /// storage fan-out site (`stage.rs`).
+    pub sse_event_count: u32,
+    /// Sum of `data:` payload bytes across all SSE events on this exchange.
+    /// Frame overhead (`event:`/`data:`/blank-line separators) is excluded —
+    /// raw SSE wire bytes are discarded at parse time. `0` for non-SSE.
+    pub sse_data_bytes: u64,
+}
+
+/// Compute `(count, data_bytes)` from a slice of SSE events.
+/// `data_bytes` is the sum of each event's `data:` payload length.
+pub fn sse_summary(events: &[SseEventData]) -> (u32, u64) {
+    let count = events.len() as u32;
+    let bytes = events.iter().map(|e| e.data.len() as u64).sum();
+    (count, bytes)
 }
 
 impl HttpExchange {
@@ -393,10 +409,13 @@ mod tests {
                 response,
                 sse_events,
             } => {
+                let (sse_event_count, sse_data_bytes) = sse_summary(sse_events);
                 let xchg = HttpExchange {
                     id: id.clone(),
                     request: request.clone(),
                     response: response.clone(),
+                    sse_event_count,
+                    sse_data_bytes,
                 };
                 assert!(!xchg.is_sse());
                 assert_eq!(response.status, 200);
@@ -434,15 +453,20 @@ mod tests {
                 response,
                 sse_events,
             } => {
+                let (sse_event_count, sse_data_bytes) = sse_summary(sse_events);
                 let xchg = HttpExchange {
                     id: id.clone(),
                     request: request.clone(),
                     response: response.clone(),
+                    sse_event_count,
+                    sse_data_bytes,
                 };
                 assert!(xchg.is_sse());
                 assert!(xchg.stored_response_body().is_none());
                 assert_eq!(sse_events.len(), 1);
                 assert_eq!(sse_events[0].event_type, "message_start");
+                assert_eq!(xchg.sse_event_count, 1);
+                assert_eq!(xchg.sse_data_bytes, 2); // "{}"
             }
             _ => panic!("expected Exchange"),
         }

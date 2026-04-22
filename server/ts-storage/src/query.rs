@@ -276,6 +276,11 @@ pub struct HttpExchangeDetail {
     /// retained) or incomplete exchanges.
     pub response_body: Option<String>,
     pub is_sse: bool,
+    /// Number of SSE events observed. `0` for non-SSE exchanges.
+    pub sse_event_count: u32,
+    /// Sum of SSE `data:` payload bytes. Frame overhead excluded; raw SSE
+    /// wire bytes are not retained. `0` for non-SSE exchanges.
+    pub sse_data_bytes: u64,
     /// Microseconds since Unix epoch.
     pub request_time: i64,
     pub response_first_byte_time: Option<i64>,
