@@ -25,7 +25,7 @@ TokenScope is an open-source project from Netis Systems, continuing a two-decade
 
 ## Quickstart
 
-See [`docs/`](docs/) for deployment, configuration, and usage. Architecture overview in [`docs/design/01-architecture.md`](docs/design/01-architecture.md). Longer mission statement in [`docs/mission.md`](docs/mission.md).
+See [`docs/`](docs/) for deployment, configuration, and usage. Architecture overview in [`docs/design/01-architecture.md`](docs/design/01-architecture.md). Terminology reference in [`docs/glossary.md`](docs/glossary.md). Longer mission statement in [`docs/mission.md`](docs/mission.md).
 
 ## License
 

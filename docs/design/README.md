@@ -2,6 +2,8 @@
 
 Module-level design docs for TokenScope's data pipeline. Ordered to follow the packet-to-metric flow.
 
+For cross-cutting terminology (TTFT/E2E/TPOT, wire_api, agent_kind, HttpExchange, LlmCall, AgentTurn, …) see [../glossary.md](../glossary.md).
+
 | # | Document | Crate | Description |
 |---|----------|-------|-------------|
 | 01 | [Architecture](01-architecture.md) | — | Monorepo layout, pipeline topology, crate dependency graph |
