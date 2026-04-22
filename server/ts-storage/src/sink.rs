@@ -265,9 +265,6 @@ mod tests {
         async fn query_call_by_id(&self, _id: &str) -> Result<Option<CallDetail>> {
             Ok(None)
         }
-        async fn query_next_call_request_body(&self, _current_id: &str) -> Result<Option<String>> {
-            Ok(None)
-        }
         async fn query_turns(&self, _query: &TurnsQuery) -> Result<TurnsPage> {
             Ok(TurnsPage {
                 total: 0,

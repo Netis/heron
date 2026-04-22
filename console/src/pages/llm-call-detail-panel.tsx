@@ -1,12 +1,38 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { X, ChevronUp, ChevronDown, Loader2 } from "lucide-react"
 import { useLlmCallDetail } from "@/hooks/use-llm-call-detail"
-import { RawHttpDrawer } from "@/components/turn-detail/raw-http-drawer"
-import { CallParsedOutput } from "@/components/call-parsed-output"
+import { RawHttpDrawer, type RawHttpData } from "@/components/turn-detail/raw-http-drawer"
 import { SummaryCards } from "@/components/llm-call-detail/summary-cards"
 import { TimelineBar } from "@/components/llm-call-detail/timeline-bar"
 import { MetadataGrid } from "@/components/llm-call-detail/metadata-grid"
-import { InputSection } from "@/components/llm-call-detail/input-section"
+import { getCallRenderer } from "@/components/llm-call-detail/renderers"
+import { joinToolResults, parseCall } from "@/lib/wire-api-parsers"
+import type { LlmCallDetail } from "@/types/api"
+
+function toRawHttpData(detail: LlmCallDetail): RawHttpData {
+  return {
+    id: detail.id,
+    wire_api: detail.wire_api,
+    model: detail.model,
+    status_code: detail.status_code,
+    finish_reason: detail.finish_reason,
+    ttfb_ms: detail.ttfb_ms,
+    e2e_latency_ms: detail.e2e_latency_ms,
+    input_tokens: detail.input_tokens,
+    output_tokens: detail.output_tokens,
+    request_path: detail.request_path,
+    client_ip: detail.client_ip,
+    client_port: detail.client_port,
+    server_ip: detail.server_ip,
+    server_port: detail.server_port,
+    is_stream: detail.is_stream,
+    request_time: detail.request_time,
+    request_body: detail.request_body,
+    response_body: detail.response_body,
+    request_headers: detail.request_headers,
+    response_headers: detail.response_headers,
+  }
+}
 
 interface Props {
   id: string
@@ -20,14 +46,22 @@ export function LlmCallDetailPanel({ id, onClose, onNavigate, hasPrev, hasNext }
   const { data: detail, isLoading, isError } = useLlmCallDetail(id)
   const [rawOpen, setRawOpen] = useState(false)
 
+  const rendered = useMemo(() => {
+    if (!detail) return null
+    const parsed = parseCall(detail.wire_api, detail.request_body, detail.response_body)
+    // Standalone call detail has no "next call" context — tool_use blocks render
+    // without joined results. Users who want the full conversation open turn detail.
+    const joined = joinToolResults(parsed.output.tool_calls, [])
+    return { parsed, joined }
+  }, [detail])
+
+  const Renderer = detail ? getCallRenderer(detail.wire_api) : null
+
   return (
     <>
-      {/* Backdrop */}
       <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose} />
 
-      {/* Panel */}
       <div className="fixed top-0 right-0 z-50 flex h-full w-[70%] min-w-[560px] flex-col border-l border-border bg-background shadow-xl animate-in slide-in-from-right duration-200">
-        {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold">LLM Call Detail</h2>
           <div className="flex items-center gap-1">
@@ -54,44 +88,29 @@ export function LlmCallDetailPanel({ id, onClose, onNavigate, hasPrev, hasNext }
           </div>
         </div>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto">
           {isLoading ? (
             <div className="flex h-40 items-center justify-center">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
-          ) : isError || !detail ? (
+          ) : isError || !detail || !rendered || !Renderer ? (
             <div className="flex h-40 items-center justify-center text-destructive">
               Failed to load LLM call detail
             </div>
           ) : (
             <div className="flex flex-col gap-4 p-4">
-              {/* ① Summary */}
               <SummaryCards detail={detail} />
-
-              {/* ② Timeline */}
               <TimelineBar detail={detail} />
-
-              {/* ③ Metadata */}
               <MetadataGrid detail={detail} />
 
-              {/* ④ Input */}
-              <InputSection
-                parsedInput={detail.parsed_input}
+              <Renderer
+                parsed={rendered.parsed}
+                joinedToolCalls={rendered.joined}
                 wireApi={detail.wire_api}
                 hasRequestBody={detail.request_body != null}
                 onOpenRawHttp={() => setRawOpen(true)}
               />
 
-              {/* ⑤ Output */}
-              <section className="border-l-2 border-emerald-500/40 pl-3">
-                <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
-                  Output
-                </div>
-                <CallParsedOutput parsed={detail.parsed} />
-              </section>
-
-              {/* ⑥ Raw HTTP link */}
               <div className="flex justify-end border-t border-border pt-3">
                 <button
                   onClick={() => setRawOpen(true)}
@@ -105,8 +124,7 @@ export function LlmCallDetailPanel({ id, onClose, onNavigate, hasPrev, hasNext }
         </div>
       </div>
 
-      {/* Raw HTTP drawer */}
-      <RawHttpDrawer callId={rawOpen ? id : null} onClose={() => setRawOpen(false)} />
+      <RawHttpDrawer data={rawOpen && detail ? toRawHttpData(detail) : null} onClose={() => setRawOpen(false)} />
     </>
   )
 }

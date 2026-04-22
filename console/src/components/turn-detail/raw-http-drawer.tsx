@@ -1,12 +1,34 @@
-import { X, Loader2 } from "lucide-react"
-import { useLlmCallDetail } from "@/hooks/use-llm-call-detail"
+import { X } from "lucide-react"
 import { StatusBadge } from "@/components/ui/status-badge"
 import { FinishBadge } from "@/components/ui/finish-badge"
 import { CollapsibleSection } from "@/components/ui/collapsible-section"
 import { formatDateTimeMs, formatMs, formatNumber } from "@/lib/format"
 
+export interface RawHttpData {
+  id: string
+  wire_api: string
+  model: string
+  status_code: number | null
+  finish_reason: string | null
+  ttfb_ms: number | null
+  e2e_latency_ms: number | null
+  input_tokens: number | null
+  output_tokens: number | null
+  request_path: string
+  client_ip: string
+  client_port: number
+  server_ip: string
+  server_port: number
+  is_stream: boolean
+  request_time: number
+  request_body: string | null
+  response_body: string | null
+  request_headers: string | null
+  response_headers: string | null
+}
+
 interface Props {
-  callId: string | null
+  data: RawHttpData | null
   onClose: () => void
 }
 
@@ -28,9 +50,8 @@ function formatJson(raw: string | null): string {
   }
 }
 
-export function RawHttpDrawer({ callId, onClose }: Props) {
-  const { data: detail, isLoading, isError } = useLlmCallDetail(callId)
-  if (!callId) return null
+export function RawHttpDrawer({ data, onClose }: Props) {
+  if (!data) return null
 
   return (
     <div className="fixed top-0 right-0 z-[60] flex h-full w-[min(720px,50vw)] flex-col border-l border-border bg-background shadow-2xl animate-in slide-in-from-right duration-200">
@@ -41,55 +62,48 @@ export function RawHttpDrawer({ callId, onClose }: Props) {
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {isLoading && !detail ? (
-          <div className="flex h-40 items-center justify-center">
-            <Loader2 className="size-5 animate-spin text-muted-foreground" />
-          </div>
-        ) : isError || !detail ? (
-          <p className="text-sm text-destructive">Failed to load HTTP details</p>
-        ) : (
-          <RawHttpBody detail={detail} />
-        )}
+        <RawHttpBody data={data} />
       </div>
     </div>
   )
 }
 
-function RawHttpBody({ detail }: { detail: NonNullable<ReturnType<typeof useLlmCallDetail>["data"]> }) {
-  const reqH = parseHeaders(detail.request_headers)
-  const respH = parseHeaders(detail.response_headers)
+function RawHttpBody({ data }: { data: RawHttpData }) {
+  const reqH = parseHeaders(data.request_headers)
+  const respH = parseHeaders(data.response_headers)
+
   return (
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
           <div className="text-muted-foreground">Wire API / Model</div>
-          <div>{detail.wire_api}</div>
-          <div className="text-muted-foreground">{detail.model}</div>
+          <div>{data.wire_api}</div>
+          <div className="text-muted-foreground">{data.model}</div>
         </div>
         <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
           <div className="text-muted-foreground">Status / Finish</div>
           <div className="flex items-center gap-2">
-            <StatusBadge status={detail.status_code} />
-            <FinishBadge reason={detail.finish_reason} />
+            <StatusBadge status={data.status_code} />
+            <FinishBadge reason={data.finish_reason} />
           </div>
         </div>
         <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
           <div className="text-muted-foreground">TTFB / E2E</div>
-          <div className="tabular-nums">{formatMs(detail.ttfb_ms)} / {formatMs(detail.e2e_latency_ms)}</div>
+          <div className="tabular-nums">{formatMs(data.ttfb_ms)} / {formatMs(data.e2e_latency_ms)}</div>
         </div>
         <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
           <div className="text-muted-foreground">Tokens</div>
-          <div className="tabular-nums">{formatNumber(detail.input_tokens)}↑ / {formatNumber(detail.output_tokens)}↓</div>
+          <div className="tabular-nums">{formatNumber(data.input_tokens)}↑ / {formatNumber(data.output_tokens)}↓</div>
         </div>
       </div>
       <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         {[
-          ["ID", detail.id],
-          ["Path", detail.request_path],
-          ["Client", `${detail.client_ip}:${detail.client_port}`],
-          ["Server", `${detail.server_ip}:${detail.server_port}`],
-          ["Stream", detail.is_stream ? "Yes" : "No"],
-          ["Req Time", formatDateTimeMs(detail.request_time)],
+          ["ID", data.id],
+          ["Path", data.request_path],
+          ["Client", `${data.client_ip}:${data.client_port}`],
+          ["Server", `${data.server_ip}:${data.server_port}`],
+          ["Stream", data.is_stream ? "Yes" : "No"],
+          ["Req Time", formatDateTimeMs(data.request_time)],
         ].map(([k, v]) => (
           <div key={k} className="contents">
             <span className="text-muted-foreground">{k}</span>
@@ -126,16 +140,16 @@ function RawHttpBody({ detail }: { detail: NonNullable<ReturnType<typeof useLlmC
         ) : <p className="text-sm text-muted-foreground">No headers</p>}
       </CollapsibleSection>
       <CollapsibleSection title="Request Body">
-        {detail.request_body ? (
+        {data.request_body ? (
           <pre className="max-h-[400px] overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
-            {formatJson(detail.request_body)}
+            {formatJson(data.request_body)}
           </pre>
         ) : <p className="text-sm text-muted-foreground">No body</p>}
       </CollapsibleSection>
       <CollapsibleSection title="Response Body">
-        {detail.response_body ? (
+        {data.response_body ? (
           <pre className="max-h-[400px] overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
-            {formatJson(detail.response_body)}
+            {formatJson(data.response_body)}
           </pre>
         ) : <p className="text-sm text-muted-foreground">No body</p>}
       </CollapsibleSection>

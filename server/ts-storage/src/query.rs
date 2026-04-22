@@ -239,12 +239,18 @@ pub struct TurnCallItem {
     pub e2e_latency_ms: Option<f64>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
-    /// Only populated by `query_turn_calls` (for in-API-layer parsing).
-    /// Not serialized to the API response — the route strips it after parsing.
-    #[serde(skip)]
+    pub request_path: String,
+    pub client_ip: String,
+    pub client_port: u16,
+    pub server_ip: String,
+    pub server_port: u16,
+    /// Raw request body. Frontend parses per-wire_api for preview + detail.
     pub request_body: Option<String>,
-    #[serde(skip)]
     pub response_body: Option<String>,
+    /// JSON-encoded `[[header_name, header_value], ...]`. Frontend uses for
+    /// the Raw HTTP drawer — no extra fetch needed.
+    pub request_headers: Option<String>,
+    pub response_headers: Option<String>,
 }
 
 /// Detail view of an `http_exchanges` row — used by `GET /api/http-exchanges/:id`
@@ -305,8 +311,4 @@ pub struct CallDetail {
     pub response_body: Option<String>,
     pub request_headers: Option<String>,
     pub response_headers: Option<String>,
-    /// Request body of the immediate successor call in the same turn, if any.
-    /// Used by Phase-3 tool-result join in the API layer.
-    #[serde(skip)]
-    pub next_call_request_body: Option<String>,
 }

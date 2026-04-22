@@ -2,6 +2,7 @@ import { useMemo } from "react"
 import { Wrench, MessageSquare, Target } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatDuration, formatMs } from "@/lib/format"
+import { deriveCallPreview, type CallType } from "@/lib/wire-api-parsers"
 import type { AgentTurnCallItem, AgentTurnDetail } from "@/types/api"
 
 interface Props {
@@ -20,10 +21,10 @@ function classifySpeed(call: AgentTurnCallItem): "normal" | "slow" | "error" {
   return "normal"
 }
 
-function TypeIcon({ call }: { call: AgentTurnCallItem }) {
+function TypeIcon({ type }: { type: CallType }) {
   const cls = "size-3"
-  if (call.type === "tool_call") return <Wrench className={cn(cls, "text-amber-600")} />
-  if (call.type === "final")     return <Target className={cn(cls, "text-emerald-600")} />
+  if (type === "tool_call") return <Wrench className={cn(cls, "text-amber-600")} />
+  if (type === "final")     return <Target className={cn(cls, "text-emerald-600")} />
   return <MessageSquare className={cn(cls, "text-blue-600")} />
 }
 
@@ -35,6 +36,11 @@ export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
     return { minStart: min, total: Math.max(max - min, 1) }
   }, [calls, turn])
 
+  const types = useMemo(
+    () => calls.map((c) => deriveCallPreview(c.wire_api, c.response_body, c.id, turn.final_call_id).type),
+    [calls, turn.final_call_id],
+  )
+
   return (
     <aside className="flex w-[140px] shrink-0 flex-col border-r border-border">
       <div className="shrink-0 border-b border-border px-3 py-2">
@@ -45,7 +51,7 @@ export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
         {calls.length === 0 ? (
           <div className="flex h-20 items-center justify-center text-xs text-muted-foreground">No calls</div>
         ) : (
-          calls.map((c) => {
+          calls.map((c, i) => {
             const end = c.complete_time ?? c.response_time ?? c.request_time
             const offset = ((c.request_time - minStart) / total) * 100
             const width = Math.max(((end - c.request_time) / total) * 100, 0.5)
@@ -62,7 +68,7 @@ export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
                 )}
               >
                 <span className="tabular-nums text-muted-foreground">{c.sequence}</span>
-                <TypeIcon call={c} />
+                <TypeIcon type={types[i]} />
                 <div className="relative h-2 rounded bg-muted">
                   <div
                     className={cn(

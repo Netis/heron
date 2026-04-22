@@ -3,11 +3,9 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::Deserialize;
-use ts_llm::wire_apis::build_default_wire_api_registry;
 use ts_storage::query::TurnsQuery;
 use ts_storage::StorageBackend;
 
-use super::turn_call_enrichment::enrich;
 use crate::extractors::{Path, Query};
 use crate::params::*;
 use crate::response::{ApiError, ApiResponse};
@@ -87,9 +85,5 @@ pub async fn calls(
     Path(turn_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let items = storage.query_turn_calls(&turn_id).await?;
-    let turn = storage.query_turn_by_id(&turn_id).await?;
-    let final_call_id = turn.as_ref().and_then(|t| t.final_call_id.as_deref());
-    let registry = build_default_wire_api_registry();
-    let enriched = enrich(items, final_call_id, &registry);
-    Ok(ApiResponse::ok(enriched))
+    Ok(ApiResponse::ok(items))
 }

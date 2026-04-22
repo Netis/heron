@@ -1,0 +1,45 @@
+{
+  "model": "claude-sonnet-4-5",
+  "system": "You are a helpful assistant.",
+  "max_tokens": 8192,
+  "temperature": 0.7,
+  "top_p": 0.95,
+  "stream": true,
+  "stop_sequences": ["STOP"],
+  "tool_choice": { "type": "auto" },
+  "tools": [
+    {
+      "name": "read_file",
+      "description": "Read the contents of a file.",
+      "input_schema": { "type": "object", "properties": { "path": { "type": "string" } } }
+    },
+    {
+      "name": "write_file",
+      "description": "Write contents to a file.",
+      "input_schema": { "type": "object" }
+    }
+  ],
+  "messages": [
+    { "role": "user", "content": "hello" },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "text", "text": "let me check" },
+        { "type": "tool_use", "id": "toolu_abc", "name": "read_file", "input": { "path": "foo.txt" } }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        { "type": "tool_result", "tool_use_id": "toolu_abc", "content": "file bytes", "is_error": false }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "AAAA" } },
+        { "type": "text", "text": "what is in this picture?" }
+      ]
+    }
+  ]
+}

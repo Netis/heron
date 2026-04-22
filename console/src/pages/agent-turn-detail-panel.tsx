@@ -2,9 +2,34 @@ import { useEffect } from "react"
 import { Loader2 } from "lucide-react"
 import { useAgentTurnDetail, useAgentTurnCalls } from "@/hooks/use-agent-turns"
 import { useTurnUrlState } from "@/hooks/use-turn-url-state"
-import { RawHttpDrawer } from "@/components/turn-detail/raw-http-drawer"
+import { RawHttpDrawer, type RawHttpData } from "@/components/turn-detail/raw-http-drawer"
 import { TopBar, StatsCards, GanttNav, UserCard, FinalAnswerCard, CallCard } from "@/components/turn-detail"
 import type { AgentTurnDetail, AgentTurnCallItem } from "@/types/api"
+
+function toRawHttpData(call: AgentTurnCallItem): RawHttpData {
+  return {
+    id: call.id,
+    wire_api: call.wire_api,
+    model: call.model,
+    status_code: call.status_code,
+    finish_reason: call.finish_reason,
+    ttfb_ms: call.ttfb_ms,
+    e2e_latency_ms: call.e2e_latency_ms,
+    input_tokens: call.input_tokens,
+    output_tokens: call.output_tokens,
+    request_path: call.request_path,
+    client_ip: call.client_ip,
+    client_port: call.client_port,
+    server_ip: call.server_ip,
+    server_port: call.server_port,
+    is_stream: call.is_stream,
+    request_time: call.request_time,
+    request_body: call.request_body,
+    response_body: call.response_body,
+    request_headers: call.request_headers,
+    response_headers: call.response_headers,
+  }
+}
 
 interface Props {
   id: string
@@ -43,10 +68,12 @@ function TurnDetailView({
               ))}
             </>
           ) : (
-            calls.map((c) => (
+            calls.map((c, i) => (
               <CallCard
                 key={c.id}
                 call={c}
+                nextCall={calls[i + 1] ?? null}
+                finalCallId={turn.final_call_id}
                 active={c.sequence === activeSeq}
                 defaultExpanded={c.sequence === activeSeq}
                 onOpenRawHttp={onOpenRawHttp}
@@ -73,9 +100,10 @@ export function AgentTurnDetailPanel({ id, onClose }: Props) {
 
   const { call: activeSeq, raw: urlRaw, setCall, setRaw, openRaw } = useTurnUrlState()
 
-  const rawHttpCallId = urlRaw && activeSeq != null
-    ? calls.find((c) => c.sequence === activeSeq)?.id ?? null
+  const rawHttpCall = urlRaw && activeSeq != null
+    ? calls.find((c) => c.sequence === activeSeq) ?? null
     : null
+  const rawHttpData = rawHttpCall ? toRawHttpData(rawHttpCall) : null
 
   const handleSelect = (seq: number) => {
     setCall(seq)
@@ -94,7 +122,7 @@ export function AgentTurnDetailPanel({ id, onClose }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (rawHttpCallId) { closeRawHttp(); return }
+        if (rawHttpData) { closeRawHttp(); return }
         onClose()
         return
       }
@@ -115,7 +143,7 @@ export function AgentTurnDetailPanel({ id, onClose }: Props) {
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSeq, calls.length, rawHttpCallId])
+  }, [activeSeq, calls.length, rawHttpData])
 
   return (
     <>
@@ -161,7 +189,7 @@ export function AgentTurnDetailPanel({ id, onClose }: Props) {
           </div>
         )}
 
-        <RawHttpDrawer callId={rawHttpCallId} onClose={closeRawHttp} />
+        <RawHttpDrawer data={rawHttpData} onClose={closeRawHttp} />
       </div>
     </>
   )

@@ -122,19 +122,6 @@ export interface AgentTurnDetail {
   metadata: unknown
 }
 
-export type CallType = "tool_call" | "text" | "final"
-
-export interface EnrichedToolCall {
-  id: string
-  name: string
-  args_preview: string
-  result_summary: {
-    size_bytes: number
-    kind: "text" | "json" | "error" | "binary" | "missing"
-    is_error: boolean
-  } | null
-}
-
 export interface AgentTurnCallItem {
   id: string
   sequence: number
@@ -150,78 +137,31 @@ export interface AgentTurnCallItem {
   e2e_latency_ms: number | null
   input_tokens: number | null
   output_tokens: number | null
-
-  // Phase 2+
-  type: CallType
-  tool_calls: EnrichedToolCall[]
-  has_reasoning: boolean
-  reasoning_preview: string | null
-  message_preview: string | null
+  request_path: string
+  client_ip: string
+  client_port: number
+  server_ip: string
+  server_port: number
+  /** Raw request body. Frontend parses per-wire_api for preview + detail. */
+  request_body: string | null
+  response_body: string | null
+  /** JSON-encoded `[[header_name, header_value], ...]`. */
+  request_headers: string | null
+  response_headers: string | null
 }
 
-// LLM call detail types
+// Parsed domain types live in @/lib/wire-api-parsers (single source of truth).
+// Re-exported here so existing call sites can migrate gradually.
+export type {
+  ParsedContentBlock,
+  ParsedInput,
+  ParsedMessage,
+  ParsedRole,
+  ParsedSampling,
+  ParsedToolDef,
+} from "@/lib/wire-api-parsers"
 
-export interface ToolResultFull {
-  content: string
-  size_bytes: number
-  kind: "text" | "json" | "error" | "binary" | "missing"
-  is_error: boolean
-}
-
-export interface EnrichedToolCallFull {
-  id: string
-  name: string
-  args_json: string
-  result: ToolResultFull | null
-}
-
-export type ParsedRole = "system" | "user" | "assistant" | "tool"
-
-// Runtime may deliver blocks whose `type` isn't one of the known variants
-// (forward-compat with backend `ParsedContentBlock::Unknown`). At compile
-// time, TS exhaustively narrows to the four variants below; the runtime
-// fallback is handled as a `default` branch with a cast.
-export type ParsedContentBlock =
-  | { type: "text"; text: string }
-  | { type: "tool_use"; id: string; name: string; args_json: string }
-  | { type: "tool_result"; tool_use_id: string; content: string; is_error: boolean }
-  | { type: "image"; mime: string | null; size_bytes: number | null }
-
-export interface ParsedMessage {
-  role: ParsedRole
-  content: ParsedContentBlock[]
-}
-
-export interface ParsedToolDef {
-  name: string
-  description: string | null
-  input_schema_json: string
-}
-
-export interface ParsedSampling {
-  temperature: number | null
-  max_tokens: number | null
-  top_p: number | null
-  top_k: number | null
-  stream: boolean | null
-  tool_choice: string | null
-  stop: string[]
-  response_format: string | null
-}
-
-export interface ParsedInput {
-  messages: ParsedMessage[]
-  system: string | null
-  tools: ParsedToolDef[]
-  sampling: ParsedSampling
-}
-
-export interface ParsedCallContent {
-  reasoning: string | null
-  message: string | null
-  tool_calls: EnrichedToolCallFull[]
-}
-
+// LLM call detail — raw payload. Frontend parses via @/lib/wire-api-parsers.
 export interface LlmCallDetail {
   id: string
   request_time: number
@@ -249,8 +189,6 @@ export interface LlmCallDetail {
   response_body: string | null
   request_headers: string | null
   response_headers: string | null
-  parsed: ParsedCallContent
-  parsed_input: ParsedInput
 }
 
 // HTTP exchange types — /api/http-exchanges
