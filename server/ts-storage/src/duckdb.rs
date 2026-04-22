@@ -1839,6 +1839,7 @@ impl StorageBackend for DuckDbBackend {
                     response_body: row.get(24)?,
                     request_headers: row.get(25)?,
                     response_headers: row.get(26)?,
+                    next_call_request_body: None,
                 })
             });
 
@@ -1847,6 +1848,73 @@ impl StorageBackend for DuckDbBackend {
                 Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(AppError::Storage(format!(
                     "failed to query call by id: {e}"
+                ))),
+            }
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    async fn query_next_call_request_body(
+        &self,
+        current_id: &str,
+    ) -> Result<Option<String>> {
+        let conn = self.read_pool.acquire().await?;
+        let current_id = current_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            // Step 1: find the call_ids JSON array of the turn that contains current_id.
+            // call_ids is a JSON column; cast to VARCHAR[] via JSON intermediate to use list_contains.
+            let turn_sql = "
+                SELECT call_ids::VARCHAR FROM agent_turns
+                WHERE list_contains(
+                    CAST(json_extract_string(call_ids, '$[*]') AS VARCHAR[]),
+                    ?
+                )
+                LIMIT 1
+            ";
+            let mut stmt = conn.prepare(turn_sql).map_err(|e| {
+                AppError::Storage(format!(
+                    "failed to prepare next_call turn query: {e}"
+                ))
+            })?;
+
+            let call_ids_json: String =
+                match stmt.query_row(duckdb::params![current_id], |row| row.get(0)) {
+                    Ok(v) => v,
+                    Err(duckdb::Error::QueryReturnedNoRows) => return Ok(None),
+                    Err(e) => {
+                        return Err(AppError::Storage(format!(
+                            "failed to query turn for next call: {e}"
+                        )))
+                    }
+                };
+
+            // Step 2: parse the JSON array in Rust, find successor id.
+            let ids: Vec<String> =
+                serde_json::from_str(&call_ids_json).map_err(|e| {
+                    AppError::Storage(format!("failed to parse call_ids JSON: {e}"))
+                })?;
+
+            let next_id: String =
+                match ids.iter().position(|id| id == &current_id) {
+                    Some(idx) if idx + 1 < ids.len() => ids[idx + 1].clone(),
+                    _ => return Ok(None), // last call in turn, or id not found
+                };
+
+            // Step 3: fetch the successor call's request_body.
+            let body_sql = "SELECT request_body FROM llm_calls WHERE id = ?";
+            let mut stmt2 = conn.prepare(body_sql).map_err(|e| {
+                AppError::Storage(format!(
+                    "failed to prepare next_call body query: {e}"
+                ))
+            })?;
+
+            match stmt2.query_row(duckdb::params![next_id], |row| row.get::<_, Option<String>>(0)) {
+                Ok(body) => Ok(body),
+                Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(AppError::Storage(format!(
+                    "failed to query next call body: {e}"
                 ))),
             }
         })

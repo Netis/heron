@@ -5,6 +5,7 @@
 
 pub mod model;
 pub mod stage;
+pub mod tool_result_join;
 pub mod tracker;
 
 pub use model::{AgentTurn, TurnKey, TurnStatus};

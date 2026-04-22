@@ -161,6 +161,26 @@ export interface AgentTurnCallItem {
 
 // LLM call detail types
 
+export interface ToolResultFull {
+  content: string
+  size_bytes: number
+  kind: "text" | "json" | "error" | "binary" | "missing"
+  is_error: boolean
+}
+
+export interface EnrichedToolCallFull {
+  id: string
+  name: string
+  args_json: string
+  result: ToolResultFull | null
+}
+
+export interface ParsedCallContent {
+  reasoning: string | null
+  message: string | null
+  tool_calls: EnrichedToolCallFull[]
+}
+
 export interface LlmCallDetail {
   id: string
   request_time: number
@@ -188,6 +208,7 @@ export interface LlmCallDetail {
   response_body: string | null
   request_headers: string | null
   response_headers: string | null
+  parsed: ParsedCallContent
 }
 
 // HTTP exchange types — /api/http-exchanges

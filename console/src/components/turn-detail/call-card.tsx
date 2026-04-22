@@ -2,7 +2,9 @@ import { useState } from "react"
 import { ChevronRight, ChevronDown, Wrench, MessageSquare, Target } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatMs, formatNumber } from "@/lib/format"
-import type { AgentTurnCallItem } from "@/types/api"
+import { useLlmCallDetail } from "@/hooks/use-llm-call-detail"
+import { Markdown } from "@/components/ui/markdown"
+import type { AgentTurnCallItem, EnrichedToolCallFull } from "@/types/api"
 
 const SLOW_THRESHOLD_MS = 10_000
 
@@ -39,6 +41,45 @@ function classify(call: AgentTurnCallItem): "normal" | "slow" | "error" {
   return "normal"
 }
 
+function formatArgs(s: string): string {
+  try { return JSON.stringify(JSON.parse(s), null, 2) } catch { return s }
+}
+
+function formatSize(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+function ToolCallRow({ tc }: { tc: EnrichedToolCallFull }) {
+  const [argsOpen, setArgsOpen] = useState(true)
+  const [resultOpen, setResultOpen] = useState(false)
+  return (
+    <div className="rounded bg-muted/40 p-2">
+      <div className="font-medium">🔧 {tc.name}</div>
+      <details className="mt-1" open={argsOpen} onToggle={(e) => setArgsOpen((e.target as HTMLDetailsElement).open)}>
+        <summary className="cursor-pointer text-muted-foreground text-[10px]">args</summary>
+        <pre className="mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{formatArgs(tc.args_json)}</pre>
+      </details>
+      {tc.result ? (
+        <details className="mt-1" open={resultOpen} onToggle={(e) => setResultOpen((e.target as HTMLDetailsElement).open)}>
+          <summary className={cn("cursor-pointer text-[10px]", tc.result.is_error ? "text-red-600" : "text-muted-foreground")}>
+            ⤷ {tc.result.is_error ? "error" : "result"} · {formatSize(tc.result.size_bytes)}
+          </summary>
+          <pre className={cn(
+            "mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]",
+            tc.result.is_error && "text-red-600",
+          )}>
+            {tc.result.content}
+          </pre>
+        </details>
+      ) : (
+        <div className="mt-1 text-[10px] text-muted-foreground italic">⤷ result · (no response, turn ended)</div>
+      )}
+    </div>
+  )
+}
+
 interface Props {
   call: AgentTurnCallItem
   active?: boolean
@@ -48,6 +89,7 @@ interface Props {
 
 export function CallCard({ call, active, defaultExpanded, onOpenRawHttp }: Props) {
   const [expanded, setExpanded] = useState(Boolean(defaultExpanded))
+  const { data: detail } = useLlmCallDetail(expanded ? call.id : null)
   const speed = classify(call)
   return (
     <div
@@ -92,14 +134,35 @@ export function CallCard({ call, active, defaultExpanded, onOpenRawHttp }: Props
         </div>
       </button>
       {expanded && (
-        <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
-          <div>{call.wire_api} · TTFB {formatMs(call.ttfb_ms)} · finish: {call.finish_reason ?? "—"}</div>
-          <button
-            onClick={() => onOpenRawHttp?.(call.id)}
-            className="mt-2 text-foreground hover:underline"
-          >
-            View raw HTTP →
-          </button>
+        <div className="border-t border-border px-3 py-2 space-y-3 text-xs">
+          {detail?.parsed.reasoning && (
+            <details className="rounded border border-border/50 p-2" open={false}>
+              <summary className="cursor-pointer text-muted-foreground">Reasoning</summary>
+              <pre className="mt-2 max-h-[600px] overflow-auto whitespace-pre-wrap font-sans text-[11px]">{detail.parsed.reasoning}</pre>
+            </details>
+          )}
+          {detail?.parsed.message && (
+            <details className="rounded border border-border/50 p-2" open>
+              <summary className="cursor-pointer text-muted-foreground">Message</summary>
+              <div className="mt-2 max-h-[400px] overflow-auto text-[11px]">
+                <Markdown text={detail.parsed.message} />
+              </div>
+            </details>
+          )}
+          {detail?.parsed.tool_calls && detail.parsed.tool_calls.length > 0 && (
+            <div className="rounded border border-border/50 p-2">
+              <div className="mb-1 text-muted-foreground">Tool calls ({detail.parsed.tool_calls.length})</div>
+              <div className="space-y-2">
+                {detail.parsed.tool_calls.map((tc) => (
+                  <ToolCallRow key={tc.id} tc={tc} />
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="text-muted-foreground">
+            {call.wire_api} · TTFB {formatMs(call.ttfb_ms)} · finish: {call.finish_reason ?? "—"}
+          </div>
+          <button onClick={() => onOpenRawHttp?.(call.id)} className="text-foreground hover:underline">View raw HTTP →</button>
         </div>
       )}
     </div>

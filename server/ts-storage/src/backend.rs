@@ -51,6 +51,13 @@ pub trait StorageBackend: Send + Sync {
     ) -> Result<Vec<MetricsModelRow>>;
     async fn query_calls(&self, query: &CallsQuery) -> Result<CallsPage>;
     async fn query_call_by_id(&self, id: &str) -> Result<Option<CallDetail>>;
+    /// Return the `request_body` of the call immediately after `current_id`
+    /// within the same agent turn, or `None` if `current_id` is the last call
+    /// in its turn or belongs to no turn.
+    async fn query_next_call_request_body(
+        &self,
+        current_id: &str,
+    ) -> Result<Option<String>>;
     async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage>;
     async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>>;
     async fn query_turn_calls(&self, turn_id: &str) -> Result<Vec<TurnCallItem>>;

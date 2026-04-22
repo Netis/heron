@@ -305,4 +305,8 @@ pub struct CallDetail {
     pub response_body: Option<String>,
     pub request_headers: Option<String>,
     pub response_headers: Option<String>,
+    /// Request body of the immediate successor call in the same turn, if any.
+    /// Used by Phase-3 tool-result join in the API layer.
+    #[serde(skip)]
+    pub next_call_request_body: Option<String>,
 }
