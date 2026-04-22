@@ -361,9 +361,16 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
     }
 
     // If no response.completed event was found (e.g. Chat Completions streaming),
-    // try to assemble from chat-style SSE chunks.
+    // try to assemble from chat-style SSE chunks. Pass the usage we already
+    // extracted from the final chunk so it ends up in the synthetic body too.
     if response_body.is_none() {
-        response_body = build_chat_response_body(sse_events);
+        response_body = build_chat_response_body(
+            sse_events,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cache_read_input_tokens,
+        );
     }
 
     ResponseInfo {
@@ -384,7 +391,13 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
 /// Chat Completions streaming sends chunks with `choices[0].delta.content` for text
 /// and `choices[0].delta.tool_calls` for tool use. The last chunk has
 /// `choices[0].finish_reason`. No event types — just `data: {...}` lines.
-fn build_chat_response_body(sse_events: &[SseEventData]) -> Option<String> {
+fn build_chat_response_body(
+    sse_events: &[SseEventData],
+    input_tokens: Option<u32>,
+    output_tokens: Option<u32>,
+    total_tokens: Option<u32>,
+    cache_read_input_tokens: Option<u32>,
+) -> Option<String> {
     use serde_json::json;
 
     let mut model: Option<String> = None;
@@ -468,7 +481,7 @@ fn build_chat_response_body(sse_events: &[SseEventData]) -> Option<String> {
         message["tool_calls"] = Value::Array(tc_array);
     }
 
-    let result = json!({
+    let mut result = json!({
         "model": model.unwrap_or_default(),
         "choices": [{
             "index": 0,
@@ -476,6 +489,28 @@ fn build_chat_response_body(sse_events: &[SseEventData]) -> Option<String> {
             "finish_reason": finish_reason,
         }]
     });
+
+    if input_tokens.is_some() || output_tokens.is_some() || total_tokens.is_some() {
+        let mut usage = serde_json::Map::new();
+        if let Some(it) = input_tokens {
+            usage.insert("prompt_tokens".to_string(), Value::from(it));
+        }
+        if let Some(ot) = output_tokens {
+            usage.insert("completion_tokens".to_string(), Value::from(ot));
+        }
+        if let Some(tt) = total_tokens {
+            usage.insert("total_tokens".to_string(), Value::from(tt));
+        }
+        if let Some(cr) = cache_read_input_tokens {
+            usage.insert(
+                "prompt_tokens_details".to_string(),
+                json!({ "cached_tokens": cr }),
+            );
+        }
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("usage".to_string(), Value::Object(usage));
+        }
+    }
 
     Some(result.to_string())
 }
@@ -555,7 +590,7 @@ mod tests {
             ),
             make_sse("", "[DONE]"),
         ];
-        let body = build_chat_response_body(&events).unwrap();
+        let body = build_chat_response_body(&events, None, None, None, None).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["model"], "gpt-4");
         assert_eq!(v["choices"][0]["message"]["content"], "Hello world");
@@ -582,7 +617,7 @@ mod tests {
                 r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
             ),
         ];
-        let body = build_chat_response_body(&events).unwrap();
+        let body = build_chat_response_body(&events, None, None, None, None).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
         let tc = &v["choices"][0]["message"]["tool_calls"][0];
         assert_eq!(tc["id"], "call_1");
@@ -595,7 +630,28 @@ mod tests {
     #[test]
     fn test_build_chat_response_body_empty() {
         let events: Vec<SseEventData> = vec![];
-        assert!(build_chat_response_body(&events).is_none());
+        assert!(build_chat_response_body(&events, None, None, None, None).is_none());
+    }
+
+    #[test]
+    fn test_build_chat_response_body_includes_usage() {
+        let events = vec![
+            make_sse(
+                "",
+                r#"{"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            ),
+        ];
+        let body =
+            build_chat_response_body(&events, Some(10), Some(5), Some(15), Some(3)).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["usage"]["prompt_tokens"], 10);
+        assert_eq!(v["usage"]["completion_tokens"], 5);
+        assert_eq!(v["usage"]["total_tokens"], 15);
+        assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 3);
     }
 
     #[test]

@@ -2,7 +2,6 @@ import { useMemo } from "react"
 import { Wrench, MessageSquare, Target } from "lucide-react"
 import { formatDuration, formatMs, formatNumber } from "@/lib/format"
 import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
-import { FinishBadge } from "@/components/ui/finish-badge"
 import { classifyType } from "@/lib/wire-apis/dispatch"
 import type { AgentTurnCallItem, AgentTurnDetail } from "@/types/api"
 import { cn } from "@/lib/utils"
@@ -75,11 +74,8 @@ export function StatsCards({ turn, calls, onJumpToSlowest }: Props) {
           </button>
         )}
       </Card>
-      <Card label="Status / Finish">
-        <div className="flex items-center gap-2">
-          <TurnStatusBadge status={turn.status} />
-          <FinishBadge reason={turn.final_finish_reason} />
-        </div>
+      <Card label="Status">
+        <div><TurnStatusBadge status={turn.status} /></div>
       </Card>
     </div>
   )
