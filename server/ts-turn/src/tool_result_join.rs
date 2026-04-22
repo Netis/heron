@@ -15,7 +15,11 @@ pub fn attach_tool_results<'a>(
     outputs: &'a [ParsedOutput],
     inputs: &'a [ParsedInput],
 ) -> Vec<Vec<(String /*tool_use_id*/, Option<&'a ParsedToolResult>)>> {
-    assert_eq!(outputs.len(), inputs.len(), "outputs and inputs must be 1-1 and sorted by call sequence");
+    assert_eq!(
+        outputs.len(),
+        inputs.len(),
+        "outputs and inputs must be 1-1 and sorted by call sequence"
+    );
     outputs
         .iter()
         .enumerate()
@@ -42,14 +46,22 @@ mod tests {
         ParsedOutput {
             reasoning: None,
             message: None,
-            tool_calls: vec![ParsedToolCall { id: id.into(), name: "x".into(), args_json: "{}".into() }],
+            tool_calls: vec![ParsedToolCall {
+                id: id.into(),
+                name: "x".into(),
+                args_json: "{}".into(),
+            }],
         }
     }
 
     fn input_with_tr(id: &str) -> ParsedInput {
         ParsedInput {
-            user_message: None,
-            tool_results: vec![ParsedToolResult { tool_use_id: id.into(), content: "ok".into(), is_error: false }],
+            tool_results: vec![ParsedToolResult {
+                tool_use_id: id.into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+            ..Default::default()
         }
     }
 

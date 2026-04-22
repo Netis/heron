@@ -175,6 +175,47 @@ export interface EnrichedToolCallFull {
   result: ToolResultFull | null
 }
 
+export type ParsedRole = "system" | "user" | "assistant" | "tool"
+
+// Runtime may deliver blocks whose `type` isn't one of the known variants
+// (forward-compat with backend `ParsedContentBlock::Unknown`). At compile
+// time, TS exhaustively narrows to the four variants below; the runtime
+// fallback is handled as a `default` branch with a cast.
+export type ParsedContentBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; args_json: string }
+  | { type: "tool_result"; tool_use_id: string; content: string; is_error: boolean }
+  | { type: "image"; mime: string | null; size_bytes: number | null }
+
+export interface ParsedMessage {
+  role: ParsedRole
+  content: ParsedContentBlock[]
+}
+
+export interface ParsedToolDef {
+  name: string
+  description: string | null
+  input_schema_json: string
+}
+
+export interface ParsedSampling {
+  temperature: number | null
+  max_tokens: number | null
+  top_p: number | null
+  top_k: number | null
+  stream: boolean | null
+  tool_choice: string | null
+  stop: string[]
+  response_format: string | null
+}
+
+export interface ParsedInput {
+  messages: ParsedMessage[]
+  system: string | null
+  tools: ParsedToolDef[]
+  sampling: ParsedSampling
+}
+
 export interface ParsedCallContent {
   reasoning: string | null
   message: string | null
@@ -209,6 +250,7 @@ export interface LlmCallDetail {
   request_headers: string | null
   response_headers: string | null
   parsed: ParsedCallContent
+  parsed_input: ParsedInput
 }
 
 // HTTP exchange types — /api/http-exchanges

@@ -126,6 +126,7 @@ pub struct EnrichedCallDetail {
     #[serde(flatten)]
     pub base: CallDetail,
     pub parsed: ParsedCallContent,
+    pub parsed_input: ParsedInput,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -153,16 +154,20 @@ pub struct ToolResultFull {
 
 pub fn enrich_single(detail: CallDetail, registry: &WireApiRegistry) -> EnrichedCallDetail {
     let wire = registry.find_by_name(&detail.wire_api);
-    let (parsed_out, _) = wire
-        .map(|w| parse_bodies(w, detail.request_body.as_deref(), detail.response_body.as_deref()))
+    let (parsed_out, parsed_in) = wire
+        .map(|w| {
+            parse_bodies(
+                w,
+                detail.request_body.as_deref(),
+                detail.response_body.as_deref(),
+            )
+        })
         .unwrap_or_default();
     let next_in = wire
         .map(|w| {
             w.parse_input(
-                &serde_json::from_str(
-                    detail.next_call_request_body.as_deref().unwrap_or("null"),
-                )
-                .unwrap_or(serde_json::Value::Null),
+                &serde_json::from_str(detail.next_call_request_body.as_deref().unwrap_or("null"))
+                    .unwrap_or(serde_json::Value::Null),
             )
         })
         .unwrap_or_default();
@@ -201,6 +206,7 @@ pub fn enrich_single(detail: CallDetail, registry: &WireApiRegistry) -> Enriched
             message: parsed_out.message,
             tool_calls,
         },
+        parsed_input: parsed_in,
     }
 }
 
@@ -335,5 +341,30 @@ mod tests {
         let enriched = enrich_single(detail, &reg);
         assert_eq!(enriched.parsed.tool_calls.len(), 1);
         assert!(enriched.parsed.tool_calls[0].result.is_none());
+    }
+
+    #[test]
+    fn enrich_single_returns_parsed_input_field() {
+        // Task 2 guarantees the `parsed_input` field exists on the struct and is
+        // populated from `request_body` via `wire.parse_input`. The actual
+        // extraction of `system`/`messages`/`tools`/`sampling` lands in Tasks 3–5;
+        // here we only verify plumbing: default-empty state when body is present
+        // but parser hasn't been extended yet.
+        let reg = build_default_wire_api_registry();
+        let detail = mk_call_detail(ANTHROPIC, Some(&anthropic_tool_use_body()), None);
+        let enriched = enrich_single(detail, &reg);
+        // Field exists — compilation proves that. Default-empty state verified in Task 1.
+        assert!(enriched.parsed_input.messages.is_empty());
+    }
+
+    #[test]
+    fn enrich_single_parsed_input_empty_when_request_body_missing() {
+        let reg = build_default_wire_api_registry();
+        let detail = mk_call_detail(ANTHROPIC, Some(&anthropic_tool_use_body()), None);
+        // request_body is None by default in mk_call_detail; confirm:
+        assert!(detail.request_body.is_none());
+        let enriched = enrich_single(detail, &reg);
+        assert!(enriched.parsed_input.system.is_none());
+        assert!(enriched.parsed_input.messages.is_empty());
     }
 }

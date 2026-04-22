@@ -157,8 +157,13 @@ pub fn spawn_storage_sink_stage(
         // Propagate inner-task panics by unwrapping join errors — otherwise
         // the outer task would exit cleanly and hide the failure from
         // supervise().
-        let (ru, rc, rt, rm, re) =
-            tokio::join!(calls_unwrap, calls_task, turns_task, metrics_task, exch_task);
+        let (ru, rc, rt, rm, re) = tokio::join!(
+            calls_unwrap,
+            calls_task,
+            turns_task,
+            metrics_task,
+            exch_task
+        );
         ru.expect("storage_sink: calls unwrap task panicked");
         rc.expect("storage_sink: calls writer panicked");
         rt.expect("storage_sink: turns writer panicked");
@@ -173,8 +178,8 @@ mod tests {
     use crate::query::{
         CallDetail, CallsPage, CallsQuery, HttpExchangeDetail, HttpExchangesPage,
         HttpExchangesQuery, MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery,
-        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, TurnCallItem,
-        TurnDetail, TurnsPage, TurnsQuery,
+        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, TurnCallItem, TurnDetail,
+        TurnsPage, TurnsQuery,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -210,10 +215,7 @@ mod tests {
             self.exchanges.fetch_add(batch.len(), Ordering::SeqCst);
             Ok(())
         }
-        async fn query_http_exchange_by_id(
-            &self,
-            _id: &str,
-        ) -> Result<Option<HttpExchangeDetail>> {
+        async fn query_http_exchange_by_id(&self, _id: &str) -> Result<Option<HttpExchangeDetail>> {
             Ok(None)
         }
         async fn query_http_exchanges(
@@ -263,10 +265,7 @@ mod tests {
         async fn query_call_by_id(&self, _id: &str) -> Result<Option<CallDetail>> {
             Ok(None)
         }
-        async fn query_next_call_request_body(
-            &self,
-            _current_id: &str,
-        ) -> Result<Option<String>> {
+        async fn query_next_call_request_body(&self, _current_id: &str) -> Result<Option<String>> {
             Ok(None)
         }
         async fn query_turns(&self, _query: &TurnsQuery) -> Result<TurnsPage> {

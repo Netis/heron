@@ -270,12 +270,88 @@ pub struct ParsedOutput {
 
 /// Structured view of an LLM input extracted from a request body.
 /// Per-wire-api implementations of `WireApi::parse_input` produce this.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct ParsedInput {
-    /// Most-recent user message in the input, if any.
+    /// Most-recent user message in the input, if any. Consumed by turn joiner.
     pub user_message: Option<String>,
-    /// Tool results keyed by the `id` / `call_id` they belong to.
+    /// Tool results keyed by the `id` / `call_id` they belong to. Consumed by turn joiner.
     pub tool_results: Vec<ParsedToolResult>,
+
+    /// Full ordered message history. Empty when the parser couldn't read `messages[]`.
+    pub messages: Vec<ParsedMessage>,
+    /// Top-level system prompt (Anthropic `system` field, OpenAI Responses `instructions`).
+    /// `None` for wire APIs where system lives inside `messages[]`.
+    pub system: Option<String>,
+    /// Tool definitions declared in the request.
+    pub tools: Vec<ParsedToolDef>,
+    /// Sampling / control parameters.
+    pub sampling: ParsedSampling,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ParsedMessage {
+    pub role: ParsedRole,
+    pub content: Vec<ParsedContentBlock>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParsedRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ParsedContentBlock {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        args_json: String,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        is_error: bool,
+    },
+    Image {
+        mime: Option<String>,
+        size_bytes: Option<u64>,
+    },
+    /// Forward-compat: unknown content block types are preserved as raw JSON
+    /// rather than dropped, so the frontend can render them as
+    /// `⚠️ unknown block: {type}` without silently losing payload data.
+    #[serde(untagged)]
+    Unknown(serde_json::Value),
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ParsedToolDef {
+    pub name: String,
+    pub description: Option<String>,
+    /// Raw JSON string of the tool's `input_schema` / `parameters`. The frontend
+    /// pretty-prints; we keep it as a string to avoid a round-trip through
+    /// `Value` on every render.
+    pub input_schema_json: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct ParsedSampling {
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u32>,
+    pub top_p: Option<f64>,
+    pub top_k: Option<u32>,
+    pub stream: Option<bool>,
+    /// Serialized back to a string — may be plain `"auto"`, `"any"`, or a JSON object.
+    pub tool_choice: Option<String>,
+    pub stop: Vec<String>,
+    /// Serialized back to a JSON string when non-trivial (e.g. `{"type":"json_schema", ...}`).
+    pub response_format: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -285,7 +361,7 @@ pub struct ParsedToolCall {
     pub args_json: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ParsedToolResult {
     pub tool_use_id: String,
     pub content: String,
@@ -357,6 +433,60 @@ mod extension_tests {
         assert_eq!(ic.call.id, "c");
         assert_eq!(ic.agent.session_id, "s");
         assert_eq!(Arc::strong_count(&arc), 2);
+    }
+
+    #[test]
+    fn parsed_content_block_serializes_with_type_tag() {
+        let t = ParsedContentBlock::Text { text: "hi".into() };
+        let tu = ParsedContentBlock::ToolUse {
+            id: "id1".into(),
+            name: "read".into(),
+            args_json: "{}".into(),
+        };
+        let tr = ParsedContentBlock::ToolResult {
+            tool_use_id: "id1".into(),
+            content: "ok".into(),
+            is_error: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&t).unwrap(),
+            serde_json::json!({"type":"text","text":"hi"}),
+        );
+        assert_eq!(
+            serde_json::to_value(&tu).unwrap(),
+            serde_json::json!({"type":"tool_use","id":"id1","name":"read","args_json":"{}"}),
+        );
+        assert_eq!(
+            serde_json::to_value(&tr).unwrap(),
+            serde_json::json!({"type":"tool_result","tool_use_id":"id1","content":"ok","is_error":false}),
+        );
+    }
+
+    #[test]
+    fn parsed_content_block_unknown_preserves_raw() {
+        let raw = serde_json::json!({"type":"future_kind","mystery":42});
+        let block = ParsedContentBlock::Unknown(raw.clone());
+        assert_eq!(serde_json::to_value(&block).unwrap(), raw);
+    }
+
+    #[test]
+    fn parsed_role_serializes_lowercase() {
+        assert_eq!(serde_json::to_value(ParsedRole::System).unwrap(), "system");
+        assert_eq!(serde_json::to_value(ParsedRole::User).unwrap(), "user");
+        assert_eq!(
+            serde_json::to_value(ParsedRole::Assistant).unwrap(),
+            "assistant",
+        );
+        assert_eq!(serde_json::to_value(ParsedRole::Tool).unwrap(), "tool");
+    }
+
+    #[test]
+    fn parsed_input_default_has_empty_new_fields() {
+        let p = ParsedInput::default();
+        assert!(p.messages.is_empty());
+        assert!(p.system.is_none());
+        assert!(p.tools.is_empty());
+        assert_eq!(p.sampling, ParsedSampling::default());
     }
 
     #[test]

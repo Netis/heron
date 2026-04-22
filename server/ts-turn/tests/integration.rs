@@ -64,8 +64,7 @@ async fn run_pcap_full_sharded(
         let (etx, erx) = mpsc::channel::<ts_protocol::model::ProtocolEvent>(queue_size);
         protocol_event_txs.push(etx);
         protocol_event_rxs.push(erx);
-        let (jtx, jrx) =
-            mpsc::channel::<ts_protocol::HttpJoinerEvent>(queue_size);
+        let (jtx, jrx) = mpsc::channel::<ts_protocol::HttpJoinerEvent>(queue_size);
         joiner_event_txs.push(jtx);
         joiner_event_rxs.push(jrx);
     }
@@ -94,12 +93,7 @@ async fn run_pcap_full_sharded(
     spawn_protocol_stage(parsed_rxs, protocol_event_txs, &mut metrics_sys);
     // Integration test doesn't assert on http_exchanges — pass None for the
     // storage-bound channel.
-    spawn_http_joiner_stage(
-        protocol_event_rxs,
-        joiner_event_txs,
-        None,
-        &mut metrics_sys,
-    );
+    spawn_http_joiner_stage(protocol_event_rxs, joiner_event_txs, None, &mut metrics_sys);
 
     let registry = Arc::new(ts_llm::agents::build_default_registry());
     let wire_api_registry = Arc::new(ts_llm::wire_apis::build_default_wire_api_registry());

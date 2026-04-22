@@ -214,7 +214,10 @@ mod tests {
             uri: "/v1/chat/completions".to_string(),
             version: 1,
             headers: vec![
-                ("authorization".to_string(), "Bearer sk-test-key".to_string()),
+                (
+                    "authorization".to_string(),
+                    "Bearer sk-test-key".to_string(),
+                ),
                 ("content-type".to_string(), "application/json".to_string()),
             ],
             body: Bytes::from(body_json.to_string()),
@@ -393,7 +396,11 @@ mod tests {
     #[test]
     fn claude_cli_exchange_attaches_identity() {
         use crate::agents::build_default_registry;
-        let mut proc = LlmProcessor::new(wire_apis(), Arc::new(build_default_registry()), test_metrics());
+        let mut proc = LlmProcessor::new(
+            wire_apis(),
+            Arc::new(build_default_registry()),
+            test_metrics(),
+        );
 
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
         let body = serde_json::json!({
@@ -471,7 +478,10 @@ mod tests {
         });
         match &events[0] {
             LlmEvent::Complete { call, .. } => {
-                assert!(call.request_headers.iter().any(|(k, _)| k == "authorization"));
+                assert!(call
+                    .request_headers
+                    .iter()
+                    .any(|(k, _)| k == "authorization"));
                 assert!(call
                     .response_headers
                     .iter()

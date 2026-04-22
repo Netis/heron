@@ -219,7 +219,11 @@ pub fn spawn_http_joiner_stage(
                     tracing::debug!(shard, "joiner worker stopping: upstream EOF");
                 }
                 r => {
-                    tracing::warn!(shard, reason = r, "joiner worker stopping: downstream closed");
+                    tracing::warn!(
+                        shard,
+                        reason = r,
+                        "joiner worker stopping: downstream closed"
+                    );
                 }
             }
         }));

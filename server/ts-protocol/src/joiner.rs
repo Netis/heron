@@ -359,7 +359,10 @@ mod tests {
     #[test]
     fn request_emits_request_event() {
         let mut joiner = HttpJoiner::new(test_metrics());
-        let events = joiner.process(ProtocolEvent::HttpRequest(make_request(flow(5000), 1_000_000)));
+        let events = joiner.process(ProtocolEvent::HttpRequest(make_request(
+            flow(5000),
+            1_000_000,
+        )));
         assert_eq!(events.len(), 1);
         match &events[0] {
             HttpJoinerEvent::Request(req) => {
@@ -375,8 +378,13 @@ mod tests {
     fn non_sse_pair_produces_exchange_with_body() {
         let mut joiner = HttpJoiner::new(test_metrics());
         let fk = flow(5000);
-        joiner.process(ProtocolEvent::HttpRequest(make_request(fk.clone(), 1_000_000)));
-        let events = joiner.process(ProtocolEvent::HttpResponse(make_response(fk, 1_000_000, false)));
+        joiner.process(ProtocolEvent::HttpRequest(make_request(
+            fk.clone(),
+            1_000_000,
+        )));
+        let events = joiner.process(ProtocolEvent::HttpResponse(make_response(
+            fk, 1_000_000, false,
+        )));
         assert_eq!(events.len(), 1);
         match &events[0] {
             HttpJoinerEvent::Exchange {
@@ -406,14 +414,19 @@ mod tests {
     fn sse_pair_has_none_body_and_carries_events() {
         let mut joiner = HttpJoiner::new(test_metrics());
         let fk = flow(5000);
-        joiner.process(ProtocolEvent::HttpRequest(make_request(fk.clone(), 1_000_000)));
+        joiner.process(ProtocolEvent::HttpRequest(make_request(
+            fk.clone(),
+            1_000_000,
+        )));
         joiner.process(ProtocolEvent::SseEvent(make_sse(
             fk.clone(),
             1_100_000,
             "message_start",
             "{}",
         )));
-        let events = joiner.process(ProtocolEvent::HttpResponse(make_response(fk, 1_000_000, true)));
+        let events = joiner.process(ProtocolEvent::HttpResponse(make_response(
+            fk, 1_000_000, true,
+        )));
         match &events[0] {
             HttpJoinerEvent::Exchange {
                 id,
@@ -438,28 +451,41 @@ mod tests {
     #[test]
     fn response_without_request_bumps_incomplete() {
         let mut joiner = HttpJoiner::new(test_metrics());
-        let events = joiner.process(ProtocolEvent::HttpResponse(make_response(flow(5000), 1_000_000, false)));
+        let events = joiner.process(ProtocolEvent::HttpResponse(make_response(
+            flow(5000),
+            1_000_000,
+            false,
+        )));
         assert!(events.is_empty());
     }
 
     #[test]
     fn heartbeat_past_timeout_evicts_pending() {
         let mut joiner = HttpJoiner::new(test_metrics());
-        joiner.process(ProtocolEvent::HttpRequest(make_request(flow(5000), 1_000_000)));
+        joiner.process(ProtocolEvent::HttpRequest(make_request(
+            flow(5000),
+            1_000_000,
+        )));
         assert_eq!(joiner.pending_count(), 1);
 
         let events = joiner.process(ProtocolEvent::Heartbeat {
             ts: 2_000_000,
             stream_id: String::new(),
         });
-        assert!(matches!(events.as_slice(), [HttpJoinerEvent::Heartbeat { .. }]));
+        assert!(matches!(
+            events.as_slice(),
+            [HttpJoinerEvent::Heartbeat { .. }]
+        ));
         assert_eq!(joiner.pending_count(), 1, "still fresh");
 
         let events = joiner.process(ProtocolEvent::Heartbeat {
             ts: 1_000_000 + PENDING_STALE_TIMEOUT_US + 1,
             stream_id: String::new(),
         });
-        assert!(matches!(events.as_slice(), [HttpJoinerEvent::Heartbeat { .. }]));
+        assert!(matches!(
+            events.as_slice(),
+            [HttpJoinerEvent::Heartbeat { .. }]
+        ));
         assert_eq!(joiner.pending_count(), 0);
     }
 
@@ -488,7 +514,10 @@ mod tests {
     fn stale_pending_replaced_silently_on_reuse() {
         let mut joiner = HttpJoiner::new(test_metrics());
         let fk = flow(5000);
-        joiner.process(ProtocolEvent::HttpRequest(make_request(fk.clone(), 1_000_000)));
+        joiner.process(ProtocolEvent::HttpRequest(make_request(
+            fk.clone(),
+            1_000_000,
+        )));
         let mut req2 = make_request(fk, 1_000_000);
         req2.timestamp_us = 1_000_000 + PENDING_STALE_TIMEOUT_US + 1;
         let events = joiner.process(ProtocolEvent::HttpRequest(req2));
@@ -503,7 +532,10 @@ mod tests {
         // the timeout should trigger cleanup.
         let mut joiner = HttpJoiner::new(test_metrics());
         let fk = flow(5000);
-        joiner.process(ProtocolEvent::HttpRequest(make_request(fk.clone(), 1_000_000)));
+        joiner.process(ProtocolEvent::HttpRequest(make_request(
+            fk.clone(),
+            1_000_000,
+        )));
 
         // Feed an SSE event well after the raw-request-age timeout — with
         // activity-based staleness, this keeps the pending alive.
@@ -528,6 +560,10 @@ mod tests {
             ts: sse_ts + PENDING_STALE_TIMEOUT_US + 1,
             stream_id: String::new(),
         });
-        assert_eq!(joiner.pending_count(), 0, "silent past timeout must be evicted");
+        assert_eq!(
+            joiner.pending_count(),
+            0,
+            "silent past timeout must be evicted"
+        );
     }
 }

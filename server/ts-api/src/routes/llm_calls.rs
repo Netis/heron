@@ -83,8 +83,7 @@ pub async fn detail(
 ) -> Result<impl IntoResponse, ApiError> {
     match storage.query_call_by_id(&id).await? {
         Some(mut detail) => {
-            detail.next_call_request_body =
-                storage.query_next_call_request_body(&id).await?;
+            detail.next_call_request_body = storage.query_next_call_request_body(&id).await?;
             let registry = build_default_wire_api_registry();
             Ok(ApiResponse::ok(enrich_single(detail, &registry)))
         }

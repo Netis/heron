@@ -205,9 +205,7 @@ mod tests {
         cfg.http_exchanges = 7;
         let now = SystemTime::now();
         let policy = policy_from_config(&cfg, now);
-        let cutoff = policy
-            .http_exchanges_before
-            .expect("http_exchanges cutoff");
+        let cutoff = policy.http_exchanges_before.expect("http_exchanges cutoff");
         let elapsed = now.duration_since(cutoff).expect("cutoff before now");
         let expected = Duration::from_secs(7 * 86_400);
         let delta = if elapsed > expected {

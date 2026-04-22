@@ -858,9 +858,8 @@ impl StorageBackend for DuckDbBackend {
                 .map_err(|e| AppError::Storage(format!("failed to create llm_metrics: {e}")))?;
             conn.execute_batch(CREATE_LLM_TURNS)
                 .map_err(|e| AppError::Storage(format!("failed to create agent_turns: {e}")))?;
-            conn.execute_batch(CREATE_HTTP_EXCHANGES).map_err(|e| {
-                AppError::Storage(format!("failed to create http_exchanges: {e}"))
-            })?;
+            conn.execute_batch(CREATE_HTTP_EXCHANGES)
+                .map_err(|e| AppError::Storage(format!("failed to create http_exchanges: {e}")))?;
             info!("storage tables initialized");
             Ok(())
         })
@@ -964,9 +963,7 @@ impl StorageBackend for DuckDbBackend {
                         p.response_first_byte_time,
                         p.response_complete_time,
                     ])
-                    .map_err(|e| {
-                        AppError::Storage(format!("failed to append exchange: {e}"))
-                    })?;
+                    .map_err(|e| AppError::Storage(format!("failed to append exchange: {e}")))?;
             }
             appender
                 .flush()
@@ -1031,10 +1028,7 @@ impl StorageBackend for DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    async fn query_http_exchanges(
-        &self,
-        query: &HttpExchangesQuery,
-    ) -> Result<HttpExchangesPage> {
+    async fn query_http_exchanges(&self, query: &HttpExchangesQuery) -> Result<HttpExchangesPage> {
         // `duration_ms` is a derived expression; the others are plain columns.
         const VALID_SORT_FIELDS: &[&str] = &["request_time", "status", "duration_ms"];
         if !VALID_SORT_FIELDS.contains(&query.sort_by.as_str()) {
@@ -1078,11 +1072,7 @@ impl StorageBackend for DuckDbBackend {
                 where_parts.push(format!("method IN ({})", list.join(", ")));
             }
             if !query.status_codes.is_empty() {
-                let list: Vec<String> = query
-                    .status_codes
-                    .iter()
-                    .map(|c| c.to_string())
-                    .collect();
+                let list: Vec<String> = query.status_codes.iter().map(|c| c.to_string()).collect();
                 where_parts.push(format!("status IN ({})", list.join(", ")));
             }
             if let Some(sse) = query.is_sse {
@@ -1095,9 +1085,7 @@ impl StorageBackend for DuckDbBackend {
             // keeps incomplete (duration/status=None) rows from dominating
             // descending sort.
             let order_expr = match query.sort_by.as_str() {
-                "duration_ms" => {
-                    "epoch_ms(response_complete_time - request_time) NULLS LAST"
-                }
+                "duration_ms" => "epoch_ms(response_complete_time - request_time) NULLS LAST",
                 "status" => "status NULLS LAST",
                 _ => "request_time",
             };
@@ -1855,10 +1843,7 @@ impl StorageBackend for DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    async fn query_next_call_request_body(
-        &self,
-        current_id: &str,
-    ) -> Result<Option<String>> {
+    async fn query_next_call_request_body(&self, current_id: &str) -> Result<Option<String>> {
         let conn = self.read_pool.acquire().await?;
         let current_id = current_id.to_string();
 
@@ -1874,9 +1859,7 @@ impl StorageBackend for DuckDbBackend {
                 LIMIT 1
             ";
             let mut stmt = conn.prepare(turn_sql).map_err(|e| {
-                AppError::Storage(format!(
-                    "failed to prepare next_call turn query: {e}"
-                ))
+                AppError::Storage(format!("failed to prepare next_call turn query: {e}"))
             })?;
 
             let call_ids_json: String =
@@ -1891,26 +1874,23 @@ impl StorageBackend for DuckDbBackend {
                 };
 
             // Step 2: parse the JSON array in Rust, find successor id.
-            let ids: Vec<String> =
-                serde_json::from_str(&call_ids_json).map_err(|e| {
-                    AppError::Storage(format!("failed to parse call_ids JSON: {e}"))
-                })?;
+            let ids: Vec<String> = serde_json::from_str(&call_ids_json)
+                .map_err(|e| AppError::Storage(format!("failed to parse call_ids JSON: {e}")))?;
 
-            let next_id: String =
-                match ids.iter().position(|id| id == &current_id) {
-                    Some(idx) if idx + 1 < ids.len() => ids[idx + 1].clone(),
-                    _ => return Ok(None), // last call in turn, or id not found
-                };
+            let next_id: String = match ids.iter().position(|id| id == &current_id) {
+                Some(idx) if idx + 1 < ids.len() => ids[idx + 1].clone(),
+                _ => return Ok(None), // last call in turn, or id not found
+            };
 
             // Step 3: fetch the successor call's request_body.
             let body_sql = "SELECT request_body FROM llm_calls WHERE id = ?";
             let mut stmt2 = conn.prepare(body_sql).map_err(|e| {
-                AppError::Storage(format!(
-                    "failed to prepare next_call body query: {e}"
-                ))
+                AppError::Storage(format!("failed to prepare next_call body query: {e}"))
             })?;
 
-            match stmt2.query_row(duckdb::params![next_id], |row| row.get::<_, Option<String>>(0)) {
+            match stmt2.query_row(duckdb::params![next_id], |row| {
+                row.get::<_, Option<String>>(0)
+            }) {
                 Ok(body) => Ok(body),
                 Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(AppError::Storage(format!(

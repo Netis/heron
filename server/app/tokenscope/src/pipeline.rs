@@ -135,8 +135,7 @@ impl Pipeline {
         let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(sink_capacity);
         let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(sink_capacity);
         let (metrics_out_tx, metrics_out_rx) = mpsc::channel::<LlmMetric>(sink_capacity);
-        let (http_exchanges_tx, http_exchanges_rx) =
-            mpsc::channel::<HttpExchange>(sink_capacity);
+        let (http_exchanges_tx, http_exchanges_rx) = mpsc::channel::<HttpExchange>(sink_capacity);
 
         let registry = Arc::new(ts_llm::agents::build_default_registry());
         let wire_api_registry = Arc::new(ts_llm::wire_apis::build_default_wire_api_registry());
@@ -166,11 +165,13 @@ impl Pipeline {
                     .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
             });
             let w = http_exchanges_tx.downgrade();
-            per_pipeline_metrics[0]
-                .register_queue_probe(Metric::QueueDepthHttpExchanges, move || {
+            per_pipeline_metrics[0].register_queue_probe(
+                Metric::QueueDepthHttpExchanges,
+                move || {
                     w.upgrade()
                         .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-                });
+                },
+            );
         }
 
         let mut stage_handles: Vec<(StageTask, JoinHandle<()>)> = Vec::new();
