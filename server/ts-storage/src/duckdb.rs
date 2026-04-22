@@ -1787,31 +1787,22 @@ impl StorageBackend for DuckDbBackend {
         let id = id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            // agent_kind comes from the agent_turn that contains this call_id
-            // (call_ids is a JSON array on agent_turns). LEFT JOIN so calls that
-            // do not belong to any turn still return with agent_kind = NULL.
             let sql = "
                 SELECT
-                    c.id, c.source_id,
-                    epoch_ms(c.request_time),
-                    epoch_ms(c.response_time),
-                    epoch_ms(c.complete_time),
-                    c.wire_api, c.model, c.api_type, c.is_stream, c.request_path,
-                    c.status_code, c.finish_reason,
-                    c.input_tokens, c.output_tokens, c.total_tokens,
-                    c.ttft_ms, c.e2e_latency_ms,
-                    c.response_id, c.tenant_id,
-                    c.client_ip, c.client_port, c.server_ip, c.server_port,
-                    c.request_body, c.response_body,
-                    c.request_headers, c.response_headers,
-                    t.agent_kind
-                FROM llm_calls c
-                LEFT JOIN agent_turns t
-                    ON list_contains(
-                        CAST(json_extract_string(t.call_ids, '$[*]') AS VARCHAR[]),
-                        c.id
-                    )
-                WHERE c.id = ?
+                    id, source_id,
+                    epoch_ms(request_time),
+                    epoch_ms(response_time),
+                    epoch_ms(complete_time),
+                    wire_api, model, api_type, is_stream, request_path,
+                    status_code, finish_reason,
+                    input_tokens, output_tokens, total_tokens,
+                    ttft_ms, e2e_latency_ms,
+                    response_id, tenant_id,
+                    client_ip, client_port, server_ip, server_port,
+                    request_body, response_body,
+                    request_headers, response_headers
+                FROM llm_calls
+                WHERE id = ?
                 LIMIT 1
             ";
 
@@ -1848,7 +1839,6 @@ impl StorageBackend for DuckDbBackend {
                     response_body: row.get(24)?,
                     request_headers: row.get(25)?,
                     response_headers: row.get(26)?,
-                    agent_kind: row.get(27)?,
                 })
             });
 
@@ -2196,32 +2186,64 @@ impl StorageBackend for DuckDbBackend {
         let turn_id = turn_id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let sql = "
-                SELECT
-                    c.id,
-                    epoch_ms(c.request_time),
-                    epoch_ms(c.response_time),
-                    epoch_ms(c.complete_time),
-                    c.wire_api, c.model, c.status_code, c.is_stream,
-                    c.finish_reason, c.ttft_ms, c.e2e_latency_ms,
-                    c.input_tokens, c.output_tokens,
-                    c.request_path, c.client_ip, c.client_port,
-                    c.server_ip, c.server_port,
-                    c.request_body, c.response_body,
-                    c.request_headers, c.response_headers
-                FROM llm_calls c
-                JOIN (SELECT UNNEST(json_extract_string(call_ids, '$[*]')) AS cid
-                      FROM agent_turns WHERE turn_id = ?) ids ON c.id = ids.cid
-                ORDER BY c.request_time ASC, c.complete_time ASC
-            ";
+            // Step 1: fetch the turn's call_ids by PK. JSON-array column is
+            // parsed with the same helper as query_turn_by_id.
+            let call_ids_raw: Option<String> = {
+                let mut stmt = conn
+                    .prepare("SELECT call_ids FROM agent_turns WHERE turn_id = ?")
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to prepare turn_calls step1: {e}"))
+                    })?;
+                match stmt.query_row(duckdb::params![turn_id], |row| {
+                    row.get::<_, Option<String>>(0)
+                }) {
+                    Ok(v) => v,
+                    Err(duckdb::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+                    Err(e) => {
+                        return Err(AppError::Storage(format!(
+                            "failed to execute turn_calls step1: {e}"
+                        )));
+                    }
+                }
+            };
 
-            let mut stmt = conn.prepare(sql).map_err(|e| {
-                AppError::Storage(format!("failed to prepare turn_calls query: {e}"))
+            let call_ids = parse_json_string_list(call_ids_raw.as_deref());
+            if call_ids.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Step 2: fetch calls by id via PK point-lookups in IN (...).
+            let placeholders = std::iter::repeat("?")
+                .take(call_ids.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT
+                    id,
+                    epoch_ms(request_time),
+                    epoch_ms(response_time),
+                    epoch_ms(complete_time),
+                    wire_api, model, status_code, is_stream,
+                    finish_reason, ttft_ms, e2e_latency_ms,
+                    input_tokens, output_tokens,
+                    request_path, client_ip, client_port,
+                    server_ip, server_port,
+                    request_body, response_body,
+                    request_headers, response_headers
+                FROM llm_calls
+                WHERE id IN ({placeholders})
+                ORDER BY request_time ASC, complete_time ASC"
+            );
+
+            let mut stmt = conn.prepare(&sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare turn_calls step2: {e}"))
             })?;
 
-            let mut rows = stmt.query(duckdb::params![turn_id]).map_err(|e| {
-                AppError::Storage(format!("failed to execute turn_calls query: {e}"))
-            })?;
+            let mut rows = stmt
+                .query(duckdb::params_from_iter(call_ids.iter()))
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute turn_calls step2: {e}"))
+                })?;
 
             let mut items = Vec::new();
             let mut seq: u32 = 0;

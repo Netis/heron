@@ -100,7 +100,6 @@ export function LlmCallDetailPanel({ id, onClose, onNavigate, hasPrev, hasNext }
               <MetadataGrid detail={detail} />
               <CallRendererDispatch
                 wireApi={detail.wire_api}
-                agentKind={detail.agent_kind}
                 requestBody={detail.request_body}
                 responseBody={detail.response_body}
                 hasRequestBody={detail.request_body != null}

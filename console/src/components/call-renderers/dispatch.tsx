@@ -17,7 +17,8 @@ function overlayFor(agentKind: string | null): CallOverlay | null {
 
 export interface CallRendererDispatchProps {
   wireApi: string
-  agentKind: string | null
+  /** Optional — only passed when the call is rendered inside a turn (agent overlays apply there). */
+  agentKind?: string | null
   requestBody: string | null
   responseBody: string | null
   /** Optional — supplied by turn-detail CallCard so tool_use blocks can show joined results. */
@@ -33,7 +34,7 @@ export interface CallRendererDispatchProps {
  * base renderer via slots.
  */
 export function CallRendererDispatch(props: CallRendererDispatchProps) {
-  const overlay = overlayFor(props.agentKind)
+  const overlay = overlayFor(props.agentKind ?? null)
   switch (props.wireApi) {
     case "anthropic":
       return (

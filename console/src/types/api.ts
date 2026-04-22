@@ -181,8 +181,6 @@ export interface LlmCallDetail {
   response_body: string | null
   request_headers: string | null
   response_headers: string | null
-  /** Populated via LEFT JOIN on agent_turns — null when the call is not part of a turn. */
-  agent_kind: string | null
 }
 
 // HTTP exchange types — /api/http-exchanges
