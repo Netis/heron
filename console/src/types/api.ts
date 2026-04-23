@@ -226,3 +226,74 @@ export interface HttpExchangeDetail {
   response_first_byte_time: number | null
   response_complete_time: number | null
 }
+
+// Agent session types — /api/agent-sessions
+
+export interface SessionListItem {
+  source_id: string
+  session_id: string
+  agent_kind: string
+  /** ms since epoch — MAX(end_time) across windowed turns, the sort key */
+  last_turn_at_in_window: number
+  first_turn_at: number
+  last_turn_at: number
+  turn_count: number
+  call_count: number
+  total_input_tokens: number
+  total_output_tokens: number
+  total_cache_read_input_tokens: number
+  total_cache_creation_input_tokens: number
+  total_cost_usd: number | null
+  first_user_input_preview: string | null
+  first_user_call_id: string | null
+}
+
+export interface SessionsPage {
+  items: SessionListItem[]
+  /** Opaque cursor. null when the current page is the last one. */
+  next_cursor: string | null
+}
+
+export interface SessionDetail {
+  source_id: string
+  session_id: string
+  agent_kind: string
+  first_turn_at: number
+  last_turn_at: number
+  turn_count: number
+  call_count: number
+  total_input_tokens: number
+  total_output_tokens: number
+  total_cache_read_input_tokens: number
+  total_cache_creation_input_tokens: number
+  total_cost_usd: number | null
+  first_user_input_preview: string | null
+  first_user_call_id: string | null
+}
+
+export interface SessionTurnItem {
+  turn_id: string
+  source_id: string
+  session_id: string
+  start_time: number
+  end_time: number
+  duration_ms: number
+  wire_api: string
+  agent_kind: string
+  primary_model: string | null
+  models_used: string[]
+  call_count: number
+  total_input_tokens: number
+  total_output_tokens: number
+  status: string
+  final_finish_reason: string | null
+  /** Full text. Frontend truncates for collapsed preview (~120 chars). */
+  user_input: string | null
+  /** Full text. Null when the turn ended without a final answer. */
+  final_answer: string | null
+}
+
+export interface SessionTurnsPage {
+  items: SessionTurnItem[]
+  next_cursor: string | null
+}

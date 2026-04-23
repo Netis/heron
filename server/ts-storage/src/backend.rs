@@ -69,7 +69,7 @@ pub trait StorageBackend: Send + Sync {
 
     /// Paginated list of the session's turns, ordered by start_time DESC. Not
     /// time-windowed — the session detail page shows the full history.
-    async fn query_session_turns(&self, query: &SessionTurnsQuery) -> Result<TurnsPage>;
+    async fn query_session_turns(&self, query: &SessionTurnsQuery) -> Result<SessionTurnsPage>;
     async fn query_distinct_wire_apis(&self) -> Result<Vec<String>>;
     async fn query_distinct_models(&self) -> Result<Vec<String>>;
     async fn query_distinct_server_ips(&self) -> Result<Vec<String>>;

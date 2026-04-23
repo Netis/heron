@@ -194,6 +194,40 @@ pub struct TurnsPage {
     pub items: Vec<TurnListItem>,
 }
 
+/// One turn row returned by the session-turns endpoint. Identical to
+/// `TurnListItem` except `user_input_preview` / `final_answer_preview` are
+/// replaced by full-text `user_input` / `final_answer` (server-side
+/// reconstructed from the referenced call bodies, see
+/// `query_session_turns` in `duckdb.rs`).
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionTurnItem {
+    pub turn_id: String,
+    pub source_id: String,
+    pub session_id: String,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub duration_ms: u64,
+    pub wire_api: String,
+    pub agent_kind: String,
+    pub primary_model: Option<String>,
+    pub models_used: Vec<String>,
+    pub call_count: u32,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub status: String,
+    pub final_finish_reason: Option<String>,
+    pub user_input: Option<String>,
+    pub final_answer: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionTurnsPage {
+    pub items: Vec<SessionTurnItem>,
+    /// Opaque cursor for the next page. `None` when the current page is the
+    /// last one (fewer than `page_size` rows were returned).
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TurnDetail {
     pub turn_id: String,
@@ -421,11 +455,52 @@ fn hex_digit(b: u8) -> Option<u8> {
     }
 }
 
+/// Cursor for paginating a session's turns (most-recent first).
+///
+/// Tuple order matches `ORDER BY start_time DESC, turn_id DESC` on the server
+/// side, so comparison `(start_time, turn_id) < (?, ?)` steps through pages
+/// without duplicates even when two turns share a microsecond.
+#[derive(Debug, Clone)]
+pub struct SessionTurnsCursor {
+    pub start_time_us: i64,
+    pub turn_id: String,
+}
+
+pub fn encode_session_turns_cursor(c: &SessionTurnsCursor) -> String {
+    let json = serde_json::json!({ "t": c.start_time_us, "k": c.turn_id }).to_string();
+    let mut out = String::with_capacity(json.len() * 2);
+    for b in json.as_bytes() {
+        use std::fmt::Write;
+        let _ = write!(out, "{:02x}", b);
+    }
+    out
+}
+
+pub fn decode_session_turns_cursor(s: &str) -> Option<SessionTurnsCursor> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len() / 2);
+    for i in (0..bytes.len()).step_by(2) {
+        let hi = hex_digit(bytes[i])?;
+        let lo = hex_digit(bytes[i + 1])?;
+        decoded.push((hi << 4) | lo);
+    }
+    let v: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    let start_time_us = v.get("t")?.as_i64()?;
+    let turn_id = v.get("k")?.as_str()?.to_string();
+    Some(SessionTurnsCursor {
+        start_time_us,
+        turn_id,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionTurnsQuery {
     pub source_id: String,
     pub session_id: String,
-    pub page: u32,
+    pub cursor: Option<SessionTurnsCursor>,
     pub page_size: u32,
 }
 
@@ -457,4 +532,28 @@ pub struct CallDetail {
     pub response_body: Option<String>,
     pub request_headers: Option<String>,
     pub response_headers: Option<String>,
+}
+
+#[cfg(test)]
+mod session_turns_cursor_tests {
+    use super::*;
+
+    #[test]
+    fn session_turns_cursor_roundtrip() {
+        let c = SessionTurnsCursor {
+            start_time_us: 1_729_000_000_000_000,
+            turn_id: "abc-123".to_string(),
+        };
+        let encoded = encode_session_turns_cursor(&c);
+        let decoded = decode_session_turns_cursor(&encoded).expect("decode");
+        assert_eq!(decoded.start_time_us, c.start_time_us);
+        assert_eq!(decoded.turn_id, c.turn_id);
+    }
+
+    #[test]
+    fn session_turns_cursor_rejects_garbage() {
+        assert!(decode_session_turns_cursor("abc").is_none()); // odd length
+        assert!(decode_session_turns_cursor("not-hex!").is_none());
+        assert!(decode_session_turns_cursor("00").is_none()); // valid hex, invalid JSON
+    }
 }

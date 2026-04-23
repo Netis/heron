@@ -4,7 +4,8 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use ts_storage::query::{
-    decode_session_cursor, SessionListQuery, SessionTurnsQuery, TimeRange,
+    decode_session_cursor, decode_session_turns_cursor, SessionListQuery, SessionTurnsQuery,
+    TimeRange,
 };
 use ts_storage::StorageBackend;
 
@@ -30,15 +31,13 @@ pub struct SessionsParams {
 
 #[derive(Debug, Deserialize)]
 pub struct SessionTurnsParams {
-    #[serde(default = "default_page")]
-    pub page: u32,
+    /// Opaque cursor from the previous page's `next_cursor`.
+    #[serde(default)]
+    pub cursor: Option<String>,
     #[serde(default = "default_page_size")]
     pub page_size: u32,
 }
 
-fn default_page() -> u32 {
-    1
-}
 fn default_page_size() -> u32 {
     50
 }
@@ -48,9 +47,10 @@ pub async fn list(
     Query(params): Query<SessionsParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let cursor = match &params.cursor {
-        Some(s) if !s.is_empty() => Some(decode_session_cursor(s).ok_or_else(|| {
-            ApiError::InvalidParam("invalid cursor".to_string())
-        })?),
+        Some(s) if !s.is_empty() => Some(
+            decode_session_cursor(s)
+                .ok_or_else(|| ApiError::InvalidParam("invalid cursor".to_string()))?,
+        ),
         _ => None,
     };
 
@@ -86,10 +86,18 @@ pub async fn turns(
     Path((source_id, session_id)): Path<(String, String)>,
     Query(params): Query<SessionTurnsParams>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let cursor = match &params.cursor {
+        Some(s) if !s.is_empty() => Some(
+            decode_session_turns_cursor(s)
+                .ok_or_else(|| ApiError::InvalidParam("invalid cursor".to_string()))?,
+        ),
+        _ => None,
+    };
+
     let query = SessionTurnsQuery {
         source_id,
         session_id,
-        page: params.page.max(1),
+        cursor,
         page_size: params.page_size.clamp(1, 200),
     };
     let page = storage.query_session_turns(&query).await?;

@@ -179,8 +179,8 @@ mod tests {
         CallDetail, CallsPage, CallsQuery, HttpExchangeDetail, HttpExchangesPage,
         HttpExchangesQuery, MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery,
         MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, SessionDetail,
-        SessionListQuery, SessionTurnsQuery, SessionsPage, TurnCallItem, TurnDetail, TurnsPage,
-        TurnsQuery,
+        SessionListQuery, SessionTurnsPage, SessionTurnsQuery, SessionsPage, TurnCallItem,
+        TurnDetail, TurnsPage, TurnsQuery,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -291,10 +291,13 @@ mod tests {
         ) -> Result<Option<SessionDetail>> {
             Ok(None)
         }
-        async fn query_session_turns(&self, _query: &SessionTurnsQuery) -> Result<TurnsPage> {
-            Ok(TurnsPage {
-                total: 0,
+        async fn query_session_turns(
+            &self,
+            _query: &SessionTurnsQuery,
+        ) -> Result<SessionTurnsPage> {
+            Ok(SessionTurnsPage {
                 items: vec![],
+                next_cursor: None,
             })
         }
         async fn query_distinct_wire_apis(&self) -> Result<Vec<String>> {

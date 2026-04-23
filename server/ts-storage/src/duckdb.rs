@@ -403,6 +403,115 @@ fn extract_full_text(
     }
 }
 
+/// Batch version of `extract_full_text`. Given `(agent_kind, call_id)` pairs
+/// and an `ExtractKind` selecting which body column to read, issues a single
+/// `SELECT ... WHERE id IN (...)` against `llm_calls` and runs each profile's
+/// extractor to produce the final text. Returns a map keyed by `call_id`.
+///
+/// - Missing call rows, unknown `wire_api`s, or extractors that decline are
+///   omitted from the result (caller falls back to the preview string).
+/// - Empty `requests` short-circuits to an empty map with zero DB work.
+fn extract_full_text_batch(
+    conn: &Connection,
+    kind: ExtractKind,
+    requests: &[(String, String)], // (agent_kind, call_id)
+) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    let mut out: HashMap<String, String> = HashMap::new();
+    if requests.is_empty() {
+        return out;
+    }
+
+    // Build agent_kind lookup keyed by call_id (last-writer-wins if a call id
+    // appears twice — extremely unlikely given AgentTurn invariants).
+    let mut agent_by_call: HashMap<&str, &str> = HashMap::new();
+    for (ak, cid) in requests {
+        agent_by_call.insert(cid.as_str(), ak.as_str());
+    }
+    let call_ids: Vec<&str> = agent_by_call.keys().copied().collect();
+
+    let col = match kind {
+        ExtractKind::User => "request_body",
+        ExtractKind::Assistant => "response_body",
+    };
+    let placeholders = vec!["?"; call_ids.len()].join(",");
+    let sql = format!("SELECT id, wire_api, {col} FROM llm_calls WHERE id IN ({placeholders})");
+
+    let registry = build_default_registry();
+
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return out;
+    };
+    let params: Vec<&dyn duckdb::ToSql> =
+        call_ids.iter().map(|s| s as &dyn duckdb::ToSql).collect();
+    let Ok(mut rows) = stmt.query(duckdb::params_from_iter(params.iter().copied())) else {
+        return out;
+    };
+
+    while let Ok(Some(row)) = rows.next() {
+        let Ok(id): std::result::Result<String, _> = row.get(0) else {
+            continue;
+        };
+        let Ok(wire_api_stored): std::result::Result<String, _> = row.get(1) else {
+            continue;
+        };
+        let body: Option<String> = row.get(2).ok();
+        let Some(wire_api) = wa::by_name(&wire_api_stored) else {
+            continue;
+        };
+        let Some(agent_kind) = agent_by_call.get(id.as_str()).copied() else {
+            continue;
+        };
+        let Some(profile) = registry.find_by_name(agent_kind) else {
+            continue;
+        };
+
+        let (request_body, response_body) = match kind {
+            ExtractKind::User => (body, None),
+            ExtractKind::Assistant => (None, body),
+        };
+        let call = LlmCall {
+            source_id: String::new(),
+            id: String::new(),
+            wire_api,
+            model: String::new(),
+            api_type: ApiType::Chat,
+            request_time: 0,
+            response_time: None,
+            complete_time: None,
+            request_path: String::new(),
+            is_stream: false,
+            request_body,
+            status_code: None,
+            finish_reason: None,
+            response_body,
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            ttft_ms: None,
+            e2e_latency_ms: None,
+            client_ip: "0.0.0.0".parse().unwrap(),
+            client_port: 0,
+            server_ip: "0.0.0.0".parse().unwrap(),
+            server_port: 0,
+            response_id: None,
+            request_headers: Vec::new(),
+            response_headers: Vec::new(),
+        };
+        let extracted = match kind {
+            ExtractKind::User => profile.extract_user_input(&call),
+            ExtractKind::Assistant => profile.extract_assistant_text(&call),
+        };
+        if let Some(text) = extracted {
+            out.insert(id, text);
+        }
+    }
+
+    out
+}
+
 /// All valid numeric metric field names accepted by `query_metrics_timeseries`.
 /// Virtual `*_avg` fields resolve to `SUM(*_sum) / SUM(*_count)` at query time;
 /// the raw `*_sum` / `*_count` fields are also accepted for callers that want
@@ -2646,109 +2755,222 @@ impl StorageBackend for DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    async fn query_session_turns(&self, query: &SessionTurnsQuery) -> Result<TurnsPage> {
+    async fn query_session_turns(&self, query: &SessionTurnsQuery) -> Result<SessionTurnsPage> {
         let conn = self.read_pool.acquire().await?;
         let query = query.clone();
 
         tokio::task::spawn_blocking(move || {
-            let count_sql = "SELECT COUNT(*) FROM agent_turns \
-                             WHERE source_id = ? AND session_id = ?";
-            let mut count_stmt = conn.prepare(count_sql).map_err(|e| {
-                AppError::Storage(format!("failed to prepare session_turns count: {e}"))
-            })?;
-            let total: u64 = count_stmt
-                .query_row(duckdb::params![query.source_id, query.session_id], |row| {
-                    row.get(0)
-                })
-                .map_err(|e| {
-                    AppError::Storage(format!("failed to execute session_turns count: {e}"))
-                })?;
-
             let page_size = query.page_size.max(1);
-            let offset = (query.page.saturating_sub(1)) as u64 * page_size as u64;
+            let limit = (page_size as u64) + 1;
 
+            // Cursor filter (tuple comparison). ORDER BY start_time DESC, turn_id DESC.
+            let (cursor_sql, cursor_values) = if let Some(c) = &query.cursor {
+                let ts = us_to_timestamp(c.start_time_us);
+                (
+                    " AND (start_time, turn_id) < (CAST(? AS TIMESTAMP), ?)".to_string(),
+                    Some((ts, c.turn_id.clone())),
+                )
+            } else {
+                (String::new(), None)
+            };
+
+            // Paging query. SELECT returns SessionTurnItem columns + preview +
+            // call_id for each side so we know whether to run full-text
+            // extraction below.
             let sql = format!(
                 "SELECT turn_id, source_id, session_id, \
-                        epoch_ms(start_time), epoch_ms(end_time), duration_ms, \
-                        wire_api, agent_kind, models_used, call_count, \
-                        total_input_tokens, total_output_tokens, status, \
-                        final_finish_reason, user_input_preview, final_answer_preview \
+                        epoch_ms(start_time)   AS start_ms, \
+                        epoch_ms(end_time)     AS end_ms, \
+                        duration_ms, wire_api, agent_kind, \
+                        models_used, call_count, \
+                        total_input_tokens, total_output_tokens, \
+                        status, final_finish_reason, \
+                        user_input_preview, user_call_id, \
+                        final_answer_preview, final_call_id \
                  FROM agent_turns \
-                 WHERE source_id = ? AND session_id = ? \
-                 ORDER BY start_time DESC \
-                 LIMIT {page_size} OFFSET {offset}"
+                 WHERE source_id = ? AND session_id = ?{cursor_sql} \
+                 ORDER BY start_time DESC, turn_id DESC \
+                 LIMIT {limit}"
             );
-            let mut stmt = conn.prepare(&sql).map_err(|e| {
-                AppError::Storage(format!("failed to prepare session_turns items: {e}"))
-            })?;
-            let mut rows = stmt
-                .query(duckdb::params![query.source_id, query.session_id])
-                .map_err(|e| {
-                    AppError::Storage(format!("failed to execute session_turns items: {e}"))
-                })?;
 
-            let mut items = Vec::new();
-            while let Some(row) = rows
-                .next()
-                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| AppError::Storage(format!("failed to prepare session_turns: {e}")))?;
+
+            #[allow(clippy::type_complexity)]
+            let mut fetched: Vec<(
+                String,
+                String,
+                String,
+                i64,
+                i64,
+                u64,
+                String,
+                String,
+                Option<String>,
+                u32,
+                u64,
+                u64,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            )> = Vec::new();
+
             {
-                let models_used_raw: Option<String> = row
-                    .get(8)
-                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let mut rows = match &cursor_values {
+                    Some((ts, sid)) => stmt.query(duckdb::params![query.source_id, query.session_id, ts, sid]),
+                    None => stmt.query(duckdb::params![query.source_id, query.session_id]),
+                }
+                .map_err(|e| AppError::Storage(format!("failed to execute session_turns: {e}")))?;
+
+                while let Some(row) = rows
+                    .next()
+                    .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+                {
+                    let tuple = (
+                        row.get(0)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get(1)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get(2)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get(3)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get(4)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get(5)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get(6)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get(7)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get::<_, Option<String>>(8)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get(9)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get(10)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get(11)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get(12)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get::<_, Option<String>>(13)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get::<_, Option<String>>(14)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get::<_, Option<String>>(15)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get::<_, Option<String>>(16)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get::<_, Option<String>>(17)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    );
+                    fetched.push(tuple);
+                }
+            }
+
+            // Fetch+1 pattern: if we got page_size + 1 rows, there's a next page.
+            let has_more = fetched.len() as u64 > page_size as u64;
+            if has_more {
+                fetched.truncate(page_size as usize);
+            }
+
+            // Gather call-ids that need full-text extraction (preview ended with `…`).
+            let mut need_user: Vec<(String, String)> = Vec::new(); // (agent_kind, call_id)
+            let mut need_assistant: Vec<(String, String)> = Vec::new();
+            for t in &fetched {
+                let agent_kind = t.7.clone();
+                let user_preview = &t.14;
+                let user_call_id = &t.15;
+                let final_preview = &t.16;
+                let final_call_id = &t.17;
+                if let (Some(p), Some(cid)) = (user_preview, user_call_id) {
+                    if p.ends_with('…') {
+                        need_user.push((agent_kind.clone(), cid.clone()));
+                    }
+                }
+                if let (Some(p), Some(cid)) = (final_preview, final_call_id) {
+                    if p.ends_with('…') {
+                        need_assistant.push((agent_kind, cid.clone()));
+                    }
+                }
+            }
+            let user_map = extract_full_text_batch(&conn, ExtractKind::User, &need_user);
+            let asst_map = extract_full_text_batch(&conn, ExtractKind::Assistant, &need_assistant);
+
+            let mut items: Vec<SessionTurnItem> = Vec::with_capacity(fetched.len());
+            for t in fetched {
+                let (
+                    turn_id,
+                    source_id,
+                    session_id,
+                    start_ms,
+                    end_ms,
+                    duration_ms,
+                    wire_api,
+                    agent_kind,
+                    models_used_raw,
+                    call_count,
+                    total_input_tokens,
+                    total_output_tokens,
+                    status,
+                    final_finish_reason,
+                    user_preview,
+                    user_call_id,
+                    final_preview,
+                    final_call_id,
+                ) = t;
+
+                let user_input = match (user_preview.as_deref(), user_call_id.as_deref()) {
+                    (Some(p), _) if !p.ends_with('…') => Some(p.to_string()),
+                    (_, Some(cid)) => user_map.get(cid).cloned().or_else(|| user_preview.clone()),
+                    _ => user_preview.clone(),
+                };
+                let final_answer = match (final_preview.as_deref(), final_call_id.as_deref()) {
+                    (Some(p), _) if !p.ends_with('…') => Some(p.to_string()),
+                    (_, Some(cid)) => asst_map.get(cid).cloned().or_else(|| final_preview.clone()),
+                    _ => final_preview.clone(),
+                };
+
                 let models_used = parse_json_string_list(models_used_raw.as_deref());
                 let primary_model = models_used.first().cloned();
-                items.push(TurnListItem {
-                    turn_id: row
-                        .get(0)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    source_id: row
-                        .get(1)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    session_id: row
-                        .get(2)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    start_time: row
-                        .get(3)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    end_time: row
-                        .get(4)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    duration_ms: row
-                        .get(5)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    wire_api: row
-                        .get(6)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    agent_kind: row
-                        .get(7)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+
+                items.push(SessionTurnItem {
+                    turn_id,
+                    source_id,
+                    session_id,
+                    start_time: start_ms,
+                    end_time: end_ms,
+                    duration_ms,
+                    wire_api,
+                    agent_kind,
                     primary_model,
                     models_used,
-                    call_count: row
-                        .get(9)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    total_input_tokens: row
-                        .get(10)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    total_output_tokens: row
-                        .get(11)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    status: row
-                        .get(12)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    final_finish_reason: row
-                        .get::<_, Option<String>>(13)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    user_input_preview: row
-                        .get::<_, Option<String>>(14)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    final_answer_preview: row
-                        .get::<_, Option<String>>(15)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    call_count,
+                    total_input_tokens,
+                    total_output_tokens,
+                    status,
+                    final_finish_reason,
+                    user_input,
+                    final_answer,
                 });
             }
 
-            Ok(TurnsPage { total, items })
+            let next_cursor = if has_more {
+                items.last().map(|last| {
+                    encode_session_turns_cursor(&SessionTurnsCursor {
+                        start_time_us: last.start_time.saturating_mul(1000),
+                        turn_id: last.turn_id.clone(),
+                    })
+                })
+            } else {
+                None
+            };
+
+            Ok(SessionTurnsPage { items, next_cursor })
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
@@ -3898,7 +4120,7 @@ mod turn_tests {
             source_id: String::new(),
             turn_id: turn_id.into(),
             session_id: session_id.into(),
-                wire_api: wire_api.into(),
+            wire_api: wire_api.into(),
             agent_kind: "claude-cli".into(),
             start_time_us: start_us,
             end_time_us: start_us + (duration_ms as i64) * 1000,
@@ -3929,7 +4151,7 @@ mod turn_tests {
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
-                request_time: request_time_us,
+            request_time: request_time_us,
             response_time: Some(request_time_us + 100_000),
             complete_time: Some(request_time_us + 500_000),
             request_path: "/v1/chat/completions".into(),
@@ -4433,15 +4655,162 @@ mod turn_tests {
             .query_session_turns(&SessionTurnsQuery {
                 source_id: String::new(),
                 session_id: "SX".into(),
-                page: 1,
+                cursor: None,
                 page_size: 10,
             })
             .await
             .unwrap();
-        assert_eq!(turns.total, 3);
         assert_eq!(turns.items.len(), 3);
         assert_eq!(turns.items[0].turn_id, "tc");
         assert_eq!(turns.items[2].turn_id, "ta");
+        // Fewer rows than page_size → no next page.
+        assert!(turns.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn query_session_turns_cursor_pagination() {
+        use crate::query::decode_session_turns_cursor;
+
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        // Seed 5 turns in session "S-CURSOR" with strictly increasing start_time.
+        // Short previews (no `…`) keep this test purely about cursor mechanics —
+        // no full-text extraction round-trip is triggered.
+        let base = 1_700_000_000_000_000_i64;
+        let us = |secs: i64| base + secs * 1_000_000;
+        let turns: Vec<AgentTurn> = (0..5)
+            .map(|i| {
+                sample_turn_for_session(
+                    &format!("turn-{i}"),
+                    "S-CURSOR",
+                    us(i as i64 * 10),
+                    Some("hi"),
+                )
+            })
+            .collect();
+        backend.write_turns(turns).await.unwrap();
+
+        // Page 1: newest 2 (turn-4, turn-3).
+        let p1 = backend
+            .query_session_turns(&SessionTurnsQuery {
+                source_id: String::new(),
+                session_id: "S-CURSOR".into(),
+                cursor: None,
+                page_size: 2,
+            })
+            .await
+            .unwrap();
+        assert_eq!(p1.items.len(), 2);
+        assert_eq!(p1.items[0].turn_id, "turn-4");
+        assert_eq!(p1.items[1].turn_id, "turn-3");
+        let cursor1 = p1.next_cursor.expect("more pages");
+
+        // Page 2: turn-2, turn-1.
+        let p2 = backend
+            .query_session_turns(&SessionTurnsQuery {
+                source_id: String::new(),
+                session_id: "S-CURSOR".into(),
+                cursor: decode_session_turns_cursor(&cursor1),
+                page_size: 2,
+            })
+            .await
+            .unwrap();
+        assert_eq!(p2.items.len(), 2);
+        assert_eq!(p2.items[0].turn_id, "turn-2");
+        assert_eq!(p2.items[1].turn_id, "turn-1");
+        let cursor2 = p2.next_cursor.expect("more pages");
+
+        // Page 3: turn-0, no next cursor.
+        let p3 = backend
+            .query_session_turns(&SessionTurnsQuery {
+                source_id: String::new(),
+                session_id: "S-CURSOR".into(),
+                cursor: decode_session_turns_cursor(&cursor2),
+                page_size: 2,
+            })
+            .await
+            .unwrap();
+        assert_eq!(p3.items.len(), 1);
+        assert_eq!(p3.items[0].turn_id, "turn-0");
+        assert!(p3.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn query_session_turns_extracts_full_text_when_preview_truncated() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        // Build llm_calls carrying real bodies that the Anthropic profile
+        // extractor can parse. Bodies must be long enough that the preview is
+        // `…`-terminated (i.e. > 500 chars so the stored preview is truncated).
+        let base = 1_700_000_000_000_000_i64;
+        let full_user: String = "u".repeat(600);
+        let full_asst: String = "a".repeat(600);
+
+        let mut user_call = mk_call_with_time("sc-user", base + 1_000);
+        user_call.wire_api = wa::ANTHROPIC;
+        user_call.request_body = Some(
+            serde_json::json!({
+                "messages": [{ "role": "user", "content": &full_user }]
+            })
+            .to_string(),
+        );
+
+        let mut asst_call = mk_call_with_time("sc-asst", base + 2_000);
+        asst_call.wire_api = wa::ANTHROPIC;
+        asst_call.response_body = Some(
+            serde_json::json!({
+                "content": [{ "type": "text", "text": &full_asst }]
+            })
+            .to_string(),
+        );
+        backend
+            .write_calls(vec![user_call, asst_call])
+            .await
+            .unwrap();
+
+        // Turn with `…`-terminated previews pointing at the call ids above.
+        let truncated_user: String = "u".repeat(500) + "…";
+        let truncated_asst: String = "a".repeat(500) + "…";
+        let mut turn = sample_turn(
+            "st-long",
+            "S-EXTRACT",
+            wa::ANTHROPIC,
+            vec!["claude-sonnet"],
+            base,
+            1500,
+            2,
+            vec!["sc-user", "sc-asst"],
+            TurnStatus::Complete,
+        );
+        turn.user_input_preview = Some(truncated_user);
+        turn.user_call_id = Some("sc-user".into());
+        turn.final_answer_preview = Some(truncated_asst);
+        turn.final_call_id = Some("sc-asst".into());
+        backend.write_turns(vec![turn]).await.unwrap();
+
+        let page = backend
+            .query_session_turns(&SessionTurnsQuery {
+                source_id: String::new(),
+                session_id: "S-EXTRACT".into(),
+                cursor: None,
+                page_size: 10,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(
+            page.items[0].user_input.as_deref(),
+            Some(full_user.as_str()),
+            "user_input should be full text, not truncated preview"
+        );
+        assert_eq!(
+            page.items[0].final_answer.as_deref(),
+            Some(full_asst.as_str()),
+            "final_answer should be full text, not truncated preview"
+        );
     }
 }
 
@@ -4462,7 +4831,7 @@ mod concurrent_tests {
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
-                request_time: 1_700_000_000_000_000 + i as i64,
+            request_time: 1_700_000_000_000_000 + i as i64,
             response_time: None,
             complete_time: None,
             request_path: "/v1/chat/completions".into(),
@@ -4493,7 +4862,7 @@ mod concurrent_tests {
             source_id: String::new(),
             turn_id: format!("turn-{i:08}"),
             session_id: format!("session-{}", i % 10),
-                wire_api: wa::OPENAI_CHAT.into(),
+            wire_api: wa::OPENAI_CHAT.into(),
             agent_kind: "test".into(),
             start_time_us: 1_700_000_000_000_000 + i as i64,
             end_time_us: 1_700_000_000_000_000 + i as i64 + 1_000_000,
@@ -4643,7 +5012,7 @@ mod retention_tests {
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
-                request_time: request_time_us,
+            request_time: request_time_us,
             response_time: Some(request_time_us + 100_000),
             complete_time: Some(request_time_us + 500_000),
             request_path: "/v1/chat/completions".into(),
@@ -4674,7 +5043,7 @@ mod retention_tests {
             source_id: String::new(),
             turn_id: id.into(),
             session_id: "s".into(),
-                wire_api: wa::OPENAI_CHAT.into(),
+            wire_api: wa::OPENAI_CHAT.into(),
             agent_kind: "claude-cli".into(),
             start_time_us: start_us,
             end_time_us: start_us + (duration_ms as i64) * 1000,

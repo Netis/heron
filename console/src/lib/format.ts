@@ -54,6 +54,20 @@ export function formatNumber(n: number | null | undefined): string {
   return String(n)
 }
 
+/** ms-since-epoch → "16:30", "yesterday", "3d ago" */
+export function formatRelativeTime(ms: number): string {
+  const now = Date.now()
+  const diffMs = now - ms
+  const day = 86_400_000
+  if (diffMs < day && new Date(ms).toDateString() === new Date(now).toDateString()) {
+    const d = new Date(ms)
+    return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`
+  }
+  if (diffMs < 2 * day) return "yesterday"
+  const days = Math.floor(diffMs / day)
+  return `${days}d ago`
+}
+
 export function formatBytes(n: number | null | undefined): string {
   if (n == null) return "—"
   if (n < 1024) return `${n} B`

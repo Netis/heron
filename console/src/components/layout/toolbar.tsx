@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react"
+import { useLocation } from "react-router"
 import { Calendar, ChevronDown, RefreshCw } from "lucide-react"
 import { useIsFetching } from "@tanstack/react-query"
 import { useToolbarStore, type TimeRangePreset } from "@/stores/toolbar"
@@ -71,6 +72,9 @@ export function Toolbar() {
   const { data: wireApisData } = useWireApis()
   const { data: modelsData } = useModelNames()
   const { data: serverIpsData } = useServerIps()
+
+  const { pathname } = useLocation()
+  const hideDimensionFilters = pathname.startsWith("/agent-sessions")
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -217,24 +221,28 @@ export function Toolbar() {
       </div>
 
       {/* Dimension filters */}
-      <FilterDropdown
-        label="Wire API"
-        options={wireApisData?.values ?? []}
-        selected={csvToArray(filters.wireApi)}
-        onChange={(v) => setFilter("wireApi", arrayToCsv(v))}
-      />
-      <FilterDropdown
-        label="Model"
-        options={modelsData?.values ?? []}
-        selected={csvToArray(filters.model)}
-        onChange={(v) => setFilter("model", arrayToCsv(v))}
-      />
-      <FilterDropdown
-        label="Server IP"
-        options={serverIpsData?.values ?? []}
-        selected={csvToArray(filters.serverIp)}
-        onChange={(v) => setFilter("serverIp", arrayToCsv(v))}
-      />
+      {!hideDimensionFilters && (
+        <>
+          <FilterDropdown
+            label="Wire API"
+            options={wireApisData?.values ?? []}
+            selected={csvToArray(filters.wireApi)}
+            onChange={(v) => setFilter("wireApi", arrayToCsv(v))}
+          />
+          <FilterDropdown
+            label="Model"
+            options={modelsData?.values ?? []}
+            selected={csvToArray(filters.model)}
+            onChange={(v) => setFilter("model", arrayToCsv(v))}
+          />
+          <FilterDropdown
+            label="Server IP"
+            options={serverIpsData?.values ?? []}
+            selected={csvToArray(filters.serverIp)}
+            onChange={(v) => setFilter("serverIp", arrayToCsv(v))}
+          />
+        </>
+      )}
     </header>
   )
 }
