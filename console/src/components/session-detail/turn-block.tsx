@@ -23,7 +23,13 @@ function ClampedMarkdown({ text }: { text: string }) {
 
   return (
     <>
-      <div ref={ref} className={cn("mt-1", !expanded && "line-clamp-3")}>
+      <div
+        ref={ref}
+        className={cn(
+          "mt-1",
+          !expanded && "line-clamp-3 max-h-[4.5rem] overflow-hidden",
+        )}
+      >
         <Markdown text={text} compact={!expanded} />
       </div>
       {!expanded && truncated && (
