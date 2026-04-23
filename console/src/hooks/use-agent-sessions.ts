@@ -8,7 +8,6 @@ import type {
 } from "@/types/api"
 
 interface UseAgentSessionsParams {
-  sourceId?: string
   /** CSV of agent kinds, e.g. "claude-cli,codex-cli" */
   agentKind?: string
   pageSize?: number
@@ -16,19 +15,18 @@ interface UseAgentSessionsParams {
 
 const DEFAULT_PAGE_SIZE = 50
 
-export function useAgentSessions({ sourceId, agentKind, pageSize = DEFAULT_PAGE_SIZE }: UseAgentSessionsParams) {
+export function useAgentSessions({ agentKind, pageSize = DEFAULT_PAGE_SIZE }: UseAgentSessionsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
 
   return useInfiniteQuery({
-    queryKey: ["agent-sessions", { start, end, sourceId, agentKind, pageSize }],
+    queryKey: ["agent-sessions", { start, end, agentKind, pageSize }],
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
       apiFetch<SessionsPage>("/api/agent-sessions", {
         start,
         end,
         page_size: pageSize,
-        source_id: sourceId || undefined,
         agent_kind: agentKind || undefined,
         cursor: pageParam || undefined,
       }),

@@ -1,89 +1,109 @@
+import { useLayoutEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { Markdown } from "@/components/ui/markdown"
-import { formatDateTimeMs, formatTime } from "@/lib/format"
+import { formatTime } from "@/lib/format"
 import { TurnMetadataStrip } from "./turn-metadata-strip"
 import type { SessionTurnItem } from "@/types/api"
 
-const PREVIEW_CHARS = 120
+function ClampedMarkdown({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [truncated, setTruncated] = useState(false)
 
-function preview(text: string | null): string {
-  if (!text) return ""
-  const trimmed = text.trim().split("\n")[0] ?? ""
-  return trimmed.length > PREVIEW_CHARS ? trimmed.slice(0, PREVIEW_CHARS) + "…" : trimmed
+  useLayoutEffect(() => {
+    if (expanded) return
+    const el = ref.current
+    if (!el) return
+    const check = () => setTruncated(el.scrollHeight > el.clientHeight + 1)
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [text, expanded])
+
+  return (
+    <>
+      <div ref={ref} className={cn("mt-1", !expanded && "line-clamp-3")}>
+        <Markdown text={text} compact={!expanded} />
+      </div>
+      {!expanded && truncated && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-1 text-[11px] text-muted-foreground hover:text-foreground"
+        >
+          … show more ↓
+        </button>
+      )}
+      {expanded && (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="mt-1 text-[11px] text-muted-foreground hover:text-foreground"
+        >
+          show less ↑
+        </button>
+      )}
+    </>
+  )
 }
 
 export function TurnBlock({
   turn,
-  expanded,
-  onToggle,
   onInspect,
 }: {
   turn: SessionTurnItem
-  expanded: boolean
-  onToggle: () => void
   onInspect: (turnId: string) => void
 }) {
   const hasFinalAnswer = turn.final_answer != null && turn.final_answer.length > 0
 
   return (
-    <div className="mb-4">
-      {/* USER */}
+    <div className="mb-6">
+      {/* USER — prompt-style: no fill, left-border only */}
       <div className="flex items-start gap-3">
-        <div className="w-[56px] shrink-0 pt-1 text-right text-xs text-muted-foreground">
-          {formatTime(turn.start_time)}
+        <div className="w-[64px] shrink-0 pt-1 text-right font-mono text-xs tabular-nums text-muted-foreground">
+          {formatTime(turn.start_time).slice(0, 8)}
         </div>
-        <div className="flex-1 rounded-r border-l-2 border-blue-400 bg-blue-50/60 px-3 py-2 dark:border-blue-500 dark:bg-blue-950/30">
-          <div className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-300">
-            👤 User{expanded ? ` · ${formatDateTimeMs(turn.start_time)}` : ""}
+        <div className="flex-1 border-l-2 border-border py-0.5 pl-3">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            👤 User
           </div>
-          <div className={cn("mt-1 text-sm text-foreground", !expanded && "truncate")}>
-            {expanded ? <Markdown text={turn.user_input ?? ""} /> : preview(turn.user_input)}
-          </div>
+          <ClampedMarkdown text={turn.user_input ?? ""} />
         </div>
       </div>
 
-      {/* ASSISTANT */}
-      <div className="mt-1 flex items-start gap-3">
-        <div className="w-[56px] shrink-0" />
+      {/* ASSISTANT — card style */}
+      <div className="mt-2 flex items-start gap-3">
+        <div className="w-[64px] shrink-0" />
         <div
           className={cn(
-            "flex-1 rounded-r border-l-2 px-3 py-2",
+            "flex-1 rounded-md border px-3 py-2",
             hasFinalAnswer
-              ? "border-emerald-400 bg-emerald-50/60 dark:border-emerald-500 dark:bg-emerald-950/30"
-              : "border-red-400 bg-red-50/60 dark:border-red-500 dark:bg-red-950/30",
+              ? "border-border bg-muted/40"
+              : "border-red-300 bg-red-50/50 dark:border-red-900/60 dark:bg-red-950/20",
           )}
         >
           <div
             className={cn(
               "text-[10px] font-semibold uppercase tracking-wide",
               hasFinalAnswer
-                ? "text-emerald-700 dark:text-emerald-300"
+                ? "text-muted-foreground"
                 : "text-red-700 dark:text-red-300",
             )}
           >
             🎯 Assistant{!hasFinalAnswer ? " · incomplete" : ""}
           </div>
-          <div
-            className={cn(
-              "mt-1 text-sm",
-              !hasFinalAnswer && "italic text-muted-foreground",
-              !expanded && "truncate",
-            )}
-          >
-            {hasFinalAnswer ? (
-              expanded ? (
-                <Markdown text={turn.final_answer ?? ""} />
-              ) : (
-                preview(turn.final_answer)
-              )
-            ) : (
-              "Turn ended without a final answer"
-            )}
-          </div>
+          {hasFinalAnswer ? (
+            <ClampedMarkdown text={turn.final_answer ?? ""} />
+          ) : (
+            <div className="mt-1 text-sm italic text-muted-foreground">
+              Turn ended without a final answer
+            </div>
+          )}
         </div>
       </div>
 
-      <TurnMetadataStrip turn={turn} expanded={expanded} onToggle={onToggle} onInspect={onInspect} />
+      <TurnMetadataStrip turn={turn} onInspect={onInspect} />
     </div>
   )
 }

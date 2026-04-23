@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useState } from "react"
 import { Link, useParams } from "react-router"
 import { ArrowLeft, Loader2 } from "lucide-react"
 import { useAgentSessionDetail, useSessionTurns } from "@/hooks/use-agent-sessions"
@@ -18,17 +18,7 @@ export function AgentSessionDetailPage() {
     isFetchingNextPage,
   } = useSessionTurns(source_id, session_id)
 
-  const [expandedTurns, setExpandedTurns] = useState<Set<string>>(new Set())
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
-
-  const toggleTurn = useCallback((turnId: string) => {
-    setExpandedTurns((prev) => {
-      const next = new Set(prev)
-      if (next.has(turnId)) next.delete(turnId)
-      else next.add(turnId)
-      return next
-    })
-  }, [])
 
   if (loadingDetail && !detail) {
     return (
@@ -79,8 +69,6 @@ export function AgentSessionDetailPage() {
             <TurnBlock
               key={t.turn_id}
               turn={t}
-              expanded={expandedTurns.has(t.turn_id)}
-              onToggle={() => toggleTurn(t.turn_id)}
               onInspect={(id) => setSelectedTurnId(id)}
             />
           ))

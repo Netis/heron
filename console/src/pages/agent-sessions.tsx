@@ -29,7 +29,7 @@ function SessionRow({ item }: { item: SessionListItem }) {
           <div className="flex items-center gap-2">
             <AgentBadge agentKind={item.agent_kind} />
             <span className="font-mono text-xs text-muted-foreground">
-              {item.session_id.slice(0, 12)}…
+              {item.session_id}
             </span>
           </div>
           <div className="mt-1 truncate text-sm text-foreground">{preview}</div>
@@ -49,12 +49,10 @@ function SessionRow({ item }: { item: SessionListItem }) {
 }
 
 export function AgentSessionsPage() {
-  const [sourceFilter, setSourceFilter] = useState<string[]>([])
   const [agentKindFilter, setAgentKindFilter] = useState<string[]>([])
 
   const { data, isLoading, isError, error, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useAgentSessions({
-      sourceId: sourceFilter[0],
       agentKind: agentKindFilter.join(","),
     })
 
@@ -66,12 +64,6 @@ export function AgentSessionsPage() {
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2">
         <Filter className="size-3.5 text-muted-foreground" />
         <span className="text-xs text-muted-foreground">Filters:</span>
-        <FilterDropdown
-          label="Source"
-          options={[]}
-          selected={sourceFilter}
-          onChange={setSourceFilter}
-        />
         <FilterDropdown
           label="Agent kind"
           options={AGENT_KIND_OPTIONS}
