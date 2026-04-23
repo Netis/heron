@@ -82,7 +82,6 @@ fn anthropic_call(
         wire_api: wa::ANTHROPIC,
         model: "claude".into(),
         api_type: ApiType::Chat,
-        tenant_id: None,
         request_time: request_time_us,
         response_time: Some(request_time_us + 100_000),
         complete_time: Some(request_time_us + 200_000),

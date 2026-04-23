@@ -342,7 +342,6 @@ mod tests {
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".to_string(),
             api_type: ApiType::Chat,
-            tenant_id: None,
             request_time: 1_000_000,
             response_time: Some(1_100_000),
             complete_time: Some(2_000_000),

@@ -94,7 +94,6 @@ mod tests {
                 wire_api: wa::OPENAI_CHAT,
                 model: model.into(),
                 api_type: ApiType::Chat,
-                tenant_id: None,
                 request_time: ts_us,
                 response_time: Some(ts_us + 100_000),
                 complete_time: Some(ts_us + 200_000),

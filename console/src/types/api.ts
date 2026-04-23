@@ -100,7 +100,6 @@ export interface AgentTurnDetail {
   turn_id: string
   source_id: string
   session_id: string
-  tenant_id: string | null
   wire_api: string
   agent_kind: string
   start_time: number
@@ -172,7 +171,6 @@ export interface LlmCallDetail {
   ttft_ms: number | null
   e2e_latency_ms: number | null
   response_id: string | null
-  tenant_id: string | null
   client_ip: string
   client_port: number
   server_ip: string

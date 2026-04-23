@@ -226,7 +226,6 @@ mod tests {
             wire_api,
             model: "gpt".into(),
             api_type: ApiType::Chat,
-            tenant_id: None,
             request_time: 0,
             response_time: None,
             complete_time: None,

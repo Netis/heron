@@ -107,7 +107,6 @@ fn print_list(turns: &[TurnSummary]) {
 struct TurnDetail {
     turn_id: String,
     session_id: String,
-    tenant_id: Option<String>,
     wire_api: String,
     agent_kind: String,
     start_time: String,
@@ -131,7 +130,7 @@ struct TurnDetail {
 }
 
 fn load_detail(conn: &Connection, turn_id: &str) -> Option<TurnDetail> {
-    let sql = "SELECT turn_id, session_id, tenant_id, wire_api, agent_kind, \
+    let sql = "SELECT turn_id, session_id, wire_api, agent_kind, \
                CAST(start_time AS VARCHAR), CAST(end_time AS VARCHAR), \
                duration_ms, call_count, models_used, subagents_used, \
                total_input_tokens, total_output_tokens, total_cache_read_input_tokens, \
@@ -147,27 +146,26 @@ fn load_detail(conn: &Connection, turn_id: &str) -> Option<TurnDetail> {
         Ok(TurnDetail {
             turn_id: row.get(0)?,
             session_id: row.get(1)?,
-            tenant_id: row.get(2)?,
-            wire_api: row.get(3)?,
-            agent_kind: row.get(4)?,
-            start_time: row.get(5)?,
-            end_time: row.get(6)?,
-            duration_ms: row.get(7)?,
-            call_count: row.get(8)?,
-            models_used: row.get(9)?,
-            subagents_used: row.get(10)?,
-            total_input_tokens: row.get(11)?,
-            total_output_tokens: row.get(12)?,
-            total_cache_read_input_tokens: row.get(13)?,
-            total_cache_creation_input_tokens: row.get(14)?,
-            total_cost_usd: row.get(15)?,
-            status: row.get(16)?,
-            final_finish_reason: row.get(17)?,
-            user_input_preview: row.get(18)?,
-            user_call_id: row.get(19)?,
-            final_answer_preview: row.get(20)?,
-            final_call_id: row.get(21)?,
-            metadata: row.get(22)?,
+            wire_api: row.get(2)?,
+            agent_kind: row.get(3)?,
+            start_time: row.get(4)?,
+            end_time: row.get(5)?,
+            duration_ms: row.get(6)?,
+            call_count: row.get(7)?,
+            models_used: row.get(8)?,
+            subagents_used: row.get(9)?,
+            total_input_tokens: row.get(10)?,
+            total_output_tokens: row.get(11)?,
+            total_cache_read_input_tokens: row.get(12)?,
+            total_cache_creation_input_tokens: row.get(13)?,
+            total_cost_usd: row.get(14)?,
+            status: row.get(15)?,
+            final_finish_reason: row.get(16)?,
+            user_input_preview: row.get(17)?,
+            user_call_id: row.get(18)?,
+            final_answer_preview: row.get(19)?,
+            final_call_id: row.get(20)?,
+            metadata: row.get(21)?,
         })
     })
     .ok()
@@ -248,7 +246,6 @@ fn extract_with_profile(
         wire_api: wa::ANTHROPIC,
         model: String::new(),
         api_type: ApiType::Chat,
-        tenant_id: None,
         request_time: 0,
         response_time: None,
         complete_time: None,
@@ -285,7 +282,6 @@ fn print_detail(conn: &Connection, d: &TurnDetail, calls: &[ChildCall]) {
     println!("{}", "=".repeat(80));
     println!("  Turn ID:        {}", d.turn_id);
     println!("  Session ID:     {}", d.session_id);
-    println!("  Tenant:         {}", fmt_opt(d.tenant_id.as_deref()));
     println!("  Wire API:       {}", d.wire_api);
     println!("  Client Kind:    {}", d.agent_kind);
     println!("  Start:          {}", d.start_time);

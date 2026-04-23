@@ -55,7 +55,6 @@ pub struct LlmCall {
     pub wire_api: &'static str,
     pub model: String,
     pub api_type: ApiType,
-    pub tenant_id: Option<String>,
     pub request_time: i64,
     pub response_time: Option<i64>,
     pub complete_time: Option<i64>,
@@ -164,7 +163,6 @@ impl fmt::Display for LlmCallStart {
 pub struct RequestInfo {
     pub model: String,
     pub is_stream: bool,
-    pub tenant_id: Option<String>,
 }
 
 /// Information extracted from a wire-API-specific response (body or SSE).
@@ -228,7 +226,7 @@ pub trait WireApi: Send + Sync {
         body: &serde_json::Value,
     ) -> bool;
 
-    /// Extract model, stream flag, tenant from the request.
+    /// Extract model and stream flag from the request.
     fn extract_request(&self, req: &ts_protocol::model::HttpRequestData) -> RequestInfo;
 
     /// Extract fields from a non-streaming HTTP response body.
@@ -274,7 +272,6 @@ mod extension_tests {
             wire_api: wa::ANTHROPIC,
             model: "claude".into(),
             api_type: ApiType::Chat,
-            tenant_id: None,
             request_time: 0,
             response_time: None,
             complete_time: None,
@@ -322,7 +319,6 @@ mod extension_tests {
             wire_api: wa::ANTHROPIC,
             model: "claude-sonnet".into(),
             api_type: ApiType::Chat,
-            tenant_id: None,
             request_time: 0,
             response_time: None,
             complete_time: None,
@@ -347,7 +343,6 @@ mod extension_tests {
             request_headers: vec![],
             response_headers: vec![],
         };
-        assert!(call.tenant_id.is_none());
         assert!(call.finish_reason.is_none());
     }
 }

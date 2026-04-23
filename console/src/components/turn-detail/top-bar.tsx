@@ -20,8 +20,6 @@ export function TopBar({ turn, onClose }: Props) {
       <div className="flex items-center gap-3 text-xs text-muted-foreground">
         <span>{turn.agent_kind}</span>
         <span>·</span>
-        <span>{turn.tenant_id ?? "—"}</span>
-        <span>·</span>
         <span className="font-mono" title={turn.turn_id}>{truncateMid(turn.turn_id)}</span>
         <button
           onClick={() => setMetaOpen((o) => !o)}

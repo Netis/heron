@@ -42,7 +42,7 @@ Each record is aggregated into four dimension combinations:
 - `(*, *, server_ip)` — per-server across all models
 - `(*, *, *)` — global, for overview dashboards
 
-`*` means "all". Per-tenant analysis queries the `llm_calls` detail table directly for now.
+`*` means "all". Finer-grained dimensions can be added once real-world traffic validates the need.
 
 ## Time Windows
 

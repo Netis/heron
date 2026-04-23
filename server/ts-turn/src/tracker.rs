@@ -642,7 +642,6 @@ fn build_turn(profile: &dyn AgentProfile, calls: &[&AgentCall], status: TurnStat
     let session_id = first.agent.session_id.clone();
     let agent_kind = first.agent.agent_kind.to_string();
     let wire_api = first.call.wire_api.to_string();
-    let tenant_id = first.call.tenant_id.clone();
     let turn_id = Uuid::now_v7().to_string();
 
     let start_time_us = first.call.request_time;
@@ -735,7 +734,6 @@ fn build_turn(profile: &dyn AgentProfile, calls: &[&AgentCall], status: TurnStat
         source_id,
         turn_id,
         session_id,
-        tenant_id,
         wire_api,
         agent_kind,
         start_time_us,
@@ -850,7 +848,6 @@ mod tests {
             wire_api: wa::ANTHROPIC,
             model: "claude".into(),
             api_type: ApiType::Chat,
-            tenant_id: None,
             request_time: request_time_us,
             response_time: Some(request_time_us + 100_000),
             complete_time: Some(request_time_us + 200_000),
@@ -899,7 +896,6 @@ mod tests {
             wire_api: wa::OPENAI_RESPONSES,
             model: "gpt-5.4".into(),
             api_type: ApiType::Chat,
-            tenant_id: None,
             request_time: 1_000_000,
             response_time: Some(1_500_000),
             complete_time: Some(2_000_000),

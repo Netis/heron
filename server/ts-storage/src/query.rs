@@ -199,7 +199,6 @@ pub struct TurnDetail {
     pub turn_id: String,
     pub source_id: String,
     pub session_id: String,
-    pub tenant_id: Option<String>,
     pub wire_api: String,
     pub agent_kind: String,
     pub start_time: i64,
@@ -287,6 +286,149 @@ pub struct HttpExchangeDetail {
     pub response_complete_time: Option<i64>,
 }
 
+/// Cursor for paginating the session list, sorted by last-turn-in-window DESC.
+///
+/// Tuple order matches the SQL `HAVING (MAX(end_time), source_id, session_id) < (?,?,?)`
+/// comparison used on the server side. Encoded/decoded as a base64 JSON blob at
+/// the API boundary; internally we carry the raw tuple.
+#[derive(Debug, Clone)]
+pub struct SessionListCursor {
+    /// Matches the `last_turn_at_in_window` of the previous page's last row,
+    /// in the same unit as `SessionListItem` timestamps (milliseconds since epoch).
+    pub last_turn_at_ms: i64,
+    pub source_id: String,
+    pub session_id: String,
+}
+
+/// List query for `agent_sessions` (view over `agent_turns`).
+///
+/// Semantics: a session is **included** when at least one of its turns has
+/// `end_time` inside `time_range` (turn-in-window inclusion). Aggregated
+/// counters / timestamps on each returned row cover the **entire lifetime** of
+/// the session, not just the window — see `SessionListItem` docs.
+#[derive(Debug, Clone)]
+pub struct SessionListQuery {
+    pub time_range: TimeRange,
+    /// Optional source filter. `None` = all sources. Same-session turns share
+    /// a `source_id` (TurnTracker partition key), so pushing this into the
+    /// WHERE clause is safe and does not truncate lifetime aggregates.
+    pub source_id: Option<String>,
+    /// Optional agent_kind filter. Also session-stable, so WHERE is safe.
+    pub agent_kind: Option<String>,
+    pub cursor: Option<SessionListCursor>,
+    pub page_size: u32,
+}
+
+/// One row of the session list. Aggregates span the session's **full**
+/// history (not just `time_range`); `last_turn_at_in_window` is what the
+/// cursor and ORDER BY actually key off.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionListItem {
+    pub source_id: String,
+    pub session_id: String,
+    pub agent_kind: String,
+    /// ms since epoch. MAX(end_time) across **windowed** turns — the sort key.
+    pub last_turn_at_in_window: i64,
+    /// ms since epoch. MIN(start_time) across **all** turns of the session.
+    pub first_turn_at: i64,
+    /// ms since epoch. MAX(end_time) across **all** turns of the session.
+    pub last_turn_at: i64,
+    pub turn_count: u64,
+    pub call_count: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_read_input_tokens: u64,
+    pub total_cache_creation_input_tokens: u64,
+    pub total_cost_usd: Option<f64>,
+    /// `user_input_preview` of the earliest turn (min start_time). Captures
+    /// the opening topic of the session.
+    pub first_user_input_preview: Option<String>,
+    /// `user_call_id` of that earliest turn — FE can fetch the full body.
+    pub first_user_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionsPage {
+    pub items: Vec<SessionListItem>,
+    /// Opaque cursor for the next page. `None` when fewer than `page_size`
+    /// rows were returned (i.e. the current page is the last one).
+    pub next_cursor: Option<String>,
+}
+
+/// Detail view for a single session. Identical field set to `SessionListItem`
+/// minus the window-dependent `last_turn_at_in_window` — the detail page
+/// has no time window.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionDetail {
+    pub source_id: String,
+    pub session_id: String,
+    pub agent_kind: String,
+    pub first_turn_at: i64,
+    pub last_turn_at: i64,
+    pub turn_count: u64,
+    pub call_count: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_read_input_tokens: u64,
+    pub total_cache_creation_input_tokens: u64,
+    pub total_cost_usd: Option<f64>,
+    pub first_user_input_preview: Option<String>,
+    pub first_user_call_id: Option<String>,
+}
+
+/// Hex-encoded JSON blob. Opaque to the client; `decode_session_cursor` is the
+/// only supported reader. Hex keeps us URL-safe without pulling in base64.
+pub fn encode_session_cursor(c: &SessionListCursor) -> String {
+    let json = serde_json::json!({
+        "t": c.last_turn_at_ms,
+        "s": c.source_id,
+        "k": c.session_id,
+    })
+    .to_string();
+    let mut out = String::with_capacity(json.len() * 2);
+    for b in json.as_bytes() {
+        use std::fmt::Write;
+        let _ = write!(out, "{:02x}", b);
+    }
+    out
+}
+
+pub fn decode_session_cursor(s: &str) -> Option<SessionListCursor> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for i in (0..bytes.len()).step_by(2) {
+        let hi = hex_digit(bytes[i])?;
+        let lo = hex_digit(bytes[i + 1])?;
+        out.push((hi << 4) | lo);
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out).ok()?;
+    Some(SessionListCursor {
+        last_turn_at_ms: v.get("t")?.as_i64()?,
+        source_id: v.get("s")?.as_str()?.to_string(),
+        session_id: v.get("k")?.as_str()?.to_string(),
+    })
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionTurnsQuery {
+    pub source_id: String,
+    pub session_id: String,
+    pub page: u32,
+    pub page_size: u32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CallDetail {
     pub id: String,
@@ -307,7 +449,6 @@ pub struct CallDetail {
     pub ttft_ms: Option<f64>,
     pub e2e_latency_ms: Option<f64>,
     pub response_id: Option<String>,
-    pub tenant_id: Option<String>,
     pub client_ip: String,
     pub client_port: u16,
     pub server_ip: String,

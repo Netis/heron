@@ -58,6 +58,15 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
             "/api/agent-turns/{id}/calls",
             get(routes::agent_turns::calls),
         )
+        .route("/api/agent-sessions", get(routes::agent_sessions::list))
+        .route(
+            "/api/agent-sessions/{source_id}/{session_id}",
+            get(routes::agent_sessions::detail),
+        )
+        .route(
+            "/api/agent-sessions/{source_id}/{session_id}/turns",
+            get(routes::agent_sessions::turns),
+        )
         .layer(CorsLayer::permissive())
         .with_state(storage)
 }

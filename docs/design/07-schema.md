@@ -20,7 +20,6 @@ llm_calls
 │   └── id: string (UUID v7, time-ordered)
 │
 ├── Association Fields
-│   ├── tenant_id: string?           # Hashed API key prefix
 │   ├── client_ip: string
 │   ├── client_port: u16
 │   └── server_port: u16
@@ -66,7 +65,6 @@ llm_calls
 
 Indexes:
   - request_time
-  - tenant_id, request_time
   - model, request_time
   - status_code, request_time
 ```
@@ -159,7 +157,7 @@ Indexes:
   - Averages → `SUM(*_sum) / SUM(*_count)` (exact).
   - `active_calls_max` → `MAX()`.
   - Percentiles → `SUM(*_p* * *_count) / SUM(*_count)` (approximation — weighting by the matching `*_count` keeps slow-response rows with `call_count=0` from collapsing the result to zero, but it is not equivalent to merging the underlying t-digests. Serialized t-digest bytes is the planned long-term fix.)
-- **Aggregation levels**: finest `(wire_api, model, server_ip)` for drilldown, global `(*, *, *)` for overview. Additional dimensions (tenant_id, etc.) will be added as they are validated with real traffic.
+- **Aggregation levels**: finest `(wire_api, model, server_ip)` for drilldown, global `(*, *, *)` for overview. Additional dimensions will be added as they are validated with real traffic.
 - **Other dimension analysis**: query `llm_calls` detail table with GROUP BY for dimensions not yet in pre-aggregation.
 - **`*_sum / *_count` instead of `*_avg`**: averages are not additive across rows; storing the exact sum and count lets the query layer SUM over any set of rows (multi-source, multi-drain-slice) and divide to get a correct average. The per-row percentiles (`*_p*`) are t-digest estimates over that row's slice only — single-row views can read them directly.
 - **Multi-granularity**: Fine-grained (10s) for realtime dashboards, coarse (1h) for historical trends. Each granularity has its own drain cadence equal to its window size, so steady-state row count per granularity matches the number of windows covered.

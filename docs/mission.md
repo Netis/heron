@@ -40,7 +40,6 @@ TokenScope is designed to answer questions at every layer of the stack. A select
 
 **Infra ops and provider-side optimization** — Platform SRE, LLM provider:
 - Is our inference cluster healthy?
-- What's our prompt-cache hit rate per tenant?
 - Is our prefill-decode split rational for this workload mix?
 - Which clients drive our burst traffic?
 

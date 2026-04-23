@@ -431,7 +431,7 @@ The aggregated `AgentTurn` (see `ts-turn/src/model.rs`) is built at finalize
 time from the sorted partition:
 
 - `turn_id: String` (UUIDv7), `session_id`, `source_id`, `agent_kind`,
-  `wire_api`, `tenant_id`
+  `wire_api`
 - `start_time_us`, `end_time_us`, `duration_ms`, `call_count`, `call_ids`
 - `models_used`, `subagents_used`
 - `total_input_tokens`, `total_output_tokens`,

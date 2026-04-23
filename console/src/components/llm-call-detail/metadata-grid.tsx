@@ -14,7 +14,6 @@ export function MetadataGrid({ detail }: Props) {
     ["Server", `${detail.server_ip}:${detail.server_port}`],
     ["Stream", detail.is_stream ? "Yes" : "No"],
     ["API Type", detail.api_type],
-    ["Tenant", detail.tenant_id ?? "—"],
   ]
 
   return (

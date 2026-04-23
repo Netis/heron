@@ -13,7 +13,6 @@ export function MetadataPopover({ turn, onClose }: Props) {
     ["Source", turn.source_id || "—"],
     ["Session ID", turn.session_id],
     ["Agent", turn.agent_kind],
-    ["Tenant", turn.tenant_id ?? "—"],
     ["Wire API", turn.wire_api],
     ["Start", formatDateTimeMs(turn.start_time)],
     ["End", formatDateTimeMs(turn.end_time)],

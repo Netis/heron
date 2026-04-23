@@ -178,8 +178,9 @@ mod tests {
     use crate::query::{
         CallDetail, CallsPage, CallsQuery, HttpExchangeDetail, HttpExchangesPage,
         HttpExchangesQuery, MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery,
-        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, TurnCallItem, TurnDetail,
-        TurnsPage, TurnsQuery,
+        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, SessionDetail,
+        SessionListQuery, SessionTurnsQuery, SessionsPage, TurnCallItem, TurnDetail, TurnsPage,
+        TurnsQuery,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -276,6 +277,25 @@ mod tests {
         }
         async fn query_turn_calls(&self, _turn_id: &str) -> Result<Vec<TurnCallItem>> {
             Ok(vec![])
+        }
+        async fn query_sessions(&self, _query: &SessionListQuery) -> Result<SessionsPage> {
+            Ok(SessionsPage {
+                items: vec![],
+                next_cursor: None,
+            })
+        }
+        async fn query_session_by_id(
+            &self,
+            _source_id: &str,
+            _session_id: &str,
+        ) -> Result<Option<SessionDetail>> {
+            Ok(None)
+        }
+        async fn query_session_turns(&self, _query: &SessionTurnsQuery) -> Result<TurnsPage> {
+            Ok(TurnsPage {
+                total: 0,
+                items: vec![],
+            })
         }
         async fn query_distinct_wire_apis(&self) -> Result<Vec<String>> {
             Ok(vec![])
@@ -406,7 +426,6 @@ mod tests {
             wire_api: wa::OPENAI_CHAT,
             model: "m".into(),
             api_type: ApiType::Chat,
-            tenant_id: None,
             request_time: 0,
             response_time: None,
             complete_time: None,
@@ -438,7 +457,6 @@ mod tests {
             source_id: String::new(),
             turn_id: format!("t-{i}"),
             session_id: "s".into(),
-            tenant_id: None,
             wire_api: ts_llm::wire_apis::OPENAI_CHAT.into(),
             agent_kind: "x".into(),
             start_time_us: 0,

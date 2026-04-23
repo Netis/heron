@@ -51,6 +51,25 @@ pub trait StorageBackend: Send + Sync {
     async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage>;
     async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>>;
     async fn query_turn_calls(&self, turn_id: &str) -> Result<Vec<TurnCallItem>>;
+
+    /// Paginated session list (view over `agent_turns`; no materialised
+    /// session table). A session is included when at least one of its turns
+    /// has `end_time` inside `query.time_range`; returned aggregates cover the
+    /// session's full lifetime (not just the window). Sorted by
+    /// `last_turn_at_in_window DESC` with cursor pagination.
+    async fn query_sessions(&self, query: &SessionListQuery) -> Result<SessionsPage>;
+
+    /// Full-lifetime aggregate for a single session. Returns `None` when no
+    /// turns exist for `(source_id, session_id)`.
+    async fn query_session_by_id(
+        &self,
+        source_id: &str,
+        session_id: &str,
+    ) -> Result<Option<SessionDetail>>;
+
+    /// Paginated list of the session's turns, ordered by start_time DESC. Not
+    /// time-windowed — the session detail page shows the full history.
+    async fn query_session_turns(&self, query: &SessionTurnsQuery) -> Result<TurnsPage>;
     async fn query_distinct_wire_apis(&self) -> Result<Vec<String>>;
     async fn query_distinct_models(&self) -> Result<Vec<String>>;
     async fn query_distinct_server_ips(&self) -> Result<Vec<String>>;

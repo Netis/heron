@@ -157,7 +157,6 @@ const CREATE_LLM_CALLS: &str = "
 CREATE TABLE IF NOT EXISTS llm_calls (
     id                VARCHAR NOT NULL PRIMARY KEY,
     source_id         VARCHAR NOT NULL DEFAULT '',
-    tenant_id         VARCHAR,
     client_ip         VARCHAR NOT NULL,
     client_port       USMALLINT NOT NULL,
     server_ip         VARCHAR NOT NULL,
@@ -239,7 +238,6 @@ CREATE TABLE IF NOT EXISTS agent_turns (
     turn_id                   VARCHAR NOT NULL PRIMARY KEY,
     source_id                 VARCHAR NOT NULL DEFAULT '',
     session_id                VARCHAR NOT NULL,
-    tenant_id                 VARCHAR,
     wire_api                  VARCHAR NOT NULL,
     agent_kind               VARCHAR NOT NULL,
     start_time                TIMESTAMP NOT NULL,
@@ -375,7 +373,6 @@ fn extract_full_text(
         wire_api,
         model: String::new(),
         api_type: ApiType::Chat,
-        tenant_id: None,
         request_time: 0,
         response_time: None,
         complete_time: None,
@@ -640,7 +637,6 @@ fn build_dimension_where_for_group(filter: &DimensionFilter, group_by: &str) -> 
 struct PreparedCall {
     id: String,
     source_id: String,
-    tenant_id: Option<String>,
     client_ip: String,
     client_port: u16,
     server_ip: String,
@@ -673,7 +669,6 @@ fn prepare_call(call: LlmCall) -> PreparedCall {
     PreparedCall {
         id: call.id,
         source_id: call.source_id,
-        tenant_id: call.tenant_id,
         client_ip: call.client_ip.to_string(),
         client_port: call.client_port,
         server_ip: call.server_ip.to_string(),
@@ -772,7 +767,6 @@ struct PreparedTurn {
     turn_id: String,
     source_id: String,
     session_id: String,
-    tenant_id: Option<String>,
     wire_api: String,
     agent_kind: String,
     start_time: Value,
@@ -801,7 +795,6 @@ fn prepare_turn(t: AgentTurn) -> PreparedTurn {
         turn_id: t.turn_id,
         source_id: t.source_id,
         session_id: t.session_id,
-        tenant_id: t.tenant_id,
         wire_api: t.wire_api,
         agent_kind: t.agent_kind,
         start_time: Value::Timestamp(TimeUnit::Microsecond, t.start_time_us),
@@ -894,7 +887,6 @@ impl StorageBackend for DuckDbBackend {
                     .append_row(duckdb::params![
                         p.id,
                         p.source_id,
-                        p.tenant_id,
                         p.client_ip,
                         p.client_port,
                         p.server_ip,
@@ -1270,7 +1262,6 @@ impl StorageBackend for DuckDbBackend {
                         p.turn_id,
                         p.source_id,
                         p.session_id,
-                        p.tenant_id,
                         p.wire_api,
                         p.agent_kind,
                         p.start_time,
@@ -1797,7 +1788,7 @@ impl StorageBackend for DuckDbBackend {
                     status_code, finish_reason,
                     input_tokens, output_tokens, total_tokens,
                     ttft_ms, e2e_latency_ms,
-                    response_id, tenant_id,
+                    response_id,
                     client_ip, client_port, server_ip, server_port,
                     request_body, response_body,
                     request_headers, response_headers
@@ -1830,15 +1821,14 @@ impl StorageBackend for DuckDbBackend {
                     ttft_ms: row.get(15)?,
                     e2e_latency_ms: row.get(16)?,
                     response_id: row.get(17)?,
-                    tenant_id: row.get(18)?,
-                    client_ip: row.get(19)?,
-                    client_port: row.get(20)?,
-                    server_ip: row.get(21)?,
-                    server_port: row.get(22)?,
-                    request_body: row.get(23)?,
-                    response_body: row.get(24)?,
-                    request_headers: row.get(25)?,
-                    response_headers: row.get(26)?,
+                    client_ip: row.get(18)?,
+                    client_port: row.get(19)?,
+                    server_ip: row.get(20)?,
+                    server_port: row.get(21)?,
+                    request_body: row.get(22)?,
+                    response_body: row.get(23)?,
+                    request_headers: row.get(24)?,
+                    response_headers: row.get(25)?,
                 })
             });
 
@@ -2032,7 +2022,7 @@ impl StorageBackend for DuckDbBackend {
         tokio::task::spawn_blocking(move || {
             let sql = "
                 SELECT
-                    turn_id, source_id, session_id, tenant_id, wire_api, agent_kind,
+                    turn_id, source_id, session_id, wire_api, agent_kind,
                     epoch_ms(start_time), epoch_ms(end_time), duration_ms, call_count,
                     models_used, subagents_used,
                     total_input_tokens, total_output_tokens,
@@ -2055,28 +2045,27 @@ impl StorageBackend for DuckDbBackend {
                     row.get::<_, String>(0)?,          // turn_id
                     row.get::<_, String>(1)?,          // source_id
                     row.get::<_, String>(2)?,          // session_id
-                    row.get::<_, Option<String>>(3)?,  // tenant_id
-                    row.get::<_, String>(4)?,          // wire_api
-                    row.get::<_, String>(5)?,          // agent_kind
-                    row.get::<_, i64>(6)?,             // start_time
-                    row.get::<_, i64>(7)?,             // end_time
-                    row.get::<_, u64>(8)?,             // duration_ms
-                    row.get::<_, u32>(9)?,             // call_count
-                    row.get::<_, Option<String>>(10)?, // models_used
-                    row.get::<_, Option<String>>(11)?, // subagents_used
-                    row.get::<_, u64>(12)?,            // total_input_tokens
-                    row.get::<_, u64>(13)?,            // total_output_tokens
-                    row.get::<_, u64>(14)?,            // total_cache_read_input_tokens
-                    row.get::<_, u64>(15)?,            // total_cache_creation_input_tokens
-                    row.get::<_, Option<f64>>(16)?,    // total_cost_usd
-                    row.get::<_, String>(17)?,         // status
-                    row.get::<_, Option<String>>(18)?, // final_finish_reason
-                    row.get::<_, Option<String>>(19)?, // user_input_preview
-                    row.get::<_, Option<String>>(20)?, // user_call_id
-                    row.get::<_, Option<String>>(21)?, // final_answer_preview
-                    row.get::<_, Option<String>>(22)?, // final_call_id
-                    row.get::<_, Option<String>>(23)?, // call_ids (JSON)
-                    row.get::<_, Option<String>>(24)?, // metadata
+                    row.get::<_, String>(3)?,          // wire_api
+                    row.get::<_, String>(4)?,          // agent_kind
+                    row.get::<_, i64>(5)?,             // start_time
+                    row.get::<_, i64>(6)?,             // end_time
+                    row.get::<_, u64>(7)?,             // duration_ms
+                    row.get::<_, u32>(8)?,             // call_count
+                    row.get::<_, Option<String>>(9)?,  // models_used
+                    row.get::<_, Option<String>>(10)?, // subagents_used
+                    row.get::<_, u64>(11)?,            // total_input_tokens
+                    row.get::<_, u64>(12)?,            // total_output_tokens
+                    row.get::<_, u64>(13)?,            // total_cache_read_input_tokens
+                    row.get::<_, u64>(14)?,            // total_cache_creation_input_tokens
+                    row.get::<_, Option<f64>>(15)?,    // total_cost_usd
+                    row.get::<_, String>(16)?,         // status
+                    row.get::<_, Option<String>>(17)?, // final_finish_reason
+                    row.get::<_, Option<String>>(18)?, // user_input_preview
+                    row.get::<_, Option<String>>(19)?, // user_call_id
+                    row.get::<_, Option<String>>(20)?, // final_answer_preview
+                    row.get::<_, Option<String>>(21)?, // final_call_id
+                    row.get::<_, Option<String>>(22)?, // call_ids (JSON)
+                    row.get::<_, Option<String>>(23)?, // metadata
                 ))
             });
 
@@ -2094,7 +2083,6 @@ impl StorageBackend for DuckDbBackend {
                 turn_id,
                 source_id,
                 session_id,
-                tenant_id,
                 wire_api,
                 agent_kind,
                 start_time,
@@ -2153,7 +2141,6 @@ impl StorageBackend for DuckDbBackend {
                 turn_id,
                 source_id,
                 session_id,
-                tenant_id,
                 wire_api,
                 agent_kind,
                 start_time,
@@ -2324,6 +2311,444 @@ impl StorageBackend for DuckDbBackend {
             }
 
             Ok(items)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    async fn query_sessions(&self, query: &SessionListQuery) -> Result<SessionsPage> {
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+            let page_size = query.page_size.max(1);
+
+            // Step 1 WHERE: time window + optional source/agent_kind. Both
+            // optional fields are session-stable (same session -> same value),
+            // so pushing them into WHERE does not truncate the lifetime
+            // aggregates computed in Step 2.
+            let mut where_parts: Vec<String> = vec![
+                "end_time >= ?".to_string(),
+                "end_time < ?".to_string(),
+            ];
+            if let Some(sid) = &query.source_id {
+                where_parts.push(format!("source_id = '{}'", sid.replace('\'', "''")));
+            }
+            if let Some(ak) = &query.agent_kind {
+                where_parts.push(format!("agent_kind = '{}'", ak.replace('\'', "''")));
+            }
+            let where_sql = where_parts.join(" AND ");
+
+            // Cursor HAVING clause. Tuple comparison lets us sort by
+            // (MAX(end_time), source_id, session_id) DESC uniformly.
+            let (having_sql, cursor_ts) = if let Some(c) = &query.cursor {
+                let ts = us_to_timestamp(c.last_turn_at_ms.saturating_mul(1000));
+                let sid = c.source_id.replace('\'', "''");
+                let sess = c.session_id.replace('\'', "''");
+                (
+                    format!(
+                        " HAVING (MAX(end_time), source_id, session_id) < (CAST(? AS TIMESTAMP), '{sid}', '{sess}')"
+                    ),
+                    Some(ts),
+                )
+            } else {
+                (String::new(), None)
+            };
+
+            // Fetch one extra row to detect the next page without a count query.
+            let limit = (page_size as u64) + 1;
+
+            let step1_sql = format!(
+                "SELECT source_id, session_id, epoch_ms(MAX(end_time)) AS last_ms \
+                 FROM agent_turns \
+                 WHERE {where_sql} \
+                 GROUP BY source_id, session_id{having_sql} \
+                 ORDER BY MAX(end_time) DESC, source_id DESC, session_id DESC \
+                 LIMIT {limit}"
+            );
+
+            let mut stmt = conn.prepare(&step1_sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare sessions step1: {e}"))
+            })?;
+
+            let mut key_rows: Vec<(String, String, i64)> = Vec::new();
+            {
+                let mut rows = match &cursor_ts {
+                    Some(cts) => stmt.query(duckdb::params![start_ts, end_ts, cts]),
+                    None => stmt.query(duckdb::params![start_ts, end_ts]),
+                }
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute sessions step1: {e}"))
+                })?;
+
+                while let Some(row) = rows
+                    .next()
+                    .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+                {
+                    let src: String = row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let sess: String = row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let ms: i64 = row
+                        .get(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    key_rows.push((src, sess, ms));
+                }
+            }
+
+            let has_more = key_rows.len() > page_size as usize;
+            if has_more {
+                key_rows.truncate(page_size as usize);
+            }
+            if key_rows.is_empty() {
+                return Ok(SessionsPage {
+                    items: vec![],
+                    next_cursor: None,
+                });
+            }
+
+            // Step 2: full-lifetime aggregate + first-turn preview via
+            // ROW_NUMBER(). Pair list is inlined because DuckDB's `IN ((?, ?))`
+            // with positional params gets awkward and the ids are trusted
+            // internal strings already vetted by Step 1.
+            let pairs_sql = key_rows
+                .iter()
+                .map(|(s, k, _)| {
+                    format!(
+                        "('{}', '{}')",
+                        s.replace('\'', "''"),
+                        k.replace('\'', "''")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let step2_sql = format!(
+                "SELECT source_id, session_id, \
+                        epoch_ms(MIN(start_time)) AS first_ms, \
+                        epoch_ms(MAX(end_time))   AS last_ms, \
+                        COUNT(*) AS turn_count, \
+                        SUM(call_count) AS call_count, \
+                        SUM(total_input_tokens) AS total_in, \
+                        SUM(total_output_tokens) AS total_out, \
+                        SUM(total_cache_read_input_tokens) AS total_cr, \
+                        SUM(total_cache_creation_input_tokens) AS total_cc, \
+                        SUM(total_cost_usd) AS total_cost, \
+                        MIN(agent_kind) AS agent_kind, \
+                        MIN(CASE WHEN rn = 1 THEN user_input_preview END) AS first_input, \
+                        MIN(CASE WHEN rn = 1 THEN user_call_id      END) AS first_call_id \
+                 FROM ( \
+                    SELECT source_id, session_id, start_time, end_time, call_count, \
+                           total_input_tokens, total_output_tokens, \
+                           total_cache_read_input_tokens, total_cache_creation_input_tokens, \
+                           total_cost_usd, agent_kind, user_input_preview, user_call_id, \
+                           ROW_NUMBER() OVER (PARTITION BY source_id, session_id ORDER BY start_time) AS rn \
+                    FROM agent_turns \
+                    WHERE (source_id, session_id) IN ({pairs_sql}) \
+                 ) t \
+                 GROUP BY source_id, session_id"
+            );
+
+            let mut stmt2 = conn.prepare(&step2_sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare sessions step2: {e}"))
+            })?;
+
+            use std::collections::HashMap;
+            let mut agg: HashMap<(String, String), SessionListItem> = HashMap::new();
+            {
+                let mut rows = stmt2.query([]).map_err(|e| {
+                    AppError::Storage(format!("failed to execute sessions step2: {e}"))
+                })?;
+                while let Some(row) = rows
+                    .next()
+                    .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+                {
+                    let src: String = row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let sess: String = row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let item = SessionListItem {
+                        source_id: src.clone(),
+                        session_id: sess.clone(),
+                        last_turn_at_in_window: 0,
+                        first_turn_at: row
+                            .get(2)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        last_turn_at: row
+                            .get(3)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        turn_count: row
+                            .get(4)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        call_count: row
+                            .get(5)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        total_input_tokens: row
+                            .get(6)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        total_output_tokens: row
+                            .get(7)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        total_cache_read_input_tokens: row
+                            .get(8)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        total_cache_creation_input_tokens: row
+                            .get(9)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        total_cost_usd: row
+                            .get::<_, Option<f64>>(10)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        agent_kind: row
+                            .get(11)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        first_user_input_preview: row
+                            .get::<_, Option<String>>(12)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        first_user_call_id: row
+                            .get::<_, Option<String>>(13)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    };
+                    agg.insert((src, sess), item);
+                }
+            }
+
+            // Preserve Step 1's ordering and inject last_turn_at_in_window.
+            let mut items: Vec<SessionListItem> = Vec::with_capacity(key_rows.len());
+            for (src, sess, in_window_ms) in &key_rows {
+                if let Some(mut it) = agg.remove(&(src.clone(), sess.clone())) {
+                    it.last_turn_at_in_window = *in_window_ms;
+                    items.push(it);
+                }
+            }
+
+            let next_cursor = if has_more {
+                items.last().map(|it| {
+                    encode_session_cursor(&SessionListCursor {
+                        last_turn_at_ms: it.last_turn_at_in_window,
+                        source_id: it.source_id.clone(),
+                        session_id: it.session_id.clone(),
+                    })
+                })
+            } else {
+                None
+            };
+
+            Ok(SessionsPage { items, next_cursor })
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    async fn query_session_by_id(
+        &self,
+        source_id: &str,
+        session_id: &str,
+    ) -> Result<Option<SessionDetail>> {
+        let conn = self.read_pool.acquire().await?;
+        let source_id = source_id.to_string();
+        let session_id = session_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let sql = "SELECT source_id, session_id, \
+                              epoch_ms(MIN(start_time)) AS first_ms, \
+                              epoch_ms(MAX(end_time))   AS last_ms, \
+                              COUNT(*) AS turn_count, \
+                              SUM(call_count) AS call_count, \
+                              SUM(total_input_tokens) AS total_in, \
+                              SUM(total_output_tokens) AS total_out, \
+                              SUM(total_cache_read_input_tokens) AS total_cr, \
+                              SUM(total_cache_creation_input_tokens) AS total_cc, \
+                              SUM(total_cost_usd) AS total_cost, \
+                              MIN(agent_kind) AS agent_kind, \
+                              MIN(CASE WHEN rn = 1 THEN user_input_preview END) AS first_input, \
+                              MIN(CASE WHEN rn = 1 THEN user_call_id      END) AS first_call_id \
+                       FROM ( \
+                          SELECT source_id, session_id, start_time, end_time, call_count, \
+                                 total_input_tokens, total_output_tokens, \
+                                 total_cache_read_input_tokens, total_cache_creation_input_tokens, \
+                                 total_cost_usd, agent_kind, user_input_preview, user_call_id, \
+                                 ROW_NUMBER() OVER (PARTITION BY source_id, session_id ORDER BY start_time) AS rn \
+                          FROM agent_turns \
+                          WHERE source_id = ? AND session_id = ? \
+                       ) t \
+                       GROUP BY source_id, session_id";
+
+            let mut stmt = conn.prepare(sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare session_by_id: {e}"))
+            })?;
+            let mut rows = stmt
+                .query(duckdb::params![source_id, session_id])
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute session_by_id: {e}"))
+                })?;
+
+            let Some(row) = rows
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            else {
+                return Ok(None);
+            };
+            // GROUP BY always emits a row when the subquery has at least one
+            // match; when the session has zero turns the subquery is empty and
+            // the outer aggregate emits nothing -> handled above.
+            Ok(Some(SessionDetail {
+                source_id: row
+                    .get(0)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                session_id: row
+                    .get(1)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                first_turn_at: row
+                    .get(2)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                last_turn_at: row
+                    .get(3)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                turn_count: row
+                    .get(4)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                call_count: row
+                    .get(5)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                total_input_tokens: row
+                    .get(6)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                total_output_tokens: row
+                    .get(7)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                total_cache_read_input_tokens: row
+                    .get(8)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                total_cache_creation_input_tokens: row
+                    .get(9)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                total_cost_usd: row
+                    .get::<_, Option<f64>>(10)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                agent_kind: row
+                    .get(11)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                first_user_input_preview: row
+                    .get::<_, Option<String>>(12)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                first_user_call_id: row
+                    .get::<_, Option<String>>(13)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            }))
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    async fn query_session_turns(&self, query: &SessionTurnsQuery) -> Result<TurnsPage> {
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let count_sql = "SELECT COUNT(*) FROM agent_turns \
+                             WHERE source_id = ? AND session_id = ?";
+            let mut count_stmt = conn.prepare(count_sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare session_turns count: {e}"))
+            })?;
+            let total: u64 = count_stmt
+                .query_row(duckdb::params![query.source_id, query.session_id], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute session_turns count: {e}"))
+                })?;
+
+            let page_size = query.page_size.max(1);
+            let offset = (query.page.saturating_sub(1)) as u64 * page_size as u64;
+
+            let sql = format!(
+                "SELECT turn_id, source_id, session_id, \
+                        epoch_ms(start_time), epoch_ms(end_time), duration_ms, \
+                        wire_api, agent_kind, models_used, call_count, \
+                        total_input_tokens, total_output_tokens, status, \
+                        final_finish_reason, user_input_preview, final_answer_preview \
+                 FROM agent_turns \
+                 WHERE source_id = ? AND session_id = ? \
+                 ORDER BY start_time DESC \
+                 LIMIT {page_size} OFFSET {offset}"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare session_turns items: {e}"))
+            })?;
+            let mut rows = stmt
+                .query(duckdb::params![query.source_id, query.session_id])
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute session_turns items: {e}"))
+                })?;
+
+            let mut items = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                let models_used_raw: Option<String> = row
+                    .get(8)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let models_used = parse_json_string_list(models_used_raw.as_deref());
+                let primary_model = models_used.first().cloned();
+                items.push(TurnListItem {
+                    turn_id: row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    source_id: row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    session_id: row
+                        .get(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    start_time: row
+                        .get(3)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    end_time: row
+                        .get(4)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    duration_ms: row
+                        .get(5)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    wire_api: row
+                        .get(6)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    agent_kind: row
+                        .get(7)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    primary_model,
+                    models_used,
+                    call_count: row
+                        .get(9)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_input_tokens: row
+                        .get(10)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_output_tokens: row
+                        .get(11)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    status: row
+                        .get(12)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    final_finish_reason: row
+                        .get::<_, Option<String>>(13)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    user_input_preview: row
+                        .get::<_, Option<String>>(14)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    final_answer_preview: row
+                        .get::<_, Option<String>>(15)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                });
+            }
+
+            Ok(TurnsPage { total, items })
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
@@ -2627,7 +3052,6 @@ mod tests {
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".to_string(),
             api_type: ApiType::Chat,
-            tenant_id: Some("tenant-abc".to_string()),
             request_time: 1_700_000_000_000_000,
             response_time: Some(1_700_000_000_500_000),
             complete_time: Some(1_700_000_001_000_000),
@@ -3445,7 +3869,6 @@ mod tests {
         assert!(detail.response_body.is_some());
         assert!(detail.request_headers.is_some());
         assert!(detail.response_headers.is_some());
-        assert_eq!(detail.tenant_id.as_deref(), Some("tenant-abc"));
 
         // Query nonexistent id
         let not_found = backend.query_call_by_id("does-not-exist").await.unwrap();
@@ -3475,8 +3898,7 @@ mod turn_tests {
             source_id: String::new(),
             turn_id: turn_id.into(),
             session_id: session_id.into(),
-            tenant_id: None,
-            wire_api: wire_api.into(),
+                wire_api: wire_api.into(),
             agent_kind: "claude-cli".into(),
             start_time_us: start_us,
             end_time_us: start_us + (duration_ms as i64) * 1000,
@@ -3507,8 +3929,7 @@ mod turn_tests {
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
-            tenant_id: None,
-            request_time: request_time_us,
+                request_time: request_time_us,
             response_time: Some(request_time_us + 100_000),
             complete_time: Some(request_time_us + 500_000),
             request_path: "/v1/chat/completions".into(),
@@ -3862,6 +4283,166 @@ mod turn_tests {
         let empty = backend.query_turn_calls("no-such-turn").await.unwrap();
         assert!(empty.is_empty());
     }
+
+    fn sample_turn_for_session(
+        turn_id: &str,
+        session_id: &str,
+        start_us: i64,
+        user_input: Option<&str>,
+    ) -> AgentTurn {
+        let mut t = sample_turn(
+            turn_id,
+            session_id,
+            wa::ANTHROPIC,
+            vec!["claude-sonnet"],
+            start_us,
+            500,
+            1,
+            vec![turn_id],
+            TurnStatus::Complete,
+        );
+        t.user_input_preview = user_input.map(String::from);
+        t.user_call_id = user_input.map(|_| format!("call-{turn_id}"));
+        t
+    }
+
+    #[tokio::test]
+    async fn query_sessions_window_filters_and_aggregates_full_lifetime() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        // Three sessions, each with multiple turns spread over time.
+        //   S1: turns at t=10, t=50 (lifetime 10..50, middle turn in window 40..60)
+        //   S2: turns at t=30, t=45 (both in window)
+        //   S3: turns at t=100, t=200 (out of window)
+        let base = 1_700_000_000_000_000_i64;
+        let us = |secs: i64| base + secs * 1_000_000;
+        backend
+            .write_turns(vec![
+                sample_turn_for_session("t1a", "S1", us(10), Some("first S1")),
+                sample_turn_for_session("t1b", "S1", us(50), None),
+                sample_turn_for_session("t2a", "S2", us(30), Some("first S2")),
+                sample_turn_for_session("t2b", "S2", us(45), None),
+                sample_turn_for_session("t3a", "S3", us(100), Some("first S3")),
+                sample_turn_for_session("t3b", "S3", us(200), None),
+            ])
+            .await
+            .unwrap();
+
+        // Window [40, 60). S3 entirely out, so excluded. S1 has t=50 in window.
+        // S2 has t=45 in window. Both S1 and S2 should return full-lifetime aggregates.
+        let page = backend
+            .query_sessions(&SessionListQuery {
+                time_range: TimeRange {
+                    start_us: us(40),
+                    end_us: us(60),
+                },
+                source_id: None,
+                agent_kind: None,
+                cursor: None,
+                page_size: 10,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 2);
+        // Sort key is MAX(end_time_in_window) DESC. S1's in-window turn ends
+        // latest (t=50 + 500ms), so S1 should be first.
+        let s1 = &page.items[0];
+        assert_eq!(s1.session_id, "S1");
+        assert_eq!(s1.turn_count, 2); // full lifetime: both turns counted
+        assert_eq!(s1.first_user_input_preview.as_deref(), Some("first S1"));
+        // first_turn_at should be the lifetime's MIN(start_time), not the
+        // in-window one. S1's earliest turn is at t=10.
+        assert_eq!(s1.first_turn_at, (us(10)) / 1000);
+
+        let s2 = &page.items[1];
+        assert_eq!(s2.session_id, "S2");
+        assert_eq!(s2.turn_count, 2);
+        assert_eq!(s2.first_user_input_preview.as_deref(), Some("first S2"));
+
+        assert!(page.next_cursor.is_none());
+
+        // Page size 1 + cursor roundtrip.
+        let p1 = backend
+            .query_sessions(&SessionListQuery {
+                time_range: TimeRange {
+                    start_us: us(40),
+                    end_us: us(60),
+                },
+                source_id: None,
+                agent_kind: None,
+                cursor: None,
+                page_size: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(p1.items.len(), 1);
+        assert_eq!(p1.items[0].session_id, "S1");
+        let cursor = p1.next_cursor.expect("has next page");
+        let decoded = decode_session_cursor(&cursor).expect("cursor decodes");
+
+        let p2 = backend
+            .query_sessions(&SessionListQuery {
+                time_range: TimeRange {
+                    start_us: us(40),
+                    end_us: us(60),
+                },
+                source_id: None,
+                agent_kind: None,
+                cursor: Some(decoded),
+                page_size: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(p2.items.len(), 1);
+        assert_eq!(p2.items[0].session_id, "S2");
+        assert!(p2.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn query_session_by_id_and_turns_roundtrip() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        let base = 1_700_000_000_000_000_i64;
+        let us = |secs: i64| base + secs * 1_000_000;
+        backend
+            .write_turns(vec![
+                sample_turn_for_session("ta", "SX", us(10), Some("opener")),
+                sample_turn_for_session("tb", "SX", us(20), None),
+                sample_turn_for_session("tc", "SX", us(30), None),
+            ])
+            .await
+            .unwrap();
+
+        let d = backend
+            .query_session_by_id("", "SX")
+            .await
+            .unwrap()
+            .expect("session exists");
+        assert_eq!(d.session_id, "SX");
+        assert_eq!(d.turn_count, 3);
+        assert_eq!(d.first_user_input_preview.as_deref(), Some("opener"));
+
+        let miss = backend.query_session_by_id("", "ZZZ").await.unwrap();
+        assert!(miss.is_none());
+
+        // Turns list: ordered by start_time DESC.
+        let turns = backend
+            .query_session_turns(&SessionTurnsQuery {
+                source_id: String::new(),
+                session_id: "SX".into(),
+                page: 1,
+                page_size: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(turns.total, 3);
+        assert_eq!(turns.items.len(), 3);
+        assert_eq!(turns.items[0].turn_id, "tc");
+        assert_eq!(turns.items[2].turn_id, "ta");
+    }
 }
 
 #[cfg(test)]
@@ -3881,8 +4462,7 @@ mod concurrent_tests {
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
-            tenant_id: None,
-            request_time: 1_700_000_000_000_000 + i as i64,
+                request_time: 1_700_000_000_000_000 + i as i64,
             response_time: None,
             complete_time: None,
             request_path: "/v1/chat/completions".into(),
@@ -3913,8 +4493,7 @@ mod concurrent_tests {
             source_id: String::new(),
             turn_id: format!("turn-{i:08}"),
             session_id: format!("session-{}", i % 10),
-            tenant_id: None,
-            wire_api: wa::OPENAI_CHAT.into(),
+                wire_api: wa::OPENAI_CHAT.into(),
             agent_kind: "test".into(),
             start_time_us: 1_700_000_000_000_000 + i as i64,
             end_time_us: 1_700_000_000_000_000 + i as i64 + 1_000_000,
@@ -4064,8 +4643,7 @@ mod retention_tests {
             wire_api: wa::OPENAI_CHAT,
             model: "gpt-4".into(),
             api_type: ApiType::Chat,
-            tenant_id: None,
-            request_time: request_time_us,
+                request_time: request_time_us,
             response_time: Some(request_time_us + 100_000),
             complete_time: Some(request_time_us + 500_000),
             request_path: "/v1/chat/completions".into(),
@@ -4096,8 +4674,7 @@ mod retention_tests {
             source_id: String::new(),
             turn_id: id.into(),
             session_id: "s".into(),
-            tenant_id: None,
-            wire_api: wa::OPENAI_CHAT.into(),
+                wire_api: wa::OPENAI_CHAT.into(),
             agent_kind: "claude-cli".into(),
             start_time_us: start_us,
             end_time_us: start_us + (duration_ms as i64) * 1000,

@@ -121,31 +121,7 @@ pub fn extract_from_request(req: &HttpRequestData) -> RequestInfo {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Tenant ID: prefix of the API key (first 10 chars) for tenant differentiation.
-    // Not a cryptographic hash — sufficient for grouping, not for security.
-    // Anthropic accepts either `x-api-key` (direct API keys) or `Authorization: Bearer`
-    // (OAuth tokens, e.g. Claude Code); check both.
-    let tenant_id = req
-        .header("x-api-key")
-        .map(|key| key.to_string())
-        .or_else(|| {
-            req.header("authorization")
-                .map(|auth| auth.strip_prefix("Bearer ").unwrap_or(auth).to_string())
-        })
-        .map(|token| {
-            let prefix = if token.len() > 10 {
-                &token[..10]
-            } else {
-                &token
-            };
-            prefix.to_string()
-        });
-
-    RequestInfo {
-        model,
-        is_stream,
-        tenant_id,
-    }
+    RequestInfo { model, is_stream }
 }
 
 /// Extract response info from a non-streaming Anthropic response.

@@ -107,7 +107,6 @@ fn print_list(calls: &[CallSummary]) {
 
 struct CallDetail {
     id: String,
-    tenant_id: Option<String>,
     client_ip: String,
     client_port: u16,
     server_ip: String,
@@ -135,7 +134,7 @@ struct CallDetail {
 }
 
 fn load_detail(conn: &Connection, id: &str) -> Option<CallDetail> {
-    let sql = "SELECT id, tenant_id, client_ip, client_port, server_ip, server_port, \
+    let sql = "SELECT id, client_ip, client_port, server_ip, server_port, \
                CAST(request_time AS VARCHAR), CAST(response_time AS VARCHAR), \
                CAST(complete_time AS VARCHAR), \
                wire_api, model, api_type, is_stream, request_path, \
@@ -149,31 +148,30 @@ fn load_detail(conn: &Connection, id: &str) -> Option<CallDetail> {
     stmt.query_row([id], |row| {
         Ok(CallDetail {
             id: row.get(0)?,
-            tenant_id: row.get(1)?,
-            client_ip: row.get(2)?,
-            client_port: row.get(3)?,
-            server_ip: row.get(4)?,
-            server_port: row.get(5)?,
-            request_time: row.get(6)?,
-            response_time: row.get(7)?,
-            complete_time: row.get(8)?,
-            wire_api: row.get(9)?,
-            model: row.get(10)?,
-            api_type: row.get(11)?,
-            is_stream: row.get(12)?,
-            request_path: row.get(13)?,
-            status_code: row.get(14)?,
-            finish_reason: row.get(15)?,
-            input_tokens: row.get(16)?,
-            output_tokens: row.get(17)?,
-            total_tokens: row.get(18)?,
-            ttft_ms: row.get(19)?,
-            e2e_latency_ms: row.get(20)?,
-            request_body: row.get(21)?,
-            response_body: row.get(22)?,
-            response_id: row.get(23)?,
-            request_headers: row.get(24)?,
-            response_headers: row.get(25)?,
+            client_ip: row.get(1)?,
+            client_port: row.get(2)?,
+            server_ip: row.get(3)?,
+            server_port: row.get(4)?,
+            request_time: row.get(5)?,
+            response_time: row.get(6)?,
+            complete_time: row.get(7)?,
+            wire_api: row.get(8)?,
+            model: row.get(9)?,
+            api_type: row.get(10)?,
+            is_stream: row.get(11)?,
+            request_path: row.get(12)?,
+            status_code: row.get(13)?,
+            finish_reason: row.get(14)?,
+            input_tokens: row.get(15)?,
+            output_tokens: row.get(16)?,
+            total_tokens: row.get(17)?,
+            ttft_ms: row.get(18)?,
+            e2e_latency_ms: row.get(19)?,
+            request_body: row.get(20)?,
+            response_body: row.get(21)?,
+            response_id: row.get(22)?,
+            request_headers: row.get(23)?,
+            response_headers: row.get(24)?,
         })
     })
     .ok()
@@ -185,7 +183,6 @@ fn print_detail(d: &CallDetail) {
     println!("{}", "=".repeat(80));
     println!("  ID:             {}", d.id);
     println!("  Response ID:    {}", fmt_opt(d.response_id.as_deref()));
-    println!("  Tenant:         {}", fmt_opt(d.tenant_id.as_deref()));
     println!("  Client:         {}:{}", d.client_ip, d.client_port);
     println!("  Server:         {}:{}", d.server_ip, d.server_port);
     println!("  Request Time:   {}", d.request_time);

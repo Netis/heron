@@ -121,7 +121,6 @@ impl LlmProcessor {
             wire_api: extractor.name(),
             model,
             api_type: ApiType::Chat,
-            tenant_id: req_info.tenant_id,
             request_time,
             response_time: Some(response_time),
             complete_time: Some(complete_time),

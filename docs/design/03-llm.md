@@ -76,7 +76,6 @@ pub struct LlmCall {
     pub wire_api: &'static str,
     pub model: String,
     pub api_type: ApiType,              // Chat / Embedding / Image / ...
-    pub tenant_id: Option<String>,      // Hashed API key prefix
     pub request_time: Timestamp,
     pub response_time: Option<Timestamp>,
     pub complete_time: Option<Timestamp>,

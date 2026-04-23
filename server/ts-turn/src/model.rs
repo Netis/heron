@@ -45,7 +45,6 @@ pub struct AgentTurn {
     pub source_id: String,
     pub turn_id: String,
     pub session_id: String,
-    pub tenant_id: Option<String>,
     pub wire_api: String,   // copied from LlmCall.wire_api
     pub agent_kind: String, // "claude-cli" / "codex-cli" / ...
 
@@ -136,7 +135,6 @@ mod tests {
             source_id: String::new(),
             turn_id: "t1".into(),
             session_id: "s1".into(),
-            tenant_id: None,
             wire_api: wa::ANTHROPIC.into(),
             agent_kind: "claude-cli".into(),
             start_time_us: 0,
@@ -172,7 +170,6 @@ mod tests {
             source_id: String::new(),
             turn_id: "t".into(),
             session_id: "s".into(),
-            tenant_id: None,
             wire_api: wa::ANTHROPIC.into(),
             agent_kind: "claude-cli".into(),
             start_time_us: 0,

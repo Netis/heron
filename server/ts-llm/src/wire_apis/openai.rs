@@ -137,23 +137,7 @@ pub fn extract_from_request(req: &HttpRequestData) -> RequestInfo {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Tenant ID: prefix of the API key (first 10 chars) for tenant differentiation.
-    // Not a cryptographic hash — sufficient for grouping, not for security.
-    let tenant_id = req.header("authorization").map(|auth| {
-        let token = auth.strip_prefix("Bearer ").unwrap_or(auth);
-        let prefix = if token.len() > 10 {
-            &token[..10]
-        } else {
-            token
-        };
-        prefix.to_string()
-    });
-
-    RequestInfo {
-        model,
-        is_stream,
-        tenant_id,
-    }
+    RequestInfo { model, is_stream }
 }
 
 /// Extract response info from a non-streaming OpenAI Chat Completions response.
