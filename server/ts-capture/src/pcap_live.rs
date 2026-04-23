@@ -76,6 +76,34 @@ impl CaptureSource for PcapLiveSource {
         let dump_cfg = self.dump_cfg.clone();
         let dumper_metrics = metrics.clone();
 
+        // Hand the pcap BreakLoop handle off to an async waker as soon as the
+        // capture is open. `pcap_next_ex` on a live capture can sit in a
+        // kernel read past the configured timeout on some platforms (notably
+        // macOS BPF on quiet interfaces); without this, cancel can be
+        // observed only at the NEXT return from next_packet, which may never
+        // come. When cancel fires the waker calls `pcap_breakloop`, forcing
+        // `next_packet` to surface as `TimeoutExpired`, where the loop
+        // re-checks cancel and exits.
+        let (breaker_tx, breaker_rx) = tokio::sync::oneshot::channel::<pcap::BreakLoop>();
+        let cancel_for_waker = cancel.clone();
+        let waker_done = CancellationToken::new();
+        let waker_done_inner = waker_done.clone();
+        let waker_task = tokio::spawn(async move {
+            let breaker = match breaker_rx.await {
+                Ok(b) => b,
+                Err(_) => return, // capture thread dropped sender before opening
+            };
+            tokio::select! {
+                _ = cancel_for_waker.cancelled() => {
+                    tracing::debug!("pcap-live: cancel observed; invoking pcap_breakloop");
+                    breaker.breakloop();
+                }
+                _ = waker_done_inner.cancelled() => {
+                    // Capture already exited cleanly; nothing to wake.
+                }
+            }
+        });
+
         let result = tokio::task::spawn_blocking(move || -> crate::Result<()> {
             // Best-effort: open the packet dumper if configured. A failure to
             // create the output directory logs + disables dumping for this
@@ -100,6 +128,12 @@ impl CaptureSource for PcapLiveSource {
                 .snaplen(snaplen as i32)
                 .timeout(500) // 500ms read timeout for shutdown responsiveness
                 .open()?;
+
+            // Hand the breakloop handle off so the async waker can signal
+            // `pcap_next_ex` to return on cancel. We ignore send errors — if
+            // the receiver is gone the waker already decided it doesn't need
+            // the handle.
+            let _ = breaker_tx.send(cap.breakloop_handle());
 
             if let Some(ref filter) = bpf_filter {
                 cap.filter(filter, true)?;
@@ -184,6 +218,15 @@ impl CaptureSource for PcapLiveSource {
                         count += 1;
                         metrics.counter(Metric::CapturePacketsReceived).inc();
                     }
+                    Err(pcap::Error::NoMorePackets) => {
+                        // `pcap_next_ex` returns PCAP_ERROR_BREAK (-2) after
+                        // `pcap_breakloop` on a live capture — pcap-rs maps
+                        // that to `NoMorePackets`. Treat it as a clean exit
+                        // so the shutdown path does not count it as a source
+                        // error.
+                        tracing::debug!("pcap-live: breakloop observed, stopping");
+                        break;
+                    }
                     Err(pcap::Error::TimeoutExpired) => {
                         // Periodically update drop stats during idle.
                         update_drop_stats(&mut cap, &mut last_dropped, &metrics);
@@ -258,6 +301,12 @@ impl CaptureSource for PcapLiveSource {
             Ok(())
         })
         .await;
+
+        // Release the waker whether the capture exited cleanly or errored.
+        // If cancel already won, the waker has already called breakloop()
+        // and returned; `waker_done.cancel()` is a no-op on that branch.
+        waker_done.cancel();
+        let _ = waker_task.await;
 
         match result {
             Ok(Ok(())) => Ok(()),
