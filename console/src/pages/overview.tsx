@@ -44,7 +44,7 @@ function errorRateColor(rate: number): "green" | "amber" | "red" {
 
 export function OverviewPage() {
   const { data: summary, isLoading: summaryLoading } = useMetricsSummary()
-  const { data: volumeTs } = useTimeseries("request_count", { groupBy: "wire_api" })
+  const { data: volumeTs } = useTimeseries("call_count", { groupBy: "wire_api" })
   const { data: latencyTs } = useTimeseries("ttft_avg,ttft_p95,e2e_avg,e2e_p95")
   const { data: modelsData } = useModels()
 
@@ -57,8 +57,8 @@ export function OverviewPage() {
   }
 
   const errorRate =
-    summary && summary.request_count > 0
-      ? (summary.error_count / summary.request_count) * 100
+    summary && summary.call_count > 0
+      ? (summary.error_count / summary.call_count) * 100
       : 0
 
   const totalTokens = (summary?.total_input_tokens ?? 0) + (summary?.total_output_tokens ?? 0)
@@ -68,8 +68,8 @@ export function OverviewPage() {
       {/* KPI Cards */}
       <div className="grid grid-cols-6 gap-3">
         <KpiCard
-          title="Total Requests"
-          value={formatNumber(summary?.request_count ?? 0)}
+          title="Total Calls"
+          value={formatNumber(summary?.call_count ?? 0)}
         />
         <KpiCard
           title="Avg TTFT"
@@ -80,7 +80,7 @@ export function OverviewPage() {
           value={formatMs(summary?.e2e_avg)}
         />
         <KpiCard
-          title="Error Rate"
+          title="Call Error Rate"
           value={`${errorRate.toFixed(2)}%`}
           color={errorRateColor(errorRate)}
         />
@@ -99,7 +99,7 @@ export function OverviewPage() {
       {/* Middle row — 2 charts */}
       <div className="grid grid-cols-2 gap-4">
         <div className="rounded-lg border border-border bg-card p-4">
-          <h3 className="mb-3 text-sm font-medium">Request Volume</h3>
+          <h3 className="mb-3 text-sm font-medium">Call Volume</h3>
           <RequestVolumeChart data={volumeTs ?? null} />
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
@@ -115,7 +115,7 @@ export function OverviewPage() {
           <ModelBreakdownChart models={modelsData?.models ?? []} />
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
-          <h3 className="mb-3 text-sm font-medium">Error Rate by Model</h3>
+          <h3 className="mb-3 text-sm font-medium">Call Error Rate by Model</h3>
           <ErrorByModelChart models={modelsData?.models ?? []} />
         </div>
       </div>

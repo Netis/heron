@@ -215,10 +215,10 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     assert_eq!(agent_kind, "claude-cli");
 
     // Metrics must have at least one anthropic 10s bucket with a non-zero
-    // request_count — proves LLM stage → metrics shard → sink wiring end-to-end.
+    // call_count — proves LLM stage → metrics shard → sink wiring end-to-end.
     let anthropic_requests_10s: i64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(request_count), 0) FROM llm_metrics \
+            "SELECT COALESCE(SUM(call_count), 0) FROM llm_metrics \
              WHERE granularity = '10s' AND wire_api = 'anthropic'",
             [],
             |r| r.get(0),

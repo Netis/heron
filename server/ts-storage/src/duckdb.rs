@@ -195,12 +195,12 @@ CREATE TABLE IF NOT EXISTS llm_metrics (
     wire_api            VARCHAR NOT NULL,
     model               VARCHAR NOT NULL,
     server_ip           VARCHAR NOT NULL,
-    request_count       UBIGINT NOT NULL,
+    call_count       UBIGINT NOT NULL,
     stream_count        UBIGINT NOT NULL,
     non_stream_count    UBIGINT NOT NULL,
-    concurrency_sum          UBIGINT NOT NULL,
-    concurrency_sample_count UBIGINT NOT NULL,
-    concurrency_max          UINTEGER NOT NULL,
+    active_calls_sum          UBIGINT NOT NULL,
+    active_calls_sample_count UBIGINT NOT NULL,
+    active_calls_max          UINTEGER NOT NULL,
     total_input_tokens  UBIGINT NOT NULL,
     input_token_count   UBIGINT NOT NULL,
     total_output_tokens UBIGINT NOT NULL,
@@ -411,13 +411,13 @@ fn extract_full_text(
 /// the raw `*_sum` / `*_count` fields are also accepted for callers that want
 /// to do their own aggregation.
 const VALID_METRIC_FIELDS: &[&str] = &[
-    "request_count",
+    "call_count",
     "stream_count",
     "non_stream_count",
-    "concurrency_avg",
-    "concurrency_sum",
-    "concurrency_sample_count",
-    "concurrency_max",
+    "active_calls_avg",
+    "active_calls_sum",
+    "active_calls_sample_count",
+    "active_calls_max",
     "total_input_tokens",
     "input_token_count",
     "total_output_tokens",
@@ -464,8 +464,8 @@ const VALID_METRIC_FIELDS: &[&str] = &[
 /// * Per-row percentiles (`*_p50/p95/p99`) → weighted average by the matching
 ///   `*_count` (number of samples contributing to the row's digest). This is
 ///   an approximation until serialized t-digest bytes land; weighting by the
-///   count field (rather than `request_count`) keeps slow-response rows with
-///   `request_count=0` from falsely collapsing the result to zero.
+///   count field (rather than `call_count`) keeps slow-response rows with
+///   `call_count=0` from falsely collapsing the result to zero.
 fn build_field_exprs(fields: &[String]) -> Vec<String> {
     fields
         .iter()
@@ -494,7 +494,7 @@ fn build_field_exprs(fields: &[String]) -> Vec<String> {
 /// physical schema. `None` for fields that are not averages.
 fn avg_pair(f: &str) -> Option<(&'static str, &'static str)> {
     match f {
-        "concurrency_avg" => Some(("concurrency_sum", "concurrency_sample_count")),
+        "active_calls_avg" => Some(("active_calls_sum", "active_calls_sample_count")),
         "input_tokens_avg" => Some(("total_input_tokens", "input_token_count")),
         "output_tokens_avg" => Some(("total_output_tokens", "output_token_count")),
         "ttft_avg" => Some(("ttft_sum", "ttft_count")),
@@ -513,18 +513,18 @@ fn percentile_weight(field: &str) -> &'static str {
     } else if field.starts_with("tpot") {
         "tpot_count"
     } else {
-        "request_count"
+        "call_count"
     }
 }
 
 /// Fields that represent counts or totals (use SUM when aggregating across groups).
 const SUM_FIELDS: &[&str] = &[
-    "request_count",
+    "call_count",
     "stream_count",
     "non_stream_count",
-    "concurrency_sum",
-    "concurrency_sample_count",
-    "concurrency_max",
+    "active_calls_sum",
+    "active_calls_sample_count",
+    "active_calls_max",
     "total_input_tokens",
     "input_token_count",
     "total_output_tokens",
@@ -1202,12 +1202,12 @@ impl StorageBackend for DuckDbBackend {
                         p.wire_api,
                         p.model,
                         p.server_ip,
-                        m.request_count,
+                        m.call_count,
                         m.stream_count,
                         m.non_stream_count,
-                        m.concurrency_sum,
-                        m.concurrency_sample_count,
-                        m.concurrency_max,
+                        m.active_calls_sum,
+                        m.active_calls_sample_count,
+                        m.active_calls_max,
                         m.total_input_tokens,
                         m.input_token_count,
                         m.total_output_tokens,
@@ -1435,7 +1435,7 @@ impl StorageBackend for DuckDbBackend {
 
             let sql = "
                 SELECT
-                    COALESCE(SUM(request_count), 0),
+                    COALESCE(SUM(call_count), 0),
                     COALESCE(SUM(error_count), 0),
                     COALESCE(SUM(error_4xx_count), 0),
                     COALESCE(SUM(error_429_count), 0),
@@ -1461,7 +1461,7 @@ impl StorageBackend for DuckDbBackend {
             let row = stmt
                 .query_row(duckdb::params![start_ts, end_ts], |row| {
                     Ok(MetricsSummaryRow {
-                        request_count: row.get::<_, u64>(0)?,
+                        call_count: row.get::<_, u64>(0)?,
                         error_count: row.get::<_, u64>(1)?,
                         error_4xx_count: row.get::<_, u64>(2)?,
                         error_429_count: row.get::<_, u64>(3)?,
@@ -1486,7 +1486,7 @@ impl StorageBackend for DuckDbBackend {
         query: &MetricsModelsQuery,
     ) -> Result<Vec<MetricsModelRow>> {
         const VALID_SORT_FIELDS: &[&str] = &[
-            "request_count",
+            "call_count",
             "error_count",
             "total_input_tokens",
             "total_output_tokens",
@@ -1526,7 +1526,7 @@ impl StorageBackend for DuckDbBackend {
                     SELECT
                         wire_api,
                         model,
-                        COALESCE(SUM(request_count), 0) AS request_count,
+                        COALESCE(SUM(call_count), 0) AS call_count,
                         COALESCE(SUM(error_count), 0) AS error_count,
                         COALESCE(SUM(error_4xx_count), 0) AS error_4xx_count,
                         COALESCE(SUM(error_429_count), 0) AS error_429_count,
@@ -1579,7 +1579,7 @@ impl StorageBackend for DuckDbBackend {
                     model: row
                         .get(1)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    request_count: row
+                    call_count: row
                         .get(2)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     error_count: row
@@ -2771,13 +2771,13 @@ mod tests {
             wire_api: wa::OPENAI_CHAT.to_string(),
             model: "gpt-4".to_string(),
             server_ip: "10.0.0.2".to_string(),
-            request_count: 42,
+            call_count: 42,
             stream_count: 30,
             non_stream_count: 12,
-            // concurrency avg 3.5 → sum 147 across 42 samples.
-            concurrency_sum: 147,
-            concurrency_sample_count: 42,
-            concurrency_max: 8,
+            // active calls avg 3.5 → sum 147 across 42 samples.
+            active_calls_sum: 147,
+            active_calls_sample_count: 42,
+            active_calls_max: 8,
             total_input_tokens: 10000,
             input_token_count: 42,
             total_output_tokens: 5000,
@@ -2824,7 +2824,7 @@ mod tests {
 
         let conn = backend.test_conn().lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT granularity, model, request_count, ttft_p50 FROM llm_metrics")
+            .prepare("SELECT granularity, model, call_count, ttft_p50 FROM llm_metrics")
             .unwrap();
         let row = stmt
             .query_row([], |row| {
@@ -3039,16 +3039,16 @@ mod tests {
 
         m.wire_api = wa::OPENAI_CHAT.to_string();
         m.model = "gpt-4".to_string();
-        m.request_count = 200;
+        m.call_count = 200;
         backend.write_metrics(vec![m.clone()]).await.unwrap();
 
         m.model = "gpt-3.5".to_string();
-        m.request_count = 100;
+        m.call_count = 100;
         backend.write_metrics(vec![m.clone()]).await.unwrap();
 
         m.wire_api = wa::ANTHROPIC.to_string();
         m.model = "claude-3".to_string();
-        m.request_count = 50;
+        m.call_count = 50;
         backend.write_metrics(vec![m]).await.unwrap();
 
         let query = MetricsTimeseriesQuery {
@@ -3058,7 +3058,7 @@ mod tests {
             },
             granularity: "1m".to_string(),
             filter: DimensionFilter::default(),
-            fields: vec!["request_count".to_string()],
+            fields: vec!["call_count".to_string()],
             group_by: Some("wire_api".to_string()),
         };
 
@@ -3079,8 +3079,8 @@ mod tests {
 
     // With per-source aggregators, the sink receives one row per (source_id,
     // ts, dim). The ungrouped timeseries query MUST GROUP BY timestamp so
-    // the caller sees one point per timestamp (request_count summed, ttft
-    // weighted-averaged by request_count). Before this fix the branch had
+    // the caller sees one point per timestamp (call_count summed, ttft
+    // weighted-averaged by call_count). Before this fix the branch had
     // no GROUP BY and returned N overlapping rows per timestamp.
     #[tokio::test]
     async fn test_multi_source_ungrouped_timeseries_merges() {
@@ -3096,7 +3096,7 @@ mod tests {
         source0.wire_api = "*".into();
         source0.model = "*".into();
         source0.server_ip = "*".into();
-        source0.request_count = 10;
+        source0.call_count = 10;
         source0.ttft_count = 10;
         source0.ttft_p50 = Some(100.0);
         source0.error_count = 1;
@@ -3108,7 +3108,7 @@ mod tests {
         source1.wire_api = "*".into();
         source1.model = "*".into();
         source1.server_ip = "*".into();
-        source1.request_count = 30;
+        source1.call_count = 30;
         source1.ttft_count = 30;
         source1.ttft_p50 = Some(200.0);
         source1.error_count = 3;
@@ -3123,7 +3123,7 @@ mod tests {
             granularity: "1m".to_string(),
             filter: DimensionFilter::default(),
             fields: vec![
-                "request_count".to_string(),
+                "call_count".to_string(),
                 "ttft_p50".to_string(),
                 "error_count".to_string(),
             ],
@@ -3137,7 +3137,7 @@ mod tests {
             "ungrouped query must return 1 row per timestamp across sources, got {}",
             rows.len()
         );
-        assert_eq!(rows[0].values[0], Some(40.0), "request_count SUM = 10 + 30");
+        assert_eq!(rows[0].values[0], Some(40.0), "call_count SUM = 10 + 30");
         // weighted avg by ttft_count: (100*10 + 200*30) / 40 = 175
         let p50 = rows[0].values[1].unwrap();
         assert!((p50 - 175.0).abs() < 0.01, "weighted p50 ≈ 175, got {p50}");
@@ -3158,7 +3158,7 @@ mod tests {
         s0.wire_api = wa::OPENAI_CHAT.into();
         s0.model = "gpt-4".into();
         s0.server_ip = "*".into();
-        s0.request_count = 10;
+        s0.call_count = 10;
 
         let mut s1 = sample_metric();
         s1.timestamp_us = ts;
@@ -3167,7 +3167,7 @@ mod tests {
         s1.wire_api = wa::OPENAI_CHAT.into();
         s1.model = "gpt-4".into();
         s1.server_ip = "*".into();
-        s1.request_count = 40;
+        s1.call_count = 40;
 
         backend.write_metrics(vec![s0, s1]).await.unwrap();
 
@@ -3178,7 +3178,7 @@ mod tests {
             },
             granularity: "1m".to_string(),
             filter: DimensionFilter::default(),
-            fields: vec!["request_count".to_string()],
+            fields: vec!["call_count".to_string()],
             group_by: Some("wire_api".to_string()),
         };
 
@@ -3204,7 +3204,7 @@ mod tests {
         m1.wire_api = "*".to_string();
         m1.model = "*".to_string();
         m1.server_ip = "*".to_string();
-        m1.request_count = 100;
+        m1.call_count = 100;
         m1.stream_count = 80;
         m1.error_count = 5;
         m1.error_4xx_count = 3;
@@ -3227,7 +3227,7 @@ mod tests {
         m2.wire_api = "*".to_string();
         m2.model = "*".to_string();
         m2.server_ip = "*".to_string();
-        m2.request_count = 200;
+        m2.call_count = 200;
         m2.stream_count = 160;
         m2.error_count = 10;
         m2.error_4xx_count = 6;
@@ -3255,7 +3255,7 @@ mod tests {
         };
 
         let summary = backend.query_metrics_summary(&query).await.unwrap();
-        assert_eq!(summary.request_count, 300);
+        assert_eq!(summary.call_count, 300);
         assert_eq!(summary.error_count, 15);
         assert_eq!(summary.error_4xx_count, 9);
         assert_eq!(summary.error_429_count, 3);
@@ -3291,7 +3291,7 @@ mod tests {
         m_gpt4.wire_api = wa::OPENAI_CHAT.to_string();
         m_gpt4.model = "gpt-4".to_string();
         m_gpt4.server_ip = "*".to_string();
-        m_gpt4.request_count = 100;
+        m_gpt4.call_count = 100;
         m_gpt4.stream_count = 80;
         // ttft avg 150 over 100 → sum 15000
         m_gpt4.ttft_sum = 15_000.0;
@@ -3310,7 +3310,7 @@ mod tests {
         m_claude.wire_api = wa::ANTHROPIC.to_string();
         m_claude.model = "claude-3".to_string();
         m_claude.server_ip = "*".to_string();
-        m_claude.request_count = 200;
+        m_claude.call_count = 200;
         m_claude.stream_count = 150;
         // ttft avg 120 over 200 → sum 24000
         m_claude.ttft_sum = 24_000.0;
@@ -3331,7 +3331,7 @@ mod tests {
                 end_us: ts + 10_000_000,
             },
             filter: DimensionFilter::default(),
-            sort_by: "request_count".to_string(),
+            sort_by: "call_count".to_string(),
             sort_order: "DESC".to_string(),
             limit: 10,
         };
@@ -3341,10 +3341,10 @@ mod tests {
         // claude-3 should come first (200 > 100)
         assert_eq!(rows[0].wire_api, wa::ANTHROPIC);
         assert_eq!(rows[0].model, "claude-3");
-        assert_eq!(rows[0].request_count, 200);
+        assert_eq!(rows[0].call_count, 200);
         assert_eq!(rows[1].wire_api, wa::OPENAI_CHAT);
         assert_eq!(rows[1].model, "gpt-4");
-        assert_eq!(rows[1].request_count, 100);
+        assert_eq!(rows[1].call_count, 100);
     }
 
     // ===== Task 7: query_calls and query_call_by_id tests =====
@@ -3946,12 +3946,12 @@ mod concurrent_tests {
             wire_api: wa::OPENAI_CHAT.into(),
             model: "gpt-4".into(),
             server_ip: "10.0.0.2".into(),
-            request_count: 1,
+            call_count: 1,
             stream_count: 0,
             non_stream_count: 1,
-            concurrency_sum: 1,
-            concurrency_sample_count: 1,
-            concurrency_max: 1,
+            active_calls_sum: 1,
+            active_calls_sample_count: 1,
+            active_calls_max: 1,
             total_input_tokens: 10,
             input_token_count: 1,
             total_output_tokens: 5,
@@ -4129,12 +4129,12 @@ mod retention_tests {
             wire_api: wa::OPENAI_CHAT.into(),
             model: "gpt-4".into(),
             server_ip: "10.0.0.2".into(),
-            request_count: 1,
+            call_count: 1,
             stream_count: 0,
             non_stream_count: 1,
-            concurrency_sum: 1,
-            concurrency_sample_count: 1,
-            concurrency_max: 1,
+            active_calls_sum: 1,
+            active_calls_sample_count: 1,
+            active_calls_max: 1,
             total_input_tokens: 10,
             input_token_count: 1,
             total_output_tokens: 5,

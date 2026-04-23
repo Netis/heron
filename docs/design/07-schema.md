@@ -73,7 +73,7 @@ Indexes:
 
 ### Design Notes
 
-- **Performance metrics in requests table**: `ttft_ms` and `e2e_latency_ms` are computed at write time for fast single-record queries. Per-request throughput can be derived: `output_tokens / (complete_time - response_time)` (tokens/s).
+- **Performance metrics in requests table**: `ttft_ms` and `e2e_latency_ms` are computed at write time for fast single-record queries. Per-call Token Throughput can be derived: `output_tokens / (complete_time - response_time)` (tokens/s).
 - **Full body storage**: `request_body` and `response_body` store complete JSON. For streaming responses, `response_body` contains the concatenated final content.
 - **Headers storage**: `request_headers` and `response_headers` store complete HTTP headers as JSON arrays of `[key, value]` pairs, preserving order and allowing duplicate keys. Rate limit info, request IDs, processing time, etc. can be queried from stored headers without top-level extraction.
 - **`response_id`**: Wire API's response/message ID (e.g., OpenAI `chatcmpl-xxx`, Anthropic `msg_xxx`). Promoted to top-level for fast cross-referencing with vendor logs.
@@ -97,12 +97,12 @@ llm_metrics
 │   └── server_ip: string            # '*' = all
 │
 ├── Traffic
-│   ├── request_count: u64
+│   ├── call_count: u64
 │   ├── stream_count: u64            # Streaming requests
 │   ├── non_stream_count: u64
-│   ├── concurrency_sum: u64         # Σ per-call concurrency samples
-│   ├── concurrency_sample_count: u64
-│   └── concurrency_max: u32         # Peak concurrent requests in row's slice
+│   ├── active_calls_sum: u64         # Σ active-calls samples
+│   ├── active_calls_sample_count: u64
+│   └── active_calls_max: u32         # Peak active calls in row's slice
 │
 ├── Tokens
 │   ├── total_input_tokens: u64
@@ -157,14 +157,14 @@ Indexes:
 - **Query-time aggregation.** Rows that share `(timestamp, granularity, wire_api, model, server_ip)` — whether they differ by `source_id` or are multiple drain slices of the same source — are merged by `GROUP BY timestamp [+ dim]`:
   - Plain counters / totals → `SUM()`.
   - Averages → `SUM(*_sum) / SUM(*_count)` (exact).
-  - `concurrency_max` → `MAX()`.
-  - Percentiles → `SUM(*_p* * *_count) / SUM(*_count)` (approximation — weighting by the matching `*_count` keeps slow-response rows with `request_count=0` from collapsing the result to zero, but it is not equivalent to merging the underlying t-digests. Serialized t-digest bytes is the planned long-term fix.)
+  - `active_calls_max` → `MAX()`.
+  - Percentiles → `SUM(*_p* * *_count) / SUM(*_count)` (approximation — weighting by the matching `*_count` keeps slow-response rows with `call_count=0` from collapsing the result to zero, but it is not equivalent to merging the underlying t-digests. Serialized t-digest bytes is the planned long-term fix.)
 - **Aggregation levels**: finest `(wire_api, model, server_ip)` for drilldown, global `(*, *, *)` for overview. Additional dimensions (tenant_id, etc.) will be added as they are validated with real traffic.
 - **Other dimension analysis**: query `llm_calls` detail table with GROUP BY for dimensions not yet in pre-aggregation.
 - **`*_sum / *_count` instead of `*_avg`**: averages are not additive across rows; storing the exact sum and count lets the query layer SUM over any set of rows (multi-source, multi-drain-slice) and divide to get a correct average. The per-row percentiles (`*_p*`) are t-digest estimates over that row's slice only — single-row views can read them directly.
 - **Multi-granularity**: Fine-grained (10s) for realtime dashboards, coarse (1h) for historical trends. Each granularity has its own drain cadence equal to its window size, so steady-state row count per granularity matches the number of windows covered.
-- **Concurrency**: Per-`DimensionKey` counter (+1 on `Start`, -1 on `Complete`); every Start writes the current value as a sample. Cross-row avg via the `sum / count` pair; peak via `MAX(concurrency_max)`.
-- **Derivable metrics** (computed at query time, not stored): QPS (`request_count / window_seconds`), success rate (`1 - error_count / request_count`), aggregate throughput in tokens/s (`total_output_tokens / window_seconds`), cache hit ratio (`total_cache_read_input_tokens / total_input_tokens`).
+- **Active Calls**: Per-`DimensionKey` counter (+1 on `Start`, -1 on `Complete`); every Start writes the current value as a sample into `active_calls_sum / active_calls_sample_count` and updates `active_calls_max`. Cross-row avg via the `sum / count` pair; peak via `MAX(active_calls_max)`.
+- **Derivable metrics** (computed at query time, not stored): Call Rate (`call_count / window_seconds`), Call Success Rate (`1 - error_count / call_count`), Token Throughput in tokens/s (`total_output_tokens / window_seconds`), Cache Hit Ratio (`total_cache_read_input_tokens / total_input_tokens`).
 
 ---
 

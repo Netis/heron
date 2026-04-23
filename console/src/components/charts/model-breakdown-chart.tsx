@@ -24,11 +24,11 @@ export function ModelBreakdownChart({ models }: Props) {
   }
 
   // Top N models by request count, show as horizontal bar
-  const sorted = [...models].sort((a, b) => b.request_count - a.request_count).slice(0, 10)
+  const sorted = [...models].sort((a, b) => b.call_count - a.call_count).slice(0, 10)
   const chartData = sorted.map((m) => ({
     model: m.model.length > 24 ? m.model.slice(0, 22) + "..." : m.model,
     fullModel: m.model,
-    requests: m.request_count,
+    requests: m.call_count,
     tokens: m.total_input_tokens + m.total_output_tokens,
     avgLatency: m.e2e_avg,
   }))
@@ -54,7 +54,7 @@ export function ModelBreakdownChart({ models }: Props) {
         />
         <Tooltip
           formatter={(value, name) => {
-            if (name === "requests") return [formatNumber(Number(value)), "Requests"]
+            if (name === "requests") return [formatNumber(Number(value)), "Calls"]
             return [String(value), String(name)]
           }}
           labelFormatter={(_label, payload) =>

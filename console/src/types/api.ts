@@ -26,7 +26,7 @@ export interface LlmCallListItem {
 // Metrics types
 
 export interface MetricsSummary {
-  request_count: number
+  call_count: number
   error_count: number
   error_4xx_count: number
   error_429_count: number
@@ -56,7 +56,7 @@ export interface ModelsData {
 export interface MetricsModelRow {
   wire_api: string
   model: string
-  request_count: number
+  call_count: number
   error_count: number
   error_4xx_count: number
   error_429_count: number

@@ -11,7 +11,7 @@ struct MetricRow {
     wire_api: String,
     model: String,
     server_ip: String,
-    request_count: u64,
+    call_count: u64,
     error_count: u64,
     total_input_tokens: u64,
     total_output_tokens: u64,
@@ -24,7 +24,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<MetricRow> {
     let sql = format!(
         "SELECT strftime(timestamp, '%m-%d %H:%M:%S'), granularity, \
          wire_api, model, server_ip, \
-         request_count, error_count, \
+         call_count, error_count, \
          total_input_tokens, total_output_tokens, \
          ttft_p95, e2e_p95, tpot_avg \
          FROM llm_metrics ORDER BY timestamp DESC LIMIT {limit}"
@@ -39,7 +39,7 @@ fn list(conn: &Connection, limit: usize) -> Vec<MetricRow> {
                 wire_api: row.get(2)?,
                 model: row.get(3)?,
                 server_ip: row.get(4)?,
-                request_count: row.get(5)?,
+                call_count: row.get(5)?,
                 error_count: row.get(6)?,
                 total_input_tokens: row.get(7)?,
                 total_output_tokens: row.get(8)?,
@@ -85,7 +85,7 @@ fn print_list(rows: &[MetricRow]) {
             truncate(&m.wire_api, 10),
             truncate(&m.model, 20),
             truncate(&m.server_ip, 15),
-            m.request_count,
+            m.call_count,
             m.error_count,
             fmt_tokens(m.total_input_tokens),
             fmt_tokens(m.total_output_tokens),

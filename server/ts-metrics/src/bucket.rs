@@ -65,18 +65,18 @@ impl DistributionDigest {
 }
 
 /// One (source, granularity, window_start, dim) bucket. Accepts writes from
-/// both `LlmEvent::Start` (traffic/concurrency) and `LlmEvent::Complete`
+/// both `LlmEvent::Start` (traffic/active-calls) and `LlmEvent::Complete`
 /// (tokens/errors/latency) over the life of a single cadence slice, then is
 /// drained and dropped. Subsequent late-arriving Completes for the same window
 /// land in a fresh bucket and produce additional rows.
 pub struct WindowBucket {
-    // Start-side: populated by on_call_start + sample_concurrency.
-    pub request_count: u64,
+    // Start-side: populated by on_call_start + sample_active_calls.
+    pub call_count: u64,
     pub stream_count: u64,
     pub non_stream_count: u64,
-    concurrency_sum: u64,
-    concurrency_sample_count: u64,
-    concurrency_max: u32,
+    active_calls_sum: u64,
+    active_calls_sample_count: u64,
+    active_calls_max: u32,
 
     // Complete-side: populated by on_call_complete.
     pub total_input_tokens: u64,
@@ -104,19 +104,19 @@ pub struct WindowBucket {
     tpot: DistributionDigest,
 
     /// Running count of Complete events written since bucket creation.
-    /// Combined with `request_count` forms the `has_data` check.
+    /// Combined with `call_count` forms the `has_data` check.
     complete_count: u64,
 }
 
 impl WindowBucket {
     pub fn new() -> Self {
         Self {
-            request_count: 0,
+            call_count: 0,
             stream_count: 0,
             non_stream_count: 0,
-            concurrency_sum: 0,
-            concurrency_sample_count: 0,
-            concurrency_max: 0,
+            active_calls_sum: 0,
+            active_calls_sample_count: 0,
+            active_calls_max: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
             input_token_count: 0,
@@ -141,7 +141,7 @@ impl WindowBucket {
 
     /// Called when a new LLM request is detected.
     pub fn on_call_start(&mut self, is_stream: bool) {
-        self.request_count += 1;
+        self.call_count += 1;
         if is_stream {
             self.stream_count += 1;
         } else {
@@ -149,12 +149,12 @@ impl WindowBucket {
         }
     }
 
-    /// Record a concurrency sample (called by the aggregator).
-    pub fn sample_concurrency(&mut self, current: u32) {
-        self.concurrency_sum += current as u64;
-        self.concurrency_sample_count += 1;
-        if current > self.concurrency_max {
-            self.concurrency_max = current;
+    /// Record an active-calls sample (called by the aggregator).
+    pub fn sample_active_calls(&mut self, current: u32) {
+        self.active_calls_sum += current as u64;
+        self.active_calls_sample_count += 1;
+        if current > self.active_calls_max {
+            self.active_calls_max = current;
         }
     }
 
@@ -223,7 +223,7 @@ impl WindowBucket {
     }
 
     pub fn has_data(&self) -> bool {
-        self.request_count > 0 || self.complete_count > 0
+        self.call_count > 0 || self.complete_count > 0
     }
 
     /// Flush this bucket into an `LlmMetric` row. Non-populated fields stay
@@ -246,12 +246,12 @@ impl WindowBucket {
             wire_api,
             model,
             server_ip,
-            request_count: self.request_count,
+            call_count: self.call_count,
             stream_count: self.stream_count,
             non_stream_count: self.non_stream_count,
-            concurrency_sum: self.concurrency_sum,
-            concurrency_sample_count: self.concurrency_sample_count,
-            concurrency_max: self.concurrency_max,
+            active_calls_sum: self.active_calls_sum,
+            active_calls_sample_count: self.active_calls_sample_count,
+            active_calls_max: self.active_calls_max,
             total_input_tokens: self.total_input_tokens,
             input_token_count: self.input_token_count,
             total_output_tokens: self.total_output_tokens,
@@ -375,20 +375,20 @@ mod tests {
         b.on_call_start(true);
         b.on_call_start(false);
         b.on_call_start(true);
-        assert_eq!(b.request_count, 3);
+        assert_eq!(b.call_count, 3);
         assert_eq!(b.stream_count, 2);
         assert_eq!(b.non_stream_count, 1);
     }
 
     #[test]
-    fn sample_concurrency_tracks_sum_and_max() {
+    fn sample_active_calls_tracks_sum_and_max() {
         let mut b = WindowBucket::new();
-        b.sample_concurrency(3);
-        b.sample_concurrency(5);
-        b.sample_concurrency(2);
-        assert_eq!(b.concurrency_max, 5);
-        assert_eq!(b.concurrency_sample_count, 3);
-        assert_eq!(b.concurrency_sum, 10);
+        b.sample_active_calls(3);
+        b.sample_active_calls(5);
+        b.sample_active_calls(2);
+        assert_eq!(b.active_calls_max, 5);
+        assert_eq!(b.active_calls_sample_count, 3);
+        assert_eq!(b.active_calls_sum, 10);
     }
 
     #[test]
@@ -432,7 +432,7 @@ mod tests {
     fn flush_merged_row_carries_both_sides() {
         let mut b = WindowBucket::new();
         b.on_call_start(true);
-        b.sample_concurrency(1);
+        b.sample_active_calls(1);
         b.on_call_complete(&test_call());
 
         let m = b.flush(
@@ -444,11 +444,11 @@ mod tests {
             "10.0.0.1".to_string(),
         );
         // Start-side
-        assert_eq!(m.request_count, 1);
+        assert_eq!(m.call_count, 1);
         assert_eq!(m.stream_count, 1);
-        assert_eq!(m.concurrency_max, 1);
-        assert_eq!(m.concurrency_sample_count, 1);
-        assert_eq!(m.concurrency_sum, 1);
+        assert_eq!(m.active_calls_max, 1);
+        assert_eq!(m.active_calls_sample_count, 1);
+        assert_eq!(m.active_calls_sum, 1);
         // Complete-side
         assert_eq!(m.total_input_tokens, 100);
         assert_eq!(m.input_token_count, 1);
@@ -469,7 +469,7 @@ mod tests {
     fn flush_complete_only_leaves_start_side_zeroed() {
         // Late-arriving Complete that opens a fresh bucket (previous drain
         // removed the Start-side row). Start-side stays at zero so
-        // `SUM(request_count)` across rows counts traffic exactly once.
+        // `SUM(call_count)` across rows counts traffic exactly once.
         let mut b = WindowBucket::new();
         b.on_call_complete(&test_call());
         let m = b.flush(
@@ -480,10 +480,10 @@ mod tests {
             "gpt-4".to_string(),
             "10.0.0.1".to_string(),
         );
-        assert_eq!(m.request_count, 0);
+        assert_eq!(m.call_count, 0);
         assert_eq!(m.stream_count, 0);
-        assert_eq!(m.concurrency_max, 0);
-        assert_eq!(m.concurrency_sample_count, 0);
+        assert_eq!(m.active_calls_max, 0);
+        assert_eq!(m.active_calls_sample_count, 0);
         // Complete-side populated — sum/count pair carries latency across SUM.
         assert_eq!(m.ttft_count, 1);
         assert!(m.ttft_sum > 0.0);

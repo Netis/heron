@@ -19,7 +19,7 @@ TokenScope is an LLM API performance monitoring system that analyzes network tra
 
 **Supported LLM providers:** OpenAI, Anthropic, Azure OpenAI, Gemini, local deployments (vLLM/Ollama, OpenAI-compatible)
 
-**Key metrics:** TTFT, E2E latency, throughput (tokens/s), error rates, concurrency
+**Key metrics:** TTFT, E2E Latency, TPOT, Call Rate, Token Throughput, Active Calls, Call Error Rate, Cache Hit Ratio
 
 ## Tech Stack
 

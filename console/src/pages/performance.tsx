@@ -19,9 +19,9 @@ const TPOT_SERIES = [
   { key: "tpot_p95", label: "p95", color: "#059669" },
 ]
 
-const CONCURRENCY_SERIES = [
-  { key: "concurrency_avg", label: "avg", color: "#3b82f6" },
-  { key: "concurrency_max", label: "max", color: "#ef4444" },
+const ACTIVE_CALLS_SERIES = [
+  { key: "active_calls_avg", label: "avg", color: "#3b82f6" },
+  { key: "active_calls_max", label: "max", color: "#ef4444" },
 ]
 
 const CACHE_TOKEN_SERIES = [
@@ -34,7 +34,7 @@ const TOKEN_AVG_SERIES = [
   { key: "output_tokens_avg", label: "Avg Output", color: "#10b981" },
 ]
 
-function formatConcurrency(v: number): string {
+function formatActiveCalls(v: number): string {
   return v.toFixed(1)
 }
 
@@ -51,7 +51,7 @@ export function PerformancePage() {
   const { data: ttftData } = useTimeseries("ttft_p50,ttft_p95,ttft_p99")
   const { data: e2eData } = useTimeseries("e2e_p50,e2e_p95,e2e_p99")
   const { data: tpotData } = useTimeseries("tpot_p50,tpot_p95")
-  const { data: concurrencyData } = useTimeseries("concurrency_avg,concurrency_max")
+  const { data: activeCallsData } = useTimeseries("active_calls_avg,active_calls_max")
   const { data: cacheTokenData } = useTimeseries("total_cache_read_input_tokens,total_cache_creation_input_tokens")
   const { data: tokenAvgData } = useTimeseries("input_tokens_avg,output_tokens_avg")
 
@@ -76,11 +76,11 @@ export function PerformancePage() {
             yFormatter={formatMs}
           />
         </ChartCard>
-        <ChartCard title="Concurrency">
+        <ChartCard title="Active Calls">
           <TimeseriesLineChart
-            data={concurrencyData ?? null}
-            series={CONCURRENCY_SERIES}
-            yFormatter={formatConcurrency}
+            data={activeCallsData ?? null}
+            series={ACTIVE_CALLS_SERIES}
+            yFormatter={formatActiveCalls}
             variant="area"
           />
         </ChartCard>

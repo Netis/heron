@@ -28,11 +28,11 @@ export function ErrorByModelChart({ models }: Props) {
     .map((m) => ({
       model: m.model.length > 24 ? m.model.slice(0, 22) + "..." : m.model,
       fullModel: m.model,
-      total: m.request_count,
-      "4xx": m.request_count > 0 ? ((m.error_4xx_count - m.error_429_count) / m.request_count) * 100 : 0,
-      "429": m.request_count > 0 ? (m.error_429_count / m.request_count) * 100 : 0,
-      "5xx": m.request_count > 0 ? (m.error_5xx_count / m.request_count) * 100 : 0,
-      errorRate: m.request_count > 0 ? (m.error_count / m.request_count) * 100 : 0,
+      total: m.call_count,
+      "4xx": m.call_count > 0 ? ((m.error_4xx_count - m.error_429_count) / m.call_count) * 100 : 0,
+      "429": m.call_count > 0 ? (m.error_429_count / m.call_count) * 100 : 0,
+      "5xx": m.call_count > 0 ? (m.error_5xx_count / m.call_count) * 100 : 0,
+      errorRate: m.call_count > 0 ? (m.error_count / m.call_count) * 100 : 0,
     }))
     .sort((a, b) => b.errorRate - a.errorRate)
     .slice(0, 10)

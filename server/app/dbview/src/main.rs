@@ -24,7 +24,7 @@ struct Args {
 }
 
 fn print_summary(conn: &Connection) {
-    let sql = "SELECT COALESCE(SUM(request_count), 0), \
+    let sql = "SELECT COALESCE(SUM(call_count), 0), \
                COALESCE(SUM(total_input_tokens), 0), \
                COALESCE(SUM(total_output_tokens), 0), \
                COALESCE(SUM(error_count), 0) \

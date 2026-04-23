@@ -9,7 +9,7 @@ import type { MetricsModelRow, TimeseriesData } from "@/types/api"
 type SortKey =
   | "model"
   | "wire_api"
-  | "request_count"
+  | "call_count"
   | "error_rate"
   | "ttft_avg"
   | "ttft_p95"
@@ -21,7 +21,7 @@ type SortKey =
 type SortOrder = "asc" | "desc"
 
 function getErrorRate(m: MetricsModelRow): number {
-  return m.request_count > 0 ? (m.error_count / m.request_count) * 100 : 0
+  return m.call_count > 0 ? (m.error_count / m.call_count) * 100 : 0
 }
 
 function getSortValue(m: MetricsModelRow, key: SortKey): number | string {
@@ -38,7 +38,7 @@ const LATENCY_SERIES = [
 ]
 
 const VOLUME_SERIES = [
-  { key: "request_count", label: "Requests", color: "#3b82f6" },
+  { key: "call_count", label: "Calls", color: "#3b82f6" },
   { key: "error_count", label: "Errors", color: "#ef4444" },
 ]
 
@@ -58,7 +58,7 @@ function ModelDetailCharts({ model }: { model: string }) {
   const { data: latencyData } = useTimeseries("ttft_avg,ttft_p95,e2e_avg,e2e_p95", {
     groupBy: "model",
   })
-  const { data: volumeData } = useTimeseries("request_count,error_count", {
+  const { data: volumeData } = useTimeseries("call_count,error_count", {
     groupBy: "model",
   })
 
@@ -75,7 +75,7 @@ function ModelDetailCharts({ model }: { model: string }) {
       </div>
       <div className="rounded-lg border border-border bg-card p-4">
         <h3 className="mb-3 text-sm font-medium">
-          Request Volume & Errors — <span className="text-muted-foreground">{model}</span>
+          Call Volume & Errors — <span className="text-muted-foreground">{model}</span>
         </h3>
         <TimeseriesLineChart
           data={modelVolume}
@@ -90,7 +90,7 @@ function ModelDetailCharts({ model }: { model: string }) {
 
 export function ModelsPage() {
   const { data: modelsData } = useModels()
-  const [sortKey, setSortKey] = useState<SortKey>("request_count")
+  const [sortKey, setSortKey] = useState<SortKey>("call_count")
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc")
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
 
@@ -140,7 +140,7 @@ export function ModelsPage() {
               <tr className="border-b border-border">
                 <th className="px-4 py-3 text-left"><SortHeader label="Model" field="model" align="left" /></th>
                 <th className="px-3 py-3 text-left"><SortHeader label="Wire API" field="wire_api" align="left" /></th>
-                <th className="px-3 py-3 text-right"><SortHeader label="Requests" field="request_count" align="right" /></th>
+                <th className="px-3 py-3 text-right"><SortHeader label="Calls" field="call_count" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="Error %" field="error_rate" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="TTFT avg" field="ttft_avg" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="TTFT p95" field="ttft_p95" align="right" /></th>
@@ -178,7 +178,7 @@ export function ModelsPage() {
                         </span>
                       </td>
                       <td className="px-3 py-2.5 text-muted-foreground">{m.wire_api}</td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(m.request_count)}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(m.call_count)}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
                         <span
                           className={

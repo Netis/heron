@@ -58,7 +58,7 @@ pub struct MetricsTimeseriesRow {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MetricsSummaryRow {
-    pub request_count: u64,
+    pub call_count: u64,
     pub error_count: u64,
     pub error_4xx_count: u64,
     pub error_429_count: u64,
@@ -74,7 +74,7 @@ pub struct MetricsSummaryRow {
 pub struct MetricsModelRow {
     pub wire_api: String,
     pub model: String,
-    pub request_count: u64,
+    pub call_count: u64,
     pub error_count: u64,
     pub error_4xx_count: u64,
     pub error_429_count: u64,

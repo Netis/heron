@@ -48,7 +48,7 @@ pub struct ModelsParams {
 }
 
 fn default_model_sort_by() -> String {
-    "request_count".to_string()
+    "call_count".to_string()
 }
 
 fn default_sort_order() -> String {

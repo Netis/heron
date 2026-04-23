@@ -27,16 +27,16 @@ pub struct LlmMetric {
     pub server_ip: String,
 
     // Traffic
-    pub request_count: u64,
+    pub call_count: u64,
     pub stream_count: u64,
     pub non_stream_count: u64,
-    /// Running sum of per-call concurrency samples in this slice.
-    /// Paired with `concurrency_sample_count` so the query layer can compute
-    /// `SUM(concurrency_sum) / SUM(concurrency_sample_count)` as a true
+    /// Running sum of per-call active-calls samples in this slice.
+    /// Paired with `active_calls_sample_count` so the query layer can compute
+    /// `SUM(active_calls_sum) / SUM(active_calls_sample_count)` as a true
     /// average across any set of rows.
-    pub concurrency_sum: u64,
-    pub concurrency_sample_count: u64,
-    pub concurrency_max: u32,
+    pub active_calls_sum: u64,
+    pub active_calls_sample_count: u64,
+    pub active_calls_max: u32,
 
     // Tokens. `total_input_tokens` pairs with `input_token_count` for
     // query-time avg; same pattern for output tokens.
@@ -99,11 +99,11 @@ fn safe_avg(sum: f64, count: u64) -> Option<f64> {
 impl LlmMetric {
     /// Per-row average derived from `*_sum / *_count`. Useful for single-row
     /// views; query layer computes aggregated averages via SUM() separately.
-    pub fn concurrency_avg(&self) -> f64 {
-        if self.concurrency_sample_count == 0 {
+    pub fn active_calls_avg(&self) -> f64 {
+        if self.active_calls_sample_count == 0 {
             0.0
         } else {
-            self.concurrency_sum as f64 / self.concurrency_sample_count as f64
+            self.active_calls_sum as f64 / self.active_calls_sample_count as f64
         }
     }
 
@@ -158,16 +158,16 @@ impl fmt::Display for LlmMetric {
         )?;
         writeln!(
             f,
-            "  requests={} (stream={} non_stream={}) errors={} (4xx={} 429={} 5xx={}) concurrency avg={:.1} max={}",
-            self.request_count,
+            "  calls={} (stream={} non_stream={}) errors={} (4xx={} 429={} 5xx={}) active_calls avg={:.1} max={}",
+            self.call_count,
             self.stream_count,
             self.non_stream_count,
             self.error_count,
             self.error_4xx_count,
             self.error_429_count,
             self.error_5xx_count,
-            self.concurrency_avg(),
-            self.concurrency_max,
+            self.active_calls_avg(),
+            self.active_calls_max,
         )?;
         writeln!(
             f,

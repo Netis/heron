@@ -44,7 +44,7 @@ export function RequestVolumeChart({ data }: Props) {
   }
 
   // Extract wire-api groups from series
-  const requestSeries = data.series.filter((s) => s.name === "request_count" && s.group)
+  const requestSeries = data.series.filter((s) => s.name === "call_count" && s.group)
   const groups = requestSeries.map((s) => s.group!)
 
   // Build chart data: [{time, group1: val, group2: val, ...}]

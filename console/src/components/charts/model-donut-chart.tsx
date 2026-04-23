@@ -30,13 +30,13 @@ export function ModelDonutChart({ models, height = 240 }: Props) {
     )
   }
 
-  const sorted = [...models].sort((a, b) => b.request_count - a.request_count)
+  const sorted = [...models].sort((a, b) => b.call_count - a.call_count)
   // Show top 7, group rest into "Other"
   const top = sorted.slice(0, 7)
   const rest = sorted.slice(7)
-  const data = top.map((m) => ({ name: m.model, value: m.request_count }))
+  const data = top.map((m) => ({ name: m.model, value: m.call_count }))
   if (rest.length > 0) {
-    const otherCount = rest.reduce((sum, m) => sum + m.request_count, 0)
+    const otherCount = rest.reduce((sum, m) => sum + m.call_count, 0)
     data.push({ name: "Other", value: otherCount })
   }
 
@@ -66,7 +66,7 @@ export function ModelDonutChart({ models, height = 240 }: Props) {
         <Tooltip
           formatter={(value) => [
             `${formatNumber(Number(value))} (${((Number(value) / total) * 100).toFixed(1)}%)`,
-            "Requests",
+            "Calls",
           ]}
           contentStyle={{
             backgroundColor: "hsl(var(--card))",

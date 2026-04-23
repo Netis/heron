@@ -8,7 +8,7 @@ The `ts-metrics` crate receives `LlmEvent` values from the pipeline, aggregates 
 
 The aggregator consumes three kinds of `LlmEvent`:
 
-- **`Start`** — emitted when request headers are parsed. Carries `source_id`, timestamp, `wire_api`, `model`, `is_stream`, `server_ip`. Writes Start-side fields (traffic counts, concurrency sample) into the bucket.
+- **`Start`** — emitted when request headers are parsed. Carries `source_id`, timestamp, `wire_api`, `model`, `is_stream`, `server_ip`. Writes Start-side fields (traffic counts, active-calls sample) into the bucket.
 - **`Complete`** — emitted when the full LLM call has been assembled. Carries the full `LlmCall`. Writes Complete-side fields (tokens, errors, finish reason, TTFT / E2E / TPOT samples) into the bucket.
 - **`Heartbeat`** — synthetic event-time advance, broadcast from capture to every shard. Does not write data; only advances the per-source watermark so the drain cadence fires on idle sources.
 
@@ -61,13 +61,13 @@ Per-granularity cadence keeps row counts bounded: in the fast-response steady st
 
 ```rust
 pub struct WindowBucket {
-    // Start-side (from LlmEvent::Start + concurrency sampling)
-    request_count: u64,
+    // Start-side (from LlmEvent::Start + active-calls sampling)
+    call_count: u64,
     stream_count: u64,
     non_stream_count: u64,
-    concurrency_sum: u64,          // Σ samples, for exact avg via SUM() at query time
-    concurrency_sample_count: u64,
-    concurrency_max: u32,
+    active_calls_sum: u64,          // Σ samples, for exact avg via SUM() at query time
+    active_calls_sample_count: u64,
+    active_calls_max: u32,
 
     // Complete-side (from LlmEvent::Complete)
     total_input_tokens: u64,
@@ -97,14 +97,14 @@ pub struct WindowBucket {
 
 `DistributionDigest` tracks `sum` and `count` exactly (untouched by digest compaction) so query-time `SUM(ttft_sum) / SUM(ttft_count)` produces an exact average over any multi-row aggregation. Percentiles are per-row t-digest estimates over that row's slice; cross-row aggregation is a weighted average by the row's `*_count` (approximate until the schema adopts serialized t-digest bytes).
 
-## Concurrency Tracking
+## Active Calls Tracking
 
-Concurrency requires overlapping-request counting, not a post-hoc derivation.
+The **Active Calls** metric (in-flight LLM call count) requires overlapping-call counting, not a post-hoc derivation.
 
-- On `Start`: aggregator increments the per-`DimensionKey` concurrency counter; the bucket writes the current value into `concurrency_sum / concurrency_sample_count` and updates `concurrency_max`.
+- On `Start`: aggregator increments the per-`DimensionKey` active-calls counter; the bucket writes the current value into `active_calls_sum / active_calls_sample_count` and updates `active_calls_max`.
 - On `Complete`: the per-`DimensionKey` counter is decremented (floored at 0). No sample is recorded for the Complete side.
 
-Per-row avg is `concurrency_sum / concurrency_sample_count`; cross-row avg is `SUM(concurrency_sum) / SUM(concurrency_sample_count)`. `concurrency_max` uses `MAX()` across rows.
+Per-row avg is `active_calls_sum / active_calls_sample_count`; cross-row avg is `SUM(active_calls_sum) / SUM(active_calls_sample_count)`. `active_calls_max` uses `MAX()` across rows.
 
 ## Per-Source Watermark
 
@@ -120,12 +120,12 @@ A busy source advances its own watermark without needing heartbeats; heartbeats 
 
 | Metric | Derivation |
 |--------|-----------|
-| QPS | `request_count / window_seconds` |
-| Success rate | `1 - error_count / request_count` |
-| Error rate | `error_count / request_count` |
-| 429 rate | `error_429_count / request_count` |
-| Throughput (tokens/s) | `total_output_tokens / window_seconds` |
-| Cache hit ratio | `total_cache_read_input_tokens / total_input_tokens` |
+| Call Rate | `call_count / window_seconds` |
+| Call Success Rate | `1 - error_count / call_count` |
+| Call Error Rate | `error_count / call_count` |
+| Call 429 Rate | `error_429_count / call_count` |
+| Token Throughput (tokens/s) | `total_output_tokens / window_seconds` |
+| Cache Hit Ratio | `total_cache_read_input_tokens / total_input_tokens` |
 
 ## File Structure
 

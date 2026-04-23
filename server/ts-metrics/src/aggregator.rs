@@ -41,7 +41,7 @@ struct BucketKey {
     server_ip: String,
 }
 
-/// Dimension key for concurrency tracking (no window or granularity).
+/// Dimension key for active-calls tracking (no window or granularity).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DimensionKey {
     source_id: String,
@@ -54,7 +54,7 @@ struct DimensionKey {
 ///
 /// Each `(source, granularity, window_start(request_time), dim)` key maps
 /// to one `WindowBucket` that receives writes from both `LlmEvent::Start`
-/// (traffic/concurrency) and `LlmEvent::Complete` (tokens/errors/latency).
+/// (traffic/active-calls) and `LlmEvent::Complete` (tokens/errors/latency).
 /// The bucket is drained on a per-`(source, granularity)` cadence aligned
 /// to the window boundary (first drain at `window_start + window_secs`,
 /// subsequent drains every `window_secs` of event-time) and then dropped.
@@ -67,7 +67,7 @@ struct DimensionKey {
 /// Heartbeat: `ts`). Pcap replay therefore produces deterministic output.
 pub struct MetricsAggregator {
     buckets: HashMap<BucketKey, WindowBucket>,
-    concurrency: HashMap<DimensionKey, i64>,
+    active_calls: HashMap<DimensionKey, i64>,
     /// Per-source event-time watermark, advanced by every event.
     latest_ts: HashMap<String, i64>,
     /// Per-(source, granularity_idx) cadence anchor for bucket drain.
@@ -82,7 +82,7 @@ impl MetricsAggregator {
     pub fn new(metrics: MetricsWorker) -> Self {
         Self {
             buckets: HashMap::new(),
-            concurrency: HashMap::new(),
+            active_calls: HashMap::new(),
             latest_ts: HashMap::new(),
             last_flush_ts: HashMap::new(),
             metrics,
@@ -148,11 +148,11 @@ impl MetricsAggregator {
             &start.server_ip.to_string(),
         );
 
-        let mut concurrency_values = [0u32; 4];
+        let mut active_calls_values = [0u32; 4];
         for (i, dk) in dim_keys.iter().enumerate() {
-            let entry = self.concurrency.entry(dk.clone()).or_insert(0);
+            let entry = self.active_calls.entry(dk.clone()).or_insert(0);
             *entry += 1;
-            concurrency_values[i] = (*entry).max(0) as u32;
+            active_calls_values[i] = (*entry).max(0) as u32;
         }
 
         for (gi, gran) in GRANULARITIES.iter().enumerate() {
@@ -171,7 +171,7 @@ impl MetricsAggregator {
                 };
                 let bucket = self.buckets.entry(bk).or_insert_with(WindowBucket::new);
                 bucket.on_call_start(start.is_stream);
-                bucket.sample_concurrency(concurrency_values[di]);
+                bucket.sample_active_calls(active_calls_values[di]);
             }
         }
     }
@@ -185,7 +185,7 @@ impl MetricsAggregator {
         );
 
         for dk in &dim_keys {
-            let entry = self.concurrency.entry(dk.clone()).or_insert(0);
+            let entry = self.active_calls.entry(dk.clone()).or_insert(0);
             *entry = (*entry - 1).max(0);
         }
 
@@ -430,7 +430,7 @@ mod tests {
             .iter()
             .find(|m| m.model == "gpt-4" && m.server_ip != "*")
             .expect("finest dim present");
-        assert_eq!(finest.request_count, 1);
+        assert_eq!(finest.call_count, 1);
         assert_eq!(finest.total_input_tokens, 100);
         assert_eq!(finest.ttft_count, 1);
         assert!(finest.ttft_sum > 0.0);
@@ -448,7 +448,7 @@ mod tests {
         let mut all = Vec::new();
         all.extend(agg.process(&make_start(t0, "gpt-4", true)));
         all.extend(agg.process(&make_heartbeat(t0 + 15_000_000, "")));
-        // Start row already emitted (request_count=1, tokens=0).
+        // Start row already emitted (call_count=1, tokens=0).
         let start_row = all
             .iter()
             .find(|m| {
@@ -458,7 +458,7 @@ mod tests {
                     && m.server_ip != "*"
             })
             .expect("start row for t0");
-        assert_eq!(start_row.request_count, 1);
+        assert_eq!(start_row.call_count, 1);
         assert_eq!(start_row.total_input_tokens, 0);
         assert_eq!(start_row.ttft_count, 0);
         assert_eq!(start_row.ttft_sum, 0.0);
@@ -487,7 +487,7 @@ mod tests {
             .iter()
             .find(|m| m.total_input_tokens > 0)
             .expect("late complete row");
-        assert_eq!(late.request_count, 0, "late complete row has zero traffic");
+        assert_eq!(late.call_count, 0, "late complete row has zero traffic");
         assert_eq!(late.total_input_tokens, 100);
         assert_eq!(late.ttft_count, 1);
         assert!(late.ttft_sum > 0.0);
@@ -497,7 +497,7 @@ mod tests {
     fn sum_traffic_across_rows_is_not_double_counted() {
         // Fast call + slow call in same window: we expect traffic SUM over
         // all rows for that window to equal 2 (not inflated by Complete
-        // rows that carry request_count=0).
+        // rows that carry call_count=0).
         let mut agg = MetricsAggregator::new(test_metrics());
         let t0 = 1_700_000_000_000_000i64;
 
@@ -522,7 +522,7 @@ mod tests {
                     && m.model == "gpt-4"
                     && m.server_ip != "*"
             })
-            .map(|m| m.request_count)
+            .map(|m| m.call_count)
             .sum();
         assert_eq!(
             traffic, 2,
@@ -657,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrency_tracked_in_merged_row() {
+    fn active_calls_tracked_in_merged_row() {
         let mut agg = MetricsAggregator::new(test_metrics());
         let t0 = 1_700_000_000_000_000i64;
 
@@ -683,11 +683,11 @@ mod tests {
             })
             .expect("global 10s row for t0");
         assert!(
-            global.concurrency_max >= 3,
-            "concurrency_max should be >= 3, got {}",
-            global.concurrency_max
+            global.active_calls_max >= 3,
+            "active_calls_max should be >= 3, got {}",
+            global.active_calls_max
         );
-        assert_eq!(global.request_count, 3);
+        assert_eq!(global.call_count, 3);
     }
 
     #[test]

@@ -146,7 +146,7 @@ export function ErrorsPage() {
   }
 
   const totalErrors = summary?.error_count ?? 0
-  const totalRequests = summary?.request_count ?? 0
+  const totalRequests = summary?.call_count ?? 0
   const errorRate = totalRequests > 0 ? (totalErrors / totalRequests) * 100 : 0
   const error4xx = summary?.error_4xx_count ?? 0
   const error429 = summary?.error_429_count ?? 0
@@ -159,7 +159,7 @@ export function ErrorsPage() {
         <KpiCard
           title="Total Errors"
           value={formatNumber(totalErrors)}
-          subtext={`${errorRate.toFixed(2)}% of all requests`}
+          subtext={`${errorRate.toFixed(2)}% of all calls`}
           color={errorRateColor(errorRate)}
         />
         <KpiCard

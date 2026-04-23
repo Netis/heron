@@ -6,7 +6,7 @@ This page explains the terms you will encounter in the TokenScope console and re
 
 The numbers shown on dashboards and detail views. Together they answer: *is the LLM service fast, stable, and efficient?*
 
-**Aggregation unit — LLM Call, not HTTP Exchange.** Every metric in this section is computed over **LLM Calls**. An HTTP Exchange that TokenScope did not recognise as an LLM call (a health check, an admin endpoint, a misrouted request) does **not** contribute to QPS, Throughput, Error Rate, or any other number below. This keeps dashboards focused on inference traffic. If you need raw-HTTP counts for debugging, query the `http_exchanges` table directly. Agent-level equivalents (per-turn latency, per-turn token cost) are derived separately from Agent Turns and appear under the turn views, not here.
+**Aggregation unit — LLM Call, not HTTP Exchange.** Every metric in this section is computed over **LLM Calls**. An HTTP Exchange that TokenScope did not recognise as an LLM call (a health check, an admin endpoint, a misrouted request) does **not** contribute to Call Rate, Token Throughput, Call Error Rate, or any other number below. This keeps dashboards focused on inference traffic. If you need raw-HTTP counts for debugging, query the `http_exchanges` table directly. Agent-level equivalents (per-turn latency, per-turn token cost) are derived separately from Agent Turns and appear under the turn views, not here.
 
 ### TTFT — Time To First Token
 
@@ -26,23 +26,23 @@ The numbers shown on dashboards and detail views. Together they answer: *is the 
 
 **Why it matters:** Steady-state generation cost, independent of prompt length. TPOT is the cleanest view of raw inference speed per request — it is what operators compare across models and hardware.
 
-### Throughput
+### Token Throughput
 
-**Definition:** Output tokens generated per second across a time window, summed over all requests. Unit: tokens per second.
+**Definition:** Output tokens generated per second across a time window, summed over all LLM Calls. Unit: tokens per second.
 
-**Why it matters:** Measures the deployment's overall token-producing capacity, not per-request speed. A single slow request has the same TPOT as a fast one but drags throughput down if many run in parallel. The primary signal for capacity planning and for judging whether a deployment is saturated.
+**Why it matters:** Measures the deployment's overall token-producing capacity, not per-call speed. A single slow call has the same TPOT as a fast one but drags Token Throughput down if many run in parallel. The primary signal for capacity planning and for judging whether a deployment is saturated.
 
-### QPS — Queries Per Second
+### Call Rate
 
-**Definition:** Number of LLM Calls per second over a time window (call count divided by window length). Unit: requests per second.
+**Definition:** Number of LLM Calls completed per second over a time window (call count divided by window length). Unit: calls per second. Roughly analogous to QPS in traditional web monitoring, but scoped to LLM traffic specifically.
 
-**Why it matters:** Traffic volume. The classic "how busy is the service" number, read alongside concurrency and error rate to understand load. Because it counts LLM Calls and not HTTP Exchanges, an agent turn with 20 tool-use round trips registers as 20 QPS, not 1.
+**Why it matters:** Traffic volume. The classic "how busy is the service" number, read alongside Active Calls and Call Error Rate to understand load. Because it counts LLM Calls and not HTTP Exchanges, an agent turn with 20 tool-use round trips registers as 20 on Call Rate, not 1.
 
-### Concurrency
+### Active Calls
 
-**Definition:** Number of **LLM Calls** in flight at the same time — counted from the moment the request enters the server to the moment its response finishes. Reported as average and peak over a time window. This is **not** TCP-connection concurrency or HTTP-Exchange concurrency: one long-lived HTTP/2 connection that is actively serving three streaming completions contributes 3 to this number, not 1.
+**Definition:** Number of **LLM Calls** in flight at the same time — counted from the moment the request enters the server to the moment its response finishes. Reported as average and peak over a time window. This is **not** TCP-connection concurrency or HTTP-Exchange concurrency: one long-lived HTTP/2 connection that is actively serving three streaming completions contributes 3 to Active Calls, not 1.
 
-**Why it matters:** Directly bounded by inference capacity. Watching concurrency against latency reveals queuing: rising concurrency with flat QPS is the classic "it is getting slower because demand outstripped supply" signature. Peak concurrency is also the honest benchmark for sizing GPU/accelerator pools — it tells you the worst case the deployment actually handled.
+**Why it matters:** Directly bounded by inference capacity. Watching Active Calls against latency reveals queuing: rising Active Calls with flat Call Rate is the classic "it is getting slower because demand outstripped supply" signature. Peak Active Calls is also the honest benchmark for sizing GPU/accelerator pools — it tells you the worst case the deployment actually handled.
 
 ### Cache Hit Ratio
 
@@ -50,9 +50,9 @@ The numbers shown on dashboards and detail views. Together they answer: *is the 
 
 **Why it matters:** Prompt-cached tokens are billed at a steep discount (roughly 10% on Anthropic, 50% on OpenAI). A high hit ratio means lower spend for the same workload; a sudden drop usually means a prompt-template change broke cache reuse.
 
-### Error Rate
+### Call Error Rate
 
-**Definition:** Fraction of requests ending in HTTP 4xx/5xx status. The 429 sub-rate is tracked separately because it specifically signals rate-limit pressure.
+**Definition:** Fraction of LLM Calls ending in HTTP 4xx/5xx status. The 429 sub-rate is tracked separately because it specifically signals rate-limit pressure.
 
 **Why it matters:** Service-health headline. 429-heavy traffic means you have hit a provider quota; 5xx-heavy traffic means the provider itself is in trouble. Both are first-order reliability signals.
 
