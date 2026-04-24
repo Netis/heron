@@ -140,7 +140,24 @@ pub fn extract_from_request(_req: &HttpRequestData, body: &Value) -> RequestInfo
     RequestInfo { model, is_stream }
 }
 
-/// Extract response info from a non-streaming OpenAI Chat Completions response.
+/// Read `cached_tokens` from an OpenAI-family `usage` object, tolerating both
+/// Chat Completions (`prompt_tokens_details`) and Responses API
+/// (`input_tokens_details`) naming. Both fields carry the same semantic
+/// (prompt-cache hits), so whichever the wire chose, we read it.
+fn read_cached_tokens(usage: &Value) -> Option<u32> {
+    usage
+        .get("input_tokens_details")
+        .or_else(|| usage.get("prompt_tokens_details"))
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+}
+
+/// Extract response info from a non-streaming OpenAI response body (Chat
+/// Completions or Responses API). Accepts both shapes: `prompt_tokens` /
+/// `completion_tokens` for Chat, `input_tokens` / `output_tokens` for
+/// Responses; `choices[0].finish_reason` for Chat, top-level `status` for
+/// Responses.
 pub fn extract_from_response(resp: &HttpResponseData) -> ResponseInfo {
     let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
     let body_str = std::str::from_utf8(&resp.body).ok().map(|s| s.to_string());
@@ -155,38 +172,40 @@ pub fn extract_from_response(resp: &HttpResponseData) -> ResponseInfo {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    // Chat Completions: choices[0].finish_reason
+    // Chat Completions: choices[0].finish_reason; Responses API: top-level status.
     let finish_reason = body
         .get("choices")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("finish_reason"))
         .and_then(|v| v.as_str())
-        .map(map_chat_finish_reason);
+        .map(map_chat_finish_reason)
+        .or_else(|| {
+            body.get("status")
+                .and_then(|v| v.as_str())
+                .map(map_responses_status)
+        });
 
-    let input_tokens = body
-        .get("usage")
-        .and_then(|u| u.get("prompt_tokens"))
+    let usage = body.get("usage");
+
+    let input_tokens = usage
+        .and_then(|u| u.get("prompt_tokens").or_else(|| u.get("input_tokens")))
         .and_then(|v| v.as_u64())
         .map(|v| v as u32);
 
-    let output_tokens = body
-        .get("usage")
-        .and_then(|u| u.get("completion_tokens"))
+    let output_tokens = usage
+        .and_then(|u| {
+            u.get("completion_tokens")
+                .or_else(|| u.get("output_tokens"))
+        })
         .and_then(|v| v.as_u64())
         .map(|v| v as u32);
 
-    let total_tokens = body
-        .get("usage")
+    let total_tokens = usage
         .and_then(|u| u.get("total_tokens"))
         .and_then(|v| v.as_u64())
         .map(|v| v as u32);
 
-    let cache_read_input_tokens = body
-        .get("usage")
-        .and_then(|u| u.get("prompt_tokens_details"))
-        .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64())
-        .map(|v| v as u32);
+    let cache_read_input_tokens = usage.and_then(read_cached_tokens);
 
     ResponseInfo {
         model,
@@ -254,12 +273,10 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
                         if let Some(tt) = usage.get("total_tokens").and_then(|v| v.as_u64()) {
                             total_tokens = Some(tt as u32);
                         }
-                        if let Some(cr) = usage
-                            .get("prompt_tokens_details")
-                            .and_then(|d| d.get("cached_tokens"))
-                            .and_then(|v| v.as_u64())
-                        {
-                            cache_read_input_tokens = Some(cr as u32);
+                        // Responses API emits `input_tokens_details.cached_tokens`;
+                        // read_cached_tokens also tolerates the Chat shape.
+                        if let Some(cr) = read_cached_tokens(usage) {
+                            cache_read_input_tokens = Some(cr);
                         }
                     }
                     // Graft accumulated output items into the response object
@@ -334,12 +351,8 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
                         if let Some(tt) = usage.get("total_tokens").and_then(|v| v.as_u64()) {
                             total_tokens = Some(tt as u32);
                         }
-                        if let Some(cr) = usage
-                            .get("prompt_tokens_details")
-                            .and_then(|d| d.get("cached_tokens"))
-                            .and_then(|v| v.as_u64())
-                        {
-                            cache_read_input_tokens = Some(cr as u32);
+                        if let Some(cr) = read_cached_tokens(usage) {
+                            cache_read_input_tokens = Some(cr);
                         }
                     }
                 }
@@ -851,5 +864,75 @@ mod tests {
         ];
         let info = extract_from_sse(&events);
         assert_eq!(info.response_id.as_deref(), Some("resp_xyz"));
+    }
+
+    #[test]
+    fn test_extract_from_sse_responses_cache_read_tokens() {
+        // Responses API carries cached_tokens under usage.input_tokens_details,
+        // not usage.prompt_tokens_details (which is Chat's field name). The
+        // extractor must read the Responses shape or Cache Token Usage stays 0.
+        let events = vec![make_sse(
+            "response.completed",
+            r#"{"response":{"id":"resp_1","model":"gpt-5","status":"completed","usage":{"input_tokens":100,"output_tokens":10,"total_tokens":110,"input_tokens_details":{"cached_tokens":42}}}}"#,
+        )];
+        let info = extract_from_sse(&events);
+        assert_eq!(info.cache_read_input_tokens, Some(42));
+    }
+
+    #[test]
+    fn test_extract_from_sse_chat_cache_read_tokens() {
+        // Guard rail: Chat Completions final chunk carries cached_tokens under
+        // usage.prompt_tokens_details. Must still be read after the helper
+        // unification.
+        let events = vec![
+            make_sse(
+                "",
+                r#"{"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hi"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":7}}}"#,
+            ),
+        ];
+        let info = extract_from_sse(&events);
+        assert_eq!(info.cache_read_input_tokens, Some(7));
+    }
+
+    #[test]
+    fn test_extract_from_response_non_streaming_responses_shape() {
+        // Non-streaming Responses API response: same shape as the inner
+        // `response` object inside a response.completed SSE event. Pre-fix
+        // this returned all-None because the reader was Chat-only.
+        let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let body = serde_json::json!({
+            "id": "resp_1",
+            "model": "gpt-5",
+            "status": "completed",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "input_tokens_details": {"cached_tokens": 3}
+            }
+        });
+        let resp = HttpResponseData {
+            flow_key: FlowKey::new(String::new(), ip, 1234, ip, 8080),
+            client_addr: (ip, 1234),
+            server_addr: (ip, 8080),
+            status: 200,
+            version: 1,
+            headers: vec![],
+            body: bytes::Bytes::from(body.to_string()),
+            first_byte_timestamp_us: 0,
+            complete_timestamp_us: 0,
+        };
+        let info = extract_from_response(&resp);
+        assert_eq!(info.model.as_deref(), Some("gpt-5"));
+        assert_eq!(info.response_id.as_deref(), Some("resp_1"));
+        assert_eq!(info.finish_reason, Some(FinishReason::Complete));
+        assert_eq!(info.input_tokens, Some(10));
+        assert_eq!(info.output_tokens, Some(5));
+        assert_eq!(info.total_tokens, Some(15));
+        assert_eq!(info.cache_read_input_tokens, Some(3));
     }
 }
