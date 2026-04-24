@@ -1,22 +1,13 @@
 import { useQuery } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
 import { useToolbarStore } from "@/stores/toolbar"
+import { useSupportedFilterParams } from "@/hooks/use-supported-filters"
 import type { MetricsSummary, TimeseriesData, ModelsData } from "@/types/api"
-
-/** Read dimension filters from toolbar store, mapping to API param names */
-function useFilterParams() {
-  const filters = useToolbarStore((s) => s.filters)
-  return {
-    wire_api: filters.wireApi || undefined,
-    model: filters.model || undefined,
-    server_ip: filters.serverIp || undefined,
-  }
-}
 
 export function useMetricsSummary() {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
-  const fp = useFilterParams()
+  const { params: fp } = useSupportedFilterParams()
 
   return useQuery({
     queryKey: ["metrics-summary", { start, end, ...fp }],
@@ -31,7 +22,7 @@ export function useTimeseries(
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
   const preset = useToolbarStore((s) => s.preset)
-  const fp = useFilterParams()
+  const { params: fp } = useSupportedFilterParams()
 
   // Auto-compute granularity based on time range
   const rangeSeconds = end - start
@@ -64,7 +55,7 @@ export function useTimeseries(
 export function useModels() {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
-  const fp = useFilterParams()
+  const { params: fp } = useSupportedFilterParams()
 
   return useQuery({
     queryKey: ["models", { start, end, ...fp }],

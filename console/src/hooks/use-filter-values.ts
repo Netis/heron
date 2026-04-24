@@ -5,22 +5,27 @@ interface FilterValuesData {
   values: string[]
 }
 
-function useFilterValues(endpoint: string) {
+interface Options {
+  enabled?: boolean
+}
+
+function useFilterValues(endpoint: string, opts?: Options) {
   return useQuery({
     queryKey: ["filter-values", endpoint],
     queryFn: () => apiFetch<FilterValuesData>(endpoint),
     staleTime: 60_000,
+    enabled: opts?.enabled ?? true,
   })
 }
 
-export function useWireApis() {
-  return useFilterValues("/api/filters/wire-apis")
+export function useWireApis(opts?: Options) {
+  return useFilterValues("/api/filters/wire-apis", opts)
 }
 
-export function useModelNames() {
-  return useFilterValues("/api/filters/models")
+export function useModelNames(opts?: Options) {
+  return useFilterValues("/api/filters/models", opts)
 }
 
-export function useServerIps() {
-  return useFilterValues("/api/filters/server-ips")
+export function useServerIps(opts?: Options) {
+  return useFilterValues("/api/filters/server-ips", opts)
 }

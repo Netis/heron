@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
 import { useToolbarStore } from "@/stores/toolbar"
+import { useSupportedFilterParams } from "@/hooks/use-supported-filters"
 import type { HttpExchangesPage } from "@/types/api"
 
 interface UseHttpExchangesParams {
@@ -27,7 +28,7 @@ export function useHttpExchanges({
 }: UseHttpExchangesParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
-  const filters = useToolbarStore((s) => s.filters)
+  const { params: fp } = useSupportedFilterParams()
 
   return useQuery({
     queryKey: [
@@ -39,7 +40,7 @@ export function useHttpExchanges({
         pageSize,
         sortBy,
         sortOrder,
-        serverIp: filters.serverIp,
+        ...fp,
         method,
         status,
         isSse,
@@ -53,7 +54,7 @@ export function useHttpExchanges({
         page_size: pageSize,
         sort_by: sortBy,
         sort_order: sortOrder,
-        server_ip: filters.serverIp || undefined,
+        ...fp,
         method: method || undefined,
         status: status || undefined,
         is_sse: isSse === undefined ? undefined : String(isSse),

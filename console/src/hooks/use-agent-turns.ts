@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
 import { useToolbarStore } from "@/stores/toolbar"
+import { useSupportedFilterParams } from "@/hooks/use-supported-filters"
 import type { AgentTurnsPage, AgentTurnDetail, AgentTurnCallItem } from "@/types/api"
 
 interface UseAgentTurnsParams {
@@ -17,12 +18,12 @@ interface UseAgentTurnsParams {
 export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agentKind }: UseAgentTurnsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
-  const filters = useToolbarStore((s) => s.filters)
+  const { params: fp } = useSupportedFilterParams()
 
   return useQuery({
     queryKey: ["agent-turns", {
       start, end, page, pageSize, sortBy, sortOrder,
-      wireApi: filters.wireApi, model: filters.model, serverIp: filters.serverIp,
+      ...fp,
       status, agentKind,
     }],
     queryFn: () =>
@@ -33,9 +34,7 @@ export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agent
         page_size: pageSize,
         sort_by: sortBy,
         sort_order: sortOrder,
-        wire_api: filters.wireApi || undefined,
-        model: filters.model || undefined,
-        server_ip: filters.serverIp || undefined,
+        ...fp,
         status: status || undefined,
         agent_kind: agentKind || undefined,
       }),

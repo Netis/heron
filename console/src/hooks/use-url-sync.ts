@@ -1,11 +1,12 @@
 import { useEffect, useRef } from "react"
-import { useSearchParams } from "react-router"
+import { useLocation, useSearchParams } from "react-router"
 import {
   useToolbarStore,
   PRESET_SECONDS,
   TOOLBAR_DEFAULTS,
   isValidPreset,
 } from "@/stores/toolbar"
+import { getSpecForPath, type DimensionKey } from "@/stores/page-filter-specs"
 
 function nowSeconds() {
   return Math.floor(Date.now() / 1000)
@@ -25,16 +26,23 @@ const P = {
 /**
  * Bidirectional sync between the toolbar Zustand store and URL search params.
  * Mount once in AppLayout.
+ *
+ * URL → store: always hydrates any filter key present in the URL (off-screen
+ * values in the store are preserved across route changes).
+ *
+ * Store → URL: per-route. Only params supported by the active route's spec
+ * are written. On route change, the URL is re-serialized so unsupported params
+ * are silently stripped.
  */
 export function useToolbarUrlSync() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const { pathname } = useLocation()
   const skipUrlUpdate = useRef(false)
 
   // ── URL → Store (on mount & on searchParams change from popstate) ──
   useEffect(() => {
     const urlPreset = searchParams.get(P.preset)
 
-    // Parse URL params into a store hydration patch
     const hydratePatch: Parameters<ReturnType<typeof useToolbarStore.getState>["_hydrate"]>[0] = {}
 
     if (urlPreset && isValidPreset(urlPreset)) {
@@ -79,32 +87,49 @@ export function useToolbarUrlSync() {
     }
   }, [searchParams])
 
-  // ── Store → URL (on store change) ──
+  // ── Store → URL (per-route; re-runs on pathname change) ──
+  // On every route change: (1) re-serialize store to URL using the new spec
+  // so params unsupported by the current page are stripped; (2) re-subscribe
+  // so future store mutations serialize against the new spec.
   useEffect(() => {
+    const spec = getSpecForPath(pathname)
+
+    writeStoreToUrl(useToolbarStore.getState(), spec, setSearchParams)
+
     const unsub = useToolbarStore.subscribe((state) => {
       if (skipUrlUpdate.current) {
         skipUrlUpdate.current = false
         return
       }
-      const params = storeToParams(state)
-      setSearchParams(
-        (prev) => {
-          const p = new URLSearchParams(prev)
-          // Clear old toolbar keys first
-          for (const k of Object.values(P)) p.delete(k)
-          for (const [k, v] of params) p.set(k, v)
-          return p
-        },
-        { replace: true },
-      )
+      writeStoreToUrl(state, spec, setSearchParams)
     })
     return unsub
-  }, [setSearchParams])
+  }, [pathname, setSearchParams])
 }
 
-/** Serialize store state to URL param entries (omitting defaults) */
+function writeStoreToUrl(
+  state: ReturnType<typeof useToolbarStore.getState>,
+  spec: readonly DimensionKey[],
+  setSearchParams: ReturnType<typeof useSearchParams>[1],
+) {
+  const params = storeToParams(state, spec)
+  setSearchParams(
+    (prev) => {
+      const p = new URLSearchParams(prev)
+      // Clear all toolbar keys first, then write supported entries
+      for (const k of Object.values(P)) p.delete(k)
+      for (const [k, v] of params) p.set(k, v)
+      return p
+    },
+    { replace: true },
+  )
+}
+
+/** Serialize store state to URL param entries (omitting defaults and
+ *  dimension filters not in the active route's spec). */
 function storeToParams(
   state: ReturnType<typeof useToolbarStore.getState>,
+  spec: readonly DimensionKey[],
 ): [string, string][] {
   const entries: [string, string][] = []
 
@@ -115,13 +140,13 @@ function storeToParams(
     entries.push([P.start, String(state.start)])
     entries.push([P.end, String(state.end)])
   }
-  if (state.filters.wireApi !== TOOLBAR_DEFAULTS.wireApi) {
+  if (spec.includes("wireApi") && state.filters.wireApi !== TOOLBAR_DEFAULTS.wireApi) {
     entries.push([P.wireApi, state.filters.wireApi])
   }
-  if (state.filters.model !== TOOLBAR_DEFAULTS.model) {
+  if (spec.includes("model") && state.filters.model !== TOOLBAR_DEFAULTS.model) {
     entries.push([P.model, state.filters.model])
   }
-  if (state.filters.serverIp !== TOOLBAR_DEFAULTS.serverIp) {
+  if (spec.includes("serverIp") && state.filters.serverIp !== TOOLBAR_DEFAULTS.serverIp) {
     entries.push([P.serverIp, state.filters.serverIp])
   }
   if (state.refreshInterval !== TOOLBAR_DEFAULTS.refreshInterval) {

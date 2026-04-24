@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
 import { useToolbarStore } from "@/stores/toolbar"
+import { useSupportedFilterParams } from "@/hooks/use-supported-filters"
 import type { LlmCallsPage } from "@/types/api"
 
 interface UseLlmCallsParams {
@@ -16,12 +17,12 @@ interface UseLlmCallsParams {
 export function useLlmCalls({ page, pageSize, sortBy, sortOrder, statusCode, finishReason }: UseLlmCallsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
-  const filters = useToolbarStore((s) => s.filters)
+  const { params: fp } = useSupportedFilterParams()
 
   return useQuery({
     queryKey: ["llm-calls", {
       start, end, page, pageSize, sortBy, sortOrder,
-      wireApi: filters.wireApi, model: filters.model, serverIp: filters.serverIp,
+      ...fp,
       statusCode, finishReason,
     }],
     queryFn: () =>
@@ -32,9 +33,7 @@ export function useLlmCalls({ page, pageSize, sortBy, sortOrder, statusCode, fin
         page_size: pageSize,
         sort_by: sortBy,
         sort_order: sortOrder,
-        wire_api: filters.wireApi || undefined,
-        model: filters.model || undefined,
-        server_ip: filters.serverIp || undefined,
+        ...fp,
         status_code: statusCode || undefined,
         finish_reason: finishReason || undefined,
       }),

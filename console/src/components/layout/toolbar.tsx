@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from "react"
-import { useLocation } from "react-router"
 import { Calendar, ChevronDown, RefreshCw } from "lucide-react"
 import { useIsFetching } from "@tanstack/react-query"
 import { useToolbarStore, type TimeRangePreset } from "@/stores/toolbar"
 import { useWireApis, useModelNames, useServerIps } from "@/hooks/use-filter-values"
+import { useSupportedFilterParams } from "@/hooks/use-supported-filters"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import { cn } from "@/lib/utils"
 
@@ -69,12 +69,14 @@ export function Toolbar() {
 
   const isFetching = useIsFetching()
 
-  const { data: wireApisData } = useWireApis()
-  const { data: modelsData } = useModelNames()
-  const { data: serverIpsData } = useServerIps()
+  const { spec } = useSupportedFilterParams()
+  const showWireApi = spec.includes("wireApi")
+  const showModel = spec.includes("model")
+  const showServerIp = spec.includes("serverIp")
 
-  const { pathname } = useLocation()
-  const hideDimensionFilters = pathname.startsWith("/agent-sessions")
+  const { data: wireApisData } = useWireApis({ enabled: showWireApi })
+  const { data: modelsData } = useModelNames({ enabled: showModel })
+  const { data: serverIpsData } = useServerIps({ enabled: showServerIp })
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -220,28 +222,30 @@ export function Toolbar() {
         )}
       </div>
 
-      {/* Dimension filters */}
-      {!hideDimensionFilters && (
-        <>
-          <FilterDropdown
-            label="Wire API"
-            options={wireApisData?.values ?? []}
-            selected={csvToArray(filters.wireApi)}
-            onChange={(v) => setFilter("wireApi", arrayToCsv(v))}
-          />
-          <FilterDropdown
-            label="Model"
-            options={modelsData?.values ?? []}
-            selected={csvToArray(filters.model)}
-            onChange={(v) => setFilter("model", arrayToCsv(v))}
-          />
-          <FilterDropdown
-            label="Server IP"
-            options={serverIpsData?.values ?? []}
-            selected={csvToArray(filters.serverIp)}
-            onChange={(v) => setFilter("serverIp", arrayToCsv(v))}
-          />
-        </>
+      {/* Dimension filters — rendered per current route's spec */}
+      {showWireApi && (
+        <FilterDropdown
+          label="Wire API"
+          options={wireApisData?.values ?? []}
+          selected={csvToArray(filters.wireApi)}
+          onChange={(v) => setFilter("wireApi", arrayToCsv(v))}
+        />
+      )}
+      {showModel && (
+        <FilterDropdown
+          label="Model"
+          options={modelsData?.values ?? []}
+          selected={csvToArray(filters.model)}
+          onChange={(v) => setFilter("model", arrayToCsv(v))}
+        />
+      )}
+      {showServerIp && (
+        <FilterDropdown
+          label="Server IP"
+          options={serverIpsData?.values ?? []}
+          selected={csvToArray(filters.serverIp)}
+          onChange={(v) => setFilter("serverIp", arrayToCsv(v))}
+        />
       )}
     </header>
   )
