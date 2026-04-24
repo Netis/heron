@@ -68,8 +68,8 @@ impl WireApi for OpenAiChatWireApi {
             .unwrap_or(false)
     }
 
-    fn extract_request(&self, req: &HttpRequestData) -> RequestInfo {
-        extract_from_request(req)
+    fn extract_request(&self, req: &HttpRequestData, body: &Value) -> RequestInfo {
+        extract_from_request(req, body)
     }
     fn extract_response(&self, resp: &HttpResponseData) -> ResponseInfo {
         extract_from_response(resp)
@@ -110,8 +110,8 @@ impl WireApi for OpenAiResponsesWireApi {
         body.get("input").is_some() && body.get("messages").is_none()
     }
 
-    fn extract_request(&self, req: &HttpRequestData) -> RequestInfo {
-        extract_from_request(req)
+    fn extract_request(&self, req: &HttpRequestData, body: &Value) -> RequestInfo {
+        extract_from_request(req, body)
     }
     fn extract_response(&self, resp: &HttpResponseData) -> ResponseInfo {
         extract_from_response(resp)
@@ -122,9 +122,9 @@ impl WireApi for OpenAiResponsesWireApi {
 }
 
 /// Extract request info from an OpenAI API request (both Chat and Responses).
-pub fn extract_from_request(req: &HttpRequestData) -> RequestInfo {
-    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-
+/// `body` is the pre-parsed JSON body (or `Value::Null` if the raw bytes
+/// weren't JSON).
+pub fn extract_from_request(_req: &HttpRequestData, body: &Value) -> RequestInfo {
     let model = body
         .get("model")
         .and_then(|v| v.as_str())
@@ -667,7 +667,8 @@ mod tests {
             body: bytes::Bytes::from(body.to_string()),
             timestamp_us: 0,
         };
-        let info = extract_from_request(&req);
+        let body_v = serde_json::from_slice::<Value>(&req.body).unwrap_or(Value::Null);
+        let info = extract_from_request(&req, &body_v);
         // When "stream" is absent, Chat Completions defaults to false
         assert!(
             !info.is_stream,

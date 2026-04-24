@@ -94,8 +94,8 @@ impl WireApi for AnthropicWireApi {
         body.get("system").is_some() || body.get("stop_sequences").is_some()
     }
 
-    fn extract_request(&self, req: &HttpRequestData) -> RequestInfo {
-        extract_from_request(req)
+    fn extract_request(&self, req: &HttpRequestData, body: &Value) -> RequestInfo {
+        extract_from_request(req, body)
     }
     fn extract_response(&self, resp: &HttpResponseData) -> ResponseInfo {
         extract_from_response(resp)
@@ -106,10 +106,9 @@ impl WireApi for AnthropicWireApi {
 }
 
 
-/// Extract request info from an Anthropic API request.
-pub fn extract_from_request(req: &HttpRequestData) -> RequestInfo {
-    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-
+/// Extract request info from an Anthropic API request. `body` is the
+/// pre-parsed JSON body (or `Value::Null` if the raw bytes weren't JSON).
+pub fn extract_from_request(_req: &HttpRequestData, body: &Value) -> RequestInfo {
     let model = body
         .get("model")
         .and_then(|v| v.as_str())

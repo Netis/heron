@@ -227,7 +227,17 @@ pub trait WireApi: Send + Sync {
     ) -> bool;
 
     /// Extract model and stream flag from the request.
-    fn extract_request(&self, req: &ts_protocol::model::HttpRequestData) -> RequestInfo;
+    ///
+    /// `body` is the pre-parsed JSON request body supplied by
+    /// `WireApiRegistry::detect`; pass `Value::Null` when the raw bytes
+    /// weren't JSON. This method is invoked only through `detect`, which
+    /// parses the body at most once on accept and never on route-rejected
+    /// requests.
+    fn extract_request(
+        &self,
+        req: &ts_protocol::model::HttpRequestData,
+        body: &serde_json::Value,
+    ) -> RequestInfo;
 
     /// Extract fields from a non-streaming HTTP response body.
     fn extract_response(&self, resp: &ts_protocol::model::HttpResponseData) -> ResponseInfo;

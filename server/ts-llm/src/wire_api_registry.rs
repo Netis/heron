@@ -17,7 +17,16 @@
 use serde_json::Value;
 use ts_protocol::model::HttpRequestData;
 
-use crate::model::{RouteVerdict, WireApi};
+use crate::model::{RequestInfo, RouteVerdict, WireApi};
+
+/// Result of a successful `WireApiRegistry::detect` call: the winning wire API
+/// plus the `RequestInfo` extracted from the same single body parse that
+/// detection did. Fusing the two avoids the historical double-parse (once in
+/// shape matching, once in `extract_request`).
+pub struct DetectionOutcome<'a> {
+    pub wire_api: &'a dyn WireApi,
+    pub request_info: RequestInfo,
+}
 
 /// Two-pass detection registry of `WireApi` implementations.
 pub struct WireApiRegistry {
@@ -36,15 +45,30 @@ impl WireApiRegistry {
         self
     }
 
-    /// Run two-pass detection. Returns the first wire API that accepts the
-    /// request by route, or — failing that — the first Unknown candidate
-    /// whose `matches_shape` returns true against the parsed JSON body.
-    pub fn detect(&self, req: &HttpRequestData) -> Option<&dyn WireApi> {
+    /// Run two-pass detection and extract request info in one pass.
+    ///
+    /// Returns the first wire API that accepts the request by route (or — if
+    /// nobody accepts — the first Unknown candidate whose `matches_shape`
+    /// returns true against the parsed JSON body), paired with the
+    /// `RequestInfo` extracted from that same body. The body is parsed **at
+    /// most once** per call, and only when a wire API actually matches —
+    /// route-rejected non-LLM traffic never triggers a parse.
+    pub fn detect(&self, req: &HttpRequestData) -> Option<DetectionOutcome<'_>> {
         // Pass 1: iterate, short-circuit on Accept, collect Unknowns.
         let mut deferred: Vec<&dyn WireApi> = Vec::new();
         for p in &self.wire_apis {
             match p.classify_route(req) {
-                RouteVerdict::Accept => return Some(p.as_ref()),
+                RouteVerdict::Accept => {
+                    // Parse the body now for extract_request. `Value::Null`
+                    // on non-JSON bodies preserves prior tolerance.
+                    let body: Value =
+                        serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+                    let request_info = p.extract_request(req, &body);
+                    return Some(DetectionOutcome {
+                        wire_api: p.as_ref(),
+                        request_info,
+                    });
+                }
                 RouteVerdict::Reject => {}
                 RouteVerdict::Unknown => deferred.push(p.as_ref()),
             }
@@ -58,7 +82,12 @@ impl WireApiRegistry {
             return None;
         }
         let body: Value = serde_json::from_slice(&req.body).ok()?;
-        deferred.into_iter().find(|p| p.matches_shape(req, &body))
+        let winner = deferred.into_iter().find(|p| p.matches_shape(req, &body))?;
+        let request_info = winner.extract_request(req, &body);
+        Some(DetectionOutcome {
+            wire_api: winner,
+            request_info,
+        })
     }
 
     /// Look up a previously-detected wire API by its stable `name()`.
@@ -132,6 +161,10 @@ mod tests {
         }
     }
 
+    fn detect_name(reg: &WireApiRegistry, req: &HttpRequestData) -> Option<&'static str> {
+        reg.detect(req).map(|o| o.wire_api.name())
+    }
+
     fn json_post(uri: &str, extra_headers: Vec<(&str, &str)>, body: &str) -> HttpRequestData {
         let mut headers = vec![
             ("authorization", "Bearer sk-xxx"),
@@ -154,7 +187,7 @@ mod tests {
             "/v1/messages",
             vec![("anthropic-version", "2023-06-01")],
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC));
+        assert_eq!(detect_name(&reg, &req), Some(wa::ANTHROPIC));
     }
 
     #[test]
@@ -167,7 +200,7 @@ mod tests {
             vec![("authorization", "Bearer sk-xxx")],
         );
         assert_eq!(
-            reg.detect(&req).map(|p| p.name()),
+            detect_name(&reg, &req),
             Some(wa::OPENAI_RESPONSES)
         );
     }
@@ -180,7 +213,7 @@ mod tests {
             "/v1/chat/completions",
             vec![("authorization", "Bearer sk-xxx")],
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::OPENAI_CHAT));
+        assert_eq!(detect_name(&reg, &req), Some(wa::OPENAI_CHAT));
     }
 
     #[test]
@@ -212,7 +245,7 @@ mod tests {
             vec![],
             r#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#,
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::OPENAI_CHAT));
+        assert_eq!(detect_name(&reg, &req), Some(wa::OPENAI_CHAT));
     }
 
     #[test]
@@ -226,7 +259,7 @@ mod tests {
             r#"{"model":"gpt-4o","input":"Tell me a joke."}"#,
         );
         assert_eq!(
-            reg.detect(&req).map(|p| p.name()),
+            detect_name(&reg, &req),
             Some(wa::OPENAI_RESPONSES)
         );
     }
@@ -241,7 +274,7 @@ mod tests {
             vec![],
             r#"{"model":"claude-3","messages":[{"role":"user","content":"hi"}],"max_tokens":100,"system":"be concise"}"#,
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC));
+        assert_eq!(detect_name(&reg, &req), Some(wa::ANTHROPIC));
     }
 
     #[test]
@@ -256,7 +289,7 @@ mod tests {
                 ("x-api-key", "sk-ant-abc"),
             ],
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC));
+        assert_eq!(detect_name(&reg, &req), Some(wa::ANTHROPIC));
     }
 
     #[test]
@@ -269,7 +302,7 @@ mod tests {
             vec![],
             r#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#,
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::OPENAI_CHAT));
+        assert_eq!(detect_name(&reg, &req), Some(wa::OPENAI_CHAT));
     }
 
     #[test]
@@ -286,7 +319,7 @@ mod tests {
             vec![("anthropic-version", "2023-06-01")],
             r#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#,
         );
-        assert_eq!(reg.detect(&req).map(|p| p.name()), Some(wa::ANTHROPIC));
+        assert_eq!(detect_name(&reg, &req), Some(wa::ANTHROPIC));
     }
 
     #[test]
@@ -312,6 +345,38 @@ mod tests {
             Bytes::from_static(br#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#),
         );
         assert!(reg.detect(&req).is_none());
+    }
+
+    #[test]
+    fn detect_returns_request_info_on_accept() {
+        // Route-accept path: detect must surface model + stream from the body
+        // with exactly one parse internally.
+        let reg = build_default_wire_api_registry();
+        let req = json_post(
+            "/v1/chat/completions",
+            vec![],
+            r#"{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let outcome = reg.detect(&req).expect("should accept");
+        assert_eq!(outcome.wire_api.name(), wa::OPENAI_CHAT);
+        assert_eq!(outcome.request_info.model, "gpt-4");
+        assert!(outcome.request_info.is_stream);
+    }
+
+    #[test]
+    fn detect_returns_request_info_on_shape_pass() {
+        // Shape-pass path: gateway prefix, body carries the identifying shape.
+        // request_info must also be populated here from the same single parse.
+        let reg = build_default_wire_api_registry();
+        let req = json_post(
+            "/v1/llm/chat/completions",
+            vec![],
+            r#"{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let outcome = reg.detect(&req).expect("should accept via shape pass");
+        assert_eq!(outcome.wire_api.name(), wa::OPENAI_CHAT);
+        assert_eq!(outcome.request_info.model, "gpt-4o");
+        assert!(!outcome.request_info.is_stream);
     }
 
     #[test]

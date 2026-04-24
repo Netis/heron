@@ -48,19 +48,18 @@ impl LlmProcessor {
     }
 
     fn on_request(&mut self, req: &HttpRequestData) -> Vec<LlmEvent> {
-        let Some(extractor) = self.wire_apis.detect(req) else {
+        let Some(outcome) = self.wire_apis.detect(req) else {
             self.metrics.counter(Metric::LlmHttpRequestsIgnored).inc();
             return Vec::new();
         };
-        let info = extractor.extract_request(req);
         self.metrics
             .counter(Metric::LlmHttpRequestsDetected)
             .inc();
         vec![LlmEvent::Start(LlmCallStart {
             source_id: req.flow_key.source_id.clone(),
-            wire_api: extractor.name(),
-            model: info.model,
-            is_stream: info.is_stream,
+            wire_api: outcome.wire_api.name(),
+            model: outcome.request_info.model,
+            is_stream: outcome.request_info.is_stream,
             server_ip: req.server_addr.0,
             timestamp_us: req.timestamp_us,
         })]
@@ -72,12 +71,13 @@ impl LlmProcessor {
         response: Arc<HttpResponseData>,
         sse_events: Vec<SseEventData>,
     ) -> Vec<LlmEvent> {
-        let Some(extractor) = self.wire_apis.detect(&request) else {
+        let Some(outcome) = self.wire_apis.detect(&request) else {
             // Already counted LlmHttpRequestsIgnored on Request; silent here.
             return Vec::new();
         };
 
-        let req_info = extractor.extract_request(&request);
+        let extractor = outcome.wire_api;
+        let req_info = outcome.request_info;
 
         // resp_info carries tokens / finish_reason / response_id / reconstructed body.
         let resp_info = if !sse_events.is_empty() {
