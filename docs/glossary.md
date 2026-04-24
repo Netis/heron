@@ -90,6 +90,14 @@ A single turn therefore contains anywhere from 1 LLM Call (simple Q&A) to 50+ (t
 
 **Why it matters:** Per-call metrics fragment the picture — a 30-call turn produces 30 different TTFTs, 30 finish reasons, 30 token counts. But the user only experienced one wait, paid for one task, and remembers one outcome. Per-turn metrics reflect that user-visible unit of work, which is what product, ops, and finance teams ultimately care about. Agent Turns are only produced for recognised agent clients (see **agent_kind**); traffic from unknown clients still generates LLM Calls but no Turn.
 
+### Agent Session
+
+**Definition:** One agent-client session — every interaction inside a single conversation, project, or IDE window of an agent product. A session groups every Agent Turn (and therefore every LLM Call) that shares the same `session_id` under one umbrella.
+
+**Hierarchy.** `Agent Session ─1:N─► Agent Turn ─1:N─► LLM Call ─1:1─► HTTP Exchange`. The session is the outermost unit — one "piece of work" the user opens and eventually closes. Each prompt inside it becomes a Turn; each Turn contains one or more Calls.
+
+**Why it matters:** Per-turn metrics capture one user-to-agent exchange; per-session metrics capture the whole task. Cumulative duration, total cost, total token spend, and turn count at the session level are what product, ops, and finance teams need to answer "what did this piece of work actually cost end-to-end?" or "how long did this task take from kickoff to handover?". Sessions are only reconstructed for recognised agent clients (see **agent_kind**); traffic from unknown clients still generates LLM Calls but no Session.
+
 ## Classification Axes
 
 Two independent filters for slicing the data.
@@ -112,7 +120,7 @@ Identifiers and status fields that appear on the entities above and are worth un
 
 ### session_id
 
-**Definition:** Identifier of one agent-client session — the same value ties together every request made inside a single conversation, project, or IDE window of an agent product.
+**Definition:** Identifier of one Agent Session — the same value ties together every request made inside a single conversation, project, or IDE window of an agent product.
 
 **How it is generated:** TokenScope does **not** invent this — it reads it directly off the wire, from whatever field the client itself already uses. Each recognised agent kind has a different source:
 

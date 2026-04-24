@@ -227,8 +227,8 @@ is no in-progress turn state, so `Started` / `CallAdded` are unnecessary.
    if None: return flush_ready_buffers()
 3. if profile.is_auxiliary(call): return flush_ready_buffers()    # aux never enters buffer
 4. buf = buffers.entry((source_id, session_id)).or_default()
-5. Orphan guard: if request_time < buf.last_finalized_request_time
-                 → drop (TurnReorderOrphan++) and flush
+5. Late-arrival guard: if request_time < buf.last_finalized_request_time
+                       → drop (TurnCallsDroppedLate++) and flush
 6. is_terminal = is_main_terminal(profile, call)
 7. buf.pending[request_time].push(BufferedCall {
        ic, arrived_at_us = virtual_now_us, is_terminal
@@ -384,7 +384,7 @@ sweep_interval_s = 10
 
 | Counter | Meaning | What to look at if rising |
 |---|---|---|
-| `worker::turn::orphan` (`TurnReorderOrphan`) | Late call dropped at entry guard | Cross-shard hashing bug, severe fan-in jitter, replay-with-time-skew |
+| `worker::turn::calls_late` (`TurnCallsDroppedLate`) | Late call dropped at entry guard | Cross-shard hashing bug, severe fan-in jitter, replay-with-time-skew |
 | `worker::turn::no_user_start` (`TurnDiscardedNoUserStart`) | Partition discarded for lack of user-start call | Lost capture window at session boundary; orphan sub-agent traffic; profile mis-classifying user-start |
 | `worker::turn::fin_idle` (`TurnFinalizedByIdle`) | Turn closed by idle timeout, not by terminal call | Truncated capture, client crash, missing terminal signal in profile |
 | `worker::turn::fin_grace` (`TurnFinalizedByGrace`) | Turn closed normally via grace expiry | Healthy steady-state path; ratio vs `fin_idle` is the health signal |
@@ -403,7 +403,7 @@ sweep_interval_s = 10
 | 8 | Sub-agent assistant text leaking to parent | `build_turn` picks final-call from main-agent only |
 | 9 | Single-call Error retry | `Error` excluded from `is_main_terminal`; buffer retained until real Complete or idle sweep |
 | 10 | Two terminals pending at flush time | `finalize_session` loops; each terminal's grace checked against own `arrived_at_us` |
-| 11 | Late call after finalize (orphan) | Entry-guard drop via `last_finalized_request_time`, counted via `TurnReorderOrphan` |
+| 11 | Late call after finalize | Entry-guard drop via `last_finalized_request_time`, counted via `TurnCallsDroppedLate` |
 | 12 | No terminal ever | Idle sweep emits Incomplete (or discards if no user-start) |
 | 13 | pcap replay (no heartbeats) | Last buffered batch waits for the next call to advance `virtual_now`, or for EOF `flush_all` |
 | 14 | Buffer memory growth (long-lived idle sessions) | GC after `2 · idle_timeout` past last finalize |

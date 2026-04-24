@@ -285,7 +285,7 @@ impl CaptureSource for CloudProbeSource {
                             // errors, but if it does, tearing down the source
                             // would take the whole pipeline with it. The cancel
                             // token is the only path out.
-                            metrics.counter(Metric::CaptureSourceErrors).inc();
+                            metrics.counter(Metric::CaptureReadErrors).inc();
                             if let Some(suppressed) = recv_err_throttle.tick() {
                                 if suppressed > 0 {
                                     tracing::warn!(

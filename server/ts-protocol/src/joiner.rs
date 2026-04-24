@@ -241,7 +241,7 @@ impl HttpJoiner {
         let pending = match self.pending.remove(&resp.flow_key) {
             Some(p) => p,
             None => {
-                self.metrics.counter(Metric::HttpExchangesIncomplete).inc();
+                self.metrics.counter(Metric::HttpExchangesUnpaired).inc();
                 return Vec::new();
             }
         };
@@ -308,7 +308,7 @@ mod tests {
             "test",
             &[
                 Metric::HttpExchangesCompleted,
-                Metric::HttpExchangesIncomplete,
+                Metric::HttpExchangesUnpaired,
                 Metric::HttpExchangesExpired,
             ],
         );

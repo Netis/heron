@@ -150,23 +150,28 @@ impl Pipeline {
         // pipeline's MetricsSystem (same as the storage_sink worker).
         {
             let w = calls_tx.downgrade();
-            per_pipeline_metrics[0].register_queue_probe(Metric::QueueDepthCalls, move || {
-                w.upgrade()
-                    .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-            });
+            per_pipeline_metrics[0]
+                .register_queue_probe(Metric::StorageQueueDepthCalls, move || {
+                    w.upgrade()
+                        .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
+                });
             let w = turns_tx.downgrade();
-            per_pipeline_metrics[0].register_queue_probe(Metric::QueueDepthTurns, move || {
-                w.upgrade()
-                    .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-            });
+            per_pipeline_metrics[0]
+                .register_queue_probe(Metric::StorageQueueDepthTurns, move || {
+                    w.upgrade()
+                        .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
+                });
             let w = metrics_out_tx.downgrade();
-            per_pipeline_metrics[0].register_queue_probe(Metric::QueueDepthMetricsOut, move || {
-                w.upgrade()
-                    .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-            });
+            per_pipeline_metrics[0].register_queue_probe(
+                Metric::StorageQueueDepthMetrics,
+                move || {
+                    w.upgrade()
+                        .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
+                },
+            );
             let w = http_exchanges_tx.downgrade();
             per_pipeline_metrics[0].register_queue_probe(
-                Metric::QueueDepthHttpExchanges,
+                Metric::StorageQueueDepthHttpExchanges,
                 move || {
                     w.upgrade()
                         .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)

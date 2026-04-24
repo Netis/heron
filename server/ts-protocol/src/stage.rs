@@ -147,7 +147,7 @@ pub fn spawn_protocol_stage(
 /// **Backpressure coupling.** For each paired exchange the worker sends to
 /// `http_exchanges_tx` before `joiner_event_txs[i]`. If the exchanges sink
 /// saturates, the LLM pipeline on that shard stalls behind it. This is
-/// observable via `QueueDepthHttpExchanges`; use that metric to detect
+/// observable via `StorageQueueDepthHttpExchanges`; use that metric to detect
 /// storage-induced stalls. The ordering was chosen to keep storage
 /// authoritative for raw transport records — a dropped storage send
 /// followed by a successful LLM send would lose the ground-truth row.
@@ -172,7 +172,7 @@ pub fn spawn_http_joiner_stage(
             &format!("joiner.{i}"),
             &[
                 Metric::HttpExchangesCompleted,
-                Metric::HttpExchangesIncomplete,
+                Metric::HttpExchangesUnpaired,
                 Metric::HttpExchangesExpired,
             ],
         );

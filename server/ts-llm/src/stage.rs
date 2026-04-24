@@ -66,11 +66,11 @@ pub fn spawn_llm_stage(
         let worker_metrics = metrics_sys.register_worker(
             &format!("llm.{i}"),
             &[
-                Metric::LlmRequestsDetected,
-                Metric::LlmRequestsIgnored,
+                Metric::LlmHttpRequestsDetected,
+                Metric::LlmHttpRequestsIgnored,
                 Metric::LlmCallsCompleted,
-                Metric::LlmCallsIdentified,
-                Metric::LlmCallsUnidentified,
+                Metric::LlmCallsWithAgent,
+                Metric::LlmCallsWithoutAgent,
             ],
         );
         handles.push(tokio::spawn(async move {
@@ -104,9 +104,9 @@ pub fn spawn_llm_stage(
                             }
                             if let LlmEvent::Complete { call, agent } = other {
                                 if agent.is_some() {
-                                    worker_metrics.counter(Metric::LlmCallsIdentified).inc();
+                                    worker_metrics.counter(Metric::LlmCallsWithAgent).inc();
                                 } else {
-                                    worker_metrics.counter(Metric::LlmCallsUnidentified).inc();
+                                    worker_metrics.counter(Metric::LlmCallsWithoutAgent).inc();
                                 }
                                 if calls_tx.send(call.clone()).await.is_err() {
                                     break 'main "downstream_closed_calls";
@@ -187,7 +187,7 @@ mod tests {
             "test-joiner",
             &[
                 Metric::HttpExchangesCompleted,
-                Metric::HttpExchangesIncomplete,
+                Metric::HttpExchangesUnpaired,
                 Metric::HttpExchangesExpired,
             ],
         );

@@ -264,7 +264,7 @@ impl CaptureSource for PcapLiveSource {
                         // the error and backing off beats tearing down the whole
                         // source — operators see the counter climb and the
                         // throttled warn shows the latest error string.
-                        metrics.counter(Metric::CaptureSourceErrors).inc();
+                        metrics.counter(Metric::CaptureReadErrors).inc();
                         if let Some(suppressed) = err_throttle.tick() {
                             if suppressed > 0 {
                                 tracing::warn!(

@@ -30,8 +30,7 @@ fn test_metrics() -> MetricsWorker {
             Metric::TurnCallsIngested,
             Metric::TurnCallsAuxiliary,
             Metric::TurnsCompleted,
-            Metric::TurnsTimedOut,
-            Metric::TurnReorderOrphan,
+            Metric::TurnCallsDroppedLate,
             Metric::TurnFinalizedByGrace,
             Metric::TurnFinalizedByIdle,
             Metric::TurnDiscardedNoUserStart,
@@ -542,7 +541,7 @@ fn f1_intra_source_hb_does_not_orphan_same_session_laggard() {
     // turn-shard ahead of slow worker X's still-in-flight call. Under an
     // event-time grace, Y's HB would fast-forward the session's grace
     // timeline past `terminal.arrived_at + grace` and finalize before X's
-    // laggard ever arrived — turning the laggard into a TurnReorderOrphan
+    // laggard ever arrived — turning the laggard into a TurnCallsDroppedLate
     // and splitting one turn into two.
     //
     // Under the wall-clock grace in place, HBs only bump the per-source

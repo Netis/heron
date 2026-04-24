@@ -286,7 +286,7 @@ async fn main() {
                                 Metric::CaptureHeartbeatsEmitted,
                                 Metric::CaptureBatchesReceived,
                                 Metric::CaptureBatchesDropped,
-                                Metric::CaptureSourceErrors,
+                                Metric::CaptureReadErrors,
                                 Metric::CaptureDumpErrors,
                             ],
                         )

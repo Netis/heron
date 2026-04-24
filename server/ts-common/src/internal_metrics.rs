@@ -134,7 +134,7 @@ define_metrics! {
     CaptureBatchesReceived   => { kind: Counter, group: Capture,  short: "batches_recv"    },
     CaptureBatchesDropped    => { kind: Counter, group: Capture,  short: "batches_drop"    },
     CaptureHeartbeatsEmitted => { kind: Counter, group: Capture,  short: "hb_emit"         },
-    CaptureSourceErrors      => { kind: Counter, group: Capture,  short: "src_errors"      },
+    CaptureReadErrors        => { kind: Counter, group: Capture,  short: "read_errors"     },
     CaptureDumpErrors        => { kind: Counter, group: Capture,  short: "dump_errors"     },
 
     // -- Protocol (dispatcher + flow workers) --
@@ -145,26 +145,25 @@ define_metrics! {
     HttpResponsesParsed          => { kind: Counter, group: Protocol, short: "http_resp"      },
     SseEventsParsed              => { kind: Counter, group: Protocol, short: "sse_events"     },
     HttpResyncEvents             => { kind: Counter, group: Protocol, short: "http_resync"    },
-    FlowsTimedOut                => { kind: Counter, group: Protocol, short: "flows_timeout"  },
+    FlowsTimedOut                => { kind: Counter, group: Protocol, short: "flows_expired"  },
 
     // -- HTTP exchange pairing (HttpJoiner) --
-    HttpExchangesCompleted  => { kind: Counter, group: Protocol, short: "xchg_done"     },
-    HttpExchangesIncomplete => { kind: Counter, group: Protocol, short: "xchg_orphan"   },
-    HttpExchangesExpired    => { kind: Counter, group: Protocol, short: "xchg_expired"  },
+    HttpExchangesCompleted => { kind: Counter, group: Protocol, short: "http_done"       },
+    HttpExchangesUnpaired  => { kind: Counter, group: Protocol, short: "http_incomplete" },
+    HttpExchangesExpired   => { kind: Counter, group: Protocol, short: "http_expired"    },
 
     // -- LLM extraction --
-    LlmRequestsDetected     => { kind: Counter, group: Llm, short: "req_detected"    },
-    LlmRequestsIgnored      => { kind: Counter, group: Llm, short: "req_ignored"     },
-    LlmCallsCompleted       => { kind: Counter, group: Llm, short: "calls_completed" },
-    LlmCallsIdentified      => { kind: Counter, group: Llm, short: "calls_identified"},
-    LlmCallsUnidentified    => { kind: Counter, group: Llm, short: "calls_unident"   },
+    LlmHttpRequestsDetected => { kind: Counter, group: Llm, short: "http_detected"  },
+    LlmHttpRequestsIgnored  => { kind: Counter, group: Llm, short: "http_ignored"   },
+    LlmCallsCompleted       => { kind: Counter, group: Llm, short: "calls_completed"},
+    LlmCallsWithAgent       => { kind: Counter, group: Llm, short: "calls_agent"    },
+    LlmCallsWithoutAgent    => { kind: Counter, group: Llm, short: "calls_no_agent" },
 
     // -- Turn tracking --
     TurnCallsIngested        => { kind: Counter, group: Turn, short: "calls_ingested" },
     TurnCallsAuxiliary       => { kind: Counter, group: Turn, short: "calls_aux"      },
+    TurnCallsDroppedLate     => { kind: Counter, group: Turn, short: "calls_late"     },
     TurnsCompleted           => { kind: Counter, group: Turn, short: "completed"      },
-    TurnsTimedOut            => { kind: Counter, group: Turn, short: "timed_out"      },
-    TurnReorderOrphan        => { kind: Counter, group: Turn, short: "orphan"         },
     TurnFinalizedByGrace     => { kind: Counter, group: Turn, short: "fin_grace"      },
     TurnFinalizedByIdle      => { kind: Counter, group: Turn, short: "fin_idle"       },
     TurnDiscardedNoUserStart => { kind: Counter, group: Turn, short: "no_user_start"  },
@@ -179,15 +178,15 @@ define_metrics! {
     StorageFlushErrors       => { kind: Counter, group: Storage, short: "flush_errors"   },
 
     // -- Queue depths (gauges) --
-    QueueDepthRaw          => { kind: Gauge, group: Protocol, short: "q.raw"           },
-    QueueDepthParsed       => { kind: Gauge, group: Protocol, short: "q.parsed"        },
-    QueueDepthEvent        => { kind: Gauge, group: Llm,      short: "q.event"         },
-    QueueDepthTurnShard    => { kind: Gauge, group: Turn,     short: "q.turn_shard"    },
-    QueueDepthMetricsShard => { kind: Gauge, group: Metrics,  short: "q.metrics_shard" },
-    QueueDepthCalls          => { kind: Gauge, group: Storage,  short: "q.calls"         },
-    QueueDepthTurns          => { kind: Gauge, group: Storage,  short: "q.turns"         },
-    QueueDepthMetricsOut     => { kind: Gauge, group: Storage,  short: "q.metrics_out"   },
-    QueueDepthHttpExchanges  => { kind: Gauge, group: Storage,  short: "q.exchanges"     },
+    QueueDepthRaw                  => { kind: Gauge, group: Protocol, short: "q.in"         },
+    QueueDepthParsed               => { kind: Gauge, group: Protocol, short: "q.out"        },
+    QueueDepthEvent                => { kind: Gauge, group: Llm,      short: "q.out"        },
+    QueueDepthTurnShard            => { kind: Gauge, group: Turn,     short: "q.in"         },
+    QueueDepthMetricsShard         => { kind: Gauge, group: Metrics,  short: "q.in"         },
+    StorageQueueDepthCalls         => { kind: Gauge, group: Storage,  short: "q.calls"      },
+    StorageQueueDepthTurns         => { kind: Gauge, group: Storage,  short: "q.turns"      },
+    StorageQueueDepthMetrics       => { kind: Gauge, group: Storage,  short: "q.metrics"    },
+    StorageQueueDepthHttpExchanges => { kind: Gauge, group: Storage,  short: "q.exchanges"  },
 }
 
 impl Metric {
@@ -629,7 +628,7 @@ mod tests {
                 Metric::StorageRecordsBuffered,
             ],
         );
-        sys.register_queue_probe(Metric::QueueDepthCalls, || 5);
+        sys.register_queue_probe(Metric::StorageQueueDepthCalls, || 5);
 
         let svc = sys.start();
         svc.sample_probes();

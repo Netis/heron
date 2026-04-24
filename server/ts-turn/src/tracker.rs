@@ -189,7 +189,7 @@ impl TurnTracker {
 
         if let Some(hw) = buf.last_finalized_request_time {
             if ic.call.request_time < hw {
-                self.metrics.counter(Metric::TurnReorderOrphan).inc();
+                self.metrics.counter(Metric::TurnCallsDroppedLate).inc();
                 return self.flush_ready_buffers(now_wall);
             }
         }
@@ -583,7 +583,6 @@ fn emit_or_discard(
     metrics.counter(Metric::TurnsCompleted).inc();
     if matches!(kind, FinalizeKind::Idle) {
         metrics.counter(Metric::TurnFinalizedByIdle).inc();
-        metrics.counter(Metric::TurnsTimedOut).inc();
     }
     true
 }
@@ -775,8 +774,7 @@ mod tests {
                 Metric::TurnCallsIngested,
                 Metric::TurnCallsAuxiliary,
                 Metric::TurnsCompleted,
-                Metric::TurnsTimedOut,
-                Metric::TurnReorderOrphan,
+                Metric::TurnCallsDroppedLate,
                 Metric::TurnFinalizedByGrace,
                 Metric::TurnFinalizedByIdle,
                 Metric::TurnDiscardedNoUserStart,
