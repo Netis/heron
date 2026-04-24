@@ -31,25 +31,13 @@ function TurnDetailView({
 
   const userCallId = turn.user_call_id ?? calls[0]?.id ?? null
 
-  const firstAnomalySeq = useMemo(() => {
-    for (const c of calls) {
-      for (const [, entry] of toolIndex) {
-        if (entry.origin?.call_id === c.id && entry.resolution == null && turn.final_call_id !== c.id) return c.sequence
-        if (entry.origin == null && entry.resolution?.call_id === c.id) return c.sequence
-      }
-    }
-    return null
-  }, [calls, toolIndex, turn.final_call_id])
-
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="shrink-0 p-4 pb-0">
         <StatsCards
           turn={turn}
           calls={calls}
-          toolIndex={toolIndex}
           onJumpToSlowest={onSelect}
-          onJumpToFirstAnomaly={firstAnomalySeq != null ? () => onSelect(firstAnomalySeq) : undefined}
         />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">

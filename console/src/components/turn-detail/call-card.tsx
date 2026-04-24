@@ -40,7 +40,6 @@ export function CallCard({
   const speed = classify(call)
   const isFinalCall = call.id === turn.final_call_id
   const userInput = isFirstCall ? turn.user_input : null
-  const finalAnswer = isFinalCall ? turn.final_answer : null
 
   return (
     <div
@@ -109,20 +108,12 @@ export function CallCard({
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
               Output · response body
             </div>
-            {finalAnswer != null && (
-              <div className="mb-2 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 dark:border-emerald-900/40 dark:bg-emerald-900/10">
-                <div className="mb-1 text-xs font-medium text-emerald-800 dark:text-emerald-300">🎯 Final Answer</div>
-                <Markdown text={finalAnswer} />
-              </div>
-            )}
             <CallOutputDispatch
               wireApi={call.wire_api}
               agentKind={turn.agent_kind ?? null}
               responseBody={call.response_body}
               toolIndex={toolIndex}
               callId={call.id}
-              finalCallId={turn.final_call_id}
-              turn={{ final_call_id: turn.final_call_id, final_finish_reason: turn.final_finish_reason }}
             />
           </section>
 
@@ -130,7 +121,7 @@ export function CallCard({
             {call.model} · {call.wire_api} · TTFB {formatMs(call.ttft_ms)} · finish: {call.finish_reason ?? "—"}
           </div>
           <button onClick={() => onOpenDetail?.(call.id)} className="text-xs text-foreground hover:underline">
-            View raw HTTP →
+            View call detail →
           </button>
         </div>
       )}

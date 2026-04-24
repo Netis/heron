@@ -51,9 +51,6 @@ export function ToolUsePointer({ state, resolution, className }: ToolUsePointerP
       </div>
     )
   }
-  if (state === "legit_pending") {
-    return <span className={cn("text-[11px] text-muted-foreground", className)}>→ no response (turn ended)</span>
-  }
   return (
     <span className={cn("inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-400", className)}>
       <AlertTriangle className="size-3" />

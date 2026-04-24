@@ -15,13 +15,11 @@ import type {
 } from "@/lib/wire-apis/openai-chat/types"
 import type { CallOverlay } from "./overlays/types"
 import { ToolUsePointer, ToolResultBackLink } from "@/components/turn-detail/tool-pointer"
-import { classifyToolUseState, classifyToolResultState, type ToolIndex, type TurnForClassification } from "@/lib/turn-index"
+import { classifyToolUseState, classifyToolResultState, type ToolIndex } from "@/lib/turn-index"
 
 interface OutputCtx {
   toolIndex: ToolIndex
   callId: string
-  isFinalCall: boolean
-  turn: TurnForClassification
 }
 interface InputCtx {
   toolIndex: ToolIndex
@@ -121,7 +119,7 @@ function MessageContent({
 function ToolCallView({ tc, ctx }: { tc: OpenAiChatToolCall; ctx?: OutputCtx }) {
   const [open, setOpen] = useState(true)
   const entry = ctx?.toolIndex.get(tc.id) ?? { origin: null, resolution: null }
-  const state = ctx ? classifyToolUseState(entry, { isFinalCall: ctx.isFinalCall, turn: ctx.turn }) : "healthy"
+  const state = ctx ? classifyToolUseState(entry) : "healthy"
   return (
     <div className="rounded bg-amber-50/60 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/40 p-2 text-[11px]">
       <div className="flex items-center gap-2">

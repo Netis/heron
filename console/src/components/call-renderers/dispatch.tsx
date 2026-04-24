@@ -4,7 +4,7 @@ import { OpenAiResponsesCallView, OpenAiResponsesOutputBlocks, OpenAiResponsesIn
 import { RawJsonFallback } from "./fallback"
 import { ClaudeCliOverlay } from "./overlays/claude-cli"
 import type { CallOverlay } from "./overlays/types"
-import type { ToolIndex, TurnForClassification } from "@/lib/turn-index"
+import type { ToolIndex } from "@/lib/turn-index"
 
 const agentOverlays: Record<string, CallOverlay> = {
   "claude-cli": ClaudeCliOverlay,
@@ -83,8 +83,6 @@ export interface CallOutputDispatchProps {
   responseBody: string | null
   toolIndex: ToolIndex
   callId: string
-  finalCallId: string | null
-  turn: TurnForClassification
 }
 
 /**
@@ -98,8 +96,6 @@ export function CallOutputDispatch(props: CallOutputDispatchProps) {
   const ctx = {
     toolIndex: props.toolIndex,
     callId: props.callId,
-    isFinalCall: props.callId === props.finalCallId,
-    turn: props.turn,
   }
   switch (props.wireApi) {
     case "anthropic": {

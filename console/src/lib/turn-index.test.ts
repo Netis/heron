@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { buildToolIndex, classifyToolUseState, classifyToolResultState, countUnresolved, type ToolUseState, type ToolIndex } from "./turn-index"
+import { buildToolIndex, classifyToolUseState, classifyToolResultState, type ToolUseState } from "./turn-index"
 import type { AgentTurnCallItem } from "@/types/api"
 
 describe("buildToolIndex", () => {
@@ -199,40 +199,15 @@ describe("buildToolIndex — capture loss", () => {
 })
 
 describe("classifyToolUseState", () => {
-  const mkTurn = (opts: { final_call_id?: string | null; final_finish_reason?: string | null } = {}) => ({
-    final_call_id: opts.final_call_id ?? null,
-    final_finish_reason: opts.final_finish_reason ?? null,
-  })
-
   it("healthy when resolution is set", () => {
     const state = classifyToolUseState(
       { origin: null, resolution: { call_sequence: 2, call_id: "c2", is_error: false, size_bytes: 0, content: "" } },
-      { isFinalCall: false, turn: mkTurn() },
     )
     expect(state).toBe<ToolUseState>("healthy")
   })
 
-  it("legit_pending when no resolution AND final call AND normal finish_reason", () => {
-    const state = classifyToolUseState(
-      { origin: null, resolution: null },
-      { isFinalCall: true, turn: mkTurn({ final_call_id: "c5", final_finish_reason: "end_turn" }) },
-    )
-    expect(state).toBe<ToolUseState>("legit_pending")
-  })
-
-  it("capture_gap when no resolution AND not final call", () => {
-    const state = classifyToolUseState(
-      { origin: null, resolution: null },
-      { isFinalCall: false, turn: mkTurn() },
-    )
-    expect(state).toBe<ToolUseState>("capture_gap")
-  })
-
-  it("capture_gap when final call but finish_reason is null (abnormal end)", () => {
-    const state = classifyToolUseState(
-      { origin: null, resolution: null },
-      { isFinalCall: true, turn: mkTurn({ final_call_id: "c5", final_finish_reason: null }) },
-    )
+  it("capture_gap when no resolution", () => {
+    const state = classifyToolUseState({ origin: null, resolution: null })
     expect(state).toBe<ToolUseState>("capture_gap")
   })
 })
@@ -240,24 +215,12 @@ describe("classifyToolUseState", () => {
 describe("classifyToolResultState", () => {
   it("healthy when origin is set", () => {
     expect(classifyToolResultState({
-      origin: { call_sequence: 1, call_id: "c1", tool_name: "Read" },
+      origin: { call_sequence: 1, call_id: "c1", tool_name: "Read", args_json: "{}" },
       resolution: null,
     })).toBe("healthy")
   })
 
   it("orphan when origin is null", () => {
     expect(classifyToolResultState({ origin: null, resolution: null })).toBe("orphan")
-  })
-})
-
-describe("countUnresolved", () => {
-  it("counts capture-gap tool_uses and orphan tool_results, not legit pending", () => {
-    const index: ToolIndex = new Map([
-      ["healthy", { origin: { call_sequence: 1, call_id: "c1", tool_name: "A" }, resolution: { call_sequence: 2, call_id: "c2", is_error: false, size_bytes: 1, content: "x" } }],
-      ["gap",     { origin: { call_sequence: 1, call_id: "c1", tool_name: "B" }, resolution: null }],
-      ["pending", { origin: { call_sequence: 3, call_id: "c3", tool_name: "C" }, resolution: null }],
-      ["orphan",  { origin: null, resolution: { call_sequence: 2, call_id: "c2", is_error: false, size_bytes: 1, content: "x" } }],
-    ])
-    expect(countUnresolved(index, { final_call_id: "c3", final_finish_reason: "end_turn" }, "c3")).toBe(2)
   })
 })

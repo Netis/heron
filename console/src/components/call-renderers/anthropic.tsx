@@ -11,7 +11,7 @@ import type {
 } from "@/lib/wire-apis/anthropic/types"
 import type { CallOverlay } from "./overlays/types"
 import { ToolUsePointer, ToolResultBackLink } from "@/components/turn-detail/tool-pointer"
-import { classifyToolUseState, classifyToolResultState, type ToolIndex, type TurnForClassification } from "@/lib/turn-index"
+import { classifyToolUseState, classifyToolResultState, type ToolIndex } from "@/lib/turn-index"
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -38,8 +38,6 @@ function byteLength(s: string): number {
 interface OutputCtx {
   toolIndex: ToolIndex
   callId: string
-  isFinalCall: boolean
-  turn: TurnForClassification
 }
 
 interface InputCtx {
@@ -69,7 +67,7 @@ function ToolUseBlockView({
 }) {
   const [argsOpen, setArgsOpen] = useState(true)
   const entry = ctx?.toolIndex.get(id) ?? { origin: null, resolution: null }
-  const state = ctx ? classifyToolUseState(entry, { isFinalCall: ctx.isFinalCall, turn: ctx.turn }) : "healthy"
+  const state = ctx ? classifyToolUseState(entry) : "healthy"
   return (
     <div className="rounded bg-amber-50/60 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/40 p-2 text-[11px]">
       <div className="flex items-center gap-2">

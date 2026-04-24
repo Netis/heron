@@ -162,39 +162,13 @@ export function buildToolIndex(calls: AgentTurnCallItem[]): ToolIndex {
   return index
 }
 
-export type ToolUseState = "healthy" | "legit_pending" | "capture_gap"
+export type ToolUseState = "healthy" | "capture_gap"
 export type ToolResultState = "healthy" | "orphan"
 
-const LEGIT_END_REASONS = new Set(["end_turn", "stop", "max_tokens", "stop_sequence"])
-
-export interface TurnForClassification {
-  final_call_id: string | null
-  final_finish_reason: string | null
-}
-
-export function classifyToolUseState(
-  entry: ToolIndexEntry,
-  ctx: { isFinalCall: boolean; turn: TurnForClassification },
-): ToolUseState {
-  if (entry.resolution != null) return "healthy"
-  if (ctx.isFinalCall && ctx.turn.final_finish_reason != null && LEGIT_END_REASONS.has(ctx.turn.final_finish_reason)) {
-    return "legit_pending"
-  }
-  return "capture_gap"
+export function classifyToolUseState(entry: ToolIndexEntry): ToolUseState {
+  return entry.resolution != null ? "healthy" : "capture_gap"
 }
 
 export function classifyToolResultState(entry: ToolIndexEntry): ToolResultState {
   return entry.origin == null ? "orphan" : "healthy"
-}
-
-export function countUnresolved(index: ToolIndex, turn: TurnForClassification, finalCallId: string | null): number {
-  let count = 0
-  for (const entry of index.values()) {
-    if (entry.resolution == null) {
-      const isFinal = entry.origin?.call_id === finalCallId
-      if (classifyToolUseState(entry, { isFinalCall: isFinal, turn }) === "capture_gap") count++
-    }
-    if (entry.origin == null) count++  // orphan results
-  }
-  return count
 }

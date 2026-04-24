@@ -572,8 +572,7 @@ fn emit_or_discard(
     }
 
     let refs: Vec<&AgentCall> = calls.iter().map(|bc| &bc.ic).collect();
-    let status = derive_status(profile, &refs);
-    let mut turn = build_turn(profile, &refs, status);
+    let mut turn = build_turn(profile, &refs);
     // The buffer key is authoritative for source/session — call.source_id
     // can legitimately be empty in tests; identity.session_id may differ
     // from a future cross-bucket scheme. Using the key keeps us consistent.
@@ -611,22 +610,6 @@ fn is_main_terminal(profile: &dyn AgentProfile, ic: &AgentCall) -> bool {
     }
 }
 
-/// Map the last main-agent call's finish_reason to a TurnStatus. Sub-agent
-/// finishes are ignored — they belong to the sub-agent, not the parent turn.
-fn derive_status(profile: &dyn AgentProfile, calls: &[&AgentCall]) -> TurnStatus {
-    let last_main = calls
-        .iter()
-        .rev()
-        .find(|ic| profile.subagent(&ic.call).is_none());
-    match last_main.and_then(|ic| ic.call.finish_reason) {
-        Some(FinishReason::Complete) => TurnStatus::Complete,
-        Some(FinishReason::Length) => TurnStatus::Length,
-        Some(FinishReason::Cancelled) => TurnStatus::Cancelled,
-        Some(FinishReason::Error) => TurnStatus::Failed,
-        _ => TurnStatus::Incomplete,
-    }
-}
-
 fn push_unique(list: &mut Vec<String>, value: String) {
     if !list.iter().any(|v| v == &value) {
         list.push(value);
@@ -634,7 +617,15 @@ fn push_unique(list: &mut Vec<String>, value: String) {
 }
 
 /// Pure constructor over a request_time-sorted, complete partition.
-fn build_turn(profile: &dyn AgentProfile, calls: &[&AgentCall], status: TurnStatus) -> AgentTurn {
+///
+/// Turn status and `final_*` are both derived from the real terminal pick
+/// (`is_main_terminal`). Wire-level `finish_reason` alone can't distinguish
+/// "final answer" from "tool roundtrip pending" on profiles with
+/// `turn_id_hint` (codex-cli over openai-responses — every call reports
+/// `Complete` regardless of whether the model asked for a tool call). For
+/// partitions drained via idle-sweep / EOF-flush with no terminal in the
+/// buffer, `final_*` stay `None` and status falls to `Incomplete`.
+fn build_turn(profile: &dyn AgentProfile, calls: &[&AgentCall]) -> AgentTurn {
     assert!(!calls.is_empty(), "build_turn requires at least one call");
     let first = calls[0];
     let source_id = first.call.source_id.clone();
@@ -709,13 +700,24 @@ fn build_turn(profile: &dyn AgentProfile, calls: &[&AgentCall], status: TurnStat
         None => (None, None),
     };
 
-    // final_*: the last main-agent call by request_time. Sub-agent text
-    // belongs to the sub-agent, never to the parent's final answer.
-    let last_main = calls
+    // Terminal pick: the main-agent call that actually closed this turn.
+    // Drives both `status` and `final_*`. `None` → turn is Incomplete (buffer
+    // was drained via sweep/flush before a terminal landed).
+    let terminal: Option<&AgentCall> = calls
         .iter()
         .rev()
-        .find(|ic| profile.subagent(&ic.call).is_none());
-    let (final_answer_preview, final_call_id, final_finish_reason) = match last_main {
+        .find(|ic| is_main_terminal(profile, ic))
+        .copied();
+
+    let status = match terminal.and_then(|ic| ic.call.finish_reason) {
+        Some(FinishReason::Complete) => TurnStatus::Complete,
+        Some(FinishReason::Length) => TurnStatus::Length,
+        Some(FinishReason::Cancelled) => TurnStatus::Cancelled,
+        Some(FinishReason::Error) => TurnStatus::Failed,
+        _ => TurnStatus::Incomplete,
+    };
+
+    let (final_answer_preview, final_call_id, final_finish_reason) = match terminal {
         Some(ic) => {
             let preview = profile
                 .extract_assistant_text(&ic.call)
@@ -1166,6 +1168,11 @@ mod tests {
         let turns = drain_completed(t.flush_all());
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].status, TurnStatus::Incomplete);
+        // No terminal ⇒ no final_*. Guards against regressing to "last call by
+        // request_time wins" which would mislabel the ToolUse call as final.
+        assert!(turns[0].final_call_id.is_none());
+        assert!(turns[0].final_finish_reason.is_none());
+        assert!(turns[0].final_answer_preview.is_none());
         assert_eq!(t.active_count(), 0);
     }
 
@@ -1224,6 +1231,33 @@ mod tests {
         let events = t.ingest(ic(c, id));
         assert!(drain_completed(events).is_empty());
         assert_eq!(t.active_count(), 1);
+    }
+
+    #[test]
+    fn codex_flush_with_pending_function_call_tail_is_incomplete() {
+        // Regression: a codex turn whose tail is a function_call (e.g.
+        // exec_command) with no function_call_output roundtrip in the buffer
+        // must not be mislabelled Complete. Per-call finish_reason is always
+        // `Complete` on openai-responses; only `is_turn_terminal` (no *_call
+        // in output) can tell "final answer" apart from "tool pending".
+        let mut t = mk_tracker_no_grace();
+        let mut c = codex_call("s1", "t1", "message", FinishReason::Complete);
+        c.response_body = Some(
+            r#"{"output":[
+                {"type":"reasoning","summary":[]},
+                {"type":"function_call","name":"exec_command","call_id":"ec1","arguments":"{}"}
+            ]}"#
+            .to_string(),
+        );
+        let id = identity_for_codex(&c);
+        t.ingest(ic(c, id));
+        assert_eq!(t.active_count(), 1);
+        let turns = drain_completed(t.flush_all());
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].status, TurnStatus::Incomplete);
+        assert!(turns[0].final_call_id.is_none());
+        assert!(turns[0].final_finish_reason.is_none());
+        assert!(turns[0].final_answer_preview.is_none());
     }
 
     #[test]
