@@ -388,6 +388,12 @@ impl FlowWorker {
         }
     }
 
+    /// Public so the stage loop can sample live-flow count into a
+    /// per-shard atomic gauge for the `flows_active` metric.
+    pub fn flow_count(&self) -> usize {
+        self.flows.len()
+    }
+
     /// Process a single worker input (packet or heartbeat) and return any
     /// downstream events produced. Pure in-memory work — no IO.
     pub fn process(&mut self, input: WorkerInput) -> Vec<HttpParseEvent> {
@@ -870,6 +876,48 @@ mod tests {
             "source-a flow must be evicted by its own source's heartbeat"
         );
         assert_eq!(metrics.counter(Metric::FlowsTimedOut).get(), 1);
+    }
+
+    #[test]
+    fn test_flow_count_tracks_flow_table() {
+        let (mut worker, _) = new_test_worker();
+        assert_eq!(worker.flow_count(), 0);
+
+        let fk1 = test_flow_key();
+        let req = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk1,
+            Direction::AtoB,
+            req,
+            100,
+            0,
+            0,
+        )));
+        assert_eq!(worker.flow_count(), 1);
+
+        let fk2 = FlowKey::new(
+            String::new(),
+            "10.0.0.1".parse().unwrap(),
+            6000,
+            "10.0.0.2".parse().unwrap(),
+            8080,
+        );
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk2,
+            Direction::AtoB,
+            req,
+            100,
+            0,
+            1_000_000,
+        )));
+        assert_eq!(worker.flow_count(), 2);
+
+        // Heartbeat past the 120s timeout evicts both flows.
+        let _ = worker.process(WorkerInput::Heartbeat {
+            ts: 200_000_000,
+            source_id: String::new(),
+        });
+        assert_eq!(worker.flow_count(), 0);
     }
 
     #[test]

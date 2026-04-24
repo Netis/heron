@@ -10,6 +10,9 @@
 //! * [`spawn_protocol_stage`] — N `FlowWorker` tasks, one per shard,
 //!   consuming `WorkerInput`s and producing `HttpParseEvent`s.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -94,8 +97,27 @@ pub fn spawn_protocol_stage(
         "worker_rxs.len() must equal event_txs.len() (composition-root wiring bug)"
     );
 
+    // Per-shard gauges updated after every `FlowWorker::process` call. Probe
+    // sums across shards: total active flows is the operationally useful
+    // number; per-shard skew is a separate concern.
+    let flow_gauges: Vec<Arc<AtomicU64>> = (0..worker_rxs.len())
+        .map(|_| Arc::new(AtomicU64::new(0)))
+        .collect();
+    let gauges_for_probe = flow_gauges.clone();
+    metrics_sys.register_queue_probe(Metric::FlowsActive, move || {
+        gauges_for_probe
+            .iter()
+            .map(|g| g.load(Ordering::Relaxed))
+            .sum()
+    });
+
     let mut handles = Vec::with_capacity(worker_rxs.len());
-    for (i, (mut wrx, event_tx)) in worker_rxs.into_iter().zip(event_txs).enumerate() {
+    for (i, ((mut wrx, event_tx), flow_gauge)) in worker_rxs
+        .into_iter()
+        .zip(event_txs)
+        .zip(flow_gauges.into_iter())
+        .enumerate()
+    {
         let worker_metrics = metrics_sys.register_worker(
             &format!("worker.{i}"),
             &[
@@ -121,6 +143,7 @@ pub fn spawn_protocol_stage(
                         break 'main "downstream_closed";
                     }
                 }
+                flow_gauge.store(worker.flow_count() as u64, Ordering::Relaxed);
             };
             match reason {
                 "upstream_eof" => {

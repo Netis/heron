@@ -149,6 +149,7 @@ define_metrics! {
     SseEventsParsed              => { kind: Counter, group: Protocol, short: "sse_events"        },
     HttpResyncEvents             => { kind: Counter, group: Protocol, short: "http_resync"       },
     FlowsTimedOut                => { kind: Counter, group: Protocol, short: "flows_expired"     },
+    FlowsActive                  => { kind: Gauge,   group: Protocol, short: "flows_active"      },
 
     // -- HTTP exchange pairing (HttpJoiner) --
     HttpExchangesCompleted => { kind: Counter, group: Protocol, short: "http_done"     },
