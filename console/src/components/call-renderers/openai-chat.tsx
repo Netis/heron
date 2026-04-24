@@ -14,6 +14,18 @@ import type {
   OpenAiChatToolCall,
 } from "@/lib/wire-apis/openai-chat/types"
 import type { CallOverlay } from "./overlays/types"
+import { ToolUsePointer, ToolResultBackLink } from "@/components/turn-detail/tool-pointer"
+import { classifyToolUseState, classifyToolResultState, type ToolIndex, type TurnForClassification } from "@/lib/turn-index"
+
+interface OutputCtx {
+  toolIndex: ToolIndex
+  callId: string
+  isFinalCall: boolean
+  turn: TurnForClassification
+}
+interface InputCtx {
+  toolIndex: ToolIndex
+}
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -106,8 +118,10 @@ function MessageContent({
   )
 }
 
-function ToolCallView({ tc }: { tc: OpenAiChatToolCall }) {
+function ToolCallView({ tc, ctx }: { tc: OpenAiChatToolCall; ctx?: OutputCtx }) {
   const [open, setOpen] = useState(true)
+  const entry = ctx?.toolIndex.get(tc.id) ?? { origin: null, resolution: null }
+  const state = ctx ? classifyToolUseState(entry, { isFinalCall: ctx.isFinalCall, turn: ctx.turn }) : "healthy"
   return (
     <div className="rounded bg-amber-50/60 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/40 p-2 text-[11px]">
       <div className="flex items-center gap-2">
@@ -120,6 +134,11 @@ function ToolCallView({ tc }: { tc: OpenAiChatToolCall }) {
           {formatJson(safeParseJson(tc.function.arguments) ?? tc.function.arguments)}
         </pre>
       </details>
+      {ctx && (
+        <div className="mt-1">
+          <ToolUsePointer state={state} resolution={entry.resolution} />
+        </div>
+      )}
     </div>
   )
 }
@@ -411,21 +430,21 @@ function LogprobsPanel({ choice }: { choice: OpenAiChatChoice }) {
   )
 }
 
-function ResponseCard({ response }: { response: OpenAiChatResponse }) {
+function ResponseCard({ response, ctx }: { response: OpenAiChatResponse; ctx?: OutputCtx }) {
   if (response.choices.length === 0) {
     return <div className="text-[11px] text-muted-foreground italic">No choices in response.</div>
   }
   return (
     <div className="space-y-2">
       {response.choices.map((c, i) => (
-        <ChoiceCard key={i} choice={c} />
+        <ChoiceCard key={i} choice={c} ctx={ctx} />
       ))}
       <UsageCard response={response} />
     </div>
   )
 }
 
-function ChoiceCard({ choice }: { choice: OpenAiChatChoice }) {
+function ChoiceCard({ choice, ctx }: { choice: OpenAiChatChoice; ctx?: OutputCtx }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
@@ -442,7 +461,7 @@ function ChoiceCard({ choice }: { choice: OpenAiChatChoice }) {
             </pre>
           </div>
         )}
-        {choice.message.tool_calls?.map((tc, i) => <ToolCallView key={i} tc={tc} />)}
+        {choice.message.tool_calls?.map((tc, i) => <ToolCallView key={i} tc={tc} ctx={ctx} />)}
         {choice.message.refusal && (
           <div className="rounded border border-red-300 bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-900/20 dark:text-red-300">
             🚫 refusal: {choice.message.refusal}
@@ -538,13 +557,13 @@ export function OpenAiChatCallView({
   )
 }
 
-export function OpenAiChatOutputBlocks({ response }: { response: OpenAiChatResponse }) {
+export function OpenAiChatOutputBlocks({ response, ctx }: { response: OpenAiChatResponse; ctx?: OutputCtx }) {
   if (response.choices.length === 0) {
     return <div className="text-[11px] text-muted-foreground italic">No response content.</div>
   }
   return (
     <div className="space-y-2">
-      {response.choices.map((c, i) => <ChoiceCard key={i} choice={c} />)}
+      {response.choices.map((c, i) => <ChoiceCard key={i} choice={c} ctx={ctx} />)}
     </div>
   )
 }
@@ -555,4 +574,81 @@ export function openaiChatParseForOutput(
 ) {
   const call = parseOpenAiChatCall(requestBody, responseBody)
   return { response: call.response }
+}
+
+// ── Input subsection (tool_result back-pointers + optional user text) ──────
+
+export interface OpenAiChatParsedInput {
+  toolResults: Array<{ tool_call_id: string; content: string }>
+  extraUserText: string | null
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function openaiChatParseForInput(requestBody: string | null | undefined): OpenAiChatParsedInput {
+  if (!requestBody) return { toolResults: [], extraUserText: null }
+  const call = parseOpenAiChatCall(requestBody, null)
+  const msgs = call.request.messages
+  let lastAssistantIdx = -1
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === "assistant") { lastAssistantIdx = i; break }
+  }
+  const tail = msgs.slice(lastAssistantIdx + 1)
+  const toolResults: OpenAiChatParsedInput["toolResults"] = []
+  let extraUserText: string | null = null
+  for (const m of tail) {
+    if (m.role === "tool" && m.tool_call_id) {
+      const content = typeof m.content === "string" ? m.content : formatJson(m.content ?? "")
+      toolResults.push({ tool_call_id: m.tool_call_id, content })
+    } else if (m.role === "user" && typeof m.content === "string") {
+      extraUserText = m.content
+    }
+  }
+  return { toolResults, extraUserText }
+}
+
+export function OpenAiChatInputBlocks({
+  parsed,
+  ctx,
+}: {
+  parsed: OpenAiChatParsedInput
+  ctx: InputCtx
+  overlay?: CallOverlay | null
+}) {
+  if (parsed.toolResults.length === 0 && !parsed.extraUserText) {
+    return <div className="text-[11px] text-muted-foreground italic">No input deltas.</div>
+  }
+  return (
+    <div className="space-y-2">
+      {parsed.toolResults.map((tr) => {
+        const entry = ctx.toolIndex.get(tr.tool_call_id) ?? { origin: null, resolution: null }
+        const state = classifyToolResultState(entry)
+        return (
+          <div
+            key={tr.tool_call_id}
+            className={cn(
+              "rounded border p-2 text-[11px]",
+              state === "orphan"
+                ? "bg-amber-50/60 border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/40"
+                : "bg-muted/40 border-border/60",
+            )}
+          >
+            <div className="flex items-center gap-2">
+              <span className="font-medium">⤷ tool_result</span>
+              <span className="font-mono text-[10px] text-muted-foreground">{tr.tool_call_id}</span>
+              <span className="text-[10px] text-muted-foreground">· {formatSize(byteLength(tr.content))}</span>
+            </div>
+            <pre className="mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{tr.content}</pre>
+            <div className="mt-1">
+              <ToolResultBackLink state={state} origin={entry.origin} />
+            </div>
+          </div>
+        )
+      })}
+      {parsed.extraUserText && (
+        <div className="rounded border border-blue-200 bg-blue-50/60 p-3 text-[11px] dark:border-blue-900/40 dark:bg-blue-900/10">
+          <Markdown text={parsed.extraUserText} />
+        </div>
+      )}
+    </div>
+  )
 }

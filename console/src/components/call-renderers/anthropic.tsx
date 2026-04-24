@@ -5,12 +5,13 @@ import { Markdown } from "@/components/ui/markdown"
 import { parseAnthropicCall } from "@/lib/wire-apis/anthropic"
 import type {
   AnthropicBlock,
-  AnthropicCall,
   AnthropicMessage,
   AnthropicRequest,
   AnthropicResponse,
 } from "@/lib/wire-apis/anthropic/types"
 import type { CallOverlay } from "./overlays/types"
+import { ToolUsePointer, ToolResultBackLink } from "@/components/turn-detail/tool-pointer"
+import { classifyToolUseState, classifyToolResultState, type ToolIndex, type TurnForClassification } from "@/lib/turn-index"
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -32,11 +33,20 @@ function byteLength(s: string): number {
   return new Blob([s]).size
 }
 
-// ── block sub-renderers ────────────────────────────────────────────────────
+// ── ctx types ──────────────────────────────────────────────────────────────
 
-interface ToolResultLookup {
-  (toolUseId: string): { content: string; is_error: boolean } | null
+interface OutputCtx {
+  toolIndex: ToolIndex
+  callId: string
+  isFinalCall: boolean
+  turn: TurnForClassification
 }
+
+interface InputCtx {
+  toolIndex: ToolIndex
+}
+
+// ── block sub-renderers ────────────────────────────────────────────────────
 
 function TextBlockView({ text, renderUserMessage }: { text: string; renderUserMessage?: (t: string) => React.ReactNode }) {
   return (
@@ -50,16 +60,16 @@ function ToolUseBlockView({
   id,
   name,
   input,
-  resultLookup,
+  ctx,
 }: {
   id: string
   name: string
   input: unknown
-  resultLookup?: ToolResultLookup
+  ctx?: OutputCtx
 }) {
   const [argsOpen, setArgsOpen] = useState(true)
-  const [resultOpen, setResultOpen] = useState(false)
-  const result = resultLookup ? resultLookup(id) : null
+  const entry = ctx?.toolIndex.get(id) ?? { origin: null, resolution: null }
+  const state = ctx ? classifyToolUseState(entry, { isFinalCall: ctx.isFinalCall, turn: ctx.turn }) : "healthy"
   return (
     <div className="rounded bg-amber-50/60 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/40 p-2 text-[11px]">
       <div className="flex items-center gap-2">
@@ -72,23 +82,11 @@ function ToolUseBlockView({
           {formatJson(input)}
         </pre>
       </details>
-      {result ? (
-        <details className="mt-1" open={resultOpen} onToggle={(e) => setResultOpen((e.target as HTMLDetailsElement).open)}>
-          <summary className={cn("cursor-pointer text-[10px]", result.is_error ? "text-red-600" : "text-muted-foreground")}>
-            ⤷ {result.is_error ? "error" : "result"} · {formatSize(byteLength(result.content))}
-          </summary>
-          <pre
-            className={cn(
-              "mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]",
-              result.is_error && "text-red-600",
-            )}
-          >
-            {result.content}
-          </pre>
-        </details>
-      ) : resultLookup ? (
-        <div className="mt-1 text-[10px] text-muted-foreground italic">⤷ result · (no response, turn ended)</div>
-      ) : null}
+      {ctx && (
+        <div className="mt-1">
+          <ToolUsePointer state={state} resolution={entry.resolution} />
+        </div>
+      )}
     </div>
   )
 }
@@ -171,11 +169,11 @@ function ThinkingBlockView({ block }: { block: Extract<AnthropicBlock, { type: "
 
 function BlockView({
   block,
-  resultLookup,
+  ctx,
   overlay,
 }: {
   block: AnthropicBlock
-  resultLookup?: ToolResultLookup
+  ctx?: OutputCtx
   overlay?: CallOverlay | null
   isUserMessage?: boolean
 }) {
@@ -185,7 +183,7 @@ function BlockView({
     case "text":
       return <TextBlockView text={block.text} renderUserMessage={UserMsg ? (t) => <UserMsg text={t} /> : undefined} />
     case "tool_use":
-      return <ToolUseBlockView id={block.id} name={block.name} input={block.input} resultLookup={resultLookup} />
+      return <ToolUseBlockView id={block.id} name={block.name} input={block.input} ctx={ctx} />
     case "tool_result":
       return (
         <ToolResultBlockView
@@ -247,12 +245,12 @@ function messagePreview(msg: AnthropicMessage): string {
 function MessageRow({
   msg,
   index,
-  resultLookup,
+  ctx,
   overlay,
 }: {
   msg: AnthropicMessage
   index: number
-  resultLookup?: ToolResultLookup
+  ctx?: OutputCtx
   overlay?: CallOverlay | null
 }) {
   const [open, setOpen] = useState(false)
@@ -274,7 +272,7 @@ function MessageRow({
       {open && (
         <div className="space-y-2 border-t border-border/30 bg-muted/10 px-3 py-2">
           {msg.content.map((b, i) => (
-            <BlockView key={i} block={b} resultLookup={resultLookup} overlay={overlay} isUserMessage={msg.role === "user"} />
+            <BlockView key={i} block={b} ctx={ctx} overlay={overlay} isUserMessage={msg.role === "user"} />
           ))}
         </div>
       )}
@@ -284,11 +282,11 @@ function MessageRow({
 
 function MessagesSection({
   messages,
-  resultLookup,
+  ctx,
   overlay,
 }: {
   messages: AnthropicMessage[]
-  resultLookup?: ToolResultLookup
+  ctx?: OutputCtx
   overlay?: CallOverlay | null
 }) {
   const [open, setOpen] = useState(true)
@@ -300,7 +298,7 @@ function MessagesSection({
         <span className="font-medium">Messages</span>
         <span className="text-muted-foreground">({messages.length})</span>
       </button>
-      {open && <div>{messages.map((m, i) => <MessageRow key={i} msg={m} index={i} resultLookup={resultLookup} overlay={overlay} />)}</div>}
+      {open && <div>{messages.map((m, i) => <MessageRow key={i} msg={m} index={i} ctx={ctx} overlay={overlay} />)}</div>}
     </div>
   )
 }
@@ -471,30 +469,11 @@ function UsageCard({ response }: { response: AnthropicResponse }) {
   )
 }
 
-// ── tool-result lookup helper ──────────────────────────────────────────────
-
-function buildResultLookup(_call: AnthropicCall, nextCallRequestBody: string | null | undefined): ToolResultLookup | undefined {
-  if (!nextCallRequestBody) return undefined
-  // Parse the next call's request to extract tool_result blocks.
-  const next = parseAnthropicCall(nextCallRequestBody, null)
-  const map = new Map<string, { content: string; is_error: boolean }>()
-  for (const msg of next.request.messages) {
-    for (const block of msg.content) {
-      if (block.type === "tool_result") {
-        const c = typeof block.content === "string" ? block.content : formatJson(block.content)
-        map.set(block.tool_use_id, { content: c, is_error: block.is_error })
-      }
-    }
-  }
-  return (id: string) => map.get(id) ?? null
-}
-
 // ── exported views ─────────────────────────────────────────────────────────
 
 export interface AnthropicCallViewProps {
   requestBody: string | null
   responseBody: string | null
-  nextCallRequestBody?: string | null
   overlay?: CallOverlay | null
   hasRequestBody: boolean
 }
@@ -502,12 +481,10 @@ export interface AnthropicCallViewProps {
 export function AnthropicCallView({
   requestBody,
   responseBody,
-  nextCallRequestBody,
   overlay,
   hasRequestBody,
 }: AnthropicCallViewProps) {
   const call = useMemo(() => parseAnthropicCall(requestBody, responseBody), [requestBody, responseBody])
-  const resultLookup = useMemo(() => buildResultLookup(call, nextCallRequestBody), [call, nextCallRequestBody])
 
   return (
     <>
@@ -539,7 +516,6 @@ export function AnthropicCallView({
         </div>
         <AnthropicOutputBlocks
           response={call.response}
-          resultLookup={resultLookup}
           overlay={overlay}
         />
         <div className="mt-2">
@@ -557,11 +533,11 @@ export function AnthropicCallView({
  */
 export function AnthropicOutputBlocks({
   response,
-  resultLookup,
+  ctx,
   overlay,
 }: {
   response: AnthropicResponse
-  resultLookup?: ToolResultLookup
+  ctx?: OutputCtx
   overlay?: CallOverlay | null
 }) {
   if (response.content.length === 0) {
@@ -570,21 +546,108 @@ export function AnthropicOutputBlocks({
   return (
     <div className="space-y-2">
       {response.content.map((b, i) => (
-        <BlockView key={i} block={b} resultLookup={resultLookup} overlay={overlay} />
+        <BlockView key={i} block={b} ctx={ctx} overlay={overlay} />
       ))}
     </div>
   )
 }
 
 /**
- * Helper for CallCard: parse + extract output + build result lookup in one call.
+ * Helper for CallCard: parse + extract output in one call.
  */
 export function anthropicParseForOutput(
   requestBody: string | null | undefined,
   responseBody: string | null | undefined,
-  nextCallRequestBody: string | null | undefined,
 ) {
   const call = parseAnthropicCall(requestBody, responseBody)
-  const resultLookup = buildResultLookup(call, nextCallRequestBody)
-  return { response: call.response, resultLookup }
+  return { response: call.response }
+}
+
+// ── Input subsection (tool_result back-pointers + optional user text) ──────
+
+export interface AnthropicParsedInput {
+  toolResults: Array<{
+    tool_use_id: string
+    content: string
+    is_error: boolean
+  }>
+  extraUserText: string | null
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function anthropicParseForInput(requestBody: string | null | undefined): AnthropicParsedInput {
+  if (!requestBody) return { toolResults: [], extraUserText: null }
+  const call = parseAnthropicCall(requestBody, null)
+  // Take only the last user-role message's content — that's the delta from the prior call.
+  const lastUserMsg = [...call.request.messages].reverse().find((m) => m.role === "user")
+  if (!lastUserMsg) return { toolResults: [], extraUserText: null }
+  const toolResults: AnthropicParsedInput["toolResults"] = []
+  let extraUserText: string | null = null
+  for (const block of lastUserMsg.content) {
+    if (block.type === "tool_result") {
+      const content = typeof block.content === "string" ? block.content : formatJson(block.content)
+      toolResults.push({ tool_use_id: block.tool_use_id, content, is_error: block.is_error })
+    } else if (block.type === "text") {
+      extraUserText = (extraUserText ?? "") + (extraUserText ? "\n\n" : "") + block.text
+    }
+  }
+  return { toolResults, extraUserText }
+}
+
+export function AnthropicInputBlocks({
+  parsed,
+  ctx,
+  overlay,
+}: {
+  parsed: AnthropicParsedInput
+  ctx: InputCtx
+  overlay?: CallOverlay | null
+}) {
+  const ToolResult = overlay?.ToolResultContent
+  if (parsed.toolResults.length === 0 && !parsed.extraUserText) {
+    return <div className="text-[11px] text-muted-foreground italic">No input deltas.</div>
+  }
+  return (
+    <div className="space-y-2">
+      {parsed.toolResults.map((tr) => {
+        const entry = ctx.toolIndex.get(tr.tool_use_id) ?? { origin: null, resolution: null }
+        const state = classifyToolResultState(entry)
+        const errored = tr.is_error
+        return (
+          <div
+            key={tr.tool_use_id}
+            className={cn(
+              "rounded border p-2 text-[11px]",
+              errored
+                ? "bg-red-50 border-red-200 dark:bg-red-900/10 dark:border-red-900/40"
+                : state === "orphan"
+                  ? "bg-amber-50/60 border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/40"
+                  : "bg-muted/40 border-border/60",
+            )}
+          >
+            <div className="flex items-center gap-2">
+              <span className={cn("font-medium", errored && "text-red-700 dark:text-red-400")}>
+                ⤷ {errored ? "error" : "tool_result"}
+              </span>
+              <span className="font-mono text-[10px] text-muted-foreground">{tr.tool_use_id}</span>
+              <span className="text-[10px] text-muted-foreground">· {formatSize(byteLength(tr.content))}</span>
+            </div>
+            <div className="mt-1">
+              {ToolResult
+                ? <ToolResult content={tr.content} isError={errored} />
+                : <pre className={cn("max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]", errored && "text-red-700 dark:text-red-400")}>{tr.content}</pre>}
+            </div>
+            <div className="mt-1">
+              <ToolResultBackLink state={state} origin={entry.origin} />
+            </div>
+          </div>
+        )
+      })}
+      {parsed.extraUserText && (
+        <div className="rounded border border-blue-200 bg-blue-50/60 p-3 text-[11px] dark:border-blue-900/40 dark:bg-blue-900/10">
+          <Markdown text={parsed.extraUserText} />
+        </div>
+      )}
+    </div>
+  )
 }

@@ -1,9 +1,10 @@
-import { useEffect } from "react"
+import { useEffect, useMemo } from "react"
 import { Loader2 } from "lucide-react"
 import { useAgentTurnDetail, useAgentTurnCalls } from "@/hooks/use-agent-turns"
 import { useTurnUrlState } from "@/hooks/use-turn-url-state"
 import { LlmCallDetailPanel } from "./llm-call-detail-panel"
-import { TopBar, StatsCards, GanttNav, UserCard, FinalAnswerCard, CallCard } from "@/components/turn-detail"
+import { TopBar, StatsCards, GanttNav, CallCard } from "@/components/turn-detail"
+import { buildToolIndex } from "@/lib/turn-index"
 import type { AgentTurnDetail, AgentTurnCallItem } from "@/types/api"
 
 interface Props {
@@ -26,16 +27,33 @@ function TurnDetailView({
   onSelect: (seq: number) => void
   onOpenDetail: (id: string) => void
 }) {
-  const finalCall = calls.find((c) => c.id === turn.final_call_id) ?? calls[calls.length - 1]
+  const toolIndex = useMemo(() => buildToolIndex(calls), [calls])
+
+  const userCallId = turn.user_call_id ?? calls[0]?.id ?? null
+
+  const firstAnomalySeq = useMemo(() => {
+    for (const c of calls) {
+      for (const [, entry] of toolIndex) {
+        if (entry.origin?.call_id === c.id && entry.resolution == null && turn.final_call_id !== c.id) return c.sequence
+        if (entry.origin == null && entry.resolution?.call_id === c.id) return c.sequence
+      }
+    }
+    return null
+  }, [calls, toolIndex, turn.final_call_id])
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="shrink-0 p-4 pb-0">
-        <StatsCards turn={turn} calls={calls} onJumpToSlowest={onSelect} />
+        <StatsCards
+          turn={turn}
+          calls={calls}
+          toolIndex={toolIndex}
+          onJumpToSlowest={onSelect}
+          onJumpToFirstAnomaly={firstAnomalySeq != null ? () => onSelect(firstAnomalySeq) : undefined}
+        />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="flex flex-col gap-3">
-          {turn.user_input && <UserCard text={turn.user_input} startTime={turn.start_time} />}
           {loadingCalls && calls.length === 0 ? (
             <>
               {[0, 1, 2].map((i) => (
@@ -43,13 +61,13 @@ function TurnDetailView({
               ))}
             </>
           ) : (
-            calls.map((c, i) => (
+            calls.map((c) => (
               <CallCard
                 key={c.id}
                 call={c}
-                nextCall={calls[i + 1] ?? null}
-                finalCallId={turn.final_call_id}
-                agentKind={turn.agent_kind ?? null}
+                turn={turn}
+                toolIndex={toolIndex}
+                isFirstCall={c.id === userCallId}
                 active={c.sequence === activeSeq}
                 defaultExpanded={c.sequence === activeSeq}
                 onOpenDetail={onOpenDetail}
@@ -59,11 +77,6 @@ function TurnDetailView({
           {!loadingCalls && calls.length === 0 && (
             <p className="text-center text-xs text-muted-foreground">No calls</p>
           )}
-          {turn.final_answer
-            ? <FinalAnswerCard text={turn.final_answer} finalCall={finalCall} onJumpToCall={onSelect} />
-            : calls.length > 0 && (
-                <p className="text-center text-xs text-muted-foreground">Turn ended without a final answer</p>
-              )}
         </div>
       </div>
     </div>

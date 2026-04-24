@@ -1,15 +1,18 @@
 import { useMemo } from "react"
-import { Wrench, MessageSquare, Target } from "lucide-react"
+import { Wrench, MessageSquare, Target, AlertTriangle } from "lucide-react"
 import { formatDuration, formatMs, formatNumber } from "@/lib/format"
 import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
 import { classifyType } from "@/lib/wire-apis/dispatch"
+import { countUnresolved, type ToolIndex } from "@/lib/turn-index"
 import type { AgentTurnCallItem, AgentTurnDetail } from "@/types/api"
 import { cn } from "@/lib/utils"
 
 interface Props {
   turn: AgentTurnDetail
   calls: AgentTurnCallItem[]
+  toolIndex: ToolIndex
   onJumpToSlowest?: (sequence: number) => void
+  onJumpToFirstAnomaly?: () => void
 }
 
 function Card({ label, children, className }: {
@@ -25,7 +28,7 @@ function Card({ label, children, className }: {
   )
 }
 
-export function StatsCards({ turn, calls, onJumpToSlowest }: Props) {
+export function StatsCards({ turn, calls, toolIndex, onJumpToSlowest, onJumpToFirstAnomaly }: Props) {
   const slowest = useMemo(() => {
     let best: AgentTurnCallItem | null = null
     for (const c of calls) {
@@ -43,6 +46,11 @@ export function StatsCards({ turn, calls, onJumpToSlowest }: Props) {
     }
     return acc
   }, [calls, turn.final_call_id])
+
+  const unresolved = useMemo(
+    () => countUnresolved(toolIndex, { final_call_id: turn.final_call_id, final_finish_reason: turn.final_finish_reason }, turn.final_call_id),
+    [toolIndex, turn.final_call_id, turn.final_finish_reason],
+  )
 
   return (
     <div className="grid grid-cols-4 gap-3">
@@ -74,9 +82,22 @@ export function StatsCards({ turn, calls, onJumpToSlowest }: Props) {
           </button>
         )}
       </Card>
-      <Card label="Status">
-        <div><TurnStatusBadge status={turn.status} /></div>
-      </Card>
+      {unresolved > 0 ? (
+        <button
+          onClick={onJumpToFirstAnomaly}
+          className="flex flex-col gap-0.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-left hover:bg-amber-100 dark:border-amber-900/40 dark:bg-amber-900/10 dark:hover:bg-amber-900/20"
+        >
+          <span className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="size-3" /> Unresolved
+          </span>
+          <span className="text-sm font-medium tabular-nums text-amber-800 dark:text-amber-300">{unresolved}</span>
+          <span className="text-[10px] text-amber-700 dark:text-amber-400">possible capture gap</span>
+        </button>
+      ) : (
+        <Card label="Status">
+          <div><TurnStatusBadge status={turn.status} /></div>
+        </Card>
+      )}
     </div>
   )
 }
