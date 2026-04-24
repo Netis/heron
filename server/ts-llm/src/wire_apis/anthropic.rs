@@ -191,9 +191,14 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
     let mut cache_creation_input_tokens: Option<u32> = None;
     let mut response_id: Option<String> = None;
 
-    for event in sse_events {
-        let data: Value = serde_json::from_str(&event.data).unwrap_or(Value::Null);
+    // Parse each event's `data` exactly once; reuse across the main loop and
+    // the synthetic-body reconstruction below.
+    let parsed: Vec<Value> = sse_events
+        .iter()
+        .map(|e| serde_json::from_str(&e.data).unwrap_or(Value::Null))
+        .collect();
 
+    for (event, data) in sse_events.iter().zip(parsed.iter()) {
         match event.event_type.as_str() {
             "message_start" => {
                 // message_start contains the message object with model info.
@@ -259,7 +264,7 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
     }
 
     // Build a synthetic response body by assembling content from SSE events.
-    let response_body = build_response_body(sse_events);
+    let response_body = build_response_body(sse_events, &parsed);
 
     ResponseInfo {
         model,
@@ -280,7 +285,10 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
 /// and `content_block_delta` (incremental text/json) events. We reconstruct the
 /// final content blocks array, then wrap in a message-like JSON object that
 /// includes model, usage, and stop_reason from `message_start`/`message_delta`.
-fn build_response_body(sse_events: &[SseEventData]) -> Option<String> {
+///
+/// Takes events alongside their already-parsed JSON values so we don't re-parse
+/// the same event bodies the caller (`extract_from_sse`) already parsed.
+fn build_response_body(sse_events: &[SseEventData], parsed: &[Value]) -> Option<String> {
     use serde_json::json;
 
     let mut message_obj: Value = Value::Null;
@@ -294,9 +302,7 @@ fn build_response_body(sse_events: &[SseEventData]) -> Option<String> {
     let mut current_text = String::new();
     let mut current_json = String::new();
 
-    for event in sse_events {
-        let data: Value = serde_json::from_str(&event.data).unwrap_or(Value::Null);
-
+    for (event, data) in sse_events.iter().zip(parsed.iter()) {
         match event.event_type.as_str() {
             "message_start" => {
                 if let Some(msg) = data.get("message") {
@@ -459,6 +465,13 @@ mod tests {
         }
     }
 
+    fn parse_events(events: &[SseEventData]) -> Vec<Value> {
+        events
+            .iter()
+            .map(|e| serde_json::from_str(&e.data).unwrap_or(Value::Null))
+            .collect()
+    }
+
     #[test]
     fn test_map_stop_reason() {
         assert_eq!(map_stop_reason("end_turn"), FinishReason::Complete);
@@ -491,7 +504,8 @@ mod tests {
                 r#"{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}"#,
             ),
         ];
-        let body = build_response_body(&events).unwrap();
+        let parsed = parse_events(&events);
+        let body = build_response_body(&events, &parsed).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["content"][0]["type"], "text");
         assert_eq!(v["content"][0]["text"], "Hello world");
@@ -526,7 +540,8 @@ mod tests {
             make_sse("content_block_stop", r#"{"index":1}"#),
             make_sse("message_delta", r#"{"delta":{"stop_reason":"end_turn"}}"#),
         ];
-        let body = build_response_body(&events).unwrap();
+        let parsed = parse_events(&events);
+        let body = build_response_body(&events, &parsed).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
         // thinking block uses "thinking" field, not "text"
         assert_eq!(v["content"][0]["type"], "thinking");
@@ -559,7 +574,8 @@ mod tests {
             make_sse("content_block_stop", r#"{"index":0}"#),
             make_sse("message_delta", r#"{"delta":{"stop_reason":"tool_use"}}"#),
         ];
-        let body = build_response_body(&events).unwrap();
+        let parsed = parse_events(&events);
+        let body = build_response_body(&events, &parsed).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["content"][0]["type"], "tool_use");
         assert_eq!(v["content"][0]["input"]["path"], "foo.txt");
@@ -569,7 +585,8 @@ mod tests {
     #[test]
     fn test_build_response_body_empty_stream() {
         let events: Vec<SseEventData> = vec![];
-        assert!(build_response_body(&events).is_none());
+        let parsed: Vec<Value> = vec![];
+        assert!(build_response_body(&events, &parsed).is_none());
     }
 
     #[test]

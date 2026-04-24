@@ -218,9 +218,14 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
     // text extraction) see the full output.
     let mut output_items: Vec<Value> = Vec::new();
 
-    for event in sse_events {
-        let data: Value = serde_json::from_str(&event.data).unwrap_or(Value::Null);
+    // Parse each event's `data` exactly once; reuse across the main loop and
+    // the Chat-path fallback reconstruction below.
+    let parsed: Vec<Value> = sse_events
+        .iter()
+        .map(|e| serde_json::from_str(&e.data).unwrap_or(Value::Null))
+        .collect();
 
+    for (event, data) in sse_events.iter().zip(parsed.iter()) {
         match event.event_type.as_str() {
             "response.output_item.done" => {
                 if let Some(item) = data.get("item") {
@@ -291,8 +296,6 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
             // Chat Completions: chunks with no event_type may contain usage
             // in the final chunk (when stream_options: {"include_usage": true}).
             _ => {
-                let data: Value = serde_json::from_str(&event.data).unwrap_or(Value::Null);
-
                 // Chat Completions chunks: extract id from first chunk
                 if response_id.is_none() {
                     if let Some(id) = data.get("id").and_then(|v| v.as_str()) {
@@ -345,11 +348,12 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
     }
 
     // If no response.completed event was found (e.g. Chat Completions streaming),
-    // try to assemble from chat-style SSE chunks. Pass the usage we already
-    // extracted from the final chunk so it ends up in the synthetic body too.
+    // try to assemble from chat-style SSE chunks. Pass the already-parsed event
+    // bodies and the usage we extracted from the final chunk so it ends up in
+    // the synthetic body too.
     if response_body.is_none() {
         response_body = build_chat_response_body(
-            sse_events,
+            &parsed,
             input_tokens,
             output_tokens,
             total_tokens,
@@ -375,8 +379,12 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
 /// Chat Completions streaming sends chunks with `choices[0].delta.content` for text
 /// and `choices[0].delta.tool_calls` for tool use. The last chunk has
 /// `choices[0].finish_reason`. No event types — just `data: {...}` lines.
+///
+/// Takes events already parsed by `extract_from_sse` so we don't re-parse the
+/// same JSON. Non-object entries (e.g. the `[DONE]` sentinel, which parses to
+/// `Value::Null`) are skipped by the `is_object()` guard.
 fn build_chat_response_body(
-    sse_events: &[SseEventData],
+    parsed: &[Value],
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
     total_tokens: Option<u32>,
@@ -391,11 +399,7 @@ fn build_chat_response_body(
         std::collections::BTreeMap::new();
     let mut has_data = false;
 
-    for event in sse_events {
-        if event.data.trim() == "[DONE]" {
-            continue;
-        }
-        let data: Value = serde_json::from_str(&event.data).unwrap_or(Value::Null);
+    for data in parsed {
         if !data.is_object() {
             continue;
         }
@@ -539,6 +543,13 @@ mod tests {
         }
     }
 
+    fn parse_events(events: &[SseEventData]) -> Vec<Value> {
+        events
+            .iter()
+            .map(|e| serde_json::from_str(&e.data).unwrap_or(Value::Null))
+            .collect()
+    }
+
     #[test]
     fn test_map_chat_finish_reason() {
         assert_eq!(map_chat_finish_reason("stop"), FinishReason::Complete);
@@ -574,7 +585,8 @@ mod tests {
             ),
             make_sse("", "[DONE]"),
         ];
-        let body = build_chat_response_body(&events, None, None, None, None).unwrap();
+        let parsed = parse_events(&events);
+        let body = build_chat_response_body(&parsed, None, None, None, None).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["model"], "gpt-4");
         assert_eq!(v["choices"][0]["message"]["content"], "Hello world");
@@ -601,7 +613,8 @@ mod tests {
                 r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
             ),
         ];
-        let body = build_chat_response_body(&events, None, None, None, None).unwrap();
+        let parsed = parse_events(&events);
+        let body = build_chat_response_body(&parsed, None, None, None, None).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
         let tc = &v["choices"][0]["message"]["tool_calls"][0];
         assert_eq!(tc["id"], "call_1");
@@ -613,8 +626,8 @@ mod tests {
 
     #[test]
     fn test_build_chat_response_body_empty() {
-        let events: Vec<SseEventData> = vec![];
-        assert!(build_chat_response_body(&events, None, None, None, None).is_none());
+        let parsed: Vec<Value> = vec![];
+        assert!(build_chat_response_body(&parsed, None, None, None, None).is_none());
     }
 
     #[test]
@@ -629,8 +642,9 @@ mod tests {
                 r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
             ),
         ];
+        let parsed = parse_events(&events);
         let body =
-            build_chat_response_body(&events, Some(10), Some(5), Some(15), Some(3)).unwrap();
+            build_chat_response_body(&parsed, Some(10), Some(5), Some(15), Some(3)).unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["usage"]["prompt_tokens"], 10);
         assert_eq!(v["usage"]["completion_tokens"], 5);
