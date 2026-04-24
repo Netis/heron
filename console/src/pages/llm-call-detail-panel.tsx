@@ -10,26 +10,19 @@ import type { LlmCallDetail } from "@/types/api"
 
 function toRawHttpData(detail: LlmCallDetail): RawHttpData {
   return {
-    id: detail.id,
-    wire_api: detail.wire_api,
-    model: detail.model,
-    status_code: detail.status_code,
-    finish_reason: detail.finish_reason,
-    ttft_ms: detail.ttft_ms,
-    e2e_latency_ms: detail.e2e_latency_ms,
-    input_tokens: detail.input_tokens,
-    output_tokens: detail.output_tokens,
     request_path: detail.request_path,
+    status_code: detail.status_code,
     client_ip: detail.client_ip,
     client_port: detail.client_port,
     server_ip: detail.server_ip,
     server_port: detail.server_port,
     is_stream: detail.is_stream,
+    e2e_latency_ms: detail.e2e_latency_ms,
     request_time: detail.request_time,
-    request_body: detail.request_body,
-    response_body: detail.response_body,
     request_headers: detail.request_headers,
     response_headers: detail.response_headers,
+    request_body: detail.request_body,
+    response_body: detail.response_body,
   }
 }
 
