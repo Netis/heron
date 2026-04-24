@@ -162,7 +162,7 @@ impl CaptureSource for PcapLiveSource {
                     let dropped = stats.dropped as u64;
                     if dropped > *last_dropped {
                         metrics
-                            .counter(Metric::CapturePacketsDropped)
+                            .counter(Metric::CaptureKernelPacketsDropped)
                             .add(dropped - *last_dropped);
                         *last_dropped = dropped;
                     }

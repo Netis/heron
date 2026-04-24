@@ -52,9 +52,7 @@ impl LlmProcessor {
             self.metrics.counter(Metric::LlmHttpRequestsIgnored).inc();
             return Vec::new();
         };
-        self.metrics
-            .counter(Metric::LlmHttpRequestsDetected)
-            .inc();
+        self.metrics.counter(Metric::LlmHttpRequestsDetected).inc();
         vec![LlmEvent::Start(LlmCallStart {
             source_id: req.flow_key.source_id.clone(),
             wire_api: outcome.wire_api.name(),
@@ -110,8 +108,6 @@ impl LlmProcessor {
                 _ => None,
             };
         }
-
-        self.metrics.counter(Metric::LlmCallsCompleted).inc();
 
         let request_body = std::str::from_utf8(&request.body)
             .ok()
@@ -193,7 +189,6 @@ mod tests {
             &[
                 Metric::LlmHttpRequestsDetected,
                 Metric::LlmHttpRequestsIgnored,
-                Metric::LlmCallsCompleted,
             ],
         );
         let _svc = sys.start();

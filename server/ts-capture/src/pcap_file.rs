@@ -137,7 +137,7 @@ mod tests {
             "test",
             &[
                 Metric::CapturePacketsReceived,
-                Metric::CapturePacketsDropped,
+                Metric::CaptureKernelPacketsDropped,
             ],
         )
     }

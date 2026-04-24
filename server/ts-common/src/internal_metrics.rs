@@ -129,36 +129,35 @@ macro_rules! define_metrics {
 
 define_metrics! {
     // -- Capture --
-    CapturePacketsReceived   => { kind: Counter, group: Capture,  short: "pkts_recv"       },
-    CapturePacketsDropped    => { kind: Counter, group: Capture,  short: "pkts_drop"       },
-    CaptureBatchesReceived   => { kind: Counter, group: Capture,  short: "batches_recv"    },
-    CaptureBatchesDropped    => { kind: Counter, group: Capture,  short: "batches_drop"    },
-    CaptureHeartbeatsEmitted => { kind: Counter, group: Capture,  short: "hb_emit"         },
-    CaptureReadErrors        => { kind: Counter, group: Capture,  short: "read_errors"     },
-    CaptureDumpErrors        => { kind: Counter, group: Capture,  short: "dump_errors"     },
+    CapturePacketsReceived       => { kind: Counter, group: Capture,  short: "pkts_recv"       },
+    CaptureKernelPacketsDropped  => { kind: Counter, group: Capture,  short: "kern_pkts_drop"  },
+    CaptureBatchesReceived       => { kind: Counter, group: Capture,  short: "batches_recv"    },
+    CaptureZmqBatchesDropped     => { kind: Counter, group: Capture,  short: "zmq_batches_drop"},
+    CaptureHeartbeatsEmitted     => { kind: Counter, group: Capture,  short: "heartbeats"      },
+    CaptureReadErrors            => { kind: Counter, group: Capture,  short: "read_errors"     },
+    CaptureDumpErrors            => { kind: Counter, group: Capture,  short: "dump_errors"     },
 
     // -- Protocol (dispatcher + flow workers) --
-    DispatcherPacketsRouted      => { kind: Counter, group: Protocol, short: "dispatched"     },
-    DispatcherHeartbeatsDropped  => { kind: Counter, group: Protocol, short: "hb_drop"        },
-    NetPacketsParsed             => { kind: Counter, group: Protocol, short: "net_parsed"     },
-    NetPacketsDroppedNotIp       => { kind: Counter, group: Protocol, short: "drop_notip"     },
-    NetPacketsDroppedNotTcp      => { kind: Counter, group: Protocol, short: "drop_nottcp"    },
-    NetPacketsDroppedMalformed   => { kind: Counter, group: Protocol, short: "drop_bad"       },
-    HttpRequestsParsed           => { kind: Counter, group: Protocol, short: "http_req"       },
-    HttpResponsesParsed          => { kind: Counter, group: Protocol, short: "http_resp"      },
-    SseEventsParsed              => { kind: Counter, group: Protocol, short: "sse_events"     },
-    HttpResyncEvents             => { kind: Counter, group: Protocol, short: "http_resync"    },
-    FlowsTimedOut                => { kind: Counter, group: Protocol, short: "flows_expired"  },
+    DispatcherPacketsRouted      => { kind: Counter, group: Protocol, short: "pkts_routed"       },
+    DispatcherHeartbeatsDropped  => { kind: Counter, group: Protocol, short: "heartbeats_drop"   },
+    NetPacketsParsed             => { kind: Counter, group: Protocol, short: "net_parsed"        },
+    NetParseDroppedNotIp         => { kind: Counter, group: Protocol, short: "parse_drop_notip"  },
+    NetParseDroppedNotTcp        => { kind: Counter, group: Protocol, short: "parse_drop_nottcp" },
+    NetParseDroppedMalformed     => { kind: Counter, group: Protocol, short: "parse_drop_bad"    },
+    HttpRequestsParsed           => { kind: Counter, group: Protocol, short: "http_req"          },
+    HttpResponsesParsed          => { kind: Counter, group: Protocol, short: "http_resp"         },
+    SseEventsParsed              => { kind: Counter, group: Protocol, short: "sse_events"        },
+    HttpResyncEvents             => { kind: Counter, group: Protocol, short: "http_resync"       },
+    FlowsTimedOut                => { kind: Counter, group: Protocol, short: "flows_expired"     },
 
     // -- HTTP exchange pairing (HttpJoiner) --
-    HttpExchangesCompleted => { kind: Counter, group: Protocol, short: "http_done"       },
-    HttpExchangesUnpaired  => { kind: Counter, group: Protocol, short: "http_incomplete" },
-    HttpExchangesExpired   => { kind: Counter, group: Protocol, short: "http_expired"    },
+    HttpExchangesCompleted => { kind: Counter, group: Protocol, short: "http_done"     },
+    HttpExchangesUnpaired  => { kind: Counter, group: Protocol, short: "http_unpaired" },
+    HttpExchangesExpired   => { kind: Counter, group: Protocol, short: "http_expired"  },
 
     // -- LLM extraction --
     LlmHttpRequestsDetected => { kind: Counter, group: Llm, short: "http_detected"  },
     LlmHttpRequestsIgnored  => { kind: Counter, group: Llm, short: "http_ignored"   },
-    LlmCallsCompleted       => { kind: Counter, group: Llm, short: "calls_completed"},
     LlmCallsWithAgent       => { kind: Counter, group: Llm, short: "calls_agent"    },
     LlmCallsWithoutAgent    => { kind: Counter, group: Llm, short: "calls_no_agent" },
 
@@ -167,14 +166,14 @@ define_metrics! {
     TurnCallsAuxiliary       => { kind: Counter, group: Turn, short: "calls_aux"      },
     TurnCallsDroppedLate     => { kind: Counter, group: Turn, short: "calls_late"     },
     TurnsCompleted           => { kind: Counter, group: Turn, short: "completed"      },
-    TurnFinalizedByGrace     => { kind: Counter, group: Turn, short: "fin_grace"      },
-    TurnFinalizedByIdle      => { kind: Counter, group: Turn, short: "fin_idle"       },
+    TurnClosedByGrace        => { kind: Counter, group: Turn, short: "closed_grace"   },
+    TurnClosedByIdle         => { kind: Counter, group: Turn, short: "closed_idle"    },
     TurnDiscardedNoUserStart => { kind: Counter, group: Turn, short: "no_user_start"  },
     TurnActive               => { kind: Gauge,   group: Turn, short: "active"         },
 
     // -- Metrics aggregation --
-    MetricsEventsReceived    => { kind: Counter, group: Metrics, short: "events_recv"    },
-    MetricsWindowsFlushed    => { kind: Counter, group: Metrics, short: "windows_flush"  },
+    MetricsLlmEventsReceived => { kind: Counter, group: Metrics, short: "llm_events_recv" },
+    MetricsWindowsFlushed    => { kind: Counter, group: Metrics, short: "windows_flush"   },
 
     // -- Storage --
     StorageRecordsBuffered   => { kind: Counter, group: Storage, short: "buffered"       },
@@ -182,11 +181,15 @@ define_metrics! {
     StorageFlushErrors       => { kind: Counter, group: Storage, short: "flush_errors"   },
 
     // -- Queue depths (gauges) --
-    QueueDepthRaw                  => { kind: Gauge, group: Protocol, short: "q.in"         },
-    QueueDepthParsed               => { kind: Gauge, group: Protocol, short: "q.out"        },
-    QueueDepthEvent                => { kind: Gauge, group: Llm,      short: "q.out"        },
-    QueueDepthTurnShard            => { kind: Gauge, group: Turn,     short: "q.in"         },
-    QueueDepthMetricsShard         => { kind: Gauge, group: Metrics,  short: "q.in"         },
+    // Each queue is named after the content it carries (not in/out),
+    // so grep lands uniquely regardless of which side of the stage
+    // you're thinking from.
+    QueueDepthRaw                  => { kind: Gauge, group: Protocol, short: "q.raw"        },
+    QueueDepthParsed               => { kind: Gauge, group: Protocol, short: "q.parsed"     },
+    QueueDepthHttpParseEvent       => { kind: Gauge, group: Llm,      short: "q.http_parse_evt"  },
+    QueueDepthHttpJoinerEvent      => { kind: Gauge, group: Llm,      short: "q.http_joiner_evt" },
+    QueueDepthAgentCall            => { kind: Gauge, group: Turn,     short: "q.agent_call" },
+    QueueDepthLlmEvent             => { kind: Gauge, group: Metrics,  short: "q.llm_evt"    },
     StorageQueueDepthCalls         => { kind: Gauge, group: Storage,  short: "q.calls"      },
     StorageQueueDepthTurns         => { kind: Gauge, group: Storage,  short: "q.turns"      },
     StorageQueueDepthMetrics       => { kind: Gauge, group: Storage,  short: "q.metrics"    },
@@ -593,19 +596,19 @@ mod tests {
     #[test]
     fn test_monitor_total_and_delta() {
         let mut sys = MetricsSystem::new();
-        let w = sys.register_worker("test", &[Metric::LlmCallsCompleted]);
+        let w = sys.register_worker("test", &[Metric::LlmCallsWithAgent]);
         let svc = sys.start();
         let mut mon = MetricsMonitor::new(svc);
 
-        w.counter(Metric::LlmCallsCompleted).add(5);
+        w.counter(Metric::LlmCallsWithAgent).add(5);
         let poll1 = mon.poll();
-        assert_eq!(poll1.snapshot.values[&Metric::LlmCallsCompleted], 5);
-        assert_eq!(poll1.deltas[&Metric::LlmCallsCompleted], 5);
+        assert_eq!(poll1.snapshot.values[&Metric::LlmCallsWithAgent], 5);
+        assert_eq!(poll1.deltas[&Metric::LlmCallsWithAgent], 5);
 
-        w.counter(Metric::LlmCallsCompleted).add(3);
+        w.counter(Metric::LlmCallsWithAgent).add(3);
         let poll2 = mon.poll();
-        assert_eq!(poll2.snapshot.values[&Metric::LlmCallsCompleted], 8);
-        assert_eq!(poll2.deltas[&Metric::LlmCallsCompleted], 3);
+        assert_eq!(poll2.snapshot.values[&Metric::LlmCallsWithAgent], 8);
+        assert_eq!(poll2.deltas[&Metric::LlmCallsWithAgent], 3);
     }
 
     #[test]

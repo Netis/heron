@@ -2,7 +2,7 @@ use std::net::IpAddr;
 
 use bytes::{Bytes, BytesMut};
 
-use crate::model::{HttpRequestData, HttpResponseData, ProtocolEvent, SseEventData};
+use crate::model::{HttpRequestData, HttpResponseData, HttpParseEvent, SseEventData};
 use crate::net::FlowKey;
 
 /// State of the HTTP parser for one TCP connection.
@@ -254,7 +254,7 @@ impl SseParser {
         client_addr: (IpAddr, u16),
         server_addr: (IpAddr, u16),
         timestamp: i64,
-        output: &mut Vec<ProtocolEvent>,
+        output: &mut Vec<HttpParseEvent>,
     ) {
         self.residual.push_str(text);
 
@@ -286,7 +286,7 @@ impl SseParser {
         client_addr: (IpAddr, u16),
         server_addr: (IpAddr, u16),
         timestamp: i64,
-        output: &mut Vec<ProtocolEvent>,
+        output: &mut Vec<HttpParseEvent>,
     ) {
         let residual = std::mem::take(&mut self.residual);
         let trimmed = residual.trim();
@@ -305,7 +305,7 @@ impl SseParser {
         client_addr: (IpAddr, u16),
         server_addr: (IpAddr, u16),
         timestamp: i64,
-    ) -> Option<ProtocolEvent> {
+    ) -> Option<HttpParseEvent> {
         let mut event_type = String::new();
         let mut data_parts: Vec<&str> = Vec::new();
 
@@ -323,7 +323,7 @@ impl SseParser {
             return None;
         }
 
-        Some(ProtocolEvent::SseEvent(SseEventData {
+        Some(HttpParseEvent::SseEvent(SseEventData {
             flow_key: flow_key.clone(),
             client_addr,
             server_addr,
@@ -414,7 +414,7 @@ impl HttpParser {
         client_ts: i64,
         server_ts: i64,
         server_last_ts: i64,
-        output: &mut Vec<ProtocolEvent>,
+        output: &mut Vec<HttpParseEvent>,
     ) -> ParseResult {
         'outer: loop {
             match self.state {
@@ -431,7 +431,7 @@ impl HttpParser {
                     match self.body_reader.read(client_buf) {
                         ReadResult::ChunkDecoded(_) => continue,
                         ReadResult::Complete(body) => {
-                            output.push(ProtocolEvent::HttpRequest(HttpRequestData {
+                            output.push(HttpParseEvent::HttpRequest(HttpRequestData {
                                 flow_key: flow_key.clone(),
                                 client_addr,
                                 server_addr,
@@ -469,7 +469,7 @@ impl HttpParser {
                     }
                     if self.body_reader.is_no_body() {
                         // No body — emit response immediately.
-                        output.push(ProtocolEvent::HttpResponse(HttpResponseData {
+                        output.push(HttpParseEvent::HttpResponse(HttpResponseData {
                             flow_key: flow_key.clone(),
                             client_addr,
                             server_addr,
@@ -533,7 +533,7 @@ impl HttpParser {
                             } else {
                                 body
                             };
-                            output.push(ProtocolEvent::HttpResponse(HttpResponseData {
+                            output.push(HttpParseEvent::HttpResponse(HttpResponseData {
                                 flow_key: flow_key.clone(),
                                 client_addr,
                                 server_addr,
@@ -564,7 +564,7 @@ impl HttpParser {
         client_addr: (IpAddr, u16),
         server_addr: (IpAddr, u16),
         server_last_ts: i64,
-        output: &mut Vec<ProtocolEvent>,
+        output: &mut Vec<HttpParseEvent>,
     ) {
         if self.state != ParserState::ReadingResponseBody {
             return;
@@ -591,7 +591,7 @@ impl HttpParser {
         } else {
             body
         };
-        output.push(ProtocolEvent::HttpResponse(HttpResponseData {
+        output.push(HttpParseEvent::HttpResponse(HttpResponseData {
             flow_key: flow_key.clone(),
             client_addr,
             server_addr,
@@ -750,7 +750,7 @@ mod tests {
 
         assert_eq!(output.len(), 2);
         match &output[0] {
-            ProtocolEvent::HttpRequest(req) => {
+            HttpParseEvent::HttpRequest(req) => {
                 assert_eq!(req.method, "POST");
                 assert_eq!(req.uri, "/v1/chat/completions");
                 assert_eq!(req.body.len(), 13);
@@ -758,7 +758,7 @@ mod tests {
             _ => panic!("expected HttpRequest"),
         }
         match &output[1] {
-            ProtocolEvent::HttpResponse(resp) => {
+            HttpParseEvent::HttpResponse(resp) => {
                 assert_eq!(resp.status, 200);
                 assert_eq!(resp.body.len(), 14);
             }
@@ -795,7 +795,7 @@ mod tests {
         // Should get: HttpRequest + HttpResponse
         assert_eq!(output.len(), 2);
         match &output[1] {
-            ProtocolEvent::HttpResponse(resp) => {
+            HttpParseEvent::HttpResponse(resp) => {
                 assert_eq!(resp.status, 200);
                 assert_eq!(&resp.body[..], b"hello world");
             }
@@ -841,15 +841,15 @@ mod tests {
         // Expect: HttpRequest + 3 SseEvents + HttpResponse
         let req_count = output
             .iter()
-            .filter(|e| matches!(e, ProtocolEvent::HttpRequest(_)))
+            .filter(|e| matches!(e, HttpParseEvent::HttpRequest(_)))
             .count();
         let sse_count = output
             .iter()
-            .filter(|e| matches!(e, ProtocolEvent::SseEvent(_)))
+            .filter(|e| matches!(e, HttpParseEvent::SseEvent(_)))
             .count();
         let resp_count = output
             .iter()
-            .filter(|e| matches!(e, ProtocolEvent::HttpResponse(_)))
+            .filter(|e| matches!(e, HttpParseEvent::HttpResponse(_)))
             .count();
 
         assert_eq!(req_count, 1);
@@ -860,7 +860,7 @@ mod tests {
         let sse_events: Vec<_> = output
             .iter()
             .filter_map(|e| match e {
-                ProtocolEvent::SseEvent(s) => Some(s),
+                HttpParseEvent::SseEvent(s) => Some(s),
                 _ => None,
             })
             .collect();
@@ -873,7 +873,7 @@ mod tests {
         // SSE responses no longer retain the raw body — the event stream is
         // the canonical form (already asserted above).
         match output.last().unwrap() {
-            ProtocolEvent::HttpResponse(resp) => {
+            HttpParseEvent::HttpResponse(resp) => {
                 assert!(resp.body.is_empty());
             }
             _ => panic!("expected HttpResponse last"),
@@ -916,7 +916,7 @@ mod tests {
 
         assert_eq!(output.len(), 1);
         match &output[0] {
-            ProtocolEvent::HttpRequest(req) => {
+            HttpParseEvent::HttpRequest(req) => {
                 assert_eq!(req.method, "GET");
                 assert_eq!(req.uri, "/api");
             }
@@ -1119,7 +1119,7 @@ mod tests {
         );
         assert_eq!(output.len(), 1);
         match &output[0] {
-            ProtocolEvent::SseEvent(e) => {
+            HttpParseEvent::SseEvent(e) => {
                 assert_eq!(e.event_type, "message_start");
                 assert_eq!(e.data, "{\"type\":\"start\"}");
             }
@@ -1156,7 +1156,7 @@ mod tests {
         parser.push("ta: hello\n\n", &fk, ca, sa, 0, &mut output);
         assert_eq!(output.len(), 1);
         match &output[0] {
-            ProtocolEvent::SseEvent(e) => {
+            HttpParseEvent::SseEvent(e) => {
                 assert_eq!(e.event_type, "delta");
                 assert_eq!(e.data, "hello");
             }
@@ -1176,7 +1176,7 @@ mod tests {
         parser.flush(&fk, ca, sa, 0, &mut output);
         assert_eq!(output.len(), 1);
         match &output[0] {
-            ProtocolEvent::SseEvent(e) => assert_eq!(e.data, "final"),
+            HttpParseEvent::SseEvent(e) => assert_eq!(e.data, "final"),
             _ => panic!("expected SseEvent"),
         }
     }
@@ -1197,7 +1197,7 @@ mod tests {
         );
         assert_eq!(output.len(), 1);
         match &output[0] {
-            ProtocolEvent::SseEvent(e) => assert_eq!(e.data, "real"),
+            HttpParseEvent::SseEvent(e) => assert_eq!(e.data, "real"),
             _ => panic!("expected SseEvent"),
         }
     }
@@ -1229,7 +1229,7 @@ mod tests {
 
         assert_eq!(output.len(), 2);
         match &output[1] {
-            ProtocolEvent::HttpResponse(resp) => {
+            HttpParseEvent::HttpResponse(resp) => {
                 assert_eq!(resp.status, 204);
                 assert!(resp.body.is_empty());
             }
@@ -1259,7 +1259,7 @@ mod tests {
 
         assert_eq!(output.len(), 2);
         match &output[1] {
-            ProtocolEvent::HttpResponse(resp) => {
+            HttpParseEvent::HttpResponse(resp) => {
                 assert_eq!(resp.status, 304);
                 assert!(resp.body.is_empty());
             }
@@ -1288,11 +1288,11 @@ mod tests {
 
         assert_eq!(output.len(), 2);
         match &output[0] {
-            ProtocolEvent::HttpRequest(req) => assert_eq!(req.method, "HEAD"),
+            HttpParseEvent::HttpRequest(req) => assert_eq!(req.method, "HEAD"),
             _ => panic!("expected HttpRequest"),
         }
         match &output[1] {
-            ProtocolEvent::HttpResponse(resp) => {
+            HttpParseEvent::HttpResponse(resp) => {
                 assert_eq!(resp.status, 200);
                 assert!(resp.body.is_empty());
             }
@@ -1328,7 +1328,7 @@ mod tests {
 
         assert_eq!(output.len(), 2);
         match &output[0] {
-            ProtocolEvent::HttpRequest(req) => {
+            HttpParseEvent::HttpRequest(req) => {
                 assert_eq!(req.method, "POST");
                 assert_eq!(&req.body[..], b"{\"hello\":true}");
             }
@@ -1367,7 +1367,7 @@ mod tests {
 
         assert_eq!(output.len(), 2);
         match &output[1] {
-            ProtocolEvent::HttpResponse(resp) => {
+            HttpParseEvent::HttpResponse(resp) => {
                 assert_eq!(&resp.body[..], b"hello");
             }
             _ => panic!("expected HttpResponse"),
@@ -1416,14 +1416,14 @@ mod tests {
         assert_eq!(output.len(), 4);
 
         match &output[2] {
-            ProtocolEvent::HttpRequest(req) => {
+            HttpParseEvent::HttpRequest(req) => {
                 assert_eq!(req.method, "POST");
                 assert_eq!(req.uri, "/second");
             }
             _ => panic!("expected HttpRequest"),
         }
         match &output[3] {
-            ProtocolEvent::HttpResponse(resp) => {
+            HttpParseEvent::HttpResponse(resp) => {
                 assert_eq!(resp.status, 201);
                 assert_eq!(&resp.body[..], b"created");
             }
@@ -1464,11 +1464,11 @@ mod tests {
 
         let sse_count = output
             .iter()
-            .filter(|e| matches!(e, ProtocolEvent::SseEvent(_)))
+            .filter(|e| matches!(e, HttpParseEvent::SseEvent(_)))
             .count();
         let resp_count = output
             .iter()
-            .filter(|e| matches!(e, ProtocolEvent::HttpResponse(_)))
+            .filter(|e| matches!(e, HttpParseEvent::HttpResponse(_)))
             .count();
 
         assert_eq!(
@@ -1500,7 +1500,7 @@ mod tests {
         );
         let resp_count = output
             .iter()
-            .filter(|e| matches!(e, ProtocolEvent::HttpResponse(_)))
+            .filter(|e| matches!(e, HttpParseEvent::HttpResponse(_)))
             .count();
         assert_eq!(resp_count, 0, "response should not be emitted yet");
 
@@ -1518,18 +1518,18 @@ mod tests {
         );
         let resp_count = output
             .iter()
-            .filter(|e| matches!(e, ProtocolEvent::HttpResponse(_)))
+            .filter(|e| matches!(e, HttpParseEvent::HttpResponse(_)))
             .count();
         assert_eq!(resp_count, 0, "still not emitted");
 
         parser.finish_response(&mut server_buf, &fk, ca, sa, 0, &mut output);
         let resp_count = output
             .iter()
-            .filter(|e| matches!(e, ProtocolEvent::HttpResponse(_)))
+            .filter(|e| matches!(e, HttpParseEvent::HttpResponse(_)))
             .count();
         assert_eq!(resp_count, 1);
         match output.last().unwrap() {
-            ProtocolEvent::HttpResponse(resp) => {
+            HttpParseEvent::HttpResponse(resp) => {
                 assert_eq!(&resp.body[..], b"partial data and more");
             }
             _ => panic!("expected HttpResponse"),

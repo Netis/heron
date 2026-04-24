@@ -150,17 +150,21 @@ impl Pipeline {
         // pipeline's MetricsSystem (same as the storage_sink worker).
         {
             let w = calls_tx.downgrade();
-            per_pipeline_metrics[0]
-                .register_queue_probe(Metric::StorageQueueDepthCalls, move || {
+            per_pipeline_metrics[0].register_queue_probe(
+                Metric::StorageQueueDepthCalls,
+                move || {
                     w.upgrade()
                         .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-                });
+                },
+            );
             let w = turns_tx.downgrade();
-            per_pipeline_metrics[0]
-                .register_queue_probe(Metric::StorageQueueDepthTurns, move || {
+            per_pipeline_metrics[0].register_queue_probe(
+                Metric::StorageQueueDepthTurns,
+                move || {
                     w.upgrade()
                         .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-                });
+                },
+            );
             let w = metrics_out_tx.downgrade();
             per_pipeline_metrics[0].register_queue_probe(
                 Metric::StorageQueueDepthMetrics,
@@ -216,12 +220,14 @@ impl Pipeline {
             let parsed_weaks: Vec<WeakSender<WorkerInput>> =
                 parsed_txs.iter().map(|tx| tx.downgrade()).collect();
             let (event_txs, event_rxs) =
-                make_shard_channels::<ts_protocol::model::ProtocolEvent>(flow_shards, q.flow_event);
-            let event_weaks: Vec<WeakSender<ts_protocol::model::ProtocolEvent>> =
+                make_shard_channels::<ts_protocol::model::HttpParseEvent>(flow_shards, q.flow_event);
+            let event_weaks: Vec<WeakSender<ts_protocol::model::HttpParseEvent>> =
                 event_txs.iter().map(|tx| tx.downgrade()).collect();
             // Joiner output: per-shard HttpJoinerEvent channels into the LLM stage.
             let (joiner_event_txs, joiner_event_rxs) =
                 make_shard_channels::<HttpJoinerEvent>(flow_shards, q.flow_event);
+            let joiner_event_weaks: Vec<WeakSender<HttpJoinerEvent>> =
+                joiner_event_txs.iter().map(|tx| tx.downgrade()).collect();
             let (turn_shard_txs, turn_shard_rxs) =
                 make_shard_channels::<TurnShardInput>(turn_shards, q.turn_event);
             let turn_shard_weaks: Vec<WeakSender<TurnShardInput>> =
@@ -387,7 +393,7 @@ impl Pipeline {
                     .max()
                     .unwrap_or(0)
             });
-            metrics_sys.register_queue_probe(Metric::QueueDepthEvent, move || {
+            metrics_sys.register_queue_probe(Metric::QueueDepthHttpParseEvent, move || {
                 event_weaks
                     .iter()
                     .filter_map(|w| w.upgrade())
@@ -395,7 +401,15 @@ impl Pipeline {
                     .max()
                     .unwrap_or(0)
             });
-            metrics_sys.register_queue_probe(Metric::QueueDepthTurnShard, move || {
+            metrics_sys.register_queue_probe(Metric::QueueDepthHttpJoinerEvent, move || {
+                joiner_event_weaks
+                    .iter()
+                    .filter_map(|w| w.upgrade())
+                    .map(|s| (s.max_capacity() - s.capacity()) as u64)
+                    .max()
+                    .unwrap_or(0)
+            });
+            metrics_sys.register_queue_probe(Metric::QueueDepthAgentCall, move || {
                 turn_shard_weaks
                     .iter()
                     .filter_map(|w| w.upgrade())
@@ -403,7 +417,7 @@ impl Pipeline {
                     .max()
                     .unwrap_or(0)
             });
-            metrics_sys.register_queue_probe(Metric::QueueDepthMetricsShard, move || {
+            metrics_sys.register_queue_probe(Metric::QueueDepthLlmEvent, move || {
                 metrics_shard_weaks
                     .iter()
                     .filter_map(|w| w.upgrade())

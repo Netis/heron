@@ -7,7 +7,7 @@ use ts_common::internal_metrics::{Metric, MetricsWorker};
 
 use crate::flow::WorkerInput;
 use crate::http::{HttpParser, ParseResult};
-use crate::model::ProtocolEvent;
+use crate::model::HttpParseEvent;
 use crate::net::{Direction, FlowKey, ParsedPacket};
 
 /// Per-flow TCP connection state.
@@ -94,9 +94,9 @@ impl TcpFlow {
     }
 
     /// Process a parsed packet belonging to this flow.
-    /// Emits ProtocolEvents to the output vec.
+    /// Emits HttpParseEvents to the output vec.
     /// Returns `true` if a resync event occurred.
-    pub fn push(&mut self, pkt: &ParsedPacket, output: &mut Vec<ProtocolEvent>) -> bool {
+    pub fn push(&mut self, pkt: &ParsedPacket, output: &mut Vec<HttpParseEvent>) -> bool {
         let mut resync = false;
         self.last_pkt_ts = pkt.timestamp_us;
 
@@ -248,7 +248,7 @@ impl TcpFlow {
         }
     }
 
-    fn try_parse_http(&mut self, output: &mut Vec<ProtocolEvent>) -> bool {
+    fn try_parse_http(&mut self, output: &mut Vec<HttpParseEvent>) -> bool {
         // Determine which buffer is client and which is server.
         let (
             client_buf,
@@ -306,7 +306,7 @@ impl TcpFlow {
         false
     }
 
-    fn finish_pending_response(&mut self, output: &mut Vec<ProtocolEvent>) {
+    fn finish_pending_response(&mut self, output: &mut Vec<HttpParseEvent>) {
         let (server_buf, client_addr, server_addr, server_last_ts) = match self.client_side {
             ClientSide::AtoB => (
                 &mut self.b_to_a_buf,
@@ -367,7 +367,7 @@ const FLOW_TIMEOUT_US: i64 = 120_000_000;
 /// A worker that processes packets for a set of flows (flow table).
 ///
 /// Pure processor: holds no channel. Callers drive `process(input)` and
-/// dispatch the returned `ProtocolEvent`s themselves — the spawn loop in
+/// dispatch the returned `HttpParseEvent`s themselves — the spawn loop in
 /// `ts_protocol::stage` owns the downstream `Sender`, so send failures are
 /// observable at that single point.
 pub struct FlowWorker {
@@ -390,7 +390,7 @@ impl FlowWorker {
 
     /// Process a single worker input (packet or heartbeat) and return any
     /// downstream events produced. Pure in-memory work — no IO.
-    pub fn process(&mut self, input: WorkerInput) -> Vec<ProtocolEvent> {
+    pub fn process(&mut self, input: WorkerInput) -> Vec<HttpParseEvent> {
         let mut out = Vec::new();
         match input {
             WorkerInput::Packet(pkt) => self.process_packet(pkt, &mut out),
@@ -401,7 +401,7 @@ impl FlowWorker {
         out
     }
 
-    fn process_packet(&mut self, pkt: ParsedPacket, out: &mut Vec<ProtocolEvent>) {
+    fn process_packet(&mut self, pkt: ParsedPacket, out: &mut Vec<HttpParseEvent>) {
         self.metrics.counter(Metric::NetPacketsParsed).inc();
 
         let flow_key = pkt.flow_key.clone();
@@ -418,16 +418,16 @@ impl FlowWorker {
 
         for event in &out[start..] {
             match event {
-                ProtocolEvent::HttpRequest(_) => {
+                HttpParseEvent::HttpRequest(_) => {
                     self.metrics.counter(Metric::HttpRequestsParsed).inc();
                 }
-                ProtocolEvent::HttpResponse(_) => {
+                HttpParseEvent::HttpResponse(_) => {
                     self.metrics.counter(Metric::HttpResponsesParsed).inc();
                 }
-                ProtocolEvent::SseEvent(_) => {
+                HttpParseEvent::SseEvent(_) => {
                     self.metrics.counter(Metric::SseEventsParsed).inc();
                 }
-                ProtocolEvent::Heartbeat { .. } => {}
+                HttpParseEvent::Heartbeat { .. } => {}
             }
         }
 
@@ -447,10 +447,10 @@ impl FlowWorker {
         &mut self,
         wall_ts_us: i64,
         source_id: String,
-        out: &mut Vec<ProtocolEvent>,
+        out: &mut Vec<HttpParseEvent>,
     ) {
         self.maybe_cleanup_stale_flows(&source_id, wall_ts_us, out);
-        out.push(ProtocolEvent::Heartbeat {
+        out.push(HttpParseEvent::Heartbeat {
             ts: wall_ts_us,
             source_id,
         });
@@ -465,7 +465,7 @@ impl FlowWorker {
         &mut self,
         source_id: &str,
         now_ts: i64,
-        out: &mut Vec<ProtocolEvent>,
+        out: &mut Vec<HttpParseEvent>,
     ) {
         let last = self
             .last_cleanup_by_source
@@ -503,7 +503,7 @@ impl FlowWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ProtocolEvent;
+    use crate::model::HttpParseEvent;
     use crate::net::{Direction, FlowKey, ParsedPacket, TCP_ACK, TCP_SYN};
     use bytes::Bytes;
 
@@ -576,7 +576,7 @@ mod tests {
         assert_eq!(
             output
                 .iter()
-                .filter(|e| matches!(e, ProtocolEvent::HttpRequest(_)))
+                .filter(|e| matches!(e, HttpParseEvent::HttpRequest(_)))
                 .count(),
             1,
             "request should be parsed after sync"
@@ -611,7 +611,7 @@ mod tests {
         // Second request should trigger resync and be parsed.
         let req_count = output
             .iter()
-            .filter(|e| matches!(e, ProtocolEvent::HttpRequest(_)))
+            .filter(|e| matches!(e, HttpParseEvent::HttpRequest(_)))
             .count();
         assert_eq!(req_count, 2, "second request should be parsed after resync");
     }
@@ -655,7 +655,7 @@ mod tests {
         flow.push(&make_pkt(&fk, Direction::AtoB, req2, 200, 0), &mut output);
         let req_count = output
             .iter()
-            .filter(|e| matches!(e, ProtocolEvent::HttpRequest(_)))
+            .filter(|e| matches!(e, HttpParseEvent::HttpRequest(_)))
             .count();
         assert_eq!(req_count, 2, "should recover after resync");
     }

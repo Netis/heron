@@ -4,7 +4,7 @@ use crate::net::FlowKey;
 
 /// Events emitted by ts-protocol for consumption by ts-llm.
 #[derive(Debug, Clone)]
-pub enum ProtocolEvent {
+pub enum HttpParseEvent {
     /// A complete HTTP request (headers + body) has been parsed.
     HttpRequest(HttpRequestData),
     /// A complete HTTP response (headers + body) has been parsed.
@@ -97,10 +97,10 @@ impl HttpResponseData {
     }
 }
 
-impl std::fmt::Display for ProtocolEvent {
+impl std::fmt::Display for HttpParseEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProtocolEvent::HttpRequest(req) => {
+            HttpParseEvent::HttpRequest(req) => {
                 write!(
                     f,
                     "[REQ]  {}:{} -> {}:{} | {} {} | {}B",
@@ -113,7 +113,7 @@ impl std::fmt::Display for ProtocolEvent {
                     req.body.len(),
                 )
             }
-            ProtocolEvent::HttpResponse(resp) => {
+            HttpParseEvent::HttpResponse(resp) => {
                 let ct = resp.content_type().unwrap_or("-");
                 write!(
                     f,
@@ -126,7 +126,7 @@ impl std::fmt::Display for ProtocolEvent {
                     resp.body.len(),
                 )
             }
-            ProtocolEvent::SseEvent(sse) => {
+            HttpParseEvent::SseEvent(sse) => {
                 let data_preview: String = sse.data.chars().take(80).collect();
                 write!(
                     f,
@@ -139,7 +139,7 @@ impl std::fmt::Display for ProtocolEvent {
                     data_preview,
                 )
             }
-            ProtocolEvent::Heartbeat { ts, source_id } => {
+            HttpParseEvent::Heartbeat { ts, source_id } => {
                 write!(f, "[HB]   wall_ts_us={ts} source={source_id}")
             }
         }

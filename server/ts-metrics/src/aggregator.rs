@@ -91,7 +91,7 @@ impl MetricsAggregator {
 
     /// Process an LlmEvent. Returns any metric rows emitted by cadence drain.
     pub fn process(&mut self, event: &LlmEvent) -> Vec<LlmMetric> {
-        self.metrics.counter(Metric::MetricsEventsReceived).inc();
+        self.metrics.counter(Metric::MetricsLlmEventsReceived).inc();
 
         let (source_id, ts) = event_clock(event);
 
@@ -328,7 +328,10 @@ mod tests {
         let mut sys = MetricsSystem::new();
         let w = sys.register_worker(
             "test",
-            &[Metric::MetricsEventsReceived, Metric::MetricsWindowsFlushed],
+            &[
+                Metric::MetricsLlmEventsReceived,
+                Metric::MetricsWindowsFlushed,
+            ],
         );
         let _svc = sys.start();
         w

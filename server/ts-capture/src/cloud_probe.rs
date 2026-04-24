@@ -261,7 +261,7 @@ impl CaptureSource for CloudProbeSource {
                                     }
                                 }
                                 Err(err) => {
-                                    metrics.counter(Metric::CaptureBatchesDropped).inc();
+                                    metrics.counter(Metric::CaptureZmqBatchesDropped).inc();
                                     if let Some(suppressed) = batch_err_throttle.tick() {
                                         if suppressed > 0 {
                                             tracing::warn!(
@@ -493,9 +493,9 @@ mod tests {
                 "test",
                 &[
                     Metric::CapturePacketsReceived,
-                    Metric::CapturePacketsDropped,
+                    Metric::CaptureKernelPacketsDropped,
                     Metric::CaptureBatchesReceived,
-                    Metric::CaptureBatchesDropped,
+                    Metric::CaptureZmqBatchesDropped,
                 ],
             )
         }

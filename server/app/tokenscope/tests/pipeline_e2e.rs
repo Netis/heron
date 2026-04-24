@@ -98,7 +98,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
                 &format!("capture.e2e.{i}"),
                 &[
                     Metric::CapturePacketsReceived,
-                    Metric::CapturePacketsDropped,
+                    Metric::CaptureKernelPacketsDropped,
                 ],
             )
         })

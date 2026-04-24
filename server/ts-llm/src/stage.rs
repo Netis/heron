@@ -68,7 +68,6 @@ pub fn spawn_llm_stage(
             &[
                 Metric::LlmHttpRequestsDetected,
                 Metric::LlmHttpRequestsIgnored,
-                Metric::LlmCallsCompleted,
                 Metric::LlmCallsWithAgent,
                 Metric::LlmCallsWithoutAgent,
             ],
@@ -169,7 +168,7 @@ mod tests {
     use std::net::IpAddr;
     use std::sync::Arc;
     use ts_protocol::joiner::HttpJoiner;
-    use ts_protocol::model::{HttpRequestData, HttpResponseData, ProtocolEvent};
+    use ts_protocol::model::{HttpRequestData, HttpResponseData, HttpParseEvent};
     use ts_protocol::net::FlowKey;
 
     use crate::agents::build_default_registry;
@@ -193,8 +192,8 @@ mod tests {
         );
         let _svc = sys.start();
         let mut joiner = HttpJoiner::new(w);
-        let mut out = joiner.process(ProtocolEvent::HttpRequest(req));
-        out.extend(joiner.process(ProtocolEvent::HttpResponse(resp)));
+        let mut out = joiner.process(HttpParseEvent::HttpRequest(req));
+        out.extend(joiner.process(HttpParseEvent::HttpResponse(resp)));
         out
     }
 

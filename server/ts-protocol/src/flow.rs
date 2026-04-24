@@ -51,21 +51,15 @@ impl FlowDispatcher {
         ) {
             Ok(p) => p,
             Err(DecodeError::NotIp) | Err(DecodeError::NotSupported) => {
-                self.metrics
-                    .counter(Metric::NetPacketsDroppedNotIp)
-                    .inc();
+                self.metrics.counter(Metric::NetParseDroppedNotIp).inc();
                 return true;
             }
             Err(DecodeError::NotTcp) => {
-                self.metrics
-                    .counter(Metric::NetPacketsDroppedNotTcp)
-                    .inc();
+                self.metrics.counter(Metric::NetParseDroppedNotTcp).inc();
                 return true;
             }
             Err(DecodeError::Truncated) | Err(DecodeError::InvalidHeader) => {
-                self.metrics
-                    .counter(Metric::NetPacketsDroppedMalformed)
-                    .inc();
+                self.metrics.counter(Metric::NetParseDroppedMalformed).inc();
                 return true;
             }
         };

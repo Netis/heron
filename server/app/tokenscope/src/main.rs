@@ -282,10 +282,10 @@ async fn main() {
                             &format!("capture.{j}"),
                             &[
                                 Metric::CapturePacketsReceived,
-                                Metric::CapturePacketsDropped,
+                                Metric::CaptureKernelPacketsDropped,
                                 Metric::CaptureHeartbeatsEmitted,
                                 Metric::CaptureBatchesReceived,
-                                Metric::CaptureBatchesDropped,
+                                Metric::CaptureZmqBatchesDropped,
                                 Metric::CaptureReadErrors,
                                 Metric::CaptureDumpErrors,
                             ],

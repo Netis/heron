@@ -534,7 +534,7 @@ fn finalize_session(
             FinalizeKind::Flush, // grace-driven; only bump grace counter if actually emitted
         );
         if emitted {
-            metrics.counter(Metric::TurnFinalizedByGrace).inc();
+            metrics.counter(Metric::TurnClosedByGrace).inc();
         }
 
         buf.last_finalized_request_time = Some(terminal_ts);
@@ -582,7 +582,7 @@ fn emit_or_discard(
     events.push(TurnEvent::Completed(turn));
     metrics.counter(Metric::TurnsCompleted).inc();
     if matches!(kind, FinalizeKind::Idle) {
-        metrics.counter(Metric::TurnFinalizedByIdle).inc();
+        metrics.counter(Metric::TurnClosedByIdle).inc();
     }
     true
 }
@@ -775,8 +775,8 @@ mod tests {
                 Metric::TurnCallsAuxiliary,
                 Metric::TurnsCompleted,
                 Metric::TurnCallsDroppedLate,
-                Metric::TurnFinalizedByGrace,
-                Metric::TurnFinalizedByIdle,
+                Metric::TurnClosedByGrace,
+                Metric::TurnClosedByIdle,
                 Metric::TurnDiscardedNoUserStart,
             ],
         );

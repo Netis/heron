@@ -39,7 +39,7 @@ async fn run_pcap_full_sharded(
         "capture.test",
         &[
             Metric::CapturePacketsReceived,
-            Metric::CapturePacketsDropped,
+            Metric::CaptureKernelPacketsDropped,
         ],
     );
 
@@ -61,7 +61,7 @@ async fn run_pcap_full_sharded(
         let (ptx, prx) = mpsc::channel::<ts_protocol::WorkerInput>(queue_size);
         parsed_txs.push(ptx);
         parsed_rxs.push(prx);
-        let (etx, erx) = mpsc::channel::<ts_protocol::model::ProtocolEvent>(queue_size);
+        let (etx, erx) = mpsc::channel::<ts_protocol::model::HttpParseEvent>(queue_size);
         protocol_event_txs.push(etx);
         protocol_event_rxs.push(erx);
         let (jtx, jrx) = mpsc::channel::<ts_protocol::HttpJoinerEvent>(queue_size);

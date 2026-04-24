@@ -8,7 +8,7 @@
 //!   Heartbeats (all-zero MACs + `ether_type=0xFFFF`) are broadcast to
 //!   every worker so each shard can advance its own clock.
 //! * [`spawn_protocol_stage`] — N `FlowWorker` tasks, one per shard,
-//!   consuming `WorkerInput`s and producing `ProtocolEvent`s.
+//!   consuming `WorkerInput`s and producing `HttpParseEvent`s.
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -18,7 +18,7 @@ use ts_common::internal_metrics::{Metric, MetricsSystem};
 
 use crate::flow::{FlowDispatcher, WorkerInput};
 use crate::joiner::{HttpExchange, HttpJoiner, HttpJoinerEvent};
-use crate::model::ProtocolEvent;
+use crate::model::HttpParseEvent;
 use crate::tcp::FlowWorker;
 
 /// Spawn the flow dispatcher: one task that consumes `RawPacket`s from
@@ -45,9 +45,9 @@ pub fn spawn_flow_dispatcher(
         &[
             Metric::DispatcherPacketsRouted,
             Metric::DispatcherHeartbeatsDropped,
-            Metric::NetPacketsDroppedNotIp,
-            Metric::NetPacketsDroppedNotTcp,
-            Metric::NetPacketsDroppedMalformed,
+            Metric::NetParseDroppedNotIp,
+            Metric::NetParseDroppedNotTcp,
+            Metric::NetParseDroppedMalformed,
         ],
     );
     let worker_name = worker_name.to_string();
@@ -79,13 +79,13 @@ pub fn spawn_flow_dispatcher(
 
 /// Spawn N flow-parser workers, one per input receiver. Each worker consumes
 /// `WorkerInput`s from `worker_rxs[i]`, runs TCP reassembly + HTTP/SSE
-/// parsing, and emits `ProtocolEvent`s into `event_txs[i]`.
+/// parsing, and emits `HttpParseEvent`s into `event_txs[i]`.
 ///
 /// Panics if `worker_rxs.len() != event_txs.len()` — that is a wiring bug
 /// in the composition root, not a runtime condition.
 pub fn spawn_protocol_stage(
     worker_rxs: Vec<mpsc::Receiver<WorkerInput>>,
-    event_txs: Vec<mpsc::Sender<ProtocolEvent>>,
+    event_txs: Vec<mpsc::Sender<HttpParseEvent>>,
     metrics_sys: &mut MetricsSystem,
 ) -> Vec<JoinHandle<()>> {
     assert_eq!(
@@ -140,7 +140,7 @@ pub fn spawn_protocol_stage(
 }
 
 /// Spawn N HttpJoiner workers, one per input receiver. Each worker pairs
-/// `ProtocolEvent`s into `HttpJoinerEvent`s (RequestObserved + Exchange +
+/// `HttpParseEvent`s into `HttpJoinerEvent`s (RequestObserved + Exchange +
 /// Heartbeat) and emits them to `joiner_event_txs[i]`.
 ///
 /// When `http_exchanges_tx` is `Some`, every paired `Exchange`'s
@@ -158,7 +158,7 @@ pub fn spawn_protocol_stage(
 /// Panics if `worker_rxs.len() != joiner_event_txs.len()` — that is a
 /// wiring bug in the composition root.
 pub fn spawn_http_joiner_stage(
-    worker_rxs: Vec<mpsc::Receiver<ProtocolEvent>>,
+    worker_rxs: Vec<mpsc::Receiver<HttpParseEvent>>,
     joiner_event_txs: Vec<mpsc::Sender<HttpJoinerEvent>>,
     http_exchanges_tx: Option<mpsc::Sender<HttpExchange>>,
     metrics_sys: &mut MetricsSystem,

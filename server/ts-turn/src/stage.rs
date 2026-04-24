@@ -60,8 +60,8 @@ pub fn spawn_turn_stage(
                 Metric::TurnCallsAuxiliary,
                 Metric::TurnsCompleted,
                 Metric::TurnCallsDroppedLate,
-                Metric::TurnFinalizedByGrace,
-                Metric::TurnFinalizedByIdle,
+                Metric::TurnClosedByGrace,
+                Metric::TurnClosedByIdle,
                 Metric::TurnDiscardedNoUserStart,
             ],
         );

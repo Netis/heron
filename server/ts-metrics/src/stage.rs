@@ -31,7 +31,10 @@ pub fn spawn_metrics_stage(
         let metrics_tx = metrics_tx.clone();
         let worker_metrics = metrics_sys.register_worker(
             &format!("metrics.{i}"),
-            &[Metric::MetricsEventsReceived, Metric::MetricsWindowsFlushed],
+            &[
+                Metric::MetricsLlmEventsReceived,
+                Metric::MetricsWindowsFlushed,
+            ],
         );
         handles.push(tokio::spawn(async move {
             let shard = i;

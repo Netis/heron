@@ -7,7 +7,7 @@
 //!   + wall-clock grace) against the three collapse modes it replaces.
 //! - `finalize_by_grace_counter_does_not_double_count_*` pins the fix that
 //!   made `emit_or_discard` return whether it actually emitted, so
-//!   `TurnFinalizedByGrace` reflects emissions rather than `events.last()`.
+//!   `TurnClosedByGrace` reflects emissions rather than `events.last()`.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -31,8 +31,8 @@ fn test_metrics() -> MetricsWorker {
             Metric::TurnCallsAuxiliary,
             Metric::TurnsCompleted,
             Metric::TurnCallsDroppedLate,
-            Metric::TurnFinalizedByGrace,
-            Metric::TurnFinalizedByIdle,
+            Metric::TurnClosedByGrace,
+            Metric::TurnClosedByIdle,
             Metric::TurnDiscardedNoUserStart,
         ],
     );
@@ -775,7 +775,7 @@ fn finalize_by_grace_counter_does_not_double_count_across_discarded_partition() 
     // Before the fix, finalize_session peeked at `events.last()` after each
     // partition. Once the first partition had pushed a Completed, the
     // discarded second partition would still see Completed as the last event
-    // and bump TurnFinalizedByGrace a second time. Expected: exactly one
+    // and bump TurnClosedByGrace a second time. Expected: exactly one
     // grace finalization.
     use ts_turn::tracker::{TrackerConfig, TurnTracker};
 
@@ -849,7 +849,7 @@ fn finalize_by_grace_counter_does_not_double_count_across_discarded_partition() 
     );
     assert_eq!(turns[0].call_count, 2);
 
-    let grace = metrics.counter(Metric::TurnFinalizedByGrace).get();
+    let grace = metrics.counter(Metric::TurnClosedByGrace).get();
     let discarded = metrics.counter(Metric::TurnDiscardedNoUserStart).get();
     assert_eq!(
         grace, 1,

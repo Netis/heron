@@ -251,7 +251,7 @@ pub struct QueueConfig {
     /// flow dispatcher → each protocol parser shard (ParsedPacket)
     #[serde(default = "default_queue_capacity")]
     pub parsed_packet: usize,
-    /// protocol parser → llm stage (ProtocolEvent, per shard)
+    /// protocol parser → llm stage (HttpParseEvent, per shard)
     #[serde(default = "default_queue_capacity")]
     pub flow_event: usize,
     /// llm stage → each turn shard (per shard)

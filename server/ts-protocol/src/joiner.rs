@@ -1,4 +1,4 @@
-//! HTTP request/response pairing. Consumes `ProtocolEvent`s (per-direction
+//! HTTP request/response pairing. Consumes `HttpParseEvent`s (per-direction
 //! HTTP/SSE parser output) and produces `HttpJoinerEvent`s — a two-phase
 //! stream that decouples request observation (for downstream concurrency
 //! tracking) from exchange completion (for storage / semantic extraction).
@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use ts_common::internal_metrics::{Metric, MetricsWorker};
 
-use crate::model::{HttpRequestData, HttpResponseData, ProtocolEvent, SseEventData};
+use crate::model::{HttpRequestData, HttpResponseData, HttpParseEvent, SseEventData};
 use crate::net::FlowKey;
 
 /// Upper bound on how long a pending HTTP exchange may sit **silent** before
@@ -145,7 +145,7 @@ pub enum HttpJoinerEvent {
         sse_events: Vec<SseEventData>,
     },
 
-    /// Time-advancing heartbeat. Forwarded from upstream `ProtocolEvent`.
+    /// Time-advancing heartbeat. Forwarded from upstream `HttpParseEvent`.
     /// Downstream consumers (metrics, turn tracker) use these to close stale
     /// windows during traffic idle.
     Heartbeat { ts: i64, source_id: String },
@@ -176,15 +176,15 @@ impl HttpJoiner {
     }
 
     /// Process a single protocol event. Returns zero or more joiner events.
-    pub fn process(&mut self, event: ProtocolEvent) -> Vec<HttpJoinerEvent> {
+    pub fn process(&mut self, event: HttpParseEvent) -> Vec<HttpJoinerEvent> {
         match event {
-            ProtocolEvent::HttpRequest(req) => self.on_request(req),
-            ProtocolEvent::SseEvent(sse) => {
+            HttpParseEvent::HttpRequest(req) => self.on_request(req),
+            HttpParseEvent::SseEvent(sse) => {
                 self.on_sse(sse);
                 Vec::new()
             }
-            ProtocolEvent::HttpResponse(resp) => self.on_response(resp),
-            ProtocolEvent::Heartbeat { ts, source_id } => {
+            HttpParseEvent::HttpResponse(resp) => self.on_response(resp),
+            HttpParseEvent::Heartbeat { ts, source_id } => {
                 self.cleanup_stale(&source_id, ts, PENDING_STALE_TIMEOUT_US);
                 vec![HttpJoinerEvent::Heartbeat { ts, source_id }]
             }
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn request_emits_request_event() {
         let mut joiner = HttpJoiner::new(test_metrics());
-        let events = joiner.process(ProtocolEvent::HttpRequest(make_request(
+        let events = joiner.process(HttpParseEvent::HttpRequest(make_request(
             flow(5000),
             1_000_000,
         )));
@@ -394,11 +394,11 @@ mod tests {
     fn non_sse_pair_produces_exchange_with_body() {
         let mut joiner = HttpJoiner::new(test_metrics());
         let fk = flow(5000);
-        joiner.process(ProtocolEvent::HttpRequest(make_request(
+        joiner.process(HttpParseEvent::HttpRequest(make_request(
             fk.clone(),
             1_000_000,
         )));
-        let events = joiner.process(ProtocolEvent::HttpResponse(make_response(
+        let events = joiner.process(HttpParseEvent::HttpResponse(make_response(
             fk, 1_000_000, false,
         )));
         assert_eq!(events.len(), 1);
@@ -433,17 +433,17 @@ mod tests {
     fn sse_pair_has_none_body_and_carries_events() {
         let mut joiner = HttpJoiner::new(test_metrics());
         let fk = flow(5000);
-        joiner.process(ProtocolEvent::HttpRequest(make_request(
+        joiner.process(HttpParseEvent::HttpRequest(make_request(
             fk.clone(),
             1_000_000,
         )));
-        joiner.process(ProtocolEvent::SseEvent(make_sse(
+        joiner.process(HttpParseEvent::SseEvent(make_sse(
             fk.clone(),
             1_100_000,
             "message_start",
             "{}",
         )));
-        let events = joiner.process(ProtocolEvent::HttpResponse(make_response(
+        let events = joiner.process(HttpParseEvent::HttpResponse(make_response(
             fk, 1_000_000, true,
         )));
         match &events[0] {
@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn response_without_request_bumps_incomplete() {
         let mut joiner = HttpJoiner::new(test_metrics());
-        let events = joiner.process(ProtocolEvent::HttpResponse(make_response(
+        let events = joiner.process(HttpParseEvent::HttpResponse(make_response(
             flow(5000),
             1_000_000,
             false,
@@ -486,13 +486,13 @@ mod tests {
     #[test]
     fn heartbeat_past_timeout_evicts_pending() {
         let mut joiner = HttpJoiner::new(test_metrics());
-        joiner.process(ProtocolEvent::HttpRequest(make_request(
+        joiner.process(HttpParseEvent::HttpRequest(make_request(
             flow(5000),
             1_000_000,
         )));
         assert_eq!(joiner.pending_count(), 1);
 
-        let events = joiner.process(ProtocolEvent::Heartbeat {
+        let events = joiner.process(HttpParseEvent::Heartbeat {
             ts: 2_000_000,
             source_id: String::new(),
         });
@@ -502,7 +502,7 @@ mod tests {
         ));
         assert_eq!(joiner.pending_count(), 1, "still fresh");
 
-        let events = joiner.process(ProtocolEvent::Heartbeat {
+        let events = joiner.process(HttpParseEvent::Heartbeat {
             ts: 1_000_000 + PENDING_STALE_TIMEOUT_US + 1,
             source_id: String::new(),
         });
@@ -520,14 +520,14 @@ mod tests {
 
         let mut req_a = make_request(flow(5000), 1_000_000);
         req_a.flow_key = FlowKey::new("source-a".into(), ip, 5000, ip, 8080);
-        joiner.process(ProtocolEvent::HttpRequest(req_a));
+        joiner.process(HttpParseEvent::HttpRequest(req_a));
 
         let mut req_b = make_request(flow(5001), 1_000_000);
         req_b.flow_key = FlowKey::new("source-b".into(), ip, 5001, ip, 8080);
-        joiner.process(ProtocolEvent::HttpRequest(req_b));
+        joiner.process(HttpParseEvent::HttpRequest(req_b));
         assert_eq!(joiner.pending_count(), 2);
 
-        joiner.process(ProtocolEvent::Heartbeat {
+        joiner.process(HttpParseEvent::Heartbeat {
             ts: 1_000_000 + PENDING_STALE_TIMEOUT_US + 1,
             source_id: "source-a".into(),
         });
@@ -538,13 +538,13 @@ mod tests {
     fn stale_pending_replaced_silently_on_reuse() {
         let mut joiner = HttpJoiner::new(test_metrics());
         let fk = flow(5000);
-        joiner.process(ProtocolEvent::HttpRequest(make_request(
+        joiner.process(HttpParseEvent::HttpRequest(make_request(
             fk.clone(),
             1_000_000,
         )));
         let mut req2 = make_request(fk, 1_000_000);
         req2.timestamp_us = 1_000_000 + PENDING_STALE_TIMEOUT_US + 1;
-        let events = joiner.process(ProtocolEvent::HttpRequest(req2));
+        let events = joiner.process(HttpParseEvent::HttpRequest(req2));
         assert!(matches!(events.as_slice(), [HttpJoinerEvent::Request(_)]));
         assert_eq!(joiner.pending_count(), 1);
     }
@@ -556,7 +556,7 @@ mod tests {
         // the timeout should trigger cleanup.
         let mut joiner = HttpJoiner::new(test_metrics());
         let fk = flow(5000);
-        joiner.process(ProtocolEvent::HttpRequest(make_request(
+        joiner.process(HttpParseEvent::HttpRequest(make_request(
             fk.clone(),
             1_000_000,
         )));
@@ -564,7 +564,7 @@ mod tests {
         // Feed an SSE event well after the raw-request-age timeout — with
         // activity-based staleness, this keeps the pending alive.
         let sse_ts = 1_000_000 + PENDING_STALE_TIMEOUT_US + 30_000_000; // +30s past
-        joiner.process(ProtocolEvent::SseEvent(make_sse(
+        joiner.process(HttpParseEvent::SseEvent(make_sse(
             fk.clone(),
             sse_ts,
             "message_delta",
@@ -573,14 +573,14 @@ mod tests {
 
         // Heartbeat shortly after the SSE event — within the timeout from
         // last_activity. Must not evict.
-        joiner.process(ProtocolEvent::Heartbeat {
+        joiner.process(HttpParseEvent::Heartbeat {
             ts: sse_ts + 60_000_000, // +60s silence, well under timeout
             source_id: String::new(),
         });
         assert_eq!(joiner.pending_count(), 1, "live stream must not be evicted");
 
         // Now silence past the timeout from the last SSE event — evict.
-        joiner.process(ProtocolEvent::Heartbeat {
+        joiner.process(HttpParseEvent::Heartbeat {
             ts: sse_ts + PENDING_STALE_TIMEOUT_US + 1,
             source_id: String::new(),
         });
