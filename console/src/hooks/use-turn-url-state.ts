@@ -4,14 +4,14 @@ import { useSearchParams } from "react-router"
 export function useTurnUrlState() {
   const [params, setParams] = useSearchParams()
   const call = params.get("call") ? Number(params.get("call")) : null
-  const raw = params.get("raw") === "1"
+  const detail = params.get("detail") === "1"
 
   const setCall = useCallback((seq: number | null) => {
     setParams((prev) => {
       const next = new URLSearchParams(prev)
       if (seq == null) {
         next.delete("call")
-        next.delete("raw")
+        next.delete("detail")
       } else {
         next.set("call", String(seq))
       }
@@ -19,23 +19,23 @@ export function useTurnUrlState() {
     }, { replace: true })
   }, [setParams])
 
-  const setRaw = useCallback((on: boolean) => {
+  const setDetail = useCallback((on: boolean) => {
     setParams((prev) => {
       const next = new URLSearchParams(prev)
-      if (on) next.set("raw", "1")
-      else next.delete("raw")
+      if (on) next.set("detail", "1")
+      else next.delete("detail")
       return next
     }, { replace: true })
   }, [setParams])
 
-  const openRaw = useCallback((seq: number) => {
+  const openDetail = useCallback((seq: number) => {
     setParams((prev) => {
       const next = new URLSearchParams(prev)
       next.set("call", String(seq))
-      next.set("raw", "1")
+      next.set("detail", "1")
       return next
     }, { replace: true })
   }, [setParams])
 
-  return { call, raw, setCall, setRaw, openRaw }
+  return { call, detail, setCall, setDetail, openDetail }
 }

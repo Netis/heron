@@ -24,10 +24,10 @@ interface Props {
   agentKind: string | null
   active?: boolean
   defaultExpanded?: boolean
-  onOpenRawHttp?: (id: string) => void
+  onOpenDetail?: (id: string) => void
 }
 
-export function CallCard({ call, nextCall, finalCallId, agentKind, active, defaultExpanded, onOpenRawHttp }: Props) {
+export function CallCard({ call, nextCall, finalCallId, agentKind, active, defaultExpanded, onOpenDetail }: Props) {
   const [expanded, setExpanded] = useState(Boolean(defaultExpanded))
   const speed = classify(call)
 
@@ -81,7 +81,7 @@ export function CallCard({ call, nextCall, finalCallId, agentKind, active, defau
           <div className="text-muted-foreground">
             {call.wire_api} · TTFT {formatMs(call.ttft_ms)} · finish: {call.finish_reason ?? "—"}
           </div>
-          <button onClick={() => onOpenRawHttp?.(call.id)} className="text-foreground hover:underline">View raw HTTP →</button>
+          <button onClick={() => onOpenDetail?.(call.id)} className="text-foreground hover:underline">View call detail →</button>
         </div>
       )}
     </div>
