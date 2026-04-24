@@ -654,87 +654,86 @@ const SUM_FIELDS: &[&str] = &[
     "tpot_count",
 ];
 
-/// Build a WHERE clause segment for dimension filters (ungrouped queries).
-/// Empty filter vec => match wildcard '*'. Non-empty => IN (...).
-fn build_dimension_where(filter: &DimensionFilter) -> String {
-    let wire_api_clause = if filter.wire_apis.is_empty() {
-        "wire_api = '*'".to_string()
-    } else {
-        let list: Vec<String> = filter
-            .wire_apis
-            .iter()
-            .map(|s| format!("'{}'", s.replace('\'', "''")))
-            .collect();
-        format!("wire_api IN ({})", list.join(", "))
-    };
-    let model_clause = if filter.models.is_empty() {
-        "model = '*'".to_string()
-    } else {
-        let list: Vec<String> = filter
-            .models
-            .iter()
-            .map(|s| format!("'{}'", s.replace('\'', "''")))
-            .collect();
-        format!("model IN ({})", list.join(", "))
-    };
-    let server_clause = if filter.server_ips.is_empty() {
-        "server_ip = '*'".to_string()
-    } else {
-        let list: Vec<String> = filter
-            .server_ips
-            .iter()
-            .map(|s| format!("'{}'", s.replace('\'', "''")))
-            .collect();
-        format!("server_ip IN ({})", list.join(", "))
-    };
-    format!("{wire_api_clause} AND {model_clause} AND {server_clause}")
+/// Format a list of string values as a SQL IN list with single-quote escaping.
+fn sql_in_list(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|s| format!("'{}'", s.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-/// Build WHERE clause for grouped timeseries queries.
-/// group_by="wire_api": returns per-model rows (wire_api != '*', model != '*', server_ip = '*')
-///   filtered by wire_api filter if specified.
-/// group_by="model": returns per-model rows (wire_api != '*', model != '*', server_ip = '*')
-///   filtered by model filter if specified.
+/// Build a WHERE clause segment for dimension filters on an ungrouped query.
+///
+/// The aggregator (see `ts-metrics/src/aggregator.rs:dimension_keys`) only
+/// materializes 4 of the 8 possible wildcard combinations for
+/// `(wire_api, model, server_ip)`:
+///
+/// - `(W, M, S)` — finest
+/// - `(W, M, *)` — per (wire_api, model), summed across servers
+/// - `(*, *, S)` — per server_ip only
+/// - `(*, *, *)` — grand total
+///
+/// The mapping below picks the coarsest tier that covers the user's filter
+/// and SUMs across the remaining rows. A filter on wire_api or model forces
+/// us below the `(*, *, ·)` tier; a filter on server_ip forces us off the
+/// `server_ip = '*'` coordinate.
+fn build_dimension_where(filter: &DimensionFilter) -> String {
+    let has_wire = !filter.wire_apis.is_empty();
+    let has_model = !filter.models.is_empty();
+    let has_server = !filter.server_ips.is_empty();
+
+    let (wire_clause, model_clause) = if !has_wire && !has_model {
+        // Stay on (*, *, ·) tier.
+        ("wire_api = '*'".to_string(), "model = '*'".to_string())
+    } else {
+        // Drop to (W, M, ·) tier — either IN-list or all specific values.
+        let w = if has_wire {
+            format!("wire_api IN ({})", sql_in_list(&filter.wire_apis))
+        } else {
+            "wire_api != '*'".to_string()
+        };
+        let m = if has_model {
+            format!("model IN ({})", sql_in_list(&filter.models))
+        } else {
+            "model != '*'".to_string()
+        };
+        (w, m)
+    };
+
+    let server_clause = if has_server {
+        format!("server_ip IN ({})", sql_in_list(&filter.server_ips))
+    } else {
+        "server_ip = '*'".to_string()
+    };
+
+    format!("{wire_clause} AND {model_clause} AND {server_clause}")
+}
+
+/// Build WHERE clause for queries that GROUP BY `wire_api` or `model`. The
+/// group dimension is always forced to a specific value (never `'*'`); the
+/// remaining dimensions follow the same filter/tier rules as
+/// [`build_dimension_where`]. Any non-recognized `group_by` falls through to
+/// the ungrouped builder.
 fn build_dimension_where_for_group(filter: &DimensionFilter, group_by: &str) -> String {
     match group_by {
-        "wire_api" => {
-            let wire_api_clause = if filter.wire_apis.is_empty() {
-                "wire_api != '*'".to_string()
+        "wire_api" | "model" => {
+            let wire_clause = if !filter.wire_apis.is_empty() {
+                format!("wire_api IN ({})", sql_in_list(&filter.wire_apis))
             } else {
-                let list: Vec<String> = filter
-                    .wire_apis
-                    .iter()
-                    .map(|s| format!("'{}'", s.replace('\'', "''")))
-                    .collect();
-                format!("wire_api IN ({})", list.join(", "))
-            };
-            // No pre-aggregated (wire_api, *, *) rows exist — the aggregator
-            // produces (wire_api, model, *) rows.  GROUP BY wire_api in the
-            // timeseries query will SUM across models for each wire_api.
-            format!("{wire_api_clause} AND model != '*' AND server_ip = '*'")
-        }
-        "model" => {
-            let wire_api_clause = if filter.wire_apis.is_empty() {
                 "wire_api != '*'".to_string()
-            } else {
-                let list: Vec<String> = filter
-                    .wire_apis
-                    .iter()
-                    .map(|s| format!("'{}'", s.replace('\'', "''")))
-                    .collect();
-                format!("wire_api IN ({})", list.join(", "))
             };
-            let model_clause = if filter.models.is_empty() {
+            let model_clause = if !filter.models.is_empty() {
+                format!("model IN ({})", sql_in_list(&filter.models))
+            } else {
                 "model != '*'".to_string()
-            } else {
-                let list: Vec<String> = filter
-                    .models
-                    .iter()
-                    .map(|s| format!("'{}'", s.replace('\'', "''")))
-                    .collect();
-                format!("model IN ({})", list.join(", "))
             };
-            format!("{wire_api_clause} AND {model_clause} AND server_ip = '*'")
+            let server_clause = if !filter.server_ips.is_empty() {
+                format!("server_ip IN ({})", sql_in_list(&filter.server_ips))
+            } else {
+                "server_ip = '*'".to_string()
+            };
+            format!("{wire_clause} AND {model_clause} AND {server_clause}")
         }
         _ => build_dimension_where(filter),
     }
@@ -1552,7 +1551,9 @@ impl StorageBackend for DuckDbBackend {
             let start_ts = us_to_timestamp(query.time_range.start_us);
             let end_ts = us_to_timestamp(query.time_range.end_us);
 
-            let sql = "
+            let dim_where = build_dimension_where(&query.filter);
+            let sql = format!(
+                "
                 SELECT
                     COALESCE(SUM(call_count), 0),
                     COALESCE(SUM(error_count), 0),
@@ -1568,13 +1569,14 @@ impl StorageBackend for DuckDbBackend {
                     CASE WHEN SUM(tpot_count) > 0
                          THEN SUM(tpot_sum) / SUM(tpot_count) ELSE NULL END
                 FROM llm_metrics
-                WHERE wire_api = '*' AND model = '*' AND server_ip = '*'
+                WHERE {dim_where}
                   AND granularity = '10s'
                   AND timestamp >= ? AND timestamp < ?
-            ";
+            "
+            );
 
             let mut stmt = conn
-                .prepare(sql)
+                .prepare(&sql)
                 .map_err(|e| AppError::Storage(format!("failed to prepare summary query: {e}")))?;
 
             let row = stmt
@@ -1638,6 +1640,9 @@ impl StorageBackend for DuckDbBackend {
 
             let sort_by = &query.sort_by;
             let limit = query.limit;
+            // Per-(wire_api, model) breakdown shares the grouped-tier logic:
+            // both dimensions are always specific, server_ip follows filter.
+            let dim_where = build_dimension_where_for_group(&query.filter, "wire_api");
 
             let sql = format!(
                 "
@@ -1668,7 +1673,7 @@ impl StorageBackend for DuckDbBackend {
                              THEN SUM(tpot_sum) / SUM(tpot_count)
                              ELSE NULL END AS tpot_avg
                     FROM llm_metrics
-                    WHERE wire_api != '*' AND model != '*' AND server_ip = '*'
+                    WHERE {dim_where}
                       AND granularity = '10s'
                       AND timestamp >= ? AND timestamp < ?
                     GROUP BY wire_api, model
@@ -4039,6 +4044,292 @@ mod tests {
         assert_eq!(rows[1].wire_api, wa::OPENAI_CHAT);
         assert_eq!(rows[1].model, "gpt-4");
         assert_eq!(rows[1].call_count, 100);
+    }
+
+    // ===== Dimension filter WHERE-clause builder tests =====
+    //
+    // The aggregator emits 4 wildcard combinations per event: (W,M,S),
+    // (W,M,*), (*,*,S), (*,*,*). These tests lock in the mapping from a
+    // user filter set to the correct pre-aggregated tier.
+
+    #[test]
+    fn test_build_dimension_where_no_filter() {
+        let f = DimensionFilter::default();
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api = '*' AND model = '*' AND server_ip = '*'"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_server_only() {
+        let f = DimensionFilter {
+            server_ips: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api = '*' AND model = '*' AND server_ip IN ('10.0.0.1')"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_wire_only() {
+        let f = DimensionFilter {
+            wire_apis: vec!["openai-chat".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api IN ('openai-chat') AND model != '*' AND server_ip = '*'"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_model_only() {
+        let f = DimensionFilter {
+            models: vec!["gpt-4".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api != '*' AND model IN ('gpt-4') AND server_ip = '*'"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_wire_and_model() {
+        let f = DimensionFilter {
+            wire_apis: vec!["openai-chat".into()],
+            models: vec!["gpt-4".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api IN ('openai-chat') AND model IN ('gpt-4') AND server_ip = '*'"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_wire_and_server() {
+        let f = DimensionFilter {
+            wire_apis: vec!["openai-chat".into()],
+            server_ips: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api IN ('openai-chat') AND model != '*' AND server_ip IN ('10.0.0.1')"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_model_and_server() {
+        let f = DimensionFilter {
+            models: vec!["gpt-4".into()],
+            server_ips: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api != '*' AND model IN ('gpt-4') AND server_ip IN ('10.0.0.1')"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_all_three() {
+        let f = DimensionFilter {
+            wire_apis: vec!["openai-chat".into()],
+            models: vec!["gpt-4".into()],
+            server_ips: vec!["10.0.0.1".into()],
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api IN ('openai-chat') AND model IN ('gpt-4') AND server_ip IN ('10.0.0.1')"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_for_group_wire_api_no_filter() {
+        let f = DimensionFilter::default();
+        assert_eq!(
+            build_dimension_where_for_group(&f, "wire_api"),
+            "wire_api != '*' AND model != '*' AND server_ip = '*'"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_for_group_with_server_filter() {
+        let f = DimensionFilter {
+            server_ips: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where_for_group(&f, "wire_api"),
+            "wire_api != '*' AND model != '*' AND server_ip IN ('10.0.0.1')"
+        );
+        assert_eq!(
+            build_dimension_where_for_group(&f, "model"),
+            "wire_api != '*' AND model != '*' AND server_ip IN ('10.0.0.1')"
+        );
+    }
+
+    // ===== Integration: filters actually narrow the returned data =====
+
+    #[tokio::test]
+    async fn test_query_metrics_summary_wire_api_filter() {
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+
+        let ts = 1_700_000_000_000_000i64;
+
+        // (W, M, *) tier rows — two wire_apis.
+        let mut openai_row = sample_metric();
+        openai_row.timestamp_us = ts;
+        openai_row.granularity = "10s";
+        openai_row.wire_api = wa::OPENAI_CHAT.into();
+        openai_row.model = "gpt-4".into();
+        openai_row.server_ip = "*".into();
+        openai_row.call_count = 100;
+
+        let mut anthropic_row = sample_metric();
+        anthropic_row.timestamp_us = ts;
+        anthropic_row.granularity = "10s";
+        anthropic_row.wire_api = wa::ANTHROPIC.into();
+        anthropic_row.model = "claude-3".into();
+        anthropic_row.server_ip = "*".into();
+        anthropic_row.call_count = 200;
+
+        // (*, *, *) tier row — must NOT be counted when a wire_api filter is
+        // applied (otherwise we'd double-count).
+        let mut total_row = sample_metric();
+        total_row.timestamp_us = ts;
+        total_row.granularity = "10s";
+        total_row.wire_api = "*".into();
+        total_row.model = "*".into();
+        total_row.server_ip = "*".into();
+        total_row.call_count = 300;
+
+        backend
+            .write_metrics(vec![openai_row, anthropic_row, total_row])
+            .await
+            .unwrap();
+
+        let query = MetricsSummaryQuery {
+            time_range: TimeRange {
+                start_us: ts,
+                end_us: ts + 10_000_000,
+            },
+            filter: DimensionFilter {
+                wire_apis: vec![wa::OPENAI_CHAT.into()],
+                ..Default::default()
+            },
+        };
+        let summary = backend.query_metrics_summary(&query).await.unwrap();
+        assert_eq!(
+            summary.call_count, 100,
+            "filter should return only the openai row"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_query_metrics_models_wire_api_filter() {
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+
+        let ts = 1_700_000_000_000_000i64;
+
+        let mut gpt4 = sample_metric();
+        gpt4.timestamp_us = ts;
+        gpt4.granularity = "10s";
+        gpt4.wire_api = wa::OPENAI_CHAT.into();
+        gpt4.model = "gpt-4".into();
+        gpt4.server_ip = "*".into();
+        gpt4.call_count = 100;
+
+        let mut claude = sample_metric();
+        claude.timestamp_us = ts;
+        claude.granularity = "10s";
+        claude.wire_api = wa::ANTHROPIC.into();
+        claude.model = "claude-3".into();
+        claude.server_ip = "*".into();
+        claude.call_count = 200;
+
+        backend.write_metrics(vec![gpt4, claude]).await.unwrap();
+
+        let query = MetricsModelsQuery {
+            time_range: TimeRange {
+                start_us: ts,
+                end_us: ts + 10_000_000,
+            },
+            filter: DimensionFilter {
+                wire_apis: vec![wa::OPENAI_CHAT.into()],
+                ..Default::default()
+            },
+            sort_by: "call_count".into(),
+            sort_order: "DESC".into(),
+            limit: 10,
+        };
+        let rows = backend.query_metrics_models(&query).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].wire_api, wa::OPENAI_CHAT);
+        assert_eq!(rows[0].model, "gpt-4");
+    }
+
+    #[tokio::test]
+    async fn test_query_metrics_timeseries_wire_api_filter_ungrouped() {
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+
+        let ts = 1_700_000_000_000_000i64;
+
+        // (W, M, *) tier — two wire_apis worth of rows at the same timestamp.
+        let mut gpt4 = sample_metric();
+        gpt4.timestamp_us = ts;
+        gpt4.granularity = "1m";
+        gpt4.wire_api = wa::OPENAI_CHAT.into();
+        gpt4.model = "gpt-4".into();
+        gpt4.server_ip = "*".into();
+        gpt4.call_count = 100;
+
+        let mut claude = sample_metric();
+        claude.timestamp_us = ts;
+        claude.granularity = "1m";
+        claude.wire_api = wa::ANTHROPIC.into();
+        claude.model = "claude-3".into();
+        claude.server_ip = "*".into();
+        claude.call_count = 200;
+
+        // (*, *, *) tier row must not be included alongside the filter.
+        let mut total_row = sample_metric();
+        total_row.timestamp_us = ts;
+        total_row.granularity = "1m";
+        total_row.wire_api = "*".into();
+        total_row.model = "*".into();
+        total_row.server_ip = "*".into();
+        total_row.call_count = 300;
+
+        backend
+            .write_metrics(vec![gpt4, claude, total_row])
+            .await
+            .unwrap();
+
+        let query = MetricsTimeseriesQuery {
+            time_range: TimeRange {
+                start_us: ts,
+                end_us: ts + 120_000_000,
+            },
+            granularity: "1m".into(),
+            filter: DimensionFilter {
+                wire_apis: vec![wa::OPENAI_CHAT.into()],
+                ..Default::default()
+            },
+            fields: vec!["call_count".into()],
+            group_by: None,
+        };
+        let rows = backend.query_metrics_timeseries(&query).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].values[0], Some(100.0));
     }
 
     // ===== Task 7: query_calls and query_call_by_id tests =====
