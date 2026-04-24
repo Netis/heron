@@ -366,6 +366,9 @@ impl Pipeline {
             }
 
             // ---- Per-pipeline queue depth probes ----
+            // Report the fullest shard's depth (max), not the sum. Summing
+            // hides skew — a single saturated shard on an otherwise idle
+            // pipeline would look only partially loaded.
             let raw_weaks: Vec<WeakSender<RawPacket>> =
                 disp_txs.iter().map(|tx| tx.downgrade()).collect();
             metrics_sys.register_queue_probe(Metric::QueueDepthRaw, move || {
@@ -373,35 +376,40 @@ impl Pipeline {
                     .iter()
                     .filter_map(|w| w.upgrade())
                     .map(|s| (s.max_capacity() - s.capacity()) as u64)
-                    .sum()
+                    .max()
+                    .unwrap_or(0)
             });
             metrics_sys.register_queue_probe(Metric::QueueDepthParsed, move || {
                 parsed_weaks
                     .iter()
                     .filter_map(|w| w.upgrade())
                     .map(|s| (s.max_capacity() - s.capacity()) as u64)
-                    .sum()
+                    .max()
+                    .unwrap_or(0)
             });
             metrics_sys.register_queue_probe(Metric::QueueDepthEvent, move || {
                 event_weaks
                     .iter()
                     .filter_map(|w| w.upgrade())
                     .map(|s| (s.max_capacity() - s.capacity()) as u64)
-                    .sum()
+                    .max()
+                    .unwrap_or(0)
             });
             metrics_sys.register_queue_probe(Metric::QueueDepthTurnShard, move || {
                 turn_shard_weaks
                     .iter()
                     .filter_map(|w| w.upgrade())
                     .map(|s| (s.max_capacity() - s.capacity()) as u64)
-                    .sum()
+                    .max()
+                    .unwrap_or(0)
             });
             metrics_sys.register_queue_probe(Metric::QueueDepthMetricsShard, move || {
                 metrics_shard_weaks
                     .iter()
                     .filter_map(|w| w.upgrade())
                     .map(|s| (s.max_capacity() - s.capacity()) as u64)
-                    .sum()
+                    .max()
+                    .unwrap_or(0)
             });
 
             pipeline_txs.push((name.clone(), RoutingSender::new(disp_txs)));

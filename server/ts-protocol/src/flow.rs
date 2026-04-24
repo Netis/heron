@@ -3,6 +3,7 @@ use tokio::sync::mpsc;
 use ts_common::internal_metrics::{Metric, MetricsWorker};
 
 use crate::de;
+use crate::de::error::DecodeError;
 use crate::net::ParsedPacket;
 use ts_capture::RawPacket;
 
@@ -48,8 +49,25 @@ impl FlowDispatcher {
             raw.timestamp_us,
             raw.source_id.clone(),
         ) {
-            Some(p) => p,
-            None => return true, // Non-TCP packet, skip.
+            Ok(p) => p,
+            Err(DecodeError::NotIp) | Err(DecodeError::NotSupported) => {
+                self.metrics
+                    .counter(Metric::NetPacketsDroppedNotIp)
+                    .inc();
+                return true;
+            }
+            Err(DecodeError::NotTcp) => {
+                self.metrics
+                    .counter(Metric::NetPacketsDroppedNotTcp)
+                    .inc();
+                return true;
+            }
+            Err(DecodeError::Truncated) | Err(DecodeError::InvalidHeader) => {
+                self.metrics
+                    .counter(Metric::NetPacketsDroppedMalformed)
+                    .inc();
+                return true;
+            }
         };
 
         self.metrics.counter(Metric::DispatcherPacketsRouted).inc();

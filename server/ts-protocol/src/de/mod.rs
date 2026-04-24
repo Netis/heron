@@ -45,19 +45,20 @@ pub(crate) use try_skip;
 
 /// Attempt to decode a raw packet into a [`ParsedPacket`].
 ///
-/// Returns `None` if the packet cannot be decoded (unsupported link type,
-/// non-TCP, truncated, etc.).
+/// Returns `Err` with the specific [`DecodeError`] variant when the packet
+/// cannot be decoded. Callers can match on the variant to attribute drops
+/// (unsupported link type, non-IP, non-TCP, truncated, malformed).
 pub fn decode(
     data: &[u8],
     link_type: u32,
     timestamp_us: i64,
     source_id: String,
-) -> Option<ParsedPacket> {
+) -> crate::de::error::DecodeResult<ParsedPacket> {
     let mut buf = PacketBuf::new(data);
 
-    let ether_type = decode_l2(&mut buf, link_type).ok()?;
-    let l3 = dispatch_l3(&mut buf, ether_type).ok()?;
-    let l4 = dispatch_l4(&mut buf, l3.protocol).ok()?;
+    let ether_type = decode_l2(&mut buf, link_type)?;
+    let l3 = dispatch_l3(&mut buf, ether_type)?;
+    let l4 = dispatch_l4(&mut buf, l3.protocol)?;
 
     let payload = Bytes::copy_from_slice(buf.remaining_slice());
 
@@ -68,7 +69,7 @@ pub fn decode(
         Direction::BtoA
     };
 
-    Some(ParsedPacket {
+    Ok(ParsedPacket {
         flow_key,
         direction,
         src_ip: l3.src_ip,
@@ -296,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_non_tcp_returns_none() {
+    fn decode_non_tcp_returns_err_not_tcp() {
         let src = [10, 0, 0, 1];
         let dst = [10, 0, 0, 2];
         // protocol=17 (UDP)
@@ -307,18 +308,27 @@ mod tests {
         pkt.extend_from_slice(&ip);
         pkt.extend_from_slice(&[0u8; 8]); // dummy UDP payload
 
-        assert!(decode(&pkt, LINKTYPE_ETHERNET, 0, String::new()).is_none());
+        assert_eq!(
+            decode(&pkt, LINKTYPE_ETHERNET, 0, String::new()).unwrap_err(),
+            crate::de::error::DecodeError::NotTcp
+        );
     }
 
     #[test]
-    fn decode_truncated_returns_none() {
+    fn decode_truncated_returns_err_truncated() {
         let pkt = [0u8; 5];
-        assert!(decode(&pkt, LINKTYPE_ETHERNET, 0, String::new()).is_none());
+        assert_eq!(
+            decode(&pkt, LINKTYPE_ETHERNET, 0, String::new()).unwrap_err(),
+            crate::de::error::DecodeError::Truncated
+        );
     }
 
     #[test]
-    fn decode_unsupported_link_type_returns_none() {
+    fn decode_unsupported_link_type_returns_err_not_supported() {
         let pkt = [0u8; 64];
-        assert!(decode(&pkt, 999, 0, String::new()).is_none());
+        assert_eq!(
+            decode(&pkt, 999, 0, String::new()).unwrap_err(),
+            crate::de::error::DecodeError::NotSupported
+        );
     }
 }

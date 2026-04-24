@@ -45,6 +45,9 @@ pub fn spawn_flow_dispatcher(
         &[
             Metric::DispatcherPacketsRouted,
             Metric::DispatcherHeartbeatsDropped,
+            Metric::NetPacketsDroppedNotIp,
+            Metric::NetPacketsDroppedNotTcp,
+            Metric::NetPacketsDroppedMalformed,
         ],
     );
     let worker_name = worker_name.to_string();

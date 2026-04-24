@@ -4,6 +4,7 @@
 //! llm-proc to storage (Arc<LlmCall> shared read-only); this stage does
 //! not forward them.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -29,8 +30,27 @@ pub fn spawn_turn_stage(
         !shard_rxs.is_empty(),
         "spawn_turn_stage: shard_rxs must be non-empty"
     );
+
+    // Per-shard gauges updated after every tracker mutation. The probe sums
+    // across shards to report total in-flight turns; max would hide shards
+    // with many open sessions behind a single dominant shard.
+    let active_gauges: Vec<Arc<AtomicU64>> = (0..shard_rxs.len())
+        .map(|_| Arc::new(AtomicU64::new(0)))
+        .collect();
+    let gauges_for_probe = active_gauges.clone();
+    metrics_sys.register_queue_probe(Metric::TurnActive, move || {
+        gauges_for_probe
+            .iter()
+            .map(|g| g.load(Ordering::Relaxed))
+            .sum()
+    });
+
     let mut handles = Vec::with_capacity(shard_rxs.len());
-    for (i, mut rx) in shard_rxs.into_iter().enumerate() {
+    for (i, (mut rx, active_gauge)) in shard_rxs
+        .into_iter()
+        .zip(active_gauges.into_iter())
+        .enumerate()
+    {
         let turns_tx = turns_tx.clone();
         let registry = registry.clone();
         let worker_metrics = metrics_sys.register_worker(
@@ -77,6 +97,7 @@ pub fn spawn_turn_stage(
                         }
                     }
                 }
+                active_gauge.store(tracker.active_count() as u64, Ordering::Relaxed);
             };
             match reason {
                 "upstream_eof" => {
@@ -86,6 +107,7 @@ pub fn spawn_turn_stage(
                         let TurnEvent::Completed(t) = ev;
                         let _ = turns_tx.send(t).await;
                     }
+                    active_gauge.store(tracker.active_count() as u64, Ordering::Relaxed);
                     tracing::debug!(shard, "turn worker stopping: upstream EOF");
                 }
                 r => {

@@ -21,7 +21,7 @@ pub struct L4Info {
 pub fn dispatch_l4(buf: &mut PacketBuf, protocol: u8) -> DecodeResult<L4Info> {
     match protocol {
         IP_PROTO_TCP => decode_tcp(buf),
-        _ => Err(DecodeError::NotSupported),
+        _ => Err(DecodeError::NotTcp),
     }
 }
 
@@ -129,7 +129,7 @@ mod tests {
         let data = vec![0u8; 20];
         let mut buf = PacketBuf::new(&data);
         let result = dispatch_l4(&mut buf, 17);
-        assert_eq!(result, Err(DecodeError::NotSupported));
+        assert_eq!(result, Err(DecodeError::NotTcp));
     }
 
     #[test]

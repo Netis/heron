@@ -141,6 +141,9 @@ define_metrics! {
     DispatcherPacketsRouted      => { kind: Counter, group: Protocol, short: "dispatched"     },
     DispatcherHeartbeatsDropped  => { kind: Counter, group: Protocol, short: "hb_drop"        },
     NetPacketsParsed             => { kind: Counter, group: Protocol, short: "net_parsed"     },
+    NetPacketsDroppedNotIp       => { kind: Counter, group: Protocol, short: "drop_notip"     },
+    NetPacketsDroppedNotTcp      => { kind: Counter, group: Protocol, short: "drop_nottcp"    },
+    NetPacketsDroppedMalformed   => { kind: Counter, group: Protocol, short: "drop_bad"       },
     HttpRequestsParsed           => { kind: Counter, group: Protocol, short: "http_req"       },
     HttpResponsesParsed          => { kind: Counter, group: Protocol, short: "http_resp"      },
     SseEventsParsed              => { kind: Counter, group: Protocol, short: "sse_events"     },
@@ -167,6 +170,7 @@ define_metrics! {
     TurnFinalizedByGrace     => { kind: Counter, group: Turn, short: "fin_grace"      },
     TurnFinalizedByIdle      => { kind: Counter, group: Turn, short: "fin_idle"       },
     TurnDiscardedNoUserStart => { kind: Counter, group: Turn, short: "no_user_start"  },
+    TurnActive               => { kind: Gauge,   group: Turn, short: "active"         },
 
     // -- Metrics aggregation --
     MetricsEventsReceived    => { kind: Counter, group: Metrics, short: "events_recv"    },
