@@ -10,6 +10,7 @@ import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
 import type { AgentTurnListItem } from "@/types/api"
 
 const STATUS_OPTIONS = ["success", "error", "incomplete", "in_progress", "timeout", "cancelled"]
+const AGENT_KIND_OPTIONS = ["claude-cli", "codex-cli"]
 
 const PAGE_SIZES = [20, 50, 100] as const
 
@@ -78,10 +79,12 @@ export function AgentTurnsPage() {
   const [sortBy, setSortBy] = useSearchParamState("sort", "start_time")
   const [sortOrder, setSortOrder] = useSearchParamState("order", "desc")
   const [statusStr, setStatusStr] = useSearchParamState("status", "")
+  const [agentKindStr, setAgentKindStr] = useSearchParamState("agent_kind", "")
 
   const page = Number(pageStr) || 1
   const pageSize = Number(pageSizeStr) || 50
   const statusFilter = statusStr ? statusStr.split(",") : []
+  const agentKindFilter = agentKindStr ? agentKindStr.split(",") : []
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
@@ -91,6 +94,7 @@ export function AgentTurnsPage() {
     sortBy,
     sortOrder: sortOrder as "asc" | "desc",
     status: statusStr || undefined,
+    agentKind: agentKindStr || undefined,
   })
 
   const items = data?.items ?? []
@@ -125,6 +129,15 @@ export function AgentTurnsPage() {
           selected={statusFilter}
           onChange={(v) => {
             setStatusStr(v.join(","))
+            setPageStr("1")
+          }}
+        />
+        <FilterDropdown
+          label="Agent kind"
+          options={AGENT_KIND_OPTIONS}
+          selected={agentKindFilter}
+          onChange={(v) => {
+            setAgentKindStr(v.join(","))
             setPageStr("1")
           }}
         />

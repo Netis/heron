@@ -12,9 +12,22 @@ interface UseLlmCallsParams {
   /** Page-specific filters */
   statusCode?: string
   finishReason?: string
+  clientIp?: string
+  requestPath?: string
+  errorsOnly?: boolean
 }
 
-export function useLlmCalls({ page, pageSize, sortBy, sortOrder, statusCode, finishReason }: UseLlmCallsParams) {
+export function useLlmCalls({
+  page,
+  pageSize,
+  sortBy,
+  sortOrder,
+  statusCode,
+  finishReason,
+  clientIp,
+  requestPath,
+  errorsOnly,
+}: UseLlmCallsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
   const { params: fp } = useSupportedFilterParams()
@@ -23,7 +36,7 @@ export function useLlmCalls({ page, pageSize, sortBy, sortOrder, statusCode, fin
     queryKey: ["llm-calls", {
       start, end, page, pageSize, sortBy, sortOrder,
       ...fp,
-      statusCode, finishReason,
+      statusCode, finishReason, clientIp, requestPath, errorsOnly,
     }],
     queryFn: () =>
       apiFetch<LlmCallsPage>("/api/llm-calls", {
@@ -36,6 +49,9 @@ export function useLlmCalls({ page, pageSize, sortBy, sortOrder, statusCode, fin
         ...fp,
         status_code: statusCode || undefined,
         finish_reason: finishReason || undefined,
+        client_ip: clientIp || undefined,
+        request_path: requestPath || undefined,
+        errors_only: errorsOnly ? true : undefined,
       }),
     placeholderData: (prev) => prev,
   })

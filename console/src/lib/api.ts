@@ -14,7 +14,7 @@ export class ApiError extends Error {
 
 export async function apiFetch<T>(
   path: string,
-  params?: Record<string, string | number | undefined>,
+  params?: Record<string, string | number | boolean | undefined>,
 ): Promise<T> {
   const url = new URL(path, window.location.origin)
   if (params) {

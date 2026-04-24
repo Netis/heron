@@ -1175,6 +1175,14 @@ impl StorageBackend for DuckDbBackend {
                     .collect();
                 where_parts.push(format!("server_ip IN ({})", list.join(", ")));
             }
+            if !query.client_ips.is_empty() {
+                let list: Vec<String> = query
+                    .client_ips
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!("client_ip IN ({})", list.join(", ")));
+            }
             if !query.methods.is_empty() {
                 let list: Vec<String> = query
                     .methods
@@ -1186,6 +1194,17 @@ impl StorageBackend for DuckDbBackend {
             if !query.status_codes.is_empty() {
                 let list: Vec<String> = query.status_codes.iter().map(|c| c.to_string()).collect();
                 where_parts.push(format!("status IN ({})", list.join(", ")));
+            }
+            if let Some(substr) = query
+                .uri_contains
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                where_parts.push(format!(
+                    "uri LIKE '%{}%'",
+                    substr.replace('\'', "''")
+                ));
             }
             if let Some(sse) = query.is_sse {
                 where_parts.push(format!("is_sse = {sse}"));
@@ -1799,6 +1818,28 @@ impl StorageBackend for DuckDbBackend {
                     .collect();
                 where_parts.push(format!("finish_reason IN ({})", list.join(", ")));
             }
+            if !query.client_ips.is_empty() {
+                let list: Vec<String> = query
+                    .client_ips
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!("client_ip IN ({})", list.join(", ")));
+            }
+            if let Some(substr) = query
+                .request_path_contains
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                where_parts.push(format!(
+                    "request_path LIKE '%{}%'",
+                    substr.replace('\'', "''")
+                ));
+            }
+            if query.errors_only {
+                where_parts.push("status_code IS NOT NULL AND status_code >= 400".to_string());
+            }
 
             let where_sql = where_parts.join(" AND ");
             let sort_by = &query.sort_by;
@@ -1817,7 +1858,8 @@ impl StorageBackend for DuckDbBackend {
             let limit = query.page_size;
             let items_sql = format!(
                 "SELECT id, source_id, epoch_ms(request_time), wire_api, model, status_code, is_stream, \
-                 finish_reason, ttft_ms, e2e_latency_ms, input_tokens, output_tokens \
+                 finish_reason, ttft_ms, e2e_latency_ms, input_tokens, output_tokens, \
+                 client_ip, request_path \
                  FROM llm_calls WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
@@ -1872,6 +1914,12 @@ impl StorageBackend for DuckDbBackend {
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     output_tokens: row
                         .get::<_, Option<u32>>(11)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    client_ip: row
+                        .get(12)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    request_path: row
+                        .get(13)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                 });
             }
@@ -4012,6 +4060,9 @@ mod tests {
             filter: DimensionFilter::default(),
             status_codes: vec![],
             finish_reasons: vec![],
+            client_ips: vec![],
+            request_path_contains: None,
+            errors_only: false,
             sort_by: "request_time".to_string(),
             sort_order: "DESC".to_string(),
             page: 1,
@@ -4052,6 +4103,9 @@ mod tests {
             filter: DimensionFilter::default(),
             status_codes: vec![429],
             finish_reasons: vec![],
+            client_ips: vec![],
+            request_path_contains: None,
+            errors_only: false,
             sort_by: "request_time".to_string(),
             sort_order: "DESC".to_string(),
             page: 1,

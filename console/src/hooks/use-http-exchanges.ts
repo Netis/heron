@@ -13,6 +13,10 @@ interface UseHttpExchangesParams {
   method?: string
   /** CSV of status codes. */
   status?: string
+  /** CSV of client IPs (exact match). */
+  clientIp?: string
+  /** Substring match against `uri`. */
+  uri?: string
   /** Tri-state: true → SSE only, false → non-SSE only, undefined → any. */
   isSse?: boolean
 }
@@ -24,6 +28,8 @@ export function useHttpExchanges({
   sortOrder,
   method,
   status,
+  clientIp,
+  uri,
   isSse,
 }: UseHttpExchangesParams) {
   const start = useToolbarStore((s) => s.start)
@@ -43,6 +49,8 @@ export function useHttpExchanges({
         ...fp,
         method,
         status,
+        clientIp,
+        uri,
         isSse,
       },
     ],
@@ -57,6 +65,8 @@ export function useHttpExchanges({
         ...fp,
         method: method || undefined,
         status: status || undefined,
+        client_ip: clientIp || undefined,
+        uri: uri || undefined,
         is_sse: isSse === undefined ? undefined : String(isSse),
       }),
     placeholderData: (prev) => prev,

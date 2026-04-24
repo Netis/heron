@@ -14,7 +14,7 @@ const SPEC_ENTRIES: ReadonlyArray<readonly [string, readonly DimensionKey[]]> = 
   ["/agent-sessions/:source_id/:session_id", []],
   ["/agent-sessions", []],
   ["/http-exchanges", ["serverIp"]],
-  ["/agent-turns", ["wireApi", "model", "serverIp"]],
+  ["/agent-turns", ["wireApi", "model"]],
   ["/llm-calls", ["wireApi", "model", "serverIp"]],
   ["/models", ["wireApi", "model", "serverIp"]],
   ["/errors", ["wireApi", "model", "serverIp"]],

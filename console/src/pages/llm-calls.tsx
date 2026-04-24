@@ -16,16 +16,18 @@ const FINISH_OPTIONS = ["complete", "stop", "length", "tool_use", "error", "canc
 const PAGE_SIZES = [20, 50, 100] as const
 
 const columns = [
-  { key: "request_time", label: "Time", width: "w-[160px]" },
-  { key: "wire_api", label: "Wire API", width: "w-[110px]" },
-  { key: "model", label: "Model", width: "w-[140px]" },
-  { key: "status_code", label: "Status", width: "w-[52px]" },
-  { key: "is_stream", label: "S", width: "w-[32px]" },
-  { key: "finish_reason", label: "Finish", width: "w-[72px]" },
-  { key: "ttft_ms", label: "TTFT", width: "w-[72px]" },
-  { key: "e2e_latency_ms", label: "E2E", width: "w-[72px]" },
-  { key: "input_tokens", label: "In", width: "w-[56px]" },
-  { key: "output_tokens", label: "Out", width: "w-[56px]" },
+  { key: "request_time", label: "Time", width: "w-[160px]", sortable: true },
+  { key: "wire_api", label: "Wire API", width: "w-[110px]", sortable: false },
+  { key: "model", label: "Model", width: "w-[140px]", sortable: false },
+  { key: "client_ip", label: "Client", width: "w-[130px]", sortable: false },
+  { key: "request_path", label: "Path", width: "", sortable: false },
+  { key: "status_code", label: "Status", width: "w-[52px]", sortable: true },
+  { key: "is_stream", label: "S", width: "w-[32px]", sortable: false },
+  { key: "finish_reason", label: "Finish", width: "w-[72px]", sortable: false },
+  { key: "ttft_ms", label: "TTFT", width: "w-[72px]", sortable: true },
+  { key: "e2e_latency_ms", label: "E2E", width: "w-[72px]", sortable: true },
+  { key: "input_tokens", label: "In", width: "w-[56px]", sortable: true },
+  { key: "output_tokens", label: "Out", width: "w-[56px]", sortable: true },
 ] as const
 
 type SortKey = (typeof columns)[number]["key"]
@@ -49,6 +51,14 @@ function CellValue({ item, column }: { item: LlmCallListItem; column: SortKey })
       return (
         <span className="truncate" title={item.model}>
           {item.model}
+        </span>
+      )
+    case "client_ip":
+      return <span className="truncate font-mono text-xs">{item.client_ip}</span>
+    case "request_path":
+      return (
+        <span className="block truncate font-mono text-xs" title={item.request_path}>
+          {item.request_path}
         </span>
       )
     case "status_code":
@@ -79,11 +89,15 @@ export function LlmCallsPage() {
   const [sortOrder, setSortOrder] = useSearchParamState("order", "desc")
   const [statusStr, setStatusStr] = useSearchParamState("status", "")
   const [finishStr, setFinishStr] = useSearchParamState("finish", "")
+  const [clientIpStr, setClientIpStr] = useSearchParamState("client_ip", "")
+  const [pathStr, setPathStr] = useSearchParamState("path", "")
+  const [errorsOnlyStr, setErrorsOnlyStr] = useSearchParamState("errors_only", "")
 
   const page = Number(pageStr) || 1
   const pageSize = Number(pageSizeStr) || 50
   const statusFilter = statusStr ? statusStr.split(",") : []
   const finishFilter = finishStr ? finishStr.split(",") : []
+  const errorsOnly = errorsOnlyStr === "true"
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedIndex, setSelectedIndex] = useState(-1)
@@ -95,6 +109,9 @@ export function LlmCallsPage() {
     sortOrder: sortOrder as "asc" | "desc",
     statusCode: statusStr || undefined,
     finishReason: finishStr || undefined,
+    clientIp: clientIpStr || undefined,
+    requestPath: pathStr || undefined,
+    errorsOnly,
   })
 
   const items = data?.items ?? []
@@ -104,7 +121,8 @@ export function LlmCallsPage() {
   const rangeEnd = Math.min(page * pageSize, total)
 
   const handleSort = useCallback(
-    (key: string) => {
+    (key: string, sortable: boolean) => {
+      if (!sortable) return
       if (key === sortBy) {
         setSortOrder(sortOrder === "asc" ? "desc" : "asc")
       } else {
@@ -140,9 +158,23 @@ export function LlmCallsPage() {
   return (
     <div className="relative flex h-full flex-col">
       {/* Page-specific filters */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-4 py-2">
         <Filter className="size-3.5 text-muted-foreground" />
         <span className="text-xs text-muted-foreground">Filters:</span>
+        <button
+          onClick={() => {
+            setErrorsOnlyStr(errorsOnly ? "" : "true")
+            setPageStr("1")
+          }}
+          className={cn(
+            "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-colors hover:bg-muted",
+            errorsOnly
+              ? "border-foreground/20 bg-muted font-medium"
+              : "border-border text-muted-foreground",
+          )}
+        >
+          Errors only
+        </button>
         <FilterDropdown
           label="Status"
           options={STATUS_OPTIONS}
@@ -155,6 +187,18 @@ export function LlmCallsPage() {
           selected={finishFilter}
           onChange={(v) => { setFinishStr(v.join(",")); setPageStr("1") }}
         />
+        <input
+          value={clientIpStr}
+          onChange={(e) => { setClientIpStr(e.target.value); setPageStr("1") }}
+          placeholder="Client IP (CSV)"
+          className="w-[180px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
+        />
+        <input
+          value={pathStr}
+          onChange={(e) => { setPathStr(e.target.value); setPageStr("1") }}
+          placeholder="Path contains…"
+          className="w-[220px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
+        />
       </div>
 
       {/* Table */}
@@ -165,10 +209,11 @@ export function LlmCallsPage() {
               {columns.map((col) => (
                 <th
                   key={col.key}
-                  onClick={() => handleSort(col.key)}
+                  onClick={() => handleSort(col.key, col.sortable)}
                   className={cn(
-                    "group cursor-pointer px-3 py-2 text-left text-xs font-medium text-muted-foreground select-none",
+                    "group px-3 py-2 text-left text-xs font-medium text-muted-foreground select-none",
                     col.width,
+                    col.sortable && "cursor-pointer",
                     (col.key === "ttft_ms" ||
                       col.key === "e2e_latency_ms" ||
                       col.key === "input_tokens" ||
@@ -178,7 +223,9 @@ export function LlmCallsPage() {
                 >
                   <span className="inline-flex items-center gap-1">
                     {col.label}
-                    <SortIcon column={col.key} sortBy={sortBy} sortOrder={sortOrder} />
+                    {col.sortable && (
+                      <SortIcon column={col.key} sortBy={sortBy} sortOrder={sortOrder} />
+                    )}
                   </span>
                 </th>
               ))}
@@ -219,6 +266,7 @@ export function LlmCallsPage() {
                       className={cn(
                         "px-3 py-1.5",
                         col.width,
+                        col.key === "request_path" && "max-w-0",
                         (col.key === "ttft_ms" ||
                           col.key === "e2e_latency_ms" ||
                           col.key === "input_tokens" ||

@@ -21,6 +21,8 @@ export interface LlmCallListItem {
   e2e_latency_ms: number | null
   input_tokens: number | null
   output_tokens: number | null
+  client_ip: string
+  request_path: string
 }
 
 // Metrics types

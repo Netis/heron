@@ -122,6 +122,8 @@ export function HttpExchangesPage() {
   const [methodStr, setMethodStr] = useSearchParamState("method", "")
   const [statusStr, setStatusStr] = useSearchParamState("status", "")
   const [sseStr, setSseStr] = useSearchParamState("sse", "")
+  const [clientIpStr, setClientIpStr] = useSearchParamState("client_ip", "")
+  const [uriStr, setUriStr] = useSearchParamState("uri", "")
 
   const page = Number(pageStr) || 1
   const pageSize = Number(pageSizeStr) || 50
@@ -139,6 +141,8 @@ export function HttpExchangesPage() {
     sortOrder: sortOrder as "asc" | "desc",
     method: methodStr || undefined,
     status: statusStr || undefined,
+    clientIp: clientIpStr || undefined,
+    uri: uriStr || undefined,
     isSse,
   })
 
@@ -186,7 +190,7 @@ export function HttpExchangesPage() {
   return (
     <div className="relative flex h-full flex-col">
       {/* Page-specific filters */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-4 py-2">
         <Filter className="size-3.5 text-muted-foreground" />
         <span className="text-xs text-muted-foreground">Filters:</span>
         <FilterDropdown
@@ -221,6 +225,24 @@ export function HttpExchangesPage() {
             </option>
           ))}
         </select>
+        <input
+          value={clientIpStr}
+          onChange={(e) => {
+            setClientIpStr(e.target.value)
+            setPageStr("1")
+          }}
+          placeholder="Client IP (CSV)"
+          className="w-[180px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
+        />
+        <input
+          value={uriStr}
+          onChange={(e) => {
+            setUriStr(e.target.value)
+            setPageStr("1")
+          }}
+          placeholder="URI contains…"
+          className="w-[220px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
+        />
       </div>
 
       {/* Table */}

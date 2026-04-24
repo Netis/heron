@@ -16,12 +16,18 @@ pub struct HttpExchangesParams {
     pub end: i64,
     #[serde(default)]
     pub server_ip: Option<String>,
+    /// CSV of client IPs (exact match).
+    #[serde(default)]
+    pub client_ip: Option<String>,
     /// CSV of HTTP methods; case-insensitive (normalized to uppercase).
     #[serde(default)]
     pub method: Option<String>,
     /// CSV of integer status codes.
     #[serde(default)]
     pub status: Option<String>,
+    /// Substring match against `uri` (case-sensitive, `LIKE '%…%'`).
+    #[serde(default)]
+    pub uri: Option<String>,
     /// `"true"` / `"false"` / absent. Absent means "any".
     #[serde(default)]
     pub is_sse: Option<bool>,
@@ -70,8 +76,10 @@ pub async fn list(
     let query = HttpExchangesQuery {
         time_range: to_time_range(params.start, params.end),
         server_ips: parse_csv(&params.server_ip),
+        client_ips: parse_csv(&params.client_ip),
         methods,
         status_codes,
+        uri_contains: params.uri.filter(|s| !s.is_empty()),
         is_sse: params.is_sse,
         sort_by: params.sort_by,
         sort_order: params.sort_order,

@@ -43,6 +43,10 @@ pub struct CallsQuery {
     pub filter: DimensionFilter,
     pub status_codes: Vec<u16>,
     pub finish_reasons: Vec<String>,
+    pub client_ips: Vec<String>,
+    pub request_path_contains: Option<String>,
+    /// When true, restrict to rows with `status_code >= 400`. Composes (AND) with `status_codes`.
+    pub errors_only: bool,
     pub sort_by: String,
     pub sort_order: String,
     pub page: u32,
@@ -102,6 +106,8 @@ pub struct CallListItem {
     pub e2e_latency_ms: Option<f64>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
+    pub client_ip: String,
+    pub request_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,11 +122,15 @@ pub struct HttpExchangesQuery {
     /// Server IPs to filter by. Empty = no filter. Matches
     /// `DimensionFilter.server_ips` for the Requests page.
     pub server_ips: Vec<String>,
+    /// Client IPs to filter by. Empty = no filter.
+    pub client_ips: Vec<String>,
     /// Uppercase HTTP method strings (GET, POST, …). Empty = no filter.
     pub methods: Vec<String>,
     /// HTTP status codes. Empty = no filter. Exchanges with `status IS NULL`
     /// are excluded when this filter is non-empty.
     pub status_codes: Vec<u16>,
+    /// Substring (case-sensitive) to match against `uri` via `LIKE '%…%'`.
+    pub uri_contains: Option<String>,
     /// `Some(true)` → SSE only. `Some(false)` → non-SSE only. `None` → any.
     pub is_sse: Option<bool>,
     /// One of `"request_time"`, `"status"`, `"duration_ms"`. Validated server-side.

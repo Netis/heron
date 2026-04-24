@@ -24,6 +24,14 @@ pub struct CallsParams {
     pub status_code: Option<String>,
     #[serde(default)]
     pub finish_reason: Option<String>,
+    #[serde(default)]
+    pub client_ip: Option<String>,
+    /// Substring match against `request_path` (case-sensitive, `LIKE '%…%'`).
+    #[serde(default)]
+    pub request_path: Option<String>,
+    /// When `true`, restrict to rows with `status_code >= 400`.
+    #[serde(default)]
+    pub errors_only: Option<bool>,
     #[serde(default = "default_calls_sort_by")]
     pub sort_by: String,
     #[serde(default = "default_calls_sort_order")]
@@ -65,6 +73,9 @@ pub async fn list(
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         status_codes,
         finish_reasons: parse_csv(&params.finish_reason),
+        client_ips: parse_csv(&params.client_ip),
+        request_path_contains: params.request_path.filter(|s| !s.is_empty()),
+        errors_only: params.errors_only.unwrap_or(false),
         sort_by: params.sort_by,
         sort_order: params.sort_order,
         page: params.page,
@@ -131,5 +142,27 @@ mod tests {
             "message: {}",
             v["message"]
         );
+    }
+
+    #[tokio::test]
+    async fn errors_only_and_contains_params_parse() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        <DuckDbBackend as ts_storage::StorageBackend>::init(&backend)
+            .await
+            .unwrap();
+        let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
+        let app = router(storage);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/llm-calls?start=0&end=1&errors_only=true&client_ip=10.0.0.1&request_path=/v1/chat")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }
