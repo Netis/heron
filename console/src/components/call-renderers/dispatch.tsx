@@ -24,7 +24,6 @@ export interface CallRendererDispatchProps {
   /** Optional — supplied by turn-detail CallCard so tool_use blocks can show joined results. */
   nextCallRequestBody?: string | null
   hasRequestBody: boolean
-  onOpenRawHttp: () => void
 }
 
 /**
@@ -44,7 +43,6 @@ export function CallRendererDispatch(props: CallRendererDispatchProps) {
           nextCallRequestBody={props.nextCallRequestBody}
           overlay={overlay}
           hasRequestBody={props.hasRequestBody}
-          onOpenRawHttp={props.onOpenRawHttp}
         />
       )
     case "openai-chat":
@@ -54,7 +52,6 @@ export function CallRendererDispatch(props: CallRendererDispatchProps) {
           responseBody={props.responseBody}
           overlay={overlay}
           hasRequestBody={props.hasRequestBody}
-          onOpenRawHttp={props.onOpenRawHttp}
         />
       )
     case "openai-responses":
@@ -64,7 +61,6 @@ export function CallRendererDispatch(props: CallRendererDispatchProps) {
           responseBody={props.responseBody}
           overlay={overlay}
           hasRequestBody={props.hasRequestBody}
-          onOpenRawHttp={props.onOpenRawHttp}
         />
       )
     default:
@@ -74,7 +70,6 @@ export function CallRendererDispatch(props: CallRendererDispatchProps) {
           requestBody={props.requestBody}
           responseBody={props.responseBody}
           hasRequestBody={props.hasRequestBody}
-          onOpenRawHttp={props.onOpenRawHttp}
         />
       )
   }

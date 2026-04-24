@@ -103,7 +103,6 @@ export function LlmCallDetailPanel({ id, onClose, onNavigate, hasPrev, hasNext }
                 requestBody={detail.request_body}
                 responseBody={detail.response_body}
                 hasRequestBody={detail.request_body != null}
-                onOpenRawHttp={() => setRawOpen(true)}
               />
             </div>
           )}

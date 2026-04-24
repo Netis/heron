@@ -502,7 +502,6 @@ export interface OpenAiChatCallViewProps {
   responseBody: string | null
   overlay?: CallOverlay | null
   hasRequestBody: boolean
-  onOpenRawHttp: () => void
 }
 
 export function OpenAiChatCallView({
@@ -510,7 +509,6 @@ export function OpenAiChatCallView({
   responseBody,
   overlay,
   hasRequestBody,
-  onOpenRawHttp,
 }: OpenAiChatCallViewProps) {
   const call = useMemo(() => parseOpenAiChatCall(requestBody, responseBody), [requestBody, responseBody])
   return (
@@ -527,11 +525,6 @@ export function OpenAiChatCallView({
             <ToolsSection request={call.request} />
             <ResponseFormatSection rf={call.request.response_format} />
             <SamplingSection request={call.request} />
-            <div className="flex justify-end">
-              <button onClick={onOpenRawHttp} className="text-[10px] text-muted-foreground hover:text-foreground hover:underline">
-                View raw HTTP →
-              </button>
-            </div>
           </div>
         )}
       </section>

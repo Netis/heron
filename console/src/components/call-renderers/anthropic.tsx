@@ -497,7 +497,6 @@ export interface AnthropicCallViewProps {
   nextCallRequestBody?: string | null
   overlay?: CallOverlay | null
   hasRequestBody: boolean
-  onOpenRawHttp: () => void
 }
 
 export function AnthropicCallView({
@@ -506,7 +505,6 @@ export function AnthropicCallView({
   nextCallRequestBody,
   overlay,
   hasRequestBody,
-  onOpenRawHttp,
 }: AnthropicCallViewProps) {
   const call = useMemo(() => parseAnthropicCall(requestBody, responseBody), [requestBody, responseBody])
   const resultLookup = useMemo(() => buildResultLookup(call, nextCallRequestBody), [call, nextCallRequestBody])
@@ -532,11 +530,6 @@ export function AnthropicCallView({
             <MessagesSection messages={call.request.messages} overlay={overlay} />
             <ToolsSection request={call.request} />
             <SamplingSection request={call.request} />
-            <div className="flex justify-end">
-              <button onClick={onOpenRawHttp} className="text-[10px] text-muted-foreground hover:text-foreground hover:underline">
-                View raw HTTP →
-              </button>
-            </div>
           </div>
         )}
       </section>

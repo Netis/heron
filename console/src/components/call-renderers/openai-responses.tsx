@@ -599,7 +599,6 @@ export interface OpenAiResponsesCallViewProps {
   responseBody: string | null
   overlay?: CallOverlay | null
   hasRequestBody: boolean
-  onOpenRawHttp: () => void
 }
 
 export function OpenAiResponsesCallView({
@@ -607,7 +606,6 @@ export function OpenAiResponsesCallView({
   responseBody,
   overlay,
   hasRequestBody,
-  onOpenRawHttp,
 }: OpenAiResponsesCallViewProps) {
   const call = useMemo(() => parseOpenAiResponsesCall(requestBody, responseBody), [requestBody, responseBody])
   return (
@@ -625,11 +623,6 @@ export function OpenAiResponsesCallView({
             <ToolsSection tools={call.request.tools} />
             <ReasoningConfigSection request={call.request} />
             <SamplingSection request={call.request} />
-            <div className="flex justify-end">
-              <button onClick={onOpenRawHttp} className="text-[10px] text-muted-foreground hover:text-foreground hover:underline">
-                View raw HTTP →
-              </button>
-            </div>
           </div>
         )}
       </section>

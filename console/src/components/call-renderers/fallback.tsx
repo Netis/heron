@@ -9,7 +9,6 @@ export interface RawJsonFallbackProps {
   requestBody: string | null
   responseBody: string | null
   hasRequestBody: boolean
-  onOpenRawHttp: () => void
 }
 
 function formatJson(raw: string | null): string {
@@ -21,7 +20,7 @@ function formatJson(raw: string | null): string {
   }
 }
 
-export function RawJsonFallback({ wireApi, requestBody, responseBody, hasRequestBody, onOpenRawHttp }: RawJsonFallbackProps) {
+export function RawJsonFallback({ wireApi, requestBody, responseBody, hasRequestBody }: RawJsonFallbackProps) {
   return (
     <>
       <section className="border-l-2 border-muted-foreground/30 pl-3">
@@ -41,11 +40,6 @@ export function RawJsonFallback({ wireApi, requestBody, responseBody, hasRequest
             </CollapsibleSection>
           </div>
         )}
-        <div className="mt-2 flex justify-end">
-          <button onClick={onOpenRawHttp} className="text-[10px] text-muted-foreground hover:text-foreground hover:underline">
-            View raw HTTP →
-          </button>
-        </div>
       </section>
       <section className="border-l-2 border-emerald-500/40 pl-3">
         <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
