@@ -70,9 +70,18 @@ function ToolUseBlockView({
   const state = ctx ? classifyToolUseState(entry) : "healthy"
   return (
     <div className="rounded bg-amber-50/60 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/40 p-2 text-[11px]">
-      <div className="flex items-center gap-2">
-        <span className="font-medium">🔧 {name}</span>
-        <span className="font-mono text-[10px] text-muted-foreground">{id}</span>
+      <div className="font-mono text-[9px] uppercase tracking-wider text-amber-700/80 dark:text-amber-400/80">
+        tool_use
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        <span>
+          <span className="text-muted-foreground">name:</span>{" "}
+          <span className="font-medium">{name}</span>
+        </span>
+        <span>
+          <span className="text-muted-foreground">id:</span>{" "}
+          <span className="font-mono text-[10px]">{id}</span>
+        </span>
       </div>
       <details className="mt-1" open={argsOpen} onToggle={(e) => setArgsOpen((e.target as HTMLDetailsElement).open)}>
         <summary className="cursor-pointer text-muted-foreground text-[10px]">input</summary>
@@ -113,11 +122,26 @@ function ToolResultBlockView({
   )
   return (
     <div className="rounded bg-muted/40 p-2 text-[11px]">
-      <div className={cn("mb-1", isError && "text-red-600")}>
-        ⤷ {isError ? "error" : "result"} · {formatSize(byteLength(contentStr))} ·{" "}
-        <span className="font-mono text-muted-foreground">{toolUseId}</span>
+      <div className={cn(
+        "font-mono text-[9px] uppercase tracking-wider",
+        isError ? "text-red-600" : "text-muted-foreground",
+      )}>
+        tool_result
       </div>
-      {rendered}
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        <span>
+          <span className="text-muted-foreground">tool_use_id:</span>{" "}
+          <span className="font-mono text-[10px]">{toolUseId}</span>
+        </span>
+        <span>
+          <span className="text-muted-foreground">is_error:</span>{" "}
+          <span className={cn("font-mono text-[10px]", isError && "font-medium text-red-600")}>
+            {String(isError)}
+          </span>
+        </span>
+        <span className="text-muted-foreground">{formatSize(byteLength(contentStr))}</span>
+      </div>
+      <div className="mt-1.5">{rendered}</div>
     </div>
   )
 }
@@ -221,23 +245,76 @@ function BlockView({
 
 // ── message list ───────────────────────────────────────────────────────────
 
-const ROLE_STYLES: Record<string, string> = {
+const ROLE_STYLES: Record<"user" | "assistant", string> = {
   user: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
   assistant: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
 }
 
+function messageBlockCounts(
+  msg: AnthropicMessage,
+): Partial<Record<AnthropicBlock["type"], number>> {
+  const counts: Partial<Record<AnthropicBlock["type"], number>> = {}
+  for (const b of msg.content) counts[b.type] = (counts[b.type] ?? 0) + 1
+  return counts
+}
+
 function messagePreview(msg: AnthropicMessage): string {
+  // Prefer narrative blocks so the preview agrees with the badge on mixed messages
+  // (otherwise a `user + tool_result` row would show a tool_use_id snippet under a `user` badge).
   for (const b of msg.content) {
     if (b.type === "text") return b.text.slice(0, 120)
+    if (b.type === "thinking") return `💭 ${b.thinking.slice(0, 120)}`
     if (b.type === "tool_use") return `🔧 ${b.name}(${formatJson(b.input).slice(0, 60)})`
+  }
+  for (const b of msg.content) {
     if (b.type === "tool_result") {
       const size = typeof b.content === "string" ? byteLength(b.content) : 0
       return `⤷ ${b.tool_use_id} · ${formatSize(size)}`
     }
-    if (b.type === "thinking") return `💭 ${b.thinking.slice(0, 120)}`
     if (b.type === "image") return `🖼️ image`
   }
   return ""
+}
+
+const CHIP_TYPE_ORDER: ReadonlyArray<AnthropicBlock["type"]> = [
+  "thinking",
+  "tool_use",
+  "tool_result",
+  "image",
+  "document",
+  "redacted_thinking",
+  "unknown",
+]
+
+function MessageChips({ counts }: { counts: Partial<Record<AnthropicBlock["type"], number>> }) {
+  const chips: Array<{ type: AnthropicBlock["type"]; count: number }> = []
+  for (const t of CHIP_TYPE_ORDER) {
+    const n = counts[t] ?? 0
+    if (n > 0) chips.push({ type: t, count: n })
+  }
+  if (chips.length === 0) return null
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      {chips.map(({ type, count }) => {
+        const label = count > 1 ? `${type} ×${count}` : type
+        const isToolResult = type === "tool_result"
+        return (
+          <span
+            key={type}
+            title={isToolResult ? "role=user · content[].type=tool_result" : undefined}
+            className={cn(
+              "rounded px-1 py-0.5 text-[9px]",
+              isToolResult
+                ? "border border-amber-300/70 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300"
+                : "border border-border/60 bg-muted/40 text-muted-foreground",
+            )}
+          >
+            {label}
+          </span>
+        )
+      })}
+    </span>
+  )
 }
 
 function MessageRow({
@@ -253,7 +330,7 @@ function MessageRow({
 }) {
   const [open, setOpen] = useState(false)
   const preview = messagePreview(msg)
-  const isOnlyToolResult = msg.role === "user" && msg.content.length > 0 && msg.content.every((b) => b.type === "tool_result")
+  const counts = messageBlockCounts(msg)
   return (
     <div className="border-t border-border/40 first:border-t-0">
       <button
@@ -261,9 +338,16 @@ function MessageRow({
         className="flex w-full items-start gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40"
       >
         <span className="w-5 shrink-0 text-[10px] tabular-nums text-muted-foreground">#{index + 1}</span>
-        <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium", isOnlyToolResult ? "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300" : ROLE_STYLES[msg.role])}>
-          {isOnlyToolResult ? "tool" : msg.role}
+        <span
+          title={`role: ${msg.role}`}
+          className={cn(
+            "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+            ROLE_STYLES[msg.role],
+          )}
+        >
+          {msg.role}
         </span>
+        <MessageChips counts={counts} />
         <span className="flex-1 truncate text-muted-foreground">{preview}</span>
         {open ? <ChevronDown className="size-3 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-3 shrink-0 text-muted-foreground" />}
       </button>

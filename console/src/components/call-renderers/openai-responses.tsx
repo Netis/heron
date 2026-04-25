@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { ChevronRight, ChevronDown, Brain, FileSearch, Globe, MousePointer, Share2, Link2 } from "lucide-react"
+import { ChevronRight, ChevronDown, Link2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Markdown } from "@/components/ui/markdown"
 import { parseOpenAiResponsesCall } from "@/lib/wire-apis/openai-responses"
@@ -124,8 +124,127 @@ const ROLE_STYLES: Record<string, string> = {
   assistant: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
 }
 
-function MessageItemView({ item, overlay }: { item: ResponsesMessageItem; overlay?: CallOverlay | null }) {
+const ITEM_TYPE_STYLES: Record<string, string> = {
+  function_call: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
+  function_call_output:
+    "border border-amber-300/70 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300",
+  reasoning: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300",
+  file_search_call: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300",
+  web_search_call: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300",
+  computer_call: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300",
+  mcp_call: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300",
+  unknown: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+}
+
+const ITEM_KIND_ORDER: ResponsesItem["kind"][] = [
+  "message",
+  "reasoning",
+  "function_call",
+  "function_call_output",
+  "file_search_call",
+  "web_search_call",
+  "computer_call",
+  "mcp_call",
+  "unknown",
+]
+
+function Chip({
+  children,
+  variant = "muted",
+  title,
+}: {
+  children: React.ReactNode
+  variant?: "muted" | "amber"
+  title?: string
+}) {
+  return (
+    <span
+      title={title}
+      className={cn(
+        "rounded px-1 py-0.5 text-[9px]",
+        variant === "amber"
+          ? "border border-amber-300/70 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300"
+          : "border border-border/60 bg-muted/40 text-muted-foreground",
+      )}
+    >
+      {children}
+    </span>
+  )
+}
+
+function InputItemRow({
+  index,
+  badgeLabel,
+  badgeStyle,
+  badgeTitle,
+  chips,
+  preview,
+  children,
+}: {
+  index: number
+  badgeLabel: string
+  badgeStyle: string
+  badgeTitle?: string
+  chips?: React.ReactNode
+  preview?: React.ReactNode
+  children?: React.ReactNode
+}) {
   const [open, setOpen] = useState(false)
+  return (
+    <div className="border-t border-border/40 first:border-t-0">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-start gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40"
+      >
+        <span className="w-5 shrink-0 text-[10px] tabular-nums text-muted-foreground">#{index + 1}</span>
+        <span
+          title={badgeTitle}
+          className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium", badgeStyle)}
+        >
+          {badgeLabel}
+        </span>
+        {chips}
+        <span className="flex-1 truncate text-muted-foreground">{preview}</span>
+        {open ? <ChevronDown className="size-3 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-3 shrink-0 text-muted-foreground" />}
+      </button>
+      {open && children && (
+        <div className="space-y-2 border-t border-border/30 bg-muted/10 px-3 py-2">
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ItemTypeChips({ items }: { items: ResponsesItem[] }) {
+  const counts: Partial<Record<ResponsesItem["kind"], number>> = {}
+  for (const it of items) counts[it.kind] = (counts[it.kind] ?? 0) + 1
+  const entries: Array<{ kind: ResponsesItem["kind"]; count: number }> = []
+  for (const k of ITEM_KIND_ORDER) {
+    const n = counts[k] ?? 0
+    if (n > 0) entries.push({ kind: k, count: n })
+  }
+  if (entries.length === 0) return null
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      {entries.map(({ kind, count }) => (
+        <Chip key={kind} variant={kind === "function_call_output" ? "amber" : "muted"}>
+          {count > 1 ? `${kind} ×${count}` : kind}
+        </Chip>
+      ))}
+    </span>
+  )
+}
+
+function MessageItemView({
+  item,
+  index,
+  overlay,
+}: {
+  item: ResponsesMessageItem
+  index: number
+  overlay?: CallOverlay | null
+}) {
   const UserMsg = overlay?.UserMessageContent
   const preview = (() => {
     if (typeof item.content === "string") return item.content.slice(0, 120)
@@ -135,216 +254,442 @@ function MessageItemView({ item, overlay }: { item: ResponsesMessageItem; overla
     }
     return item.content.map((p) => p.type).join(", ")
   })()
+  const partCounts: Record<string, number> = {}
+  if (typeof item.content !== "string") {
+    for (const p of item.content) {
+      if (p.type === "input_text" || p.type === "output_text" || p.type === "text") continue
+      partCounts[p.type] = (partCounts[p.type] ?? 0) + 1
+    }
+  }
+  const partEntries = Object.entries(partCounts)
+  const chips = partEntries.length > 0 ? (
+    <span className="flex shrink-0 items-center gap-1">
+      {partEntries.map(([type, n]) => (
+        <Chip key={type}>{n > 1 ? `${type} ×${n}` : type}</Chip>
+      ))}
+    </span>
+  ) : undefined
   return (
-    <div className="border-t border-border/40 first:border-t-0">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-start gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40"
-      >
-        <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium", ROLE_STYLES[item.role] ?? "bg-muted")}>
-          {item.role}
-        </span>
-        <span className="flex-1 truncate text-muted-foreground">{preview}</span>
-        {open ? <ChevronDown className="size-3 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-3 shrink-0 text-muted-foreground" />}
-      </button>
-      {open && (
-        <div className="space-y-2 border-t border-border/30 bg-muted/10 px-3 py-2">
-          {typeof item.content === "string" ? (
-            <div className="text-[11px]">
-              {item.role === "user" && UserMsg ? <UserMsg text={item.content} /> : <Markdown text={item.content} />}
-            </div>
-          ) : (
-            item.content.map((p, i) => (
-              <ContentPartView
-                key={i}
-                part={p}
-                renderUserText={item.role === "user" && UserMsg ? (t) => <UserMsg text={t} /> : undefined}
-              />
-            ))
-          )}
+    <InputItemRow
+      index={index}
+      badgeLabel={item.role}
+      badgeStyle={ROLE_STYLES[item.role] ?? "bg-muted"}
+      badgeTitle={`role: ${item.role}`}
+      chips={chips}
+      preview={preview}
+    >
+      {typeof item.content === "string" ? (
+        <div className="text-[11px]">
+          {item.role === "user" && UserMsg ? <UserMsg text={item.content} /> : <Markdown text={item.content} />}
         </div>
+      ) : (
+        item.content.map((p, i) => (
+          <ContentPartView
+            key={i}
+            part={p}
+            renderUserText={item.role === "user" && UserMsg ? (t) => <UserMsg text={t} /> : undefined}
+          />
+        ))
       )}
-    </div>
+    </InputItemRow>
   )
 }
 
-function FunctionCallItemView({ item, ctx }: { item: Extract<ResponsesItem, { kind: "function_call" }>; ctx?: OutputCtx }) {
-  const [open, setOpen] = useState(true)
+function FunctionCallItemView({
+  item,
+  index,
+  ctx,
+}: {
+  item: Extract<ResponsesItem, { kind: "function_call" }>
+  index: number
+  ctx?: OutputCtx
+}) {
   const parsed = safeParseJson(item.arguments)
   const entry = ctx?.toolIndex.get(item.call_id) ?? { origin: null, resolution: null }
   const state = ctx ? classifyToolUseState(entry) : "healthy"
+  const argsSnippet = formatJson(parsed ?? item.arguments).replace(/\s+/g, " ").slice(0, 60)
+  const preview = `🔧 ${item.name}(${argsSnippet})`
+  const chips = item.status && item.status !== "completed" ? (
+    <span className="flex shrink-0 items-center gap-1">
+      <Chip>{`status:${item.status}`}</Chip>
+    </span>
+  ) : undefined
   return (
-    <div className="rounded bg-amber-50/60 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/40 p-2 text-[11px]">
-      <div className="flex items-center gap-2">
-        <span className="font-medium">🔧 {item.name}</span>
-        <span className="font-mono text-[10px] text-muted-foreground">{item.call_id}</span>
-        {item.status && <span className="text-[10px] text-muted-foreground">· {item.status}</span>}
+    <InputItemRow
+      index={index}
+      badgeLabel="function_call"
+      badgeStyle={ITEM_TYPE_STYLES.function_call}
+      badgeTitle="type: function_call"
+      chips={chips}
+      preview={preview}
+    >
+      <div className="font-mono text-[9px] uppercase tracking-wider text-amber-700/80 dark:text-amber-400/80">
+        function_call
       </div>
-      <details className="mt-1" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
-        <summary className="cursor-pointer text-muted-foreground text-[10px]">arguments</summary>
-        <pre className="mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+        <span>
+          <span className="text-muted-foreground">name:</span>{" "}
+          <span className="font-medium">{item.name}</span>
+        </span>
+        <span>
+          <span className="text-muted-foreground">call_id:</span>{" "}
+          <span className="font-mono text-[10px]">{item.call_id}</span>
+        </span>
+        {item.status && (
+          <span>
+            <span className="text-muted-foreground">status:</span>{" "}
+            <span className="font-mono text-[10px]">{item.status}</span>
+          </span>
+        )}
+      </div>
+      <div className="mt-1.5">
+        <div className="mb-1 text-[10px] text-muted-foreground">arguments</div>
+        <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">
           {formatJson(parsed ?? item.arguments)}
         </pre>
-      </details>
+      </div>
       {ctx && (
         <div className="mt-1">
           <ToolUsePointer state={state} resolution={entry.resolution} />
         </div>
       )}
-    </div>
+    </InputItemRow>
   )
 }
 
 function FunctionCallOutputItemView({
   item,
+  index,
   renderToolResult,
 }: {
   item: Extract<ResponsesItem, { kind: "function_call_output" }>
+  index: number
   renderToolResult?: (content: string, isError: boolean) => React.ReactNode
 }) {
   const str = typeof item.output === "string" ? item.output : formatJson(item.output)
   const rendered = renderToolResult ? renderToolResult(str, false) : (
     <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{str}</pre>
   )
+  const preview = `⤷ ${item.call_id} · ${formatSize(byteLength(str))}`
   return (
-    <div className="rounded bg-muted/40 p-2 text-[11px]">
-      <div className="mb-1">
-        ⤷ result · {formatSize(byteLength(str))} · <span className="font-mono text-muted-foreground">{item.call_id}</span>
+    <InputItemRow
+      index={index}
+      badgeLabel="function_call_output"
+      badgeStyle={ITEM_TYPE_STYLES.function_call_output}
+      badgeTitle="type: function_call_output"
+      preview={preview}
+    >
+      <div className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+        function_call_output
       </div>
-      {rendered}
-    </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+        <span>
+          <span className="text-muted-foreground">call_id:</span>{" "}
+          <span className="font-mono text-[10px]">{item.call_id}</span>
+        </span>
+        <span className="text-muted-foreground">{formatSize(byteLength(str))}</span>
+      </div>
+      <div className="mt-1.5">
+        <div className="mb-1 text-[10px] text-muted-foreground">output</div>
+        {rendered}
+      </div>
+    </InputItemRow>
   )
 }
 
-function ReasoningItemView({ item }: { item: ResponsesReasoningItem }) {
-  const [open, setOpen] = useState(false)
+function ReasoningItemView({ item, index }: { item: ResponsesReasoningItem; index: number }) {
   const body = item.summary.join("\n\n")
+  const firstSummary = item.summary[0]?.slice(0, 120)
+  const preview = firstSummary || (item.encrypted_content ? "(encrypted)" : "(no summary)")
+  const chipNodes: React.ReactNode[] = []
+  if (item.encrypted_content) chipNodes.push(<Chip key="enc">encrypted</Chip>)
+  if (item.status && item.status !== "completed") chipNodes.push(<Chip key="status">{`status:${item.status}`}</Chip>)
+  if (item.summary.length > 1) chipNodes.push(<Chip key="sum">{`summary ×${item.summary.length}`}</Chip>)
+  const chips = chipNodes.length > 0 ? (
+    <span className="flex shrink-0 items-center gap-1">{chipNodes}</span>
+  ) : undefined
   return (
-    <div className="rounded bg-purple-50/60 border border-purple-200 dark:bg-purple-900/10 dark:border-purple-900/40 p-2 text-[11px]">
-      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 text-left">
-        {open ? <ChevronDown className="size-3 text-purple-700 dark:text-purple-400" /> : <ChevronRight className="size-3 text-purple-700 dark:text-purple-400" />}
-        <Brain className="size-3 text-purple-700 dark:text-purple-400" />
-        <span className="font-medium text-purple-800 dark:text-purple-300">reasoning</span>
-        {item.id && <span className="font-mono text-[10px] text-muted-foreground">{item.id}</span>}
-        {item.encrypted_content && (
-          <span className="ml-auto font-mono text-[9px] text-muted-foreground">encrypted</span>
+    <InputItemRow
+      index={index}
+      badgeLabel="reasoning"
+      badgeStyle={ITEM_TYPE_STYLES.reasoning}
+      badgeTitle="type: reasoning"
+      chips={chips}
+      preview={preview}
+    >
+      <div className="font-mono text-[9px] uppercase tracking-wider text-purple-700/80 dark:text-purple-400/80">
+        reasoning
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+        {item.id && (
+          <span>
+            <span className="text-muted-foreground">id:</span>{" "}
+            <span className="font-mono text-[10px]">{item.id}</span>
+          </span>
+        )}
+        {item.status && (
+          <span>
+            <span className="text-muted-foreground">status:</span>{" "}
+            <span className="font-mono text-[10px]">{item.status}</span>
+          </span>
         )}
         {item.summary.length > 0 && (
-          <span className="ml-auto text-[10px] text-muted-foreground">{item.summary.length} summary</span>
+          <span>
+            <span className="text-muted-foreground">summary:</span>{" "}
+            <span className="font-mono text-[10px]">{item.summary.length} items</span>
+          </span>
         )}
-      </button>
-      {open && (
-        <div className="mt-2">
-          {body ? (
-            <pre className="max-h-[400px] overflow-auto whitespace-pre-wrap font-sans text-[11px]">{body}</pre>
-          ) : (
-            <div className="text-[10px] italic text-muted-foreground">(no summary exposed; may be encrypted)</div>
-          )}
-        </div>
-      )}
-    </div>
+        {item.encrypted_content && (
+          <span className="text-muted-foreground">encrypted_content</span>
+        )}
+      </div>
+      <div className="mt-1.5">
+        {body ? (
+          <pre className="max-h-[400px] overflow-auto whitespace-pre-wrap font-sans text-[11px]">{body}</pre>
+        ) : (
+          <div className="text-[10px] italic text-muted-foreground">(no summary exposed; may be encrypted)</div>
+        )}
+      </div>
+    </InputItemRow>
   )
 }
 
-function FileSearchCallItemView({ item }: { item: Extract<ResponsesItem, { kind: "file_search_call" }> }) {
+function FileSearchCallItemView({
+  item,
+  index,
+}: {
+  item: Extract<ResponsesItem, { kind: "file_search_call" }>
+  index: number
+}) {
+  const queries = item.queries ?? []
+  const results = item.results ?? []
+  const preview = queries[0] ?? (results.length > 0 ? `${results.length} results` : "")
+  const chipNodes: React.ReactNode[] = []
+  if (item.status && item.status !== "completed") chipNodes.push(<Chip key="status">{`status:${item.status}`}</Chip>)
+  if (queries.length > 0) chipNodes.push(<Chip key="q">{`queries ×${queries.length}`}</Chip>)
+  if (results.length > 0) chipNodes.push(<Chip key="r">{`results ×${results.length}`}</Chip>)
+  const chips = chipNodes.length > 0 ? (
+    <span className="flex shrink-0 items-center gap-1">{chipNodes}</span>
+  ) : undefined
   return (
-    <div className="rounded bg-sky-50/60 border border-sky-200 dark:bg-sky-900/10 dark:border-sky-900/40 p-2 text-[11px]">
-      <div className="flex items-center gap-2">
-        <FileSearch className="size-3 text-sky-700 dark:text-sky-400" />
-        <span className="font-medium">file_search</span>
-        {item.id && <span className="font-mono text-[10px] text-muted-foreground">{item.id}</span>}
-        {item.status && <span className="text-[10px] text-muted-foreground">· {item.status}</span>}
+    <InputItemRow
+      index={index}
+      badgeLabel="file_search_call"
+      badgeStyle={ITEM_TYPE_STYLES.file_search_call}
+      badgeTitle="type: file_search_call"
+      chips={chips}
+      preview={preview}
+    >
+      <div className="font-mono text-[9px] uppercase tracking-wider text-cyan-700/80 dark:text-cyan-400/80">
+        file_search_call
       </div>
-      {item.queries && item.queries.length > 0 && (
-        <div className="mt-1">
-          <span className="text-[10px] text-muted-foreground">queries:</span>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+        {item.id && (
+          <span>
+            <span className="text-muted-foreground">id:</span>{" "}
+            <span className="font-mono text-[10px]">{item.id}</span>
+          </span>
+        )}
+        {item.status && (
+          <span>
+            <span className="text-muted-foreground">status:</span>{" "}
+            <span className="font-mono text-[10px]">{item.status}</span>
+          </span>
+        )}
+      </div>
+      {queries.length > 0 && (
+        <div className="mt-1.5">
+          <div className="mb-1 text-[10px] text-muted-foreground">queries</div>
           <ul className="ml-4 list-disc text-[11px]">
-            {item.queries.map((q, i) => <li key={i} className="font-mono">{q}</li>)}
+            {queries.map((q, i) => <li key={i} className="font-mono">{q}</li>)}
           </ul>
         </div>
       )}
-      {item.results && item.results.length > 0 && (
-        <details className="mt-1">
-          <summary className="cursor-pointer text-[10px] text-muted-foreground">results ({item.results.length})</summary>
-          <pre className="mt-1 max-h-[300px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{formatJson(item.results)}</pre>
-        </details>
+      {results.length > 0 && (
+        <div className="mt-1.5">
+          <div className="mb-1 text-[10px] text-muted-foreground">results ({results.length})</div>
+          <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{formatJson(results)}</pre>
+        </div>
       )}
-    </div>
+    </InputItemRow>
   )
 }
 
-function WebSearchCallItemView({ item }: { item: Extract<ResponsesItem, { kind: "web_search_call" }> }) {
+function WebSearchCallItemView({
+  item,
+  index,
+}: {
+  item: Extract<ResponsesItem, { kind: "web_search_call" }>
+  index: number
+}) {
+  const actionStr = item.action != null ? formatJson(item.action) : ""
+  const preview = actionStr.replace(/\s+/g, " ").slice(0, 80)
+  const chipNodes: React.ReactNode[] = []
+  if (item.status && item.status !== "completed") chipNodes.push(<Chip key="status">{`status:${item.status}`}</Chip>)
+  const chips = chipNodes.length > 0 ? (
+    <span className="flex shrink-0 items-center gap-1">{chipNodes}</span>
+  ) : undefined
   return (
-    <div className="rounded bg-sky-50/60 border border-sky-200 dark:bg-sky-900/10 dark:border-sky-900/40 p-2 text-[11px]">
-      <div className="flex items-center gap-2">
-        <Globe className="size-3 text-sky-700 dark:text-sky-400" />
-        <span className="font-medium">web_search</span>
-        {item.id && <span className="font-mono text-[10px] text-muted-foreground">{item.id}</span>}
-        {item.status && <span className="text-[10px] text-muted-foreground">· {item.status}</span>}
+    <InputItemRow
+      index={index}
+      badgeLabel="web_search_call"
+      badgeStyle={ITEM_TYPE_STYLES.web_search_call}
+      badgeTitle="type: web_search_call"
+      chips={chips}
+      preview={preview}
+    >
+      <div className="font-mono text-[9px] uppercase tracking-wider text-cyan-700/80 dark:text-cyan-400/80">
+        web_search_call
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+        {item.id && (
+          <span>
+            <span className="text-muted-foreground">id:</span>{" "}
+            <span className="font-mono text-[10px]">{item.id}</span>
+          </span>
+        )}
+        {item.status && (
+          <span>
+            <span className="text-muted-foreground">status:</span>{" "}
+            <span className="font-mono text-[10px]">{item.status}</span>
+          </span>
+        )}
       </div>
       {item.action != null && (
-        <details className="mt-1">
-          <summary className="cursor-pointer text-[10px] text-muted-foreground">action</summary>
-          <pre className="mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{formatJson(item.action)}</pre>
-        </details>
+        <div className="mt-1.5">
+          <div className="mb-1 text-[10px] text-muted-foreground">action</div>
+          <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{formatJson(item.action)}</pre>
+        </div>
       )}
-    </div>
+    </InputItemRow>
   )
 }
 
-function ComputerCallItemView({ item }: { item: Extract<ResponsesItem, { kind: "computer_call" }> }) {
+function ComputerCallItemView({
+  item,
+  index,
+}: {
+  item: Extract<ResponsesItem, { kind: "computer_call" }>
+  index: number
+}) {
+  const actionStr = item.action != null ? formatJson(item.action) : ""
+  const preview = actionStr.replace(/\s+/g, " ").slice(0, 80)
+  const chipNodes: React.ReactNode[] = []
+  if (item.status && item.status !== "completed") chipNodes.push(<Chip key="status">{`status:${item.status}`}</Chip>)
+  const chips = chipNodes.length > 0 ? (
+    <span className="flex shrink-0 items-center gap-1">{chipNodes}</span>
+  ) : undefined
   return (
-    <div className="rounded bg-sky-50/60 border border-sky-200 dark:bg-sky-900/10 dark:border-sky-900/40 p-2 text-[11px]">
-      <div className="flex items-center gap-2">
-        <MousePointer className="size-3 text-sky-700 dark:text-sky-400" />
-        <span className="font-medium">computer_call</span>
-        {item.status && <span className="text-[10px] text-muted-foreground">· {item.status}</span>}
+    <InputItemRow
+      index={index}
+      badgeLabel="computer_call"
+      badgeStyle={ITEM_TYPE_STYLES.computer_call}
+      badgeTitle="type: computer_call"
+      chips={chips}
+      preview={preview}
+    >
+      <div className="font-mono text-[9px] uppercase tracking-wider text-cyan-700/80 dark:text-cyan-400/80">
+        computer_call
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+        {item.status && (
+          <span>
+            <span className="text-muted-foreground">status:</span>{" "}
+            <span className="font-mono text-[10px]">{item.status}</span>
+          </span>
+        )}
       </div>
       {item.action != null && (
-        <pre className="mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{formatJson(item.action)}</pre>
+        <div className="mt-1.5">
+          <div className="mb-1 text-[10px] text-muted-foreground">action</div>
+          <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{formatJson(item.action)}</pre>
+        </div>
       )}
-    </div>
+    </InputItemRow>
   )
 }
 
-function McpCallItemView({ item }: { item: Extract<ResponsesItem, { kind: "mcp_call" }> }) {
+function McpCallItemView({
+  item,
+  index,
+}: {
+  item: Extract<ResponsesItem, { kind: "mcp_call" }>
+  index: number
+}) {
+  const argsSnippet = item.arguments?.replace(/\s+/g, " ").slice(0, 60) ?? ""
+  const preview = `${item.name}${argsSnippet ? `(${argsSnippet})` : ""}`
+  const chipNodes: React.ReactNode[] = []
+  if (item.server_label) chipNodes.push(<Chip key="server">{`server:${item.server_label}`}</Chip>)
+  if (item.error) chipNodes.push(<Chip key="err">error</Chip>)
+  const chips = chipNodes.length > 0 ? (
+    <span className="flex shrink-0 items-center gap-1">{chipNodes}</span>
+  ) : undefined
   return (
-    <div className={cn(
-      "rounded p-2 text-[11px]",
-      item.error ? "bg-red-50 border border-red-200 dark:bg-red-900/20" : "bg-sky-50/60 border border-sky-200 dark:bg-sky-900/10 dark:border-sky-900/40",
-    )}>
-      <div className="flex items-center gap-2">
-        <Share2 className="size-3 text-sky-700 dark:text-sky-400" />
-        <span className="font-medium">mcp {item.name}</span>
-        {item.server_label && <span className="font-mono text-[10px] text-muted-foreground">@{item.server_label}</span>}
+    <InputItemRow
+      index={index}
+      badgeLabel="mcp_call"
+      badgeStyle={ITEM_TYPE_STYLES.mcp_call}
+      badgeTitle="type: mcp_call"
+      chips={chips}
+      preview={preview}
+    >
+      <div className="font-mono text-[9px] uppercase tracking-wider text-cyan-700/80 dark:text-cyan-400/80">
+        mcp_call
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+        <span>
+          <span className="text-muted-foreground">name:</span>{" "}
+          <span className="font-medium">{item.name}</span>
+        </span>
+        {item.server_label && (
+          <span>
+            <span className="text-muted-foreground">server_label:</span>{" "}
+            <span className="font-mono text-[10px]">{item.server_label}</span>
+          </span>
+        )}
       </div>
       {item.arguments && (
-        <details className="mt-1">
-          <summary className="cursor-pointer text-[10px] text-muted-foreground">arguments</summary>
-          <pre className="mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{item.arguments}</pre>
-        </details>
+        <div className="mt-1.5">
+          <div className="mb-1 text-[10px] text-muted-foreground">arguments</div>
+          <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{item.arguments}</pre>
+        </div>
       )}
-      {item.error && <div className="mt-1 text-red-700 dark:text-red-300">⚠️ {item.error}</div>}
+      {item.error && (
+        <div className="mt-1.5 rounded border border-red-300 bg-red-50 px-2 py-1 text-[11px] text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
+          <span className="text-muted-foreground">error:</span> {item.error}
+        </div>
+      )}
       {item.output != null && (
-        <details className="mt-1">
-          <summary className="cursor-pointer text-[10px] text-muted-foreground">output</summary>
-          <pre className="mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{formatJson(item.output)}</pre>
-        </details>
+        <div className="mt-1.5">
+          <div className="mb-1 text-[10px] text-muted-foreground">output</div>
+          <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{formatJson(item.output)}</pre>
+        </div>
       )}
-    </div>
+    </InputItemRow>
   )
 }
 
-function ItemView({ item, overlay, ctx }: { item: ResponsesItem; overlay?: CallOverlay | null; ctx?: OutputCtx }) {
+function ItemView({
+  item,
+  index,
+  overlay,
+  ctx,
+}: {
+  item: ResponsesItem
+  index: number
+  overlay?: CallOverlay | null
+  ctx?: OutputCtx
+}) {
   switch (item.kind) {
     case "message":
-      return <MessageItemView item={item} overlay={overlay} />
+      return <MessageItemView item={item} index={index} overlay={overlay} />
     case "function_call":
-      return <FunctionCallItemView item={item} ctx={ctx} />
+      return <FunctionCallItemView item={item} index={index} ctx={ctx} />
     case "function_call_output":
       return (
         <FunctionCallOutputItemView
           item={item}
+          index={index}
           renderToolResult={
             overlay?.ToolResultContent
               ? (content, isError) => {
@@ -356,23 +701,26 @@ function ItemView({ item, overlay, ctx }: { item: ResponsesItem; overlay?: CallO
         />
       )
     case "reasoning":
-      return <ReasoningItemView item={item} />
+      return <ReasoningItemView item={item} index={index} />
     case "file_search_call":
-      return <FileSearchCallItemView item={item} />
+      return <FileSearchCallItemView item={item} index={index} />
     case "web_search_call":
-      return <WebSearchCallItemView item={item} />
+      return <WebSearchCallItemView item={item} index={index} />
     case "computer_call":
-      return <ComputerCallItemView item={item} />
+      return <ComputerCallItemView item={item} index={index} />
     case "mcp_call":
-      return <McpCallItemView item={item} />
+      return <McpCallItemView item={item} index={index} />
     case "unknown":
       return (
-        <details className="text-[11px]">
-          <summary className="cursor-pointer text-red-600">⚠️ unknown item</summary>
-          <pre className="mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">
-            {formatJson(item.raw)}
-          </pre>
-        </details>
+        <InputItemRow
+          index={index}
+          badgeLabel="unknown"
+          badgeStyle={ITEM_TYPE_STYLES.unknown}
+          badgeTitle="type: unknown"
+          preview="unrecognized item"
+        >
+          <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">{formatJson(item.raw)}</pre>
+        </InputItemRow>
       )
   }
 }
@@ -399,14 +747,15 @@ function InputItemsSection({ request, overlay, ctx }: { request: ResponsesReques
   if (request.input.length === 0) return null
   return (
     <div className="rounded border border-border/60 bg-background text-xs">
-      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-left">
         {open ? <ChevronDown className="size-3 text-muted-foreground" /> : <ChevronRight className="size-3 text-muted-foreground" />}
         <span className="font-medium">Input items</span>
         <span className="text-muted-foreground">({request.input.length})</span>
+        <ItemTypeChips items={request.input} />
       </button>
       {open && (
-        <div className="space-y-2 px-3 py-2">
-          {request.input.map((item, i) => <ItemView key={i} item={item} overlay={overlay} ctx={ctx} />)}
+        <div>
+          {request.input.map((item, i) => <ItemView key={i} item={item} index={i} overlay={overlay} ctx={ctx} />)}
         </div>
       )}
     </div>
@@ -669,7 +1018,7 @@ export function OpenAiResponsesOutputBlocks({
   return (
     <div className="space-y-2">
       <AggregatedOutputText text={response.output_text_aggregated} />
-      {response.output.map((item, i) => <ItemView key={i} item={item} overlay={overlay} ctx={ctx} />)}
+      {response.output.map((item, i) => <ItemView key={i} item={item} index={i} overlay={overlay} ctx={ctx} />)}
     </div>
   )
 }

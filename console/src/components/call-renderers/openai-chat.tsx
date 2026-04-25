@@ -122,12 +122,25 @@ function ToolCallView({ tc, ctx }: { tc: OpenAiChatToolCall; ctx?: OutputCtx }) 
   const state = ctx ? classifyToolUseState(entry) : "healthy"
   return (
     <div className="rounded bg-amber-50/60 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/40 p-2 text-[11px]">
-      <div className="flex items-center gap-2">
-        <span className="font-medium">🔧 {tc.function.name}</span>
-        <span className="font-mono text-[10px] text-muted-foreground">{tc.id}</span>
+      <div className="font-mono text-[9px] uppercase tracking-wider text-amber-700/80 dark:text-amber-400/80">
+        tool_call
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        <span>
+          <span className="text-muted-foreground">id:</span>{" "}
+          <span className="font-mono text-[10px]">{tc.id}</span>
+        </span>
+        <span>
+          <span className="text-muted-foreground">type:</span>{" "}
+          <span className="font-mono text-[10px]">{tc.type}</span>
+        </span>
+        <span>
+          <span className="text-muted-foreground">function.name:</span>{" "}
+          <span className="font-medium">{tc.function.name}</span>
+        </span>
       </div>
       <details className="mt-1" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
-        <summary className="cursor-pointer text-muted-foreground text-[10px]">arguments</summary>
+        <summary className="cursor-pointer text-muted-foreground text-[10px]">function.arguments</summary>
         <pre className="mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap font-mono text-[10px]">
           {formatJson(safeParseJson(tc.function.arguments) ?? tc.function.arguments)}
         </pre>
@@ -152,7 +165,79 @@ const ROLE_STYLES: Record<string, string> = {
   developer: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300",
   user: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
   assistant: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
-  tool: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
+  tool: "border border-amber-300/70 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300",
+}
+
+const ROLE_ORDER: Array<"system" | "developer" | "user" | "assistant" | "tool"> = [
+  "system",
+  "developer",
+  "user",
+  "assistant",
+  "tool",
+]
+
+function Chip({
+  children,
+  variant = "muted",
+}: {
+  children: React.ReactNode
+  variant?: "muted" | "amber"
+}) {
+  return (
+    <span
+      className={cn(
+        "rounded px-1 py-0.5 text-[9px]",
+        variant === "amber"
+          ? "border border-amber-300/70 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300"
+          : "border border-border/60 bg-muted/40 text-muted-foreground",
+      )}
+    >
+      {children}
+    </span>
+  )
+}
+
+function MessageRoleChips({ messages }: { messages: OpenAiChatMessage[] }) {
+  const counts: Partial<Record<string, number>> = {}
+  for (const m of messages) counts[m.role] = (counts[m.role] ?? 0) + 1
+  const entries: Array<{ role: string; count: number }> = []
+  for (const r of ROLE_ORDER) {
+    const n = counts[r] ?? 0
+    if (n > 0) entries.push({ role: r, count: n })
+  }
+  if (entries.length === 0) return null
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      {entries.map(({ role, count }) => (
+        <Chip key={role} variant={role === "tool" ? "amber" : "muted"}>
+          {count > 1 ? `${role} ×${count}` : role}
+        </Chip>
+      ))}
+    </span>
+  )
+}
+
+function MessageContentChips({ msg }: { msg: OpenAiChatMessage }) {
+  const chips: React.ReactNode[] = []
+  if (msg.tool_calls && msg.tool_calls.length > 0) {
+    const n = msg.tool_calls.length
+    chips.push(<Chip key="tc">{n > 1 ? `tool_calls ×${n}` : "tool_calls"}</Chip>)
+  }
+  if (msg.reasoning_content) {
+    chips.push(<Chip key="rc">reasoning</Chip>)
+  }
+  if (Array.isArray(msg.content)) {
+    const partCounts: Record<string, number> = {}
+    for (const p of msg.content) {
+      if (p.type === "text") continue
+      partCounts[p.type] = (partCounts[p.type] ?? 0) + 1
+    }
+    for (const [type, n] of Object.entries(partCounts)) {
+      chips.push(<Chip key={`p-${type}`}>{n > 1 ? `${type} ×${n}` : type}</Chip>)
+    }
+  }
+  if (chips.length === 0) return null
+  return <span className="flex shrink-0 items-center gap-1">{chips}</span>
 }
 
 function messagePreview(msg: OpenAiChatMessage): string {
@@ -178,9 +263,13 @@ function MessageRow({ msg, index, overlay }: { msg: OpenAiChatMessage; index: nu
         className="flex w-full items-start gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40"
       >
         <span className="w-5 shrink-0 text-[10px] tabular-nums text-muted-foreground">#{index + 1}</span>
-        <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium", ROLE_STYLES[msg.role])}>
+        <span
+          title={`role: ${msg.role}`}
+          className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium", ROLE_STYLES[msg.role])}
+        >
           {msg.role}
         </span>
+        <MessageContentChips msg={msg} />
         <span className="flex-1 truncate text-muted-foreground">{preview}</span>
         {open ? <ChevronDown className="size-3 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-3 shrink-0 text-muted-foreground" />}
       </button>
@@ -194,7 +283,7 @@ function MessageRow({ msg, index, overlay }: { msg: OpenAiChatMessage; index: nu
           <MessageContent content={msg.content} isUserText={msg.role === "user"} overlay={overlay} />
           {msg.reasoning_content && (
             <div className="rounded bg-purple-50/60 border border-purple-200 dark:bg-purple-900/10 dark:border-purple-900/40 p-2 text-[11px]">
-              <div className="font-medium text-purple-800 dark:text-purple-300">💭 reasoning_content</div>
+              <div className="font-mono text-[9px] uppercase tracking-wider text-purple-700/80 dark:text-purple-400/80">reasoning_content</div>
               <pre className="mt-1 max-h-[400px] overflow-auto whitespace-pre-wrap font-sans text-[11px]">
                 {msg.reasoning_content}
               </pre>
@@ -217,10 +306,11 @@ function MessagesSection({ request, overlay }: { request: OpenAiChatRequest; ove
   if (request.messages.length === 0) return null
   return (
     <div className="rounded border border-border/60 bg-background text-xs">
-      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-left">
         {open ? <ChevronDown className="size-3 text-muted-foreground" /> : <ChevronRight className="size-3 text-muted-foreground" />}
         <span className="font-medium">Messages</span>
         <span className="text-muted-foreground">({request.messages.length})</span>
+        <MessageRoleChips messages={request.messages} />
       </button>
       {open && <div>{request.messages.map((m, i) => <MessageRow key={i} msg={m} index={i} overlay={overlay} />)}</div>}
     </div>
@@ -453,7 +543,7 @@ function ChoiceCard({ choice, ctx }: { choice: OpenAiChatChoice; ctx?: OutputCtx
         <MessageContent content={choice.message.content} isUserText={false} />
         {choice.message.reasoning_content && (
           <div className="rounded bg-purple-50/60 border border-purple-200 dark:bg-purple-900/10 dark:border-purple-900/40 p-2 text-[11px]">
-            <div className="font-medium text-purple-800 dark:text-purple-300">💭 reasoning_content</div>
+            <div className="font-mono text-[9px] uppercase tracking-wider text-purple-700/80 dark:text-purple-400/80">reasoning_content</div>
             <pre className="mt-1 max-h-[400px] overflow-auto whitespace-pre-wrap font-sans text-[11px]">
               {choice.message.reasoning_content}
             </pre>
