@@ -36,6 +36,34 @@ enum ClientSide {
     BtoA,
 }
 
+/// Per-direction reassembly state. Keeping these together makes
+/// direction-selection in `append_payload` / `try_parse_http` /
+/// `finish_pending_response` a single `&mut self.{a_to_b,b_to_a}` borrow,
+/// and gives every future per-direction concept (SACK ranges, OOO buffer)
+/// a natural home.
+struct DirState {
+    /// Reassembled in-order bytes pending HTTP parse.
+    buf: BytesMut,
+    /// Next expected sequence number; `None` until we observe SYN or the
+    /// first data packet (mid-stream sync).
+    next_seq: Option<u32>,
+    /// Timestamp of the most recent data packet in this direction. Used as
+    /// the stamping time for HTTP requests/responses at parse time — on
+    /// keep-alive connections the connection's first-packet time is not a
+    /// valid per-request start time.
+    last_data_ts: i64,
+}
+
+impl DirState {
+    fn new() -> Self {
+        Self {
+            buf: BytesMut::new(),
+            next_seq: None,
+            last_data_ts: 0,
+        }
+    }
+}
+
 /// Per-flow TCP state and reassembly buffers.
 pub struct TcpFlow {
     state: TcpState,
@@ -44,20 +72,9 @@ pub struct TcpFlow {
     /// `synced == true` implies `client_side != Unknown`.
     synced: bool,
 
-    // Reassembly buffers for each direction.
-    a_to_b_buf: BytesMut,
-    b_to_a_buf: BytesMut,
-
-    // Expected next sequence number for in-order reassembly.
-    a_to_b_next_seq: Option<u32>,
-    b_to_a_next_seq: Option<u32>,
-
-    // Timestamp of the most recent data packet in each direction. Used as the
-    // stamping time for HTTP requests/responses at parse time — on keep-alive
-    // connections the connection's first-packet time is not a valid per-request
-    // start time.
-    last_a_to_b_data_ts: i64,
-    last_b_to_a_data_ts: i64,
+    /// Per-direction reassembly state.
+    a_to_b: DirState,
+    b_to_a: DirState,
 
     /// Timestamp of the last packet received on this flow (any direction).
     last_pkt_ts: i64,
@@ -79,6 +96,15 @@ pub struct TcpFlow {
 }
 
 impl TcpFlow {
+    /// Per-direction state mutable access. Centralizing this here keeps
+    /// callers free of `match pkt.direction { ... }` boilerplate.
+    fn dir_mut(&mut self, d: Direction) -> &mut DirState {
+        match d {
+            Direction::AtoB => &mut self.a_to_b,
+            Direction::BtoA => &mut self.b_to_a,
+        }
+    }
+
     pub fn new(flow_key: FlowKey) -> Self {
         let addr_a = flow_key.addr_a;
         let addr_b = flow_key.addr_b;
@@ -86,12 +112,8 @@ impl TcpFlow {
             state: TcpState::Init,
             client_side: ClientSide::Unknown,
             synced: false,
-            a_to_b_buf: BytesMut::new(),
-            b_to_a_buf: BytesMut::new(),
-            a_to_b_next_seq: None,
-            b_to_a_next_seq: None,
-            last_a_to_b_data_ts: 0,
-            last_b_to_a_data_ts: 0,
+            a_to_b: DirState::new(),
+            b_to_a: DirState::new(),
             last_pkt_ts: 0,
             ooo_drops_pending: 0,
             rexmit_ignored_pending: 0,
@@ -125,20 +147,14 @@ impl TcpFlow {
             };
             self.synced = true;
             // Initialize sequence tracking (next expected = SYN seq + 1).
-            match pkt.direction {
-                Direction::AtoB => self.a_to_b_next_seq = Some(pkt.tcp_seq.wrapping_add(1)),
-                Direction::BtoA => self.b_to_a_next_seq = Some(pkt.tcp_seq.wrapping_add(1)),
-            }
+            self.dir_mut(pkt.direction).next_seq = Some(pkt.tcp_seq.wrapping_add(1));
             return false;
         }
 
         // SYN-ACK.
         if pkt.has_syn() && pkt.has_ack() {
             self.state = TcpState::Established;
-            match pkt.direction {
-                Direction::AtoB => self.a_to_b_next_seq = Some(pkt.tcp_seq.wrapping_add(1)),
-                Direction::BtoA => self.b_to_a_next_seq = Some(pkt.tcp_seq.wrapping_add(1)),
-            }
+            self.dir_mut(pkt.direction).next_seq = Some(pkt.tcp_seq.wrapping_add(1));
             return false;
         }
 
@@ -168,8 +184,8 @@ impl TcpFlow {
                         Direction::BtoA => ClientSide::BtoA,
                     };
                     self.synced = true;
-                    self.a_to_b_buf.clear();
-                    self.b_to_a_buf.clear();
+                    self.a_to_b.buf.clear();
+                    self.b_to_a.buf.clear();
                     self.http_parser.reset();
                     self.append_payload(pkt);
                     self.try_parse_http(output);
@@ -191,11 +207,11 @@ impl TcpFlow {
                         flow = %self.flow_key,
                         "resync: new request while waiting for response"
                     );
-                    self.a_to_b_buf.clear();
-                    self.b_to_a_buf.clear();
+                    self.a_to_b.buf.clear();
+                    self.b_to_a.buf.clear();
                     self.http_parser.reset();
-                    self.a_to_b_next_seq = None;
-                    self.b_to_a_next_seq = None;
+                    self.a_to_b.next_seq = None;
+                    self.b_to_a.next_seq = None;
                     self.append_payload(pkt);
                     self.try_parse_http(output);
                     resync = true;
@@ -215,20 +231,10 @@ impl TcpFlow {
     }
 
     fn append_payload(&mut self, pkt: &ParsedPacket) {
-        let (buf, next_seq, last_ts) = match pkt.direction {
-            Direction::AtoB => (
-                &mut self.a_to_b_buf,
-                &mut self.a_to_b_next_seq,
-                &mut self.last_a_to_b_data_ts,
-            ),
-            Direction::BtoA => (
-                &mut self.b_to_a_buf,
-                &mut self.b_to_a_next_seq,
-                &mut self.last_b_to_a_data_ts,
-            ),
-        };
-
-        *last_ts = pkt.timestamp_us;
+        let dir = self.dir_mut(pkt.direction);
+        dir.last_data_ts = pkt.timestamp_us;
+        let buf = &mut dir.buf;
+        let next_seq = &mut dir.next_seq;
 
         match next_seq {
             Some(expected) => {
@@ -278,22 +284,22 @@ impl TcpFlow {
             server_last_ts,
         ) = match self.client_side {
             ClientSide::AtoB => (
-                &mut self.a_to_b_buf,
-                &mut self.b_to_a_buf,
+                &mut self.a_to_b.buf,
+                &mut self.b_to_a.buf,
                 self.addr_a,
                 self.addr_b,
-                self.last_a_to_b_data_ts,
-                self.last_b_to_a_data_ts,
-                self.last_b_to_a_data_ts,
+                self.a_to_b.last_data_ts,
+                self.b_to_a.last_data_ts,
+                self.b_to_a.last_data_ts,
             ),
             ClientSide::BtoA => (
-                &mut self.b_to_a_buf,
-                &mut self.a_to_b_buf,
+                &mut self.b_to_a.buf,
+                &mut self.a_to_b.buf,
                 self.addr_b,
                 self.addr_a,
-                self.last_b_to_a_data_ts,
-                self.last_a_to_b_data_ts,
-                self.last_a_to_b_data_ts,
+                self.b_to_a.last_data_ts,
+                self.a_to_b.last_data_ts,
+                self.a_to_b.last_data_ts,
             ),
             ClientSide::Unknown => return false,
         };
@@ -316,8 +322,8 @@ impl TcpFlow {
                 "resync: HTTP parse error, waiting for next valid request"
             );
             self.synced = false;
-            self.a_to_b_buf.clear();
-            self.b_to_a_buf.clear();
+            self.a_to_b.buf.clear();
+            self.b_to_a.buf.clear();
             self.http_parser.reset();
             return true;
         }
@@ -327,16 +333,16 @@ impl TcpFlow {
     fn finish_pending_response(&mut self, output: &mut Vec<HttpParseEvent>) {
         let (server_buf, client_addr, server_addr, server_last_ts) = match self.client_side {
             ClientSide::AtoB => (
-                &mut self.b_to_a_buf,
+                &mut self.b_to_a.buf,
                 self.addr_a,
                 self.addr_b,
-                self.last_b_to_a_data_ts,
+                self.b_to_a.last_data_ts,
             ),
             ClientSide::BtoA => (
-                &mut self.a_to_b_buf,
+                &mut self.a_to_b.buf,
                 self.addr_b,
                 self.addr_a,
-                self.last_a_to_b_data_ts,
+                self.a_to_b.last_data_ts,
             ),
             ClientSide::Unknown => return,
         };
