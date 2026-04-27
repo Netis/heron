@@ -70,6 +70,16 @@ impl DirState {
             ooo: None,
         }
     }
+
+    /// Discard all in-flight reassembly state on this direction: the
+    /// in-order buffer and any segments held in the OOO map. Used by every
+    /// resync site so a stale gap can't leak across a flow restart.
+    /// `next_seq` and `last_data_ts` are not touched here — callers manage
+    /// them per resync semantics.
+    fn discard_buffers(&mut self) {
+        self.buf.clear();
+        self.ooo = None;
+    }
 }
 
 /// Per-flow TCP state and reassembly buffers.
@@ -194,8 +204,8 @@ impl TcpFlow {
                         Direction::BtoA => ClientSide::BtoA,
                     };
                     self.synced = true;
-                    self.a_to_b.buf.clear();
-                    self.b_to_a.buf.clear();
+                    self.a_to_b.discard_buffers();
+                    self.b_to_a.discard_buffers();
                     self.http_parser.reset();
                     self.append_payload(pkt);
                     self.try_parse_http(output);
@@ -217,8 +227,8 @@ impl TcpFlow {
                         flow = %self.flow_key,
                         "resync: new request while waiting for response"
                     );
-                    self.a_to_b.buf.clear();
-                    self.b_to_a.buf.clear();
+                    self.a_to_b.discard_buffers();
+                    self.b_to_a.discard_buffers();
                     self.http_parser.reset();
                     self.a_to_b.next_seq = None;
                     self.b_to_a.next_seq = None;
@@ -351,8 +361,8 @@ impl TcpFlow {
                 "resync: HTTP parse error, waiting for next valid request"
             );
             self.synced = false;
-            self.a_to_b.buf.clear();
-            self.b_to_a.buf.clear();
+            self.a_to_b.discard_buffers();
+            self.b_to_a.discard_buffers();
             self.http_parser.reset();
             return true;
         }
@@ -1112,6 +1122,16 @@ mod tests {
             .is_none()
     }
 
+    fn flow_b_to_a_ooo_is_none(worker: &FlowWorker, fk: &FlowKey) -> bool {
+        worker
+            .flows
+            .get(fk)
+            .expect("flow must exist")
+            .b_to_a
+            .ooo
+            .is_none()
+    }
+
     #[test]
     fn test_ooo_drop_and_retransmit_counters() {
         // After SYN handshake the flow has `next_seq=Some(1)`. A segment
@@ -1276,6 +1296,74 @@ mod tests {
         assert_eq!(metrics.counter(Metric::TcpOutOfOrderBuffered).get(), 1);
         assert_eq!(metrics.counter(Metric::TcpOutOfOrderDrops).get(), 0);
         assert_eq!(metrics.counter(Metric::TcpRetransmissionsIgnored).get(), 0);
+    }
+
+    #[test]
+    fn test_resync_clears_ooo_on_both_directions() {
+        // Reproduces the bug fixed by `DirState::discard_buffers`. Establish
+        // a flow, drive it to `is_waiting_for_response()`, queue an OOO
+        // segment in *each* direction, then trigger the
+        // "new request while waiting for response" resync. After resync the
+        // OOO map on both directions must be released — otherwise stale
+        // gap-bridging segments would corrupt the post-resync flow state.
+        let (mut worker, _metrics) = new_test_worker();
+        let fk = test_flow_key();
+        handshake(&mut worker, &fk);
+
+        // Client sends a complete request with Content-Length: 0 so the
+        // parser advances to WaitingForResponse without needing body bytes.
+        let req1 = b"POST /v1/x HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\n\r\n";
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            req1,
+            1,
+            0,
+            1_000,
+        )));
+
+        // Buffer an OOO segment on the server side (response gap simulated).
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::BtoA,
+            b"GAP-AHEAD",
+            500,
+            0,
+            2_000,
+        )));
+        // And one on the client side too — keep-alive client could enqueue
+        // its next request body bytes ahead of the new request's first seg.
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            b"AHEAD-A",
+            1_000,
+            0,
+            3_000,
+        )));
+        assert!(!flow_a_to_b_ooo_is_none(&worker, &fk));
+        assert!(!flow_b_to_a_ooo_is_none(&worker, &fk));
+
+        // New POST while waiting for response → triggers the resync branch.
+        let req2 = b"POST /v1/x HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\n\r\n";
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            req2,
+            req1.len() as u32 + 1,
+            0,
+            4_000,
+        )));
+
+        // Both directions' OOO maps must be released by the resync path.
+        assert!(
+            flow_a_to_b_ooo_is_none(&worker, &fk),
+            "AtoB OOO must be cleared on resync"
+        );
+        assert!(
+            flow_b_to_a_ooo_is_none(&worker, &fk),
+            "BtoA OOO must be cleared on resync"
+        );
     }
 
     #[test]
