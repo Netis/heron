@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use ts_common::internal_metrics::{Metric, MetricsWorker};
 
-use crate::model::{HttpRequestData, HttpResponseData, HttpParseEvent, SseEventData};
+use crate::model::{HttpParseEvent, HttpRequestData, HttpResponseData, SseEventData};
 use crate::net::FlowKey;
 
 /// Upper bound on how long a pending HTTP exchange may sit **silent** before

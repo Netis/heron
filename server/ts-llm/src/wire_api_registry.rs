@@ -61,8 +61,7 @@ impl WireApiRegistry {
                 RouteVerdict::Accept => {
                     // Parse the body now for extract_request. `Value::Null`
                     // on non-JSON bodies preserves prior tolerance.
-                    let body: Value =
-                        serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+                    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
                     let request_info = p.extract_request(req, &body);
                     return Some(DetectionOutcome {
                         wire_api: p.as_ref(),
@@ -199,10 +198,7 @@ mod tests {
             "/v1/responses",
             vec![("authorization", "Bearer sk-xxx")],
         );
-        assert_eq!(
-            detect_name(&reg, &req),
-            Some(wa::OPENAI_RESPONSES)
-        );
+        assert_eq!(detect_name(&reg, &req), Some(wa::OPENAI_RESPONSES));
     }
 
     #[test]
@@ -258,10 +254,7 @@ mod tests {
             vec![],
             r#"{"model":"gpt-4o","input":"Tell me a joke."}"#,
         );
-        assert_eq!(
-            detect_name(&reg, &req),
-            Some(wa::OPENAI_RESPONSES)
-        );
+        assert_eq!(detect_name(&reg, &req), Some(wa::OPENAI_RESPONSES));
     }
 
     #[test]

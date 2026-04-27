@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 // ---------------------------------------------------------------------------
 // MetricKind
@@ -173,13 +174,25 @@ define_metrics! {
     TurnActive               => { kind: Gauge,   group: Turn, short: "active"         },
 
     // -- Metrics aggregation --
-    MetricsLlmEventsReceived => { kind: Counter, group: Metrics, short: "llm_events_recv" },
-    MetricsWindowsFlushed    => { kind: Counter, group: Metrics, short: "windows_flush"   },
+    // LlmEvent variants are split so heartbeat fan-out (= flow_shards × metrics_shards)
+    // doesn't drown out the real call signal.
+    MetricsLlmEventsStart     => { kind: Counter, group: Metrics, short: "llm_event_start"     },
+    MetricsLlmEventsComplete  => { kind: Counter, group: Metrics, short: "llm_event_complete"  },
+    MetricsLlmEventsHeartbeat => { kind: Counter, group: Metrics, short: "llm_event_heartbeat" },
+    MetricsWindowsFlushed     => { kind: Counter, group: Metrics, short: "windows_flush"       },
 
     // -- Storage --
-    StorageRecordsBuffered   => { kind: Counter, group: Storage, short: "buffered"       },
-    StorageRecordsFlushed    => { kind: Counter, group: Storage, short: "flushed"        },
-    StorageFlushErrors       => { kind: Counter, group: Storage, short: "flush_errors"   },
+    // buffered/flushed split per entity so the line tells you which stream
+    // dominates (was previously one shared counter across 4 WriteBuffers).
+    StorageBufferedCalls         => { kind: Counter, group: Storage, short: "buf.calls"        },
+    StorageBufferedTurns         => { kind: Counter, group: Storage, short: "buf.turns"        },
+    StorageBufferedMetrics       => { kind: Counter, group: Storage, short: "buf.metrics"      },
+    StorageBufferedHttpExchanges => { kind: Counter, group: Storage, short: "buf.exchanges"    },
+    StorageFlushedCalls          => { kind: Counter, group: Storage, short: "flushed.calls"    },
+    StorageFlushedTurns          => { kind: Counter, group: Storage, short: "flushed.turns"    },
+    StorageFlushedMetrics        => { kind: Counter, group: Storage, short: "flushed.metrics"  },
+    StorageFlushedHttpExchanges  => { kind: Counter, group: Storage, short: "flushed.exchanges"},
+    StorageFlushErrors           => { kind: Counter, group: Storage, short: "flush_errors"     },
 
     // -- Queue depths (gauges) --
     // Each queue is named after the content it carries (not in/out),
@@ -516,6 +529,22 @@ impl MonitorPoll {
 // MetricsReporter — async Tokio task
 // ---------------------------------------------------------------------------
 
+/// Handle returned by [`MetricsReporter::start`]. Hold both pieces:
+///
+/// * `stop_tx` — drop or `send(())` to ask the reporter to print its final
+///   tick and exit.
+/// * `join` — `await` it after stopping to know the final tick has actually
+///   been logged. Awaiting before sending stop hangs forever (the reporter
+///   only exits on the stop signal, not by drop).
+///
+/// Holding only `stop_tx` and dropping `join` keeps the reporter task alive
+/// but loses the final-flush guarantee — the runtime may abort the task
+/// before its final report logs. Most callers should keep both.
+pub struct ReporterHandle {
+    pub stop_tx: watch::Sender<()>,
+    pub join: JoinHandle<()>,
+}
+
 /// Periodic metrics reporter. Spawns a Tokio task that polls and logs metrics.
 pub struct MetricsReporter;
 
@@ -525,12 +554,13 @@ impl MetricsReporter {
     /// `label` is prefixed onto every log line so multiple reporters (e.g.
     /// one per capture source) can be told apart in the output.
     ///
-    /// Returns a shutdown handle — drop the sender or send `()` to stop.
-    pub fn start(svc: Arc<MetricsSvc>, label: &str, interval: Duration) -> watch::Sender<()> {
+    /// Returns a [`ReporterHandle`]: send/drop `stop_tx` to stop, then `await`
+    /// `join` to ensure the final tick was logged.
+    pub fn start(svc: Arc<MetricsSvc>, label: &str, interval: Duration) -> ReporterHandle {
         let (stop_tx, mut stop_rx) = watch::channel(());
         let label = label.to_string();
 
-        tokio::spawn(async move {
+        let join = tokio::spawn(async move {
             let mut monitor = MetricsMonitor::new(svc.clone());
             let mut ticker = tokio::time::interval(interval);
             ticker.tick().await; // first tick is immediate, skip it
@@ -550,7 +580,7 @@ impl MetricsReporter {
             }
         });
 
-        stop_tx
+        ReporterHandle { stop_tx, join }
     }
 
     fn report(label: &str, svc: &MetricsSvc, monitor: &mut MetricsMonitor) {
@@ -633,7 +663,7 @@ mod tests {
             &[
                 Metric::CapturePacketsReceived,
                 Metric::NetPacketsParsed,
-                Metric::StorageRecordsBuffered,
+                Metric::StorageBufferedCalls,
             ],
         );
         sys.register_queue_probe(Metric::StorageQueueDepthCalls, || 5);
@@ -644,7 +674,7 @@ mod tests {
 
         w.counter(Metric::CapturePacketsReceived).add(1000);
         w.counter(Metric::NetPacketsParsed).add(500);
-        w.counter(Metric::StorageRecordsBuffered).add(100);
+        w.counter(Metric::StorageBufferedCalls).add(100);
 
         let poll = mon.poll();
         let grouped = poll.format_grouped();
@@ -655,7 +685,7 @@ mod tests {
         assert_eq!(grouped[1].0, "protocol");
         assert!(grouped[1].1.contains("net_parsed=500/500"));
         assert_eq!(grouped[2].0, "storage");
-        assert!(grouped[2].1.contains("buffered=100/100"));
+        assert!(grouped[2].1.contains("buf.calls=100/100"));
         assert!(grouped[2].1.contains("q.calls=5"));
     }
 

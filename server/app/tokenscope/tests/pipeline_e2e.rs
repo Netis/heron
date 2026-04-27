@@ -88,6 +88,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
     let mut per_pipeline_metrics: Vec<MetricsSystem> = (0..pipeline_defs.len())
         .map(|_| MetricsSystem::new())
         .collect();
+    let mut shared_metrics = MetricsSystem::new();
 
     // Register capture metrics for each pipeline's single source.
     let capture_metrics: Vec<_> = per_pipeline_metrics
@@ -118,11 +119,13 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
         &sink_config,
         storage.clone(),
         &mut per_pipeline_metrics,
+        &mut shared_metrics,
     );
     let _metrics_svcs: Vec<_> = per_pipeline_metrics
         .into_iter()
         .map(|s| s.start())
         .collect();
+    let _shared_metrics_svc = shared_metrics.start();
 
     // Each pcap source owns its pipeline's RawPacket sender; dropping it on
     // source exit cascades EOF through that pipeline.

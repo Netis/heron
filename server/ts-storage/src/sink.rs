@@ -46,10 +46,32 @@ pub fn spawn_storage_sink_stage(
 ) -> JoinHandle<()> {
     let flush_interval = Duration::from_millis(config.flush_interval_ms);
 
-    let buf_metrics = BufferMetrics {
-        buffered: metrics.counter(Metric::StorageRecordsBuffered).clone(),
-        flushed: metrics.counter(Metric::StorageRecordsFlushed).clone(),
-        errors: metrics.counter(Metric::StorageFlushErrors).clone(),
+    // One BufferMetrics per entity so operators can see which stream dominates
+    // in the storage line. flush_errors stays shared — it's near-zero in
+    // practice and the tracing::error! in WriteBuffer::flush already includes
+    // the entity tag when it does fire.
+    let errors = metrics.counter(Metric::StorageFlushErrors).clone();
+    let calls_buf_metrics = BufferMetrics {
+        buffered: metrics.counter(Metric::StorageBufferedCalls).clone(),
+        flushed: metrics.counter(Metric::StorageFlushedCalls).clone(),
+        errors: errors.clone(),
+    };
+    let turns_buf_metrics = BufferMetrics {
+        buffered: metrics.counter(Metric::StorageBufferedTurns).clone(),
+        flushed: metrics.counter(Metric::StorageFlushedTurns).clone(),
+        errors: errors.clone(),
+    };
+    let metrics_buf_metrics = BufferMetrics {
+        buffered: metrics.counter(Metric::StorageBufferedMetrics).clone(),
+        flushed: metrics.counter(Metric::StorageFlushedMetrics).clone(),
+        errors: errors.clone(),
+    };
+    let exch_buf_metrics = BufferMetrics {
+        buffered: metrics
+            .counter(Metric::StorageBufferedHttpExchanges)
+            .clone(),
+        flushed: metrics.counter(Metric::StorageFlushedHttpExchanges).clone(),
+        errors,
     };
 
     // calls_rx carries Arc<LlmCall> so turn aggregation can share the data.
@@ -91,7 +113,7 @@ pub fn spawn_storage_sink_stage(
         owned_rx,
         config.batch_size,
         flush_interval,
-        Some(buf_metrics.clone()),
+        Some(calls_buf_metrics),
     );
     let calls_task = tokio::spawn(async move {
         calls_buffer
@@ -108,7 +130,7 @@ pub fn spawn_storage_sink_stage(
         turns_rx,
         config.batch_size,
         flush_interval,
-        Some(buf_metrics.clone()),
+        Some(turns_buf_metrics),
     );
     let turns_task = tokio::spawn(async move {
         turns_buffer
@@ -125,7 +147,7 @@ pub fn spawn_storage_sink_stage(
         metrics_rx,
         config.batch_size,
         flush_interval,
-        Some(buf_metrics.clone()),
+        Some(metrics_buf_metrics),
     );
     let metrics_task = tokio::spawn(async move {
         metrics_buffer
@@ -142,7 +164,7 @@ pub fn spawn_storage_sink_stage(
         http_exchanges_rx,
         config.batch_size,
         flush_interval,
-        Some(buf_metrics),
+        Some(exch_buf_metrics),
     );
     let exch_task = tokio::spawn(async move {
         exch_buffer
@@ -346,8 +368,14 @@ mod tests {
         let storage_metrics = metrics_sys.register_worker(
             "storage_sink",
             &[
-                Metric::StorageRecordsBuffered,
-                Metric::StorageRecordsFlushed,
+                Metric::StorageBufferedCalls,
+                Metric::StorageBufferedTurns,
+                Metric::StorageBufferedMetrics,
+                Metric::StorageBufferedHttpExchanges,
+                Metric::StorageFlushedCalls,
+                Metric::StorageFlushedTurns,
+                Metric::StorageFlushedMetrics,
+                Metric::StorageFlushedHttpExchanges,
                 Metric::StorageFlushErrors,
             ],
         );

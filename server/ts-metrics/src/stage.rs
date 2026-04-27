@@ -32,7 +32,9 @@ pub fn spawn_metrics_stage(
         let worker_metrics = metrics_sys.register_worker(
             &format!("metrics.{i}"),
             &[
-                Metric::MetricsLlmEventsReceived,
+                Metric::MetricsLlmEventsStart,
+                Metric::MetricsLlmEventsComplete,
+                Metric::MetricsLlmEventsHeartbeat,
                 Metric::MetricsWindowsFlushed,
             ],
         );

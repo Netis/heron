@@ -208,10 +208,7 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
                         .unwrap_or(true);
                     if needs_graft && !output_items.is_empty() {
                         if let Some(map) = response_obj.as_object_mut() {
-                            map.insert(
-                                "output".to_string(),
-                                Value::Array(output_items.clone()),
-                            );
+                            map.insert("output".to_string(), Value::Array(output_items.clone()));
                         }
                     }
                     response_body = Some(response_obj.to_string());

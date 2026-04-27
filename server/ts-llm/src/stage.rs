@@ -168,7 +168,7 @@ mod tests {
     use std::net::IpAddr;
     use std::sync::Arc;
     use ts_protocol::joiner::HttpJoiner;
-    use ts_protocol::model::{HttpRequestData, HttpResponseData, HttpParseEvent};
+    use ts_protocol::model::{HttpParseEvent, HttpRequestData, HttpResponseData};
     use ts_protocol::net::FlowKey;
 
     use crate::agents::build_default_registry;

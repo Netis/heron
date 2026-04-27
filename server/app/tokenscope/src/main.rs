@@ -269,6 +269,11 @@ async fn main() {
             .map(|_| MetricsSystem::new())
             .collect();
 
+        // Cross-pipeline counters (storage sink + storage queue probes) live
+        // here so they show up under a separate `global` reporter rather than
+        // being mis-attributed to the first pipeline's reporter line.
+        let mut shared_metrics = MetricsSystem::new();
+
         // Pre-register capture metrics for each pipeline's sources.
         let capture_metrics: Vec<Vec<_>> = effective_pipelines
             .iter()
@@ -307,9 +312,10 @@ async fn main() {
             .collect();
 
         // Build the pipeline: channels, stages, sink — all wired in one
-        // place. `Pipeline::build` registers every per-pipeline stage
-        // (including metrics) against the corresponding entry in
-        // `per_pipeline_metrics`. There is no cross-pipeline metrics stage.
+        // place. `Pipeline::build` registers per-pipeline stage workers
+        // against the corresponding entry in `per_pipeline_metrics`, and
+        // shared (storage sink + queue probes) workers against
+        // `shared_metrics`. There is no cross-pipeline metrics stage.
         let Pipeline {
             pipeline_txs,
             pipeline_sources,
@@ -322,33 +328,55 @@ async fn main() {
             },
             storage.clone(),
             &mut per_pipeline_metrics,
+            &mut shared_metrics,
         );
 
         // Start each per-pipeline MetricsSystem and, if enabled, one
-        // reporter per pipeline. Reporter handles are held in a Vec so they
-        // stay alive for the duration of the run.
-        let reporter_handles: Vec<_> = per_pipeline_metrics
+        // reporter per pipeline. Per-pipeline and global handles are kept
+        // separate so shutdown can stage them: per-pipeline reporters drain
+        // first (their final ticks print), then `global` — making the global
+        // storage summary the last block of metrics output.
+        let reporter_enabled =
+            config.internal_metrics.enabled && config.internal_metrics.interval_secs > 0;
+        let pipeline_reporter_handles: Vec<_> = per_pipeline_metrics
             .into_iter()
             .zip(effective_pipelines.iter())
             .filter_map(|(sys, def)| {
                 let svc = sys.start();
-                (config.internal_metrics.enabled && config.internal_metrics.interval_secs > 0).then(
-                    || {
-                        let label = format!("pipeline.{}", def.name);
-                        let handle = MetricsReporter::start(
-                            svc,
-                            &label,
-                            Duration::from_secs(config.internal_metrics.interval_secs),
-                        );
-                        tracing::info!(
-                            "internal metrics reporter started for {label} (interval={}s)",
-                            config.internal_metrics.interval_secs
-                        );
-                        handle
-                    },
-                )
+                reporter_enabled.then(|| {
+                    let label = format!("pipeline.{}", def.name);
+                    let handle = MetricsReporter::start(
+                        svc,
+                        &label,
+                        Duration::from_secs(config.internal_metrics.interval_secs),
+                    );
+                    tracing::info!(
+                        "internal metrics reporter started for {label} (interval={}s)",
+                        config.internal_metrics.interval_secs
+                    );
+                    handle
+                })
             })
             .collect();
+
+        // Cross-pipeline reporter — the storage sink + its queue probes are
+        // the only workers registered here, so the log line is honest about
+        // representing every pipeline's traffic into a single shared sink.
+        let global_reporter_handle = {
+            let svc = shared_metrics.start();
+            reporter_enabled.then(|| {
+                let handle = MetricsReporter::start(
+                    svc,
+                    "global",
+                    Duration::from_secs(config.internal_metrics.interval_secs),
+                );
+                tracing::info!(
+                    "internal metrics reporter started for global (interval={}s)",
+                    config.internal_metrics.interval_secs
+                );
+                handle
+            })
+        };
 
         // Spawn capture sources — each pipeline may have N sources that
         // fan-in to a single raw-packet channel.
@@ -413,9 +441,10 @@ async fn main() {
             }
         }
 
-        for stop_tx in &reporter_handles {
-            let _ = stop_tx.send(());
-        }
+        // NOTE: reporters keep running through capture-stop and pipeline-drain
+        // so their final-tick numbers reflect the truly drained state
+        // (`flushed.* == buf.*`, `q.* == 0`). They get the stop signal *after*
+        // drain at the bottom of this block.
 
         let mut force_exit = false;
 
@@ -464,6 +493,22 @@ async fn main() {
             };
         if pipeline_drained {
             tracing::info!("pipeline drained");
+        }
+
+        // Stop reporters now that drain is done — their final tick captures
+        // post-drain totals (every `flushed.*` should equal its `buf.*`).
+        // Stage the shutdown so `global` is logged *last*: signal every
+        // per-pipeline reporter, await each task's exit (its final tick has
+        // been logged by then), and only then signal `global` and await it.
+        for handle in &pipeline_reporter_handles {
+            let _ = handle.stop_tx.send(());
+        }
+        for handle in pipeline_reporter_handles {
+            let _ = handle.join.await;
+        }
+        if let Some(handle) = global_reporter_handle {
+            let _ = handle.stop_tx.send(());
+            let _ = handle.join.await;
         }
 
         if force_exit {

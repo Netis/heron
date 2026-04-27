@@ -91,14 +91,22 @@ impl MetricsAggregator {
 
     /// Process an LlmEvent. Returns any metric rows emitted by cadence drain.
     pub fn process(&mut self, event: &LlmEvent) -> Vec<LlmMetric> {
-        self.metrics.counter(Metric::MetricsLlmEventsReceived).inc();
-
         let (source_id, ts) = event_clock(event);
 
         match event {
-            LlmEvent::Start(start) => self.on_call_start(start),
-            LlmEvent::Complete { call, .. } => self.on_call_complete(call),
-            LlmEvent::Heartbeat { .. } => {}
+            LlmEvent::Start(start) => {
+                self.metrics.counter(Metric::MetricsLlmEventsStart).inc();
+                self.on_call_start(start);
+            }
+            LlmEvent::Complete { call, .. } => {
+                self.metrics.counter(Metric::MetricsLlmEventsComplete).inc();
+                self.on_call_complete(call);
+            }
+            LlmEvent::Heartbeat { .. } => {
+                self.metrics
+                    .counter(Metric::MetricsLlmEventsHeartbeat)
+                    .inc();
+            }
         }
 
         let watermark = {
@@ -329,7 +337,9 @@ mod tests {
         let w = sys.register_worker(
             "test",
             &[
-                Metric::MetricsLlmEventsReceived,
+                Metric::MetricsLlmEventsStart,
+                Metric::MetricsLlmEventsComplete,
+                Metric::MetricsLlmEventsHeartbeat,
                 Metric::MetricsWindowsFlushed,
             ],
         );

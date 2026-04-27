@@ -1200,10 +1200,7 @@ impl StorageBackend for DuckDbBackend {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             {
-                where_parts.push(format!(
-                    "uri LIKE '%{}%'",
-                    substr.replace('\'', "''")
-                ));
+                where_parts.push(format!("uri LIKE '%{}%'", substr.replace('\'', "''")));
             }
             if let Some(sse) = query.is_sse {
                 where_parts.push(format!("is_sse = {sse}"));
@@ -2874,7 +2871,9 @@ impl StorageBackend for DuckDbBackend {
 
             {
                 let mut rows = match &cursor_values {
-                    Some((ts, sid)) => stmt.query(duckdb::params![query.source_id, query.session_id, ts, sid]),
+                    Some((ts, sid)) => {
+                        stmt.query(duckdb::params![query.source_id, query.session_id, ts, sid])
+                    }
                     None => stmt.query(duckdb::params![query.source_id, query.session_id]),
                 }
                 .map_err(|e| AppError::Storage(format!("failed to execute session_turns: {e}")))?;

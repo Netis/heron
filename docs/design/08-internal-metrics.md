@@ -8,13 +8,22 @@ All metrics are defined in a single `define_metrics!` macro invocation in `ts-co
 
 ## Report format
 
-One log line per group per interval. The line is prefixed by a `label` (pipeline name) supplied at reporter start:
+One log line per group per interval. The line is prefixed by a `label` supplied at reporter start:
 
 ```
 [INTERNAL] <label> | <group>  | short=total/delta short=total/delta ... q.name=depth
 ```
 
 Counters print as `total/delta`; gauges print as current value only.
+
+There are two kinds of reporters:
+
+- **`pipeline.<name>`** — one per `[[pipeline]]` definition, carrying that
+  pipeline's capture / protocol / llm / turn / metrics workers. Per-pipeline
+  state never crosses pipelines.
+- **`global`** — one shared reporter for the storage sink + storage queue
+  probes. The storage sink fans in records from every pipeline, so reporting
+  it under any single pipeline name would mis-attribute the totals.
 
 Groups and their display order:
 
@@ -87,18 +96,30 @@ Per turn-shard. Finalization path: `calls_ingested` → buffered until the profi
 
 ### metrics
 
-| Short              | Semantics                                              |
-|--------------------|--------------------------------------------------------|
-| `llm_events_recv`  | CallStart + CallEnd events received by the aggregator  |
-| `windows_flush`    | Sliding windows flushed to the storage channel         |
+| Short                   | Semantics                                                                       |
+|-------------------------|---------------------------------------------------------------------------------|
+| `llm_event_start`       | `LlmEvent::Start` events received by the aggregator (≈ one per LLM request)    |
+| `llm_event_complete`    | `LlmEvent::Complete` events received (≈ one per LLM exchange; pairs with Start) |
+| `llm_event_heartbeat`   | `LlmEvent::Heartbeat` events received — equals `capture.heartbeats × flow_shards × metrics_shards` due to dispatcher broadcast and per-shard heartbeat fan-out |
+| `windows_flush`         | Sliding windows flushed to the storage channel                                  |
 
 ### storage
 
-| Short          | Semantics                                         |
-|----------------|---------------------------------------------------|
-| `buffered`     | Rows added to the write buffer                    |
-| `flushed`      | Rows flushed to the backend                       |
-| `flush_errors` | Backend flush errors                              |
+Storage counters are reported under the **`global`** reporter line
+(`[INTERNAL] global | storage | …`), not under any single pipeline, because the
+storage sink is shared across every pipeline.
+
+| Short                | Semantics                                                  |
+|----------------------|------------------------------------------------------------|
+| `buf.calls`          | `LlmCall` rows added to the write buffer                   |
+| `buf.turns`          | `AgentTurn` rows added to the write buffer                 |
+| `buf.metrics`        | `LlmMetric` rows added to the write buffer                 |
+| `buf.exchanges`      | `HttpExchange` rows added to the write buffer              |
+| `flushed.calls`      | `LlmCall` rows flushed to the backend                      |
+| `flushed.turns`      | `AgentTurn` rows flushed to the backend                    |
+| `flushed.metrics`    | `LlmMetric` rows flushed to the backend                    |
+| `flushed.exchanges`  | `HttpExchange` rows flushed to the backend                 |
+| `flush_errors`       | Backend flush errors (shared across all four streams)      |
 
 ## Gauges (queue depths)
 
@@ -126,8 +147,8 @@ Rising storage queues mean the backend cannot keep up — flip to a faster backe
 [INTERNAL] pipeline.remote | protocol | pkts_routed=765190/62 heartbeats_drop=0/0 net_parsed=765190/62 parse_drop_notip=0/0 parse_drop_nottcp=0/0 parse_drop_bad=0/0 http_req=22276/2 http_resp=21956/2 sse_events=319818/25 http_resync=13/0 flows_expired=12123/0 http_done=21956/2 http_unpaired=0/0 http_expired=314/0 q.raw=0 q.parsed=0
 [INTERNAL] pipeline.remote | llm      | http_detected=10890/2 http_ignored=11386/0 calls_agent=0/0 calls_no_agent=10574/0 q.http_parse_evt=0 q.http_joiner_evt=0
 [INTERNAL] pipeline.remote | turn     | calls_ingested=0/0 calls_aux=0/0 calls_late=0/0 completed=0/0 closed_grace=0/0 closed_idle=0/0 no_user_start=0/0 q.agent_call=0
-[INTERNAL] pipeline.remote | metrics  | llm_events_recv=333856/26 windows_flush=45108/20 q.llm_evt=0
-[INTERNAL] pipeline.remote | storage  | buffered=... flushed=... flush_errors=... q.calls=0 q.turns=0 q.metrics=0 q.exchanges=0
+[INTERNAL] pipeline.remote | metrics  | llm_event_start=10574/2 llm_event_complete=10574/2 llm_event_heartbeat=312708/24 windows_flush=45108/20 q.llm_evt=0
+[INTERNAL] global          | storage  | buf.calls=10574/2 buf.turns=0/0 buf.metrics=45108/20 buf.exchanges=21956/2 flushed.calls=10574/2 flushed.turns=0/0 flushed.metrics=45108/20 flushed.exchanges=21956/2 flush_errors=0/0 q.calls=0 q.turns=0 q.metrics=0 q.exchanges=0
 ```
 
 ## Configuration

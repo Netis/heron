@@ -2,7 +2,7 @@ use std::net::IpAddr;
 
 use bytes::{Bytes, BytesMut};
 
-use crate::model::{HttpRequestData, HttpResponseData, HttpParseEvent, SseEventData};
+use crate::model::{HttpParseEvent, HttpRequestData, HttpResponseData, SseEventData};
 use crate::net::FlowKey;
 
 /// State of the HTTP parser for one TCP connection.

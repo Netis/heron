@@ -105,7 +105,6 @@ impl WireApi for AnthropicWireApi {
     }
 }
 
-
 /// Extract request info from an Anthropic API request. `body` is the
 /// pre-parsed JSON body (or `Value::Null` if the raw bytes weren't JSON).
 pub fn extract_from_request(_req: &HttpRequestData, body: &Value) -> RequestInfo {

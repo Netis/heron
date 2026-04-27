@@ -109,6 +109,12 @@ impl Pipeline {
     /// [`MetricsReporter`](ts_common::internal_metrics::MetricsReporter) per
     /// system so log lines are per-pipeline.
     ///
+    /// `shared_metrics` carries counters and gauges that span every pipeline:
+    /// the storage sink worker and the four storage queue-depth probes. The
+    /// caller starts a separate reporter (label `global`) for it so the
+    /// `[INTERNAL] global | storage | …` line is honest about being
+    /// cross-pipeline aggregate, not tied to any one pipeline's name.
+    ///
     /// The metrics stage is **per-pipeline** (one aggregator group per
     /// `PipelineDef`, registered against that pipeline's `MetricsSystem`).
     /// There is no cross-pipeline metrics stage — the sink is the only truly
@@ -118,6 +124,7 @@ impl Pipeline {
         storage_config: &ts_storage::StorageSinkConfig,
         storage: Arc<dyn StorageBackend>,
         per_pipeline_metrics: &mut [MetricsSystem],
+        shared_metrics: &mut MetricsSystem,
     ) -> Self {
         // ---- Shared sinks (fan-in across every pipeline) ----
         // Use the max queue capacity across all pipelines for shared channels.
@@ -146,35 +153,27 @@ impl Pipeline {
             "per_pipeline_metrics length must match pipeline_defs length"
         );
 
-        // Shared sink queue depth probes — registered against the first
-        // pipeline's MetricsSystem (same as the storage_sink worker).
+        // Shared sink queue depth probes — registered against `shared_metrics`
+        // (same MetricsSystem as the storage_sink worker), so they show up in
+        // the `[INTERNAL] global | storage | …` line.
         {
             let w = calls_tx.downgrade();
-            per_pipeline_metrics[0].register_queue_probe(
-                Metric::StorageQueueDepthCalls,
-                move || {
-                    w.upgrade()
-                        .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-                },
-            );
+            shared_metrics.register_queue_probe(Metric::StorageQueueDepthCalls, move || {
+                w.upgrade()
+                    .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
+            });
             let w = turns_tx.downgrade();
-            per_pipeline_metrics[0].register_queue_probe(
-                Metric::StorageQueueDepthTurns,
-                move || {
-                    w.upgrade()
-                        .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-                },
-            );
+            shared_metrics.register_queue_probe(Metric::StorageQueueDepthTurns, move || {
+                w.upgrade()
+                    .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
+            });
             let w = metrics_out_tx.downgrade();
-            per_pipeline_metrics[0].register_queue_probe(
-                Metric::StorageQueueDepthMetrics,
-                move || {
-                    w.upgrade()
-                        .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-                },
-            );
+            shared_metrics.register_queue_probe(Metric::StorageQueueDepthMetrics, move || {
+                w.upgrade()
+                    .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
+            });
             let w = http_exchanges_tx.downgrade();
-            per_pipeline_metrics[0].register_queue_probe(
+            shared_metrics.register_queue_probe(
                 Metric::StorageQueueDepthHttpExchanges,
                 move || {
                     w.upgrade()
@@ -219,8 +218,10 @@ impl Pipeline {
             // long as any dispatcher task holds a strong clone of the same channel.
             let parsed_weaks: Vec<WeakSender<WorkerInput>> =
                 parsed_txs.iter().map(|tx| tx.downgrade()).collect();
-            let (event_txs, event_rxs) =
-                make_shard_channels::<ts_protocol::model::HttpParseEvent>(flow_shards, q.flow_event);
+            let (event_txs, event_rxs) = make_shard_channels::<ts_protocol::model::HttpParseEvent>(
+                flow_shards,
+                q.flow_event,
+            );
             let event_weaks: Vec<WeakSender<ts_protocol::model::HttpParseEvent>> =
                 event_txs.iter().map(|tx| tx.downgrade()).collect();
             // Joiner output: per-shard HttpJoinerEvent channels into the LLM stage.
@@ -440,13 +441,19 @@ impl Pipeline {
         drop(http_exchanges_tx);
 
         // ---- Shared storage sink ----
-        // Register against the first pipeline's MetricsSystem so counters
-        // appear in that pipeline's reporter output.
-        let storage_metrics = per_pipeline_metrics[0].register_worker(
+        // Register against `shared_metrics` so the line is reported under the
+        // `global` reporter rather than mis-attributed to the first pipeline.
+        let storage_metrics = shared_metrics.register_worker(
             "storage_sink",
             &[
-                Metric::StorageRecordsBuffered,
-                Metric::StorageRecordsFlushed,
+                Metric::StorageBufferedCalls,
+                Metric::StorageBufferedTurns,
+                Metric::StorageBufferedMetrics,
+                Metric::StorageBufferedHttpExchanges,
+                Metric::StorageFlushedCalls,
+                Metric::StorageFlushedTurns,
+                Metric::StorageFlushedMetrics,
+                Metric::StorageFlushedHttpExchanges,
                 Metric::StorageFlushErrors,
             ],
         );
