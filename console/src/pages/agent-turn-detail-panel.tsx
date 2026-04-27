@@ -57,7 +57,11 @@ function TurnDetailView({
                 toolIndex={toolIndex}
                 isFirstCall={c.id === userCallId}
                 active={c.sequence === activeSeq}
-                defaultExpanded={c.sequence === activeSeq}
+                defaultExpanded={
+                  c.sequence === activeSeq ||
+                  c.id === userCallId ||
+                  c.id === turn.final_call_id
+                }
                 onOpenDetail={onOpenDetail}
               />
             ))
