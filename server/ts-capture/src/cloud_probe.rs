@@ -235,6 +235,16 @@ impl CaptureSource for CloudProbeSource {
                                             d.write(&pkt);
                                         }
 
+                                        // Read truncation flag before `pkt` is
+                                        // moved into the channel. `caplen <
+                                        // wirelen` mirrors the pcap_live
+                                        // surfacing — a remote probe whose
+                                        // snaplen is smaller than its link's
+                                        // max frame produces the same
+                                        // tail-truncation wedge as a local lo
+                                        // capture.
+                                        let truncated = pkt.caplen < pkt.wirelen;
+
                                         if tx.send(pkt).await.is_err() {
                                             tracing::debug!(
                                                 "cloud-probe: channel closed, stopping"
@@ -256,6 +266,11 @@ impl CaptureSource for CloudProbeSource {
                                             metrics
                                                 .counter(Metric::CapturePacketsReceived)
                                                 .inc();
+                                            if truncated {
+                                                metrics
+                                                    .counter(Metric::CaptureTruncatedPackets)
+                                                    .inc();
+                                            }
                                             pkt_count += 1;
                                         }
                                     }
@@ -494,6 +509,8 @@ mod tests {
                 &[
                     Metric::CapturePacketsReceived,
                     Metric::CaptureKernelPacketsDropped,
+                    Metric::CaptureTruncatedPackets,
+                    Metric::CaptureHeartbeatsEmitted,
                     Metric::CaptureBatchesReceived,
                     Metric::CaptureZmqBatchesDropped,
                 ],
@@ -561,6 +578,73 @@ mod tests {
                 .expect("source task did not exit")
                 .expect("join error");
             assert!(result.is_ok());
+        }
+
+        #[tokio::test]
+        async fn integration_truncated_packets_bump_counter() {
+            // A remote probe whose snaplen was smaller than the link's max
+            // frame produces a record with `caplen < wirelen` — same
+            // tail-truncation that bites local lo capture. The counter
+            // must surface this so operators can correlate wedged
+            // reassembly with a misconfigured probe-side snaplen.
+            let port = pick_free_port();
+            let endpoint = format!("tcp://127.0.0.1:{port}");
+
+            let (tx, mut rx) = mpsc::channel(16);
+            let cancel = CancellationToken::new();
+
+            let source = Box::new(CloudProbeSource::new(endpoint.clone(), 100, None));
+            let metrics = test_metrics();
+            let metrics_for_assert = metrics.clone();
+            let cancel_clone = cancel.clone();
+            let handle = tokio::spawn(async move {
+                source
+                    .run(RoutingSender::single(tx), metrics, cancel_clone)
+                    .await
+            });
+
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let mut pusher = PushSocket::new();
+            pusher.connect(&endpoint).await.unwrap();
+
+            // First packet: caplen == wirelen (clean), second: caplen <
+            // wirelen (truncated by `wirelen_extra=20`).
+            let mut batch = batch_header(2);
+            append_packet(&mut batch, 1, 0, &[0xaa, 0xbb][..], 0);
+            append_packet(&mut batch, 2, 0, &[0xcc][..], 20);
+            pusher.send(ZmqMessage::from(batch)).await.unwrap();
+
+            // Drain both packets out so we know the run loop has accounted
+            // for them before we read the counter.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("timeout waiting for first packet");
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("timeout waiting for second packet");
+
+            cancel.cancel();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+                .await
+                .expect("source task did not exit")
+                .expect("join error");
+            assert!(result.is_ok());
+
+            assert_eq!(
+                metrics_for_assert
+                    .counter(Metric::CaptureTruncatedPackets)
+                    .get(),
+                1,
+                "exactly one truncated packet (the second) should bump the counter"
+            );
+            assert_eq!(
+                metrics_for_assert
+                    .counter(Metric::CapturePacketsReceived)
+                    .get(),
+                2,
+                "both packets received should still be counted"
+            );
         }
 
         #[tokio::test]
