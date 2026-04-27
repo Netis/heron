@@ -150,6 +150,7 @@ define_metrics! {
     SseEventsParsed              => { kind: Counter, group: Protocol, short: "sse_events"        },
     HttpResyncEvents             => { kind: Counter, group: Protocol, short: "http_resync"       },
     TcpOutOfOrderDrops           => { kind: Counter, group: Protocol, short: "tcp_ooo_drop"      },
+    TcpOutOfOrderBuffered        => { kind: Counter, group: Protocol, short: "tcp_ooo_buf"       },
     TcpRetransmissionsIgnored    => { kind: Counter, group: Protocol, short: "tcp_rexmit"        },
     FlowsTimedOut                => { kind: Counter, group: Protocol, short: "flows_expired"     },
     FlowsActive                  => { kind: Gauge,   group: Protocol, short: "flows_active"      },

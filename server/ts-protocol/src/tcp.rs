@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 
 use ts_common::internal_metrics::{Metric, MetricsWorker};
 
@@ -52,6 +52,13 @@ struct DirState {
     /// keep-alive connections the connection's first-packet time is not a
     /// valid per-request start time.
     last_data_ts: i64,
+    /// Out-of-order segment buffer. Lazily allocated: stays `None` for any
+    /// flow that never sees an OOO arrival, so the in-order hot path costs
+    /// one `Option` discriminant test. Capped at `OOO_CAP_SEGMENTS`; when
+    /// full we evict the lowest-seq entry. Live span is bounded by the cap
+    /// (≪ 2³¹ bytes), so `BTreeMap`'s natural u32 ordering matches the
+    /// wraparound-aware logical ordering used in `drain_ooo`.
+    ooo: Option<BTreeMap<u32, Bytes>>,
 }
 
 impl DirState {
@@ -60,6 +67,7 @@ impl DirState {
             buf: BytesMut::new(),
             next_seq: None,
             last_data_ts: 0,
+            ooo: None,
         }
     }
 }
@@ -84,6 +92,7 @@ pub struct TcpFlow {
     /// branches live) and let the caller hand them off to the per-shard
     /// `MetricsWorker` once per packet — TcpFlow itself stays IO-free.
     ooo_drops_pending: u32,
+    ooo_buffered_pending: u32,
     rexmit_ignored_pending: u32,
 
     // HTTP parser operates on the reassembled buffers.
@@ -116,6 +125,7 @@ impl TcpFlow {
             b_to_a: DirState::new(),
             last_pkt_ts: 0,
             ooo_drops_pending: 0,
+            ooo_buffered_pending: 0,
             rexmit_ignored_pending: 0,
             http_parser: HttpParser::new(),
             flow_key,
@@ -231,44 +241,63 @@ impl TcpFlow {
     }
 
     fn append_payload(&mut self, pkt: &ParsedPacket) {
-        let dir = self.dir_mut(pkt.direction);
+        // Direct match (not `dir_mut`) so the borrow checker can split:
+        // the closure borrows only `a_to_b` or `b_to_a`, leaving the pending
+        // counter fields freely mutable in the OOO branch below.
+        let dir = match pkt.direction {
+            Direction::AtoB => &mut self.a_to_b,
+            Direction::BtoA => &mut self.b_to_a,
+        };
         dir.last_data_ts = pkt.timestamp_us;
-        let buf = &mut dir.buf;
-        let next_seq = &mut dir.next_seq;
 
-        match next_seq {
-            Some(expected) => {
-                // In-order check: is this the expected sequence number?
-                let diff = pkt.tcp_seq.wrapping_sub(*expected) as i32;
-                if diff == 0 {
-                    // In order — append.
-                    buf.extend_from_slice(&pkt.payload);
-                    *expected = pkt.tcp_seq.wrapping_add(pkt.payload.len() as u32);
-                } else if diff < 0 {
-                    // Retransmission or overlap — check if it extends past expected.
-                    let overlap = (-diff) as usize;
-                    if overlap < pkt.payload.len() {
-                        buf.extend_from_slice(&pkt.payload[overlap..]);
-                        *expected = pkt.tcp_seq.wrapping_add(pkt.payload.len() as u32);
-                    } else if !pkt.payload.is_empty() {
-                        // Pure retransmission of already-buffered bytes.
-                        self.rexmit_ignored_pending = self.rexmit_ignored_pending.saturating_add(1);
-                    }
-                } else if !pkt.payload.is_empty() {
-                    // Out-of-order (diff > 0): segment ahead of `expected`.
-                    // Reassembler currently has no OOO buffer, so the bytes
-                    // are dropped and the flow's HTTP parser will stall on
-                    // the gap until RST/FIN. Counter exposes how often this
-                    // happens so we can correlate with stuck keep-alive
-                    // flows in the field.
-                    self.ooo_drops_pending = self.ooo_drops_pending.saturating_add(1);
+        let Some(expected) = dir.next_seq.as_mut() else {
+            // No expected seq yet (mid-stream capture). Accept and start tracking.
+            // The OOO buffer cannot have entries yet because nothing was ever
+            // tracked relative to an expected seq.
+            dir.buf.extend_from_slice(&pkt.payload);
+            dir.next_seq = Some(pkt.tcp_seq.wrapping_add(pkt.payload.len() as u32));
+            return;
+        };
+
+        let diff = pkt.tcp_seq.wrapping_sub(*expected) as i32;
+        if diff == 0 {
+            // Hot path — in-order. Append, advance, then drain any OOO segments
+            // that just became contiguous. The `is_some_and` check is one
+            // discriminant test on the lazily-allocated map.
+            dir.buf.extend_from_slice(&pkt.payload);
+            *expected = pkt.tcp_seq.wrapping_add(pkt.payload.len() as u32);
+            if dir.ooo.as_ref().is_some_and(|m| !m.is_empty()) {
+                drain_ooo(dir);
+            }
+        } else if diff < 0 {
+            // Retransmission or overlap — check if it extends past expected.
+            let overlap = (-diff) as usize;
+            if overlap < pkt.payload.len() {
+                dir.buf.extend_from_slice(&pkt.payload[overlap..]);
+                *expected = pkt.tcp_seq.wrapping_add(pkt.payload.len() as u32);
+                if dir.ooo.as_ref().is_some_and(|m| !m.is_empty()) {
+                    drain_ooo(dir);
                 }
+            } else if !pkt.payload.is_empty() {
+                // Pure retransmission of already-buffered bytes.
+                self.rexmit_ignored_pending = self.rexmit_ignored_pending.saturating_add(1);
             }
-            None => {
-                // No expected seq yet (mid-stream capture). Accept and start tracking.
-                buf.extend_from_slice(&pkt.payload);
-                *next_seq = Some(pkt.tcp_seq.wrapping_add(pkt.payload.len() as u32));
+        } else if !pkt.payload.is_empty() {
+            // Out-of-order (diff > 0): segment ahead of `expected`. Buffer it;
+            // a future in-order arrival will drain it back into `buf`.
+            let ooo = dir.ooo.get_or_insert_with(BTreeMap::new);
+            if ooo.len() >= OOO_CAP_SEGMENTS {
+                // Evict oldest (lowest seq). It is the segment furthest from
+                // the current `expected`, so most likely stranded; the freshly
+                // arrived segment is closer to the next in-order arrival.
+                if let Some(oldest) = ooo.keys().next().copied() {
+                    ooo.remove(&oldest);
+                }
+                self.ooo_drops_pending = self.ooo_drops_pending.saturating_add(1);
             }
+            // `pkt.payload` is already a `Bytes` view; insert is a refcount bump.
+            ooo.insert(pkt.tcp_seq, pkt.payload.clone());
+            self.ooo_buffered_pending = self.ooo_buffered_pending.saturating_add(1);
         }
     }
 
@@ -368,10 +397,52 @@ impl TcpFlow {
 
     /// Drain the reassembler-branch counters accumulated since the last call.
     /// Returned tuple: `(ooo_drops, rexmit_ignored)`.
-    pub fn take_append_stats(&mut self) -> (u32, u32) {
-        let ooo = std::mem::take(&mut self.ooo_drops_pending);
+    pub fn take_append_stats(&mut self) -> (u32, u32, u32) {
+        let drops = std::mem::take(&mut self.ooo_drops_pending);
+        let buffered = std::mem::take(&mut self.ooo_buffered_pending);
         let rex = std::mem::take(&mut self.rexmit_ignored_pending);
-        (ooo, rex)
+        (drops, buffered, rex)
+    }
+}
+
+/// Drain consecutive OOO segments from `dir.ooo` into `dir.buf` starting at
+/// `dir.next_seq`. Stops at the first remaining gap. Handles partial overlap
+/// (a buffered segment whose head is already covered by an in-order append).
+///
+/// Caller must guarantee `dir.next_seq.is_some()` and `dir.ooo.is_some()`.
+fn drain_ooo(dir: &mut DirState) {
+    let Some(ooo) = dir.ooo.as_mut() else { return };
+    let expected = dir
+        .next_seq
+        .as_mut()
+        .expect("drain_ooo requires next_seq to be set");
+
+    while let Some((&seq, _)) = ooo.iter().next() {
+        let seq_diff = seq.wrapping_sub(*expected) as i32;
+        if seq_diff > 0 {
+            // First entry still has a gap before it — stop.
+            break;
+        }
+        let bytes = ooo.remove(&seq).expect("just peeked");
+        if seq_diff == 0 {
+            dir.buf.extend_from_slice(&bytes);
+            *expected = seq.wrapping_add(bytes.len() as u32);
+        } else {
+            // seq_diff < 0: buffered segment's head is already covered.
+            let behind = (-seq_diff) as usize;
+            if behind < bytes.len() {
+                dir.buf.extend_from_slice(&bytes[behind..]);
+                *expected = seq.wrapping_add(bytes.len() as u32);
+            }
+            // else: entirely behind `expected` — stale, drop silently. This
+            // entry was already counted at insert time; skipping it here is
+            // not a separate event.
+        }
+    }
+
+    // Free the map allocation when empty so the next idle period costs zero.
+    if ooo.is_empty() {
+        dir.ooo = None;
     }
 }
 
@@ -395,6 +466,13 @@ const CLEANUP_INTERVAL_US: i64 = 30_000_000;
 
 /// A flow with no packets for this duration is considered dead (120 seconds in µs).
 const FLOW_TIMEOUT_US: i64 = 120_000_000;
+
+/// Maximum out-of-order segments held per direction before eviction kicks in.
+/// Worst-case memory ≈ 32 × MSS ≈ 48 KB / direction = 96 KB / flow. The cap is
+/// also an implicit guarantee that the buffered window stays well under 2³¹
+/// bytes, so `BTreeMap`'s natural u32 ordering matches wraparound-aware logical
+/// ordering used in `drain_ooo`.
+const OOO_CAP_SEGMENTS: usize = 32;
 
 /// A worker that processes packets for a set of flows (flow table).
 ///
@@ -453,11 +531,16 @@ impl FlowWorker {
         if resync {
             self.metrics.counter(Metric::HttpResyncEvents).inc();
         }
-        let (ooo, rex) = flow.take_append_stats();
-        if ooo > 0 {
+        let (ooo_drops, ooo_buffered, rex) = flow.take_append_stats();
+        if ooo_drops > 0 {
             self.metrics
                 .counter(Metric::TcpOutOfOrderDrops)
-                .add(ooo as u64);
+                .add(ooo_drops as u64);
+        }
+        if ooo_buffered > 0 {
+            self.metrics
+                .counter(Metric::TcpOutOfOrderBuffered)
+                .add(ooo_buffered as u64);
         }
         if rex > 0 {
             self.metrics
@@ -756,6 +839,7 @@ mod tests {
                 Metric::SseEventsParsed,
                 Metric::HttpResyncEvents,
                 Metric::TcpOutOfOrderDrops,
+                Metric::TcpOutOfOrderBuffered,
                 Metric::TcpRetransmissionsIgnored,
                 Metric::FlowsTimedOut,
             ],
@@ -965,19 +1049,11 @@ mod tests {
         assert_eq!(worker.flow_count(), 0);
     }
 
-    #[test]
-    fn test_ooo_drop_and_retransmit_counters() {
-        // After SYN handshake the flow has `next_seq=Some(1)`. A segment
-        // arriving at seq=11 is 10 bytes ahead of `expected` — the silent
-        // OOO branch — and must bump TcpOutOfOrderDrops. A subsequent
-        // segment that re-sends bytes already buffered must bump
-        // TcpRetransmissionsIgnored.
-        let (mut worker, metrics) = new_test_worker();
-        let fk = test_flow_key();
-
-        // SYN handshake → both sides have `next_seq` initialized.
+    /// Test-only helper: SYN/SYN-ACK handshake on the given flow worker so
+    /// both directions have `next_seq=Some(1)`.
+    fn handshake(worker: &mut FlowWorker, fk: &FlowKey) {
         let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
-            &fk,
+            fk,
             Direction::AtoB,
             &[],
             0,
@@ -985,15 +1061,68 @@ mod tests {
             0,
         )));
         let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
-            &fk,
+            fk,
             Direction::BtoA,
             &[],
             0,
             TCP_SYN | TCP_ACK,
             0,
         )));
+    }
 
-        // First request seq=1, 10 bytes — buffer advances to seq=11.
+    /// Read out a flow's reassembled AtoB buffer for assertion purposes.
+    /// Test-only escape hatch — production code never inspects `buf` directly.
+    fn flow_a_to_b_buf<'a>(worker: &'a FlowWorker, fk: &FlowKey) -> &'a [u8] {
+        worker
+            .flows
+            .get(fk)
+            .expect("flow must exist")
+            .a_to_b
+            .buf
+            .as_ref()
+    }
+
+    fn flow_a_to_b_next_seq(worker: &FlowWorker, fk: &FlowKey) -> Option<u32> {
+        worker
+            .flows
+            .get(fk)
+            .expect("flow must exist")
+            .a_to_b
+            .next_seq
+    }
+
+    fn flow_a_to_b_ooo_smallest_seq(worker: &FlowWorker, fk: &FlowKey) -> Option<u32> {
+        worker
+            .flows
+            .get(fk)
+            .expect("flow must exist")
+            .a_to_b
+            .ooo
+            .as_ref()
+            .and_then(|m| m.keys().next().copied())
+    }
+
+    fn flow_a_to_b_ooo_is_none(worker: &FlowWorker, fk: &FlowKey) -> bool {
+        worker
+            .flows
+            .get(fk)
+            .expect("flow must exist")
+            .a_to_b
+            .ooo
+            .is_none()
+    }
+
+    #[test]
+    fn test_ooo_drop_and_retransmit_counters() {
+        // After SYN handshake the flow has `next_seq=Some(1)`. A segment
+        // arriving 10 bytes ahead of `expected` is now buffered (not dropped)
+        // and bumps TcpOutOfOrderBuffered. A subsequent segment that re-sends
+        // bytes already in the buffer bumps TcpRetransmissionsIgnored.
+        let (mut worker, metrics) = new_test_worker();
+        let fk = test_flow_key();
+        handshake(&mut worker, &fk);
+
+        // First request seq=1, 8 bytes — buffer advances to seq=9.
         let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
             &fk,
             Direction::AtoB,
@@ -1003,7 +1132,7 @@ mod tests {
             1_000,
         )));
 
-        // OOO: seq=21 (gap of 10) — drop_for_now branch.
+        // OOO: seq=21 (gap of 12) — buffered, not dropped.
         let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
             &fk,
             Direction::AtoB,
@@ -1012,11 +1141,11 @@ mod tests {
             0,
             2_000,
         )));
-        assert_eq!(metrics.counter(Metric::TcpOutOfOrderDrops).get(), 1);
+        assert_eq!(metrics.counter(Metric::TcpOutOfOrderBuffered).get(), 1);
+        assert_eq!(metrics.counter(Metric::TcpOutOfOrderDrops).get(), 0);
 
-        // Pure retransmission: re-send bytes already at seq=1 covering
-        // the same 8-byte payload — overlap (8) >= payload.len() (8),
-        // so it's ignored.
+        // Pure retransmission of seq=1's 8-byte payload — overlap (8) >=
+        // payload.len() (8), so it's ignored.
         let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
             &fk,
             Direction::AtoB,
@@ -1026,6 +1155,165 @@ mod tests {
             3_000,
         )));
         assert_eq!(metrics.counter(Metric::TcpRetransmissionsIgnored).get(), 1);
+    }
+
+    #[test]
+    fn test_ooo_three_segments_arriving_1_3_2_yields_merged_buffer() {
+        // SYN → expected=1. Send seq=1/5B "AAAAA", seq=11/5B "CCCCC" (OOO),
+        // seq=6/5B "BBBBB" (closes gap). After the in-order arrival of
+        // "BBBBB", `drain_ooo` must pull the buffered "CCCCC" and produce
+        // the contiguous "AAAAABBBBBCCCCC".
+        let (mut worker, metrics) = new_test_worker();
+        let fk = test_flow_key();
+        handshake(&mut worker, &fk);
+
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            b"AAAAA",
+            1,
+            0,
+            1_000,
+        )));
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            b"CCCCC",
+            11,
+            0,
+            2_000,
+        )));
+        // After the OOO buffer step, expected is still 6 and the map holds
+        // one entry at seq=11. Buffer is just "AAAAA".
+        assert_eq!(flow_a_to_b_buf(&worker, &fk), b"AAAAA");
+        assert_eq!(flow_a_to_b_next_seq(&worker, &fk), Some(6));
+
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            b"BBBBB",
+            6,
+            0,
+            3_000,
+        )));
+
+        assert_eq!(flow_a_to_b_buf(&worker, &fk), b"AAAAABBBBBCCCCC");
+        assert_eq!(flow_a_to_b_next_seq(&worker, &fk), Some(16));
+        assert_eq!(metrics.counter(Metric::TcpOutOfOrderBuffered).get(), 1);
+        assert_eq!(metrics.counter(Metric::TcpOutOfOrderDrops).get(), 0);
+    }
+
+    #[test]
+    fn test_ooo_cap_eviction_evicts_oldest_and_bumps_drop() {
+        // Buffer 33 OOO segments at seqs 100, 200, ..., 3300 — gap to
+        // expected=1 is huge, so all stay buffered. The 33rd insert must
+        // hit the cap (32) and evict the lowest-seq entry (seq=100), bumping
+        // TcpOutOfOrderDrops once. The smallest remaining seq is 200.
+        let (mut worker, metrics) = new_test_worker();
+        let fk = test_flow_key();
+        handshake(&mut worker, &fk);
+
+        for i in 0..OOO_CAP_SEGMENTS as u32 + 1 {
+            let seq = 100 + i * 100;
+            let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+                &fk,
+                Direction::AtoB,
+                b"X",
+                seq,
+                0,
+                10_000 + i as i64,
+            )));
+        }
+
+        assert_eq!(
+            metrics.counter(Metric::TcpOutOfOrderBuffered).get(),
+            (OOO_CAP_SEGMENTS as u64) + 1
+        );
+        assert_eq!(metrics.counter(Metric::TcpOutOfOrderDrops).get(), 1);
+        assert_eq!(flow_a_to_b_ooo_smallest_seq(&worker, &fk), Some(200));
+    }
+
+    #[test]
+    fn test_drain_handles_partially_overlapping_buffered_segment() {
+        // SYN → expected=1. Buffer seq=50/20B (range [50..70)). Then send
+        // an in-order seq=1/60B that extends expected to 61. The buffered
+        // segment now overlaps: bytes [50..61) are stale, [61..70) extend
+        // the in-order buffer. Drain must append exactly bytes[11..20] and
+        // advance expected to 70. Final buffer contains the 60-byte payload
+        // followed by the 9-byte tail.
+        let (mut worker, metrics) = new_test_worker();
+        let fk = test_flow_key();
+        handshake(&mut worker, &fk);
+
+        // 20-byte OOO segment at seq=50.
+        let ooo_payload = b"OOOOOOOOOOTAILTAILXX";
+        assert_eq!(ooo_payload.len(), 20);
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            ooo_payload,
+            50,
+            0,
+            1_000,
+        )));
+
+        // 60-byte in-order segment at seq=1.
+        let in_order = vec![b'A'; 60];
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            &in_order,
+            1,
+            0,
+            2_000,
+        )));
+
+        let buf = flow_a_to_b_buf(&worker, &fk);
+        assert_eq!(buf.len(), 69, "60 in-order + 9 tail of buffered");
+        assert_eq!(&buf[..60], in_order.as_slice());
+        assert_eq!(&buf[60..], &ooo_payload[11..]);
+        assert_eq!(flow_a_to_b_next_seq(&worker, &fk), Some(70));
+        assert_eq!(metrics.counter(Metric::TcpOutOfOrderBuffered).get(), 1);
+        assert_eq!(metrics.counter(Metric::TcpOutOfOrderDrops).get(), 0);
+        assert_eq!(metrics.counter(Metric::TcpRetransmissionsIgnored).get(), 0);
+    }
+
+    #[test]
+    fn test_ooo_buffer_freed_when_drained_empty() {
+        // After a drain that empties the OOO map, `dir.ooo` must return to
+        // `None` so that the flow's idle memory cost is zero.
+        let (mut worker, _metrics) = new_test_worker();
+        let fk = test_flow_key();
+        handshake(&mut worker, &fk);
+
+        // seq=1 fills first 5 bytes; seq=11 buffered; seq=6 closes the gap
+        // and drains seq=11. Map should be released.
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            b"AAAAA",
+            1,
+            0,
+            1_000,
+        )));
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            b"CCCCC",
+            11,
+            0,
+            2_000,
+        )));
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            b"BBBBB",
+            6,
+            0,
+            3_000,
+        )));
+
+        assert!(flow_a_to_b_ooo_is_none(&worker, &fk));
     }
 
     #[test]
