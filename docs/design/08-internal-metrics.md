@@ -11,10 +11,10 @@ All metrics are defined in a single `define_metrics!` macro invocation in `ts-co
 One log line per group per interval. The line is prefixed by a `label` supplied at reporter start:
 
 ```
-[INTERNAL] <label> | <group>  | short=total/delta short=total/delta ... q.name=depth
+[INTERNAL] <label> | <group>  | short=total/delta short=total/delta ... q.name=used/cap(pct%)
 ```
 
-Counters print as `total/delta`; gauges print as current value only.
+Counters print as `total/delta`. Gauges with a known capacity (every bounded queue probe) print as `used/cap(pct%)` so that backpressure (≥80%) is visible without arithmetic. Unbounded gauges (`flows_active`, `turn_active`) still print as the bare current value.
 
 There are two kinds of reporters:
 
@@ -60,21 +60,21 @@ Groups and their display order:
 | `parse_drop_notip`   | Packets dropped at net-parse: not IP / not supported     |
 | `parse_drop_nottcp`  | Packets dropped at net-parse: IP but not TCP            |
 | `parse_drop_bad`     | Packets dropped at net-parse: truncated / invalid header |
-| `http_req`           | HTTP requests parsed                                    |
-| `http_resp`          | HTTP responses parsed                                   |
+| `http_parse_req`     | HTTP requests parsed                                    |
+| `http_parse_resp`    | HTTP responses parsed                                   |
 | `sse_events`         | SSE events parsed                                       |
 | `http_resync`        | TCP stream resync events (recovery from partial HTTP parse) |
 | `flows_expired`      | TCP flows garbage-collected for idle timeout            |
-| `http_done`          | HTTP exchanges paired successfully (req + resp)         |
-| `http_unpaired`      | Responses arriving without a matching pending request (pairing failed) |
-| `http_expired`       | Pending pairings aged out before a response arrived     |
+| `http_joiner_done`     | HTTP exchanges paired successfully (req + resp)         |
+| `http_joiner_unpaired` | Responses arriving without a matching pending request (pairing failed) |
+| `http_joiner_expired`  | Pending pairings aged out before a response arrived     |
 
 ### llm
 
 | Short            | Semantics                                                                          |
 |------------------|------------------------------------------------------------------------------------|
-| `http_detected`  | HTTP requests classified as an LLM API call (matched by wire-api registry)         |
-| `http_ignored`   | HTTP requests not matching any LLM wire-api                                        |
+| `wire_detected`  | HTTP requests classified as an LLM API call (matched by wire-api registry)         |
+| `wire_ignored`   | HTTP requests not matching any LLM wire-api                                        |
 | `calls_agent`    | LLM calls emitted downstream that were attached to an agent session (profile match) |
 | `calls_no_agent` | LLM calls emitted downstream with no agent attached (unassigned)                   |
 
@@ -101,7 +101,7 @@ Per turn-shard. Finalization path: `calls_ingested` → buffered until the profi
 | `llm_event_start`       | `LlmEvent::Start` events received by the aggregator (≈ one per LLM request)    |
 | `llm_event_complete`    | `LlmEvent::Complete` events received (≈ one per LLM exchange; pairs with Start) |
 | `llm_event_heartbeat`   | `LlmEvent::Heartbeat` events received — equals `capture.heartbeats × flow_shards × metrics_shards` due to dispatcher broadcast and per-shard heartbeat fan-out |
-| `windows_flush`         | Sliding windows flushed to the storage channel                                  |
+| `windows_emitted`       | Sliding windows closed and emitted to the storage channel                       |
 
 ### storage
 
@@ -144,11 +144,11 @@ Rising storage queues mean the backend cannot keep up — flip to a faster backe
 
 ```
 [INTERNAL] pipeline.remote | capture  | pkts_recv=765190/62 kern_pkts_drop=0/0 batches_recv=26982/2 zmq_batches_drop=0/0 heartbeats=39049/3 read_errors=0/0 dump_errors=0/0
-[INTERNAL] pipeline.remote | protocol | pkts_routed=765190/62 heartbeats_drop=0/0 net_parsed=765190/62 parse_drop_notip=0/0 parse_drop_nottcp=0/0 parse_drop_bad=0/0 http_req=22276/2 http_resp=21956/2 sse_events=319818/25 http_resync=13/0 flows_expired=12123/0 http_done=21956/2 http_unpaired=0/0 http_expired=314/0 q.raw=0 q.parsed=0
-[INTERNAL] pipeline.remote | llm      | http_detected=10890/2 http_ignored=11386/0 calls_agent=0/0 calls_no_agent=10574/0 q.http_parse_evt=0 q.http_joiner_evt=0
-[INTERNAL] pipeline.remote | turn     | calls_ingested=0/0 calls_aux=0/0 calls_late=0/0 completed=0/0 closed_grace=0/0 closed_idle=0/0 no_user_start=0/0 q.agent_call=0
-[INTERNAL] pipeline.remote | metrics  | llm_event_start=10574/2 llm_event_complete=10574/2 llm_event_heartbeat=312708/24 windows_flush=45108/20 q.llm_evt=0
-[INTERNAL] global          | storage  | buf.calls=10574/2 buf.turns=0/0 buf.metrics=45108/20 buf.exchanges=21956/2 flushed.calls=10574/2 flushed.turns=0/0 flushed.metrics=45108/20 flushed.exchanges=21956/2 flush_errors=0/0 q.calls=0 q.turns=0 q.metrics=0 q.exchanges=0
+[INTERNAL] pipeline.remote | protocol | pkts_routed=765190/62 heartbeats_drop=0/0 net_parsed=765190/62 parse_drop_notip=0/0 parse_drop_nottcp=0/0 parse_drop_bad=0/0 http_parse_req=22276/2 http_parse_resp=21956/2 sse_events=319818/25 http_resync=13/0 flows_expired=12123/0 http_joiner_done=21956/2 http_joiner_unpaired=0/0 http_joiner_expired=314/0 flows_active=42 q.raw=0/4096(0%) q.parsed=0/4096(0%)
+[INTERNAL] pipeline.remote | llm      | wire_detected=10890/2 wire_ignored=11386/0 calls_agent=0/0 calls_no_agent=10574/0 q.http_parse_evt=0/4096(0%) q.http_joiner_evt=0/4096(0%)
+[INTERNAL] pipeline.remote | turn     | calls_ingested=0/0 calls_aux=0/0 calls_late=0/0 completed=0/0 closed_grace=0/0 closed_idle=0/0 no_user_start=0/0 active=0 q.agent_call=0/4096(0%)
+[INTERNAL] pipeline.remote | metrics  | llm_event_start=10574/2 llm_event_complete=10574/2 llm_event_heartbeat=312708/24 windows_emitted=45108/20 q.llm_evt=0/4096(0%)
+[INTERNAL] global          | storage  | buf.calls=10574/2 buf.turns=0/0 buf.metrics=45108/20 buf.exchanges=21956/2 flushed.calls=10574/2 flushed.turns=0/0 flushed.metrics=45108/20 flushed.exchanges=21956/2 flush_errors=0/0 q.calls=0/4096(0%) q.turns=0/4096(0%) q.metrics=0/4096(0%) q.exchanges=0/4096(0%)
 ```
 
 ## Configuration

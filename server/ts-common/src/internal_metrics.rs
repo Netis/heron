@@ -145,21 +145,21 @@ define_metrics! {
     NetParseDroppedNotIp         => { kind: Counter, group: Protocol, short: "parse_drop_notip"  },
     NetParseDroppedNotTcp        => { kind: Counter, group: Protocol, short: "parse_drop_nottcp" },
     NetParseDroppedMalformed     => { kind: Counter, group: Protocol, short: "parse_drop_bad"    },
-    HttpRequestsParsed           => { kind: Counter, group: Protocol, short: "http_req"          },
-    HttpResponsesParsed          => { kind: Counter, group: Protocol, short: "http_resp"         },
+    HttpParseReq                 => { kind: Counter, group: Protocol, short: "http_parse_req"    },
+    HttpParseResp                => { kind: Counter, group: Protocol, short: "http_parse_resp"   },
     SseEventsParsed              => { kind: Counter, group: Protocol, short: "sse_events"        },
     HttpResyncEvents             => { kind: Counter, group: Protocol, short: "http_resync"       },
     FlowsTimedOut                => { kind: Counter, group: Protocol, short: "flows_expired"     },
     FlowsActive                  => { kind: Gauge,   group: Protocol, short: "flows_active"      },
 
     // -- HTTP exchange pairing (HttpJoiner) --
-    HttpExchangesCompleted => { kind: Counter, group: Protocol, short: "http_done"     },
-    HttpExchangesUnpaired  => { kind: Counter, group: Protocol, short: "http_unpaired" },
-    HttpExchangesExpired   => { kind: Counter, group: Protocol, short: "http_expired"  },
+    HttpJoinerDone     => { kind: Counter, group: Protocol, short: "http_joiner_done"     },
+    HttpJoinerUnpaired => { kind: Counter, group: Protocol, short: "http_joiner_unpaired" },
+    HttpJoinerExpired  => { kind: Counter, group: Protocol, short: "http_joiner_expired"  },
 
     // -- LLM extraction --
-    LlmHttpRequestsDetected => { kind: Counter, group: Llm, short: "http_detected"  },
-    LlmHttpRequestsIgnored  => { kind: Counter, group: Llm, short: "http_ignored"   },
+    WireDetected            => { kind: Counter, group: Llm, short: "wire_detected"  },
+    WireIgnored             => { kind: Counter, group: Llm, short: "wire_ignored"   },
     LlmCallsWithAgent       => { kind: Counter, group: Llm, short: "calls_agent"    },
     LlmCallsWithoutAgent    => { kind: Counter, group: Llm, short: "calls_no_agent" },
 
@@ -179,7 +179,7 @@ define_metrics! {
     MetricsLlmEventsStart     => { kind: Counter, group: Metrics, short: "llm_event_start"     },
     MetricsLlmEventsComplete  => { kind: Counter, group: Metrics, short: "llm_event_complete"  },
     MetricsLlmEventsHeartbeat => { kind: Counter, group: Metrics, short: "llm_event_heartbeat" },
-    MetricsWindowsFlushed     => { kind: Counter, group: Metrics, short: "windows_flush"       },
+    MetricsWindowsEmitted     => { kind: Counter, group: Metrics, short: "windows_emitted"     },
 
     // -- Storage --
     // buffered/flushed split per entity so the line tells you which stream
@@ -309,8 +309,15 @@ impl MetricsWorker {
 
 /// A queue depth probe that the reporter calls periodically to sample the
 /// current queue length.
+///
+/// `capacity` is captured at registration time. tokio mpsc channels never
+/// resize their buffer, so a static value is sufficient and lets the reporter
+/// render `name=used/cap(pct%)` without re-querying. `None` means the gauge
+/// has no meaningful upper bound (e.g. `flows_active`, `turn_active`).
 struct QueueProbe {
+    metric: Metric,
     handle: MetricHandle,
+    capacity: Option<u64>,
     sample: Box<dyn Fn() -> u64 + Send + Sync>,
 }
 
@@ -358,12 +365,33 @@ impl MetricsSystem {
         MetricsWorker { identity, counters }
     }
 
-    /// Register a queue depth probe. The `sample` closure is called by the
-    /// reporter on each poll cycle.
+    /// Register a gauge probe with no fixed capacity. Used for unbounded
+    /// counts like active flow / active turn gauges. Reporter renders
+    /// `name=value`.
     pub fn register_queue_probe(
         &mut self,
         metric: Metric,
         sample: impl Fn() -> u64 + Send + Sync + 'static,
+    ) {
+        self.register_probe_inner(metric, None, Box::new(sample));
+    }
+
+    /// Register a bounded queue probe. `capacity` is the channel's
+    /// `max_capacity()`. Reporter renders `name=used/cap(pct%)`.
+    pub fn register_queue_probe_capped(
+        &mut self,
+        metric: Metric,
+        capacity: u64,
+        sample: impl Fn() -> u64 + Send + Sync + 'static,
+    ) {
+        self.register_probe_inner(metric, Some(capacity), Box::new(sample));
+    }
+
+    fn register_probe_inner(
+        &mut self,
+        metric: Metric,
+        capacity: Option<u64>,
+        sample: Box<dyn Fn() -> u64 + Send + Sync>,
     ) {
         let handle = MetricHandle::new();
         let identity = WorkerIdentity {
@@ -376,16 +404,25 @@ impl MetricsSystem {
             .or_default()
             .push((identity, handle.clone()));
         self.probes.push(QueueProbe {
+            metric,
             handle,
-            sample: Box::new(sample),
+            capacity,
+            sample,
         });
     }
 
     /// Finalize the build phase and produce a read-only service view.
     pub fn start(self) -> Arc<MetricsSvc> {
+        let mut capacities: BTreeMap<Metric, u64> = BTreeMap::new();
+        for probe in &self.probes {
+            if let Some(cap) = probe.capacity {
+                capacities.insert(probe.metric, cap);
+            }
+        }
         Arc::new(MetricsSvc {
             registry: self.registry,
             probes: self.probes,
+            capacities: Arc::new(capacities),
         })
     }
 }
@@ -398,6 +435,10 @@ impl MetricsSystem {
 pub struct MetricsSvc {
     registry: BTreeMap<Metric, Vec<(WorkerIdentity, MetricHandle)>>,
     probes: Vec<QueueProbe>,
+    /// Static per-metric capacity, populated for queue probes registered
+    /// via [`MetricsSystem::register_queue_probe_capped`]. Shared with
+    /// [`MonitorPoll`] for `name=used/cap(pct%)` formatting.
+    capacities: Arc<BTreeMap<Metric, u64>>,
 }
 
 // Safety: QueueProbe contains Box<dyn Fn() -> u64 + Send + Sync>, which is
@@ -428,6 +469,11 @@ impl MetricsSvc {
             values.insert(metric, total);
         }
         MetricsSnapshot { values }
+    }
+
+    /// Capacity map for bounded gauges (queue probes registered with a cap).
+    pub fn capacities(&self) -> Arc<BTreeMap<Metric, u64>> {
+        self.capacities.clone()
     }
 }
 
@@ -481,6 +527,7 @@ impl MetricsMonitor {
         MonitorPoll {
             snapshot: current,
             deltas,
+            capacities: self.svc.capacities(),
         }
     }
 }
@@ -489,14 +536,16 @@ impl MetricsMonitor {
 pub struct MonitorPoll {
     pub snapshot: MetricsSnapshot,
     pub deltas: BTreeMap<Metric, u64>,
+    pub capacities: Arc<BTreeMap<Metric, u64>>,
 }
 
 impl MonitorPoll {
     /// Format metrics grouped by category for human-readable log output.
     ///
     /// Returns a list of `(group_name, formatted_line)` pairs.
-    /// - Counter: `short_name: total/delta`
-    /// - Gauge:   `short_name: value`
+    /// - Counter: `short_name=total/delta`
+    /// - Gauge with known capacity: `short_name=used/cap(pct%)`
+    /// - Gauge without capacity:    `short_name=value`
     pub fn format_grouped(&self) -> Vec<(&'static str, String)> {
         let mut by_group: BTreeMap<MetricGroup, Vec<String>> = BTreeMap::new();
 
@@ -507,9 +556,13 @@ impl MonitorPoll {
                     let delta = self.deltas.get(&metric).copied().unwrap_or(0);
                     format!("{}={}/{}", spec.short_name, total, delta)
                 }
-                MetricKind::Gauge => {
-                    format!("{}={}", spec.short_name, total)
-                }
+                MetricKind::Gauge => match self.capacities.get(&metric).copied() {
+                    Some(cap) if cap > 0 => {
+                        let pct = (total as u128 * 100 / cap as u128) as u64;
+                        format!("{}={}/{}({}%)", spec.short_name, total, cap, pct)
+                    }
+                    _ => format!("{}={}", spec.short_name, total),
+                },
             };
             by_group.entry(spec.group).or_default().push(part);
         }
@@ -606,21 +659,21 @@ mod tests {
 
         let w1 = sys.register_worker(
             "worker",
-            &[Metric::NetPacketsParsed, Metric::HttpRequestsParsed],
+            &[Metric::NetPacketsParsed, Metric::HttpParseReq],
         );
         let w2 = sys.register_worker(
             "worker",
-            &[Metric::NetPacketsParsed, Metric::HttpRequestsParsed],
+            &[Metric::NetPacketsParsed, Metric::HttpParseReq],
         );
 
         w1.counter(Metric::NetPacketsParsed).add(100);
         w2.counter(Metric::NetPacketsParsed).add(200);
-        w1.counter(Metric::HttpRequestsParsed).add(10);
-        w2.counter(Metric::HttpRequestsParsed).add(20);
+        w1.counter(Metric::HttpParseReq).add(10);
+        w2.counter(Metric::HttpParseReq).add(20);
 
         let svc = sys.start();
         assert_eq!(svc.aggregate(Metric::NetPacketsParsed), Some(300));
-        assert_eq!(svc.aggregate(Metric::HttpRequestsParsed), Some(30));
+        assert_eq!(svc.aggregate(Metric::HttpParseReq), Some(30));
         assert_eq!(svc.aggregate(Metric::CapturePacketsReceived), None);
     }
 
@@ -718,6 +771,41 @@ mod tests {
         let w1 = sys.register_worker("b", &[Metric::CapturePacketsReceived]);
         assert_eq!(w0.identity.worker_id, 0);
         assert_eq!(w1.identity.worker_id, 1);
+    }
+
+    #[test]
+    fn test_capped_gauge_renders_with_capacity() {
+        let mut sys = MetricsSystem::new();
+        sys.register_queue_probe_capped(Metric::QueueDepthRaw, 4096, || 4000);
+        sys.register_queue_probe(Metric::FlowsActive, || 7); // uncapped
+        let svc = sys.start();
+        svc.sample_probes();
+
+        let mut mon = MetricsMonitor::new(svc);
+        let poll = mon.poll();
+        let grouped = poll.format_grouped();
+        // Single "protocol" line containing both gauges.
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].0, "protocol");
+        let line = &grouped[0].1;
+        assert!(line.contains("q.raw=4000/4096(97%)"), "got: {line}");
+        assert!(line.contains("flows_active=7"), "got: {line}");
+        assert!(!line.contains("flows_active=7/"), "got: {line}");
+    }
+
+    #[test]
+    fn test_capped_gauge_zero_capacity_falls_back() {
+        let mut sys = MetricsSystem::new();
+        sys.register_queue_probe_capped(Metric::QueueDepthRaw, 0, || 5);
+        let svc = sys.start();
+        svc.sample_probes();
+
+        let mut mon = MetricsMonitor::new(svc);
+        let poll = mon.poll();
+        let grouped = poll.format_grouped();
+        // Capacity 0 means no division — fall back to plain `name=value`.
+        assert!(grouped[0].1.contains("q.raw=5"), "got: {}", grouped[0].1);
+        assert!(!grouped[0].1.contains("q.raw=5/"), "got: {}", grouped[0].1);
     }
 
     #[test]

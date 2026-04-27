@@ -157,24 +157,38 @@ impl Pipeline {
         // (same MetricsSystem as the storage_sink worker), so they show up in
         // the `[INTERNAL] global | storage | …` line.
         {
+            let cap = sink_capacity as u64;
             let w = calls_tx.downgrade();
-            shared_metrics.register_queue_probe(Metric::StorageQueueDepthCalls, move || {
-                w.upgrade()
-                    .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-            });
+            shared_metrics.register_queue_probe_capped(
+                Metric::StorageQueueDepthCalls,
+                cap,
+                move || {
+                    w.upgrade()
+                        .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
+                },
+            );
             let w = turns_tx.downgrade();
-            shared_metrics.register_queue_probe(Metric::StorageQueueDepthTurns, move || {
-                w.upgrade()
-                    .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-            });
+            shared_metrics.register_queue_probe_capped(
+                Metric::StorageQueueDepthTurns,
+                cap,
+                move || {
+                    w.upgrade()
+                        .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
+                },
+            );
             let w = metrics_out_tx.downgrade();
-            shared_metrics.register_queue_probe(Metric::StorageQueueDepthMetrics, move || {
-                w.upgrade()
-                    .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
-            });
+            shared_metrics.register_queue_probe_capped(
+                Metric::StorageQueueDepthMetrics,
+                cap,
+                move || {
+                    w.upgrade()
+                        .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
+                },
+            );
             let w = http_exchanges_tx.downgrade();
-            shared_metrics.register_queue_probe(
+            shared_metrics.register_queue_probe_capped(
                 Metric::StorageQueueDepthHttpExchanges,
+                cap,
                 move || {
                     w.upgrade()
                         .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
@@ -375,57 +389,82 @@ impl Pipeline {
             // ---- Per-pipeline queue depth probes ----
             // Report the fullest shard's depth (max), not the sum. Summing
             // hides skew — a single saturated shard on an otherwise idle
-            // pipeline would look only partially loaded.
+            // pipeline would look only partially loaded. Capacity passed in
+            // explicitly so the reporter renders `q.X=used/cap(pct%)`.
             let raw_weaks: Vec<WeakSender<RawPacket>> =
                 disp_txs.iter().map(|tx| tx.downgrade()).collect();
-            metrics_sys.register_queue_probe(Metric::QueueDepthRaw, move || {
-                raw_weaks
-                    .iter()
-                    .filter_map(|w| w.upgrade())
-                    .map(|s| (s.max_capacity() - s.capacity()) as u64)
-                    .max()
-                    .unwrap_or(0)
-            });
-            metrics_sys.register_queue_probe(Metric::QueueDepthParsed, move || {
-                parsed_weaks
-                    .iter()
-                    .filter_map(|w| w.upgrade())
-                    .map(|s| (s.max_capacity() - s.capacity()) as u64)
-                    .max()
-                    .unwrap_or(0)
-            });
-            metrics_sys.register_queue_probe(Metric::QueueDepthHttpParseEvent, move || {
-                event_weaks
-                    .iter()
-                    .filter_map(|w| w.upgrade())
-                    .map(|s| (s.max_capacity() - s.capacity()) as u64)
-                    .max()
-                    .unwrap_or(0)
-            });
-            metrics_sys.register_queue_probe(Metric::QueueDepthHttpJoinerEvent, move || {
-                joiner_event_weaks
-                    .iter()
-                    .filter_map(|w| w.upgrade())
-                    .map(|s| (s.max_capacity() - s.capacity()) as u64)
-                    .max()
-                    .unwrap_or(0)
-            });
-            metrics_sys.register_queue_probe(Metric::QueueDepthAgentCall, move || {
-                turn_shard_weaks
-                    .iter()
-                    .filter_map(|w| w.upgrade())
-                    .map(|s| (s.max_capacity() - s.capacity()) as u64)
-                    .max()
-                    .unwrap_or(0)
-            });
-            metrics_sys.register_queue_probe(Metric::QueueDepthLlmEvent, move || {
-                metrics_shard_weaks
-                    .iter()
-                    .filter_map(|w| w.upgrade())
-                    .map(|s| (s.max_capacity() - s.capacity()) as u64)
-                    .max()
-                    .unwrap_or(0)
-            });
+            metrics_sys.register_queue_probe_capped(
+                Metric::QueueDepthRaw,
+                q.raw as u64,
+                move || {
+                    raw_weaks
+                        .iter()
+                        .filter_map(|w| w.upgrade())
+                        .map(|s| (s.max_capacity() - s.capacity()) as u64)
+                        .max()
+                        .unwrap_or(0)
+                },
+            );
+            metrics_sys.register_queue_probe_capped(
+                Metric::QueueDepthParsed,
+                q.parsed_packet as u64,
+                move || {
+                    parsed_weaks
+                        .iter()
+                        .filter_map(|w| w.upgrade())
+                        .map(|s| (s.max_capacity() - s.capacity()) as u64)
+                        .max()
+                        .unwrap_or(0)
+                },
+            );
+            metrics_sys.register_queue_probe_capped(
+                Metric::QueueDepthHttpParseEvent,
+                q.flow_event as u64,
+                move || {
+                    event_weaks
+                        .iter()
+                        .filter_map(|w| w.upgrade())
+                        .map(|s| (s.max_capacity() - s.capacity()) as u64)
+                        .max()
+                        .unwrap_or(0)
+                },
+            );
+            metrics_sys.register_queue_probe_capped(
+                Metric::QueueDepthHttpJoinerEvent,
+                q.flow_event as u64,
+                move || {
+                    joiner_event_weaks
+                        .iter()
+                        .filter_map(|w| w.upgrade())
+                        .map(|s| (s.max_capacity() - s.capacity()) as u64)
+                        .max()
+                        .unwrap_or(0)
+                },
+            );
+            metrics_sys.register_queue_probe_capped(
+                Metric::QueueDepthAgentCall,
+                q.turn_event as u64,
+                move || {
+                    turn_shard_weaks
+                        .iter()
+                        .filter_map(|w| w.upgrade())
+                        .map(|s| (s.max_capacity() - s.capacity()) as u64)
+                        .max()
+                        .unwrap_or(0)
+                },
+            );
+            metrics_sys.register_queue_probe_capped(
+                Metric::QueueDepthLlmEvent,
+                q.metrics_event as u64,
+                move || {
+                    metrics_shard_weaks
+                        .iter()
+                        .filter_map(|w| w.upgrade())
+                        .map(|s| (s.max_capacity() - s.capacity()) as u64)
+                        .max()
+                        .unwrap_or(0)
+                },
+            );
 
             pipeline_txs.push((name.clone(), RoutingSender::new(disp_txs)));
             pipeline_sources.push(def.sources.clone());

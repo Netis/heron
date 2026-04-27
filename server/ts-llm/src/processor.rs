@@ -49,10 +49,10 @@ impl LlmProcessor {
 
     fn on_request(&mut self, req: &HttpRequestData) -> Vec<LlmEvent> {
         let Some(outcome) = self.wire_apis.detect(req) else {
-            self.metrics.counter(Metric::LlmHttpRequestsIgnored).inc();
+            self.metrics.counter(Metric::WireIgnored).inc();
             return Vec::new();
         };
-        self.metrics.counter(Metric::LlmHttpRequestsDetected).inc();
+        self.metrics.counter(Metric::WireDetected).inc();
         vec![LlmEvent::Start(LlmCallStart {
             source_id: req.flow_key.source_id.clone(),
             wire_api: outcome.wire_api.name(),
@@ -70,7 +70,7 @@ impl LlmProcessor {
         sse_events: Vec<SseEventData>,
     ) -> Vec<LlmEvent> {
         let Some(outcome) = self.wire_apis.detect(&request) else {
-            // Already counted LlmHttpRequestsIgnored on Request; silent here.
+            // Already counted WireIgnored on Request; silent here.
             return Vec::new();
         };
 
@@ -187,8 +187,8 @@ mod tests {
         let w = sys.register_worker(
             "test",
             &[
-                Metric::LlmHttpRequestsDetected,
-                Metric::LlmHttpRequestsIgnored,
+                Metric::WireDetected,
+                Metric::WireIgnored,
             ],
         );
         let _svc = sys.start();

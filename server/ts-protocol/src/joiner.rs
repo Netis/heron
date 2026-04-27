@@ -241,7 +241,7 @@ impl HttpJoiner {
         let pending = match self.pending.remove(&resp.flow_key) {
             Some(p) => p,
             None => {
-                self.metrics.counter(Metric::HttpExchangesUnpaired).inc();
+                self.metrics.counter(Metric::HttpJoinerUnpaired).inc();
                 return Vec::new();
             }
         };
@@ -249,7 +249,7 @@ impl HttpJoiner {
         let response = Arc::new(resp);
         let id = Uuid::now_v7().to_string();
 
-        self.metrics.counter(Metric::HttpExchangesCompleted).inc();
+        self.metrics.counter(Metric::HttpJoinerDone).inc();
         vec![HttpJoinerEvent::Exchange {
             id,
             request: pending.request,
@@ -284,7 +284,7 @@ impl HttpJoiner {
         let expired = before - self.pending.len();
         if expired > 0 {
             self.metrics
-                .counter(Metric::HttpExchangesExpired)
+                .counter(Metric::HttpJoinerExpired)
                 .add(expired as u64);
         }
         expired
@@ -307,9 +307,9 @@ mod tests {
         let w = sys.register_worker(
             "test",
             &[
-                Metric::HttpExchangesCompleted,
-                Metric::HttpExchangesUnpaired,
-                Metric::HttpExchangesExpired,
+                Metric::HttpJoinerDone,
+                Metric::HttpJoinerUnpaired,
+                Metric::HttpJoinerExpired,
             ],
         );
         let _svc = sys.start();

@@ -35,7 +35,7 @@ pub fn spawn_metrics_stage(
                 Metric::MetricsLlmEventsStart,
                 Metric::MetricsLlmEventsComplete,
                 Metric::MetricsLlmEventsHeartbeat,
-                Metric::MetricsWindowsFlushed,
+                Metric::MetricsWindowsEmitted,
             ],
         );
         handles.push(tokio::spawn(async move {

@@ -133,7 +133,7 @@ impl MetricsAggregator {
                         key.model,
                         key.server_ip,
                     ));
-                    self.metrics.counter(Metric::MetricsWindowsFlushed).inc();
+                    self.metrics.counter(Metric::MetricsWindowsEmitted).inc();
                 }
             }
         }
@@ -255,7 +255,7 @@ impl MetricsAggregator {
                             key.model,
                             key.server_ip,
                         ));
-                        self.metrics.counter(Metric::MetricsWindowsFlushed).inc();
+                        self.metrics.counter(Metric::MetricsWindowsEmitted).inc();
                     }
                 }
             }
@@ -340,7 +340,7 @@ mod tests {
                 Metric::MetricsLlmEventsStart,
                 Metric::MetricsLlmEventsComplete,
                 Metric::MetricsLlmEventsHeartbeat,
-                Metric::MetricsWindowsFlushed,
+                Metric::MetricsWindowsEmitted,
             ],
         );
         let _svc = sys.start();

@@ -66,8 +66,8 @@ pub fn spawn_llm_stage(
         let worker_metrics = metrics_sys.register_worker(
             &format!("llm.{i}"),
             &[
-                Metric::LlmHttpRequestsDetected,
-                Metric::LlmHttpRequestsIgnored,
+                Metric::WireDetected,
+                Metric::WireIgnored,
                 Metric::LlmCallsWithAgent,
                 Metric::LlmCallsWithoutAgent,
             ],
@@ -185,9 +185,9 @@ mod tests {
         let w = sys.register_worker(
             "test-joiner",
             &[
-                Metric::HttpExchangesCompleted,
-                Metric::HttpExchangesUnpaired,
-                Metric::HttpExchangesExpired,
+                Metric::HttpJoinerDone,
+                Metric::HttpJoinerUnpaired,
+                Metric::HttpJoinerExpired,
             ],
         );
         let _svc = sys.start();

@@ -122,8 +122,8 @@ pub fn spawn_protocol_stage(
             &format!("worker.{i}"),
             &[
                 Metric::NetPacketsParsed,
-                Metric::HttpRequestsParsed,
-                Metric::HttpResponsesParsed,
+                Metric::HttpParseReq,
+                Metric::HttpParseResp,
                 Metric::SseEventsParsed,
                 Metric::HttpResyncEvents,
                 Metric::FlowsTimedOut,
@@ -197,9 +197,9 @@ pub fn spawn_http_joiner_stage(
         let worker_metrics = metrics_sys.register_worker(
             &format!("joiner.{i}"),
             &[
-                Metric::HttpExchangesCompleted,
-                Metric::HttpExchangesUnpaired,
-                Metric::HttpExchangesExpired,
+                Metric::HttpJoinerDone,
+                Metric::HttpJoinerUnpaired,
+                Metric::HttpJoinerExpired,
             ],
         );
         let exch_tx = http_exchanges_tx.clone();

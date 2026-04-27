@@ -425,10 +425,10 @@ impl FlowWorker {
         for event in &out[start..] {
             match event {
                 HttpParseEvent::HttpRequest(_) => {
-                    self.metrics.counter(Metric::HttpRequestsParsed).inc();
+                    self.metrics.counter(Metric::HttpParseReq).inc();
                 }
                 HttpParseEvent::HttpResponse(_) => {
-                    self.metrics.counter(Metric::HttpResponsesParsed).inc();
+                    self.metrics.counter(Metric::HttpParseResp).inc();
                 }
                 HttpParseEvent::SseEvent(_) => {
                     self.metrics.counter(Metric::SseEventsParsed).inc();
@@ -708,8 +708,8 @@ mod tests {
             "test",
             &[
                 Metric::NetPacketsParsed,
-                Metric::HttpRequestsParsed,
-                Metric::HttpResponsesParsed,
+                Metric::HttpParseReq,
+                Metric::HttpParseResp,
                 Metric::SseEventsParsed,
                 Metric::HttpResyncEvents,
                 Metric::FlowsTimedOut,
