@@ -217,6 +217,17 @@ impl CaptureSource for PcapLiveSource {
 
                         count += 1;
                         metrics.counter(Metric::CapturePacketsReceived).inc();
+                        // Snaplen-truncation surfaces here: when
+                        // `caplen < wirelen`, libpcap delivered only the
+                        // leading `caplen` bytes of the on-wire frame and
+                        // the rest is gone. On `lo` with TSO/GSO this can
+                        // happen for super-frames > snaplen even when no
+                        // kernel drops are reported. Counter exposes it so
+                        // operators can distinguish truncation from real
+                        // loss without reading hex dumps.
+                        if packet.header.caplen < packet.header.len {
+                            metrics.counter(Metric::CaptureTruncatedPackets).inc();
+                        }
                     }
                     Err(pcap::Error::NoMorePackets) => {
                         // `pcap_next_ex` returns PCAP_ERROR_BREAK (-2) after

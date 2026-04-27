@@ -207,6 +207,13 @@ impl TcpFlow {
                     self.a_to_b.discard_buffers();
                     self.b_to_a.discard_buffers();
                     self.http_parser.reset();
+                    // Drop stale per-direction seq tracking — the pkt we're
+                    // syncing on becomes the new baseline via append_payload's
+                    // mid-stream branch. Without this, post-resync packets
+                    // get diff'd against a stale `expected` and may end up in
+                    // the OOO buffer instead of the in-order buf.
+                    self.a_to_b.next_seq = None;
+                    self.b_to_a.next_seq = None;
                     self.append_payload(pkt);
                     self.try_parse_http(output);
                     // We just synced from unsynced — that counts as a resync.
@@ -364,6 +371,10 @@ impl TcpFlow {
             self.a_to_b.discard_buffers();
             self.b_to_a.discard_buffers();
             self.http_parser.reset();
+            // Same rationale as the unsynced→synced site: drop seq tracking
+            // so the next packet on each direction re-baselines.
+            self.a_to_b.next_seq = None;
+            self.b_to_a.next_seq = None;
             return true;
         }
         false
@@ -756,6 +767,58 @@ mod tests {
             .filter(|e| matches!(e, HttpParseEvent::HttpRequest(_)))
             .count();
         assert_eq!(req_count, 2, "second request should be parsed after resync");
+    }
+
+    #[test]
+    fn test_needresync_clears_next_seq_so_unsynced_resync_recovers() {
+        // Without the next_seq=None reset on the NeedResync path, a fresh
+        // request after parser failure ends up routed to the OOO buffer
+        // (because diff>0 against the stale `expected`) and never reaches
+        // the in-order buf. Then the unsynced-sync site's append_payload
+        // also sees diff>0 and buffers it as OOO, parser sees nothing,
+        // request is silently lost.
+        //
+        // With the consistency fix, NeedResync drops next_seq=None; the
+        // following unsynced-sync packet enters the mid-stream branch and
+        // re-baselines, so the request parses cleanly.
+        let fk = test_flow_key();
+        let mut flow = TcpFlow::new(fk.clone());
+        let mut output = Vec::new();
+
+        // SYN handshake: both directions get next_seq=Some(1).
+        flow.push(
+            &make_pkt(&fk, Direction::AtoB, &[], 0, TCP_SYN),
+            &mut output,
+        );
+        flow.push(
+            &make_pkt(&fk, Direction::BtoA, &[], 0, TCP_SYN | TCP_ACK),
+            &mut output,
+        );
+
+        // First request — parsed normally; AtoB.next_seq advances past it.
+        let req1 = b"POST /v1/x HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\n\r\n";
+        flow.push(&make_pkt(&fk, Direction::AtoB, req1, 1, 0), &mut output);
+        assert_eq!(output.len(), 1);
+
+        // Corrupt response *in-order* on BtoA so it actually reaches the
+        // parser and trips NeedResync (an OOO seq would just be buffered).
+        let corrupt = b"\x00\x01\x02 not http\r\n\r\n";
+        flow.push(&make_pkt(&fk, Direction::BtoA, corrupt, 1, 0), &mut output);
+
+        // Fresh request on AtoB at a *high* seq (simulating that some time
+        // passed and seq has advanced). With the consistency fix, the
+        // unsynced-sync site treats this as the new mid-stream baseline.
+        let req2 = b"GET /v1/models HTTP/1.1\r\nHost: h\r\n\r\n";
+        flow.push(
+            &make_pkt(&fk, Direction::AtoB, req2, 50_000, 0),
+            &mut output,
+        );
+
+        let req_count = output
+            .iter()
+            .filter(|e| matches!(e, HttpParseEvent::HttpRequest(_)))
+            .count();
+        assert_eq!(req_count, 2, "fresh request after NeedResync must parse");
     }
 
     #[test]

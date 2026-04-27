@@ -132,6 +132,7 @@ define_metrics! {
     // -- Capture --
     CapturePacketsReceived       => { kind: Counter, group: Capture,  short: "pkts_recv"       },
     CaptureKernelPacketsDropped  => { kind: Counter, group: Capture,  short: "kern_pkts_drop"  },
+    CaptureTruncatedPackets      => { kind: Counter, group: Capture,  short: "pkts_truncated"  },
     CaptureBatchesReceived       => { kind: Counter, group: Capture,  short: "batches_recv"    },
     CaptureZmqBatchesDropped     => { kind: Counter, group: Capture,  short: "zmq_batches_drop"},
     CaptureHeartbeatsEmitted     => { kind: Counter, group: Capture,  short: "heartbeats"      },

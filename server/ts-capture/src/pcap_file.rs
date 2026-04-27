@@ -94,6 +94,12 @@ impl CaptureSource for PcapFileSource {
 
                         count += 1;
                         metrics.counter(Metric::CapturePacketsReceived).add(1);
+                        // Mirror pcap_live's truncation surfacing so that
+                        // replaying a snaplen-truncated dump shows the same
+                        // signal — not a silent re-emergence of the bug.
+                        if packet.header.caplen < packet.header.len {
+                            metrics.counter(Metric::CaptureTruncatedPackets).inc();
+                        }
                     }
                     Err(pcap::Error::NoMorePackets) => {
                         tracing::debug!("pcap-file: end of file reached");
@@ -138,6 +144,7 @@ mod tests {
             &[
                 Metric::CapturePacketsReceived,
                 Metric::CaptureKernelPacketsDropped,
+                Metric::CaptureTruncatedPackets,
             ],
         )
     }

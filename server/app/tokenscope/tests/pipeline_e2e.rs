@@ -100,6 +100,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
                 &[
                     Metric::CapturePacketsReceived,
                     Metric::CaptureKernelPacketsDropped,
+                    Metric::CaptureTruncatedPackets,
                 ],
             )
         })

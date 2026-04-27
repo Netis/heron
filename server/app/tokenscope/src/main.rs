@@ -288,6 +288,7 @@ async fn main() {
                             &[
                                 Metric::CapturePacketsReceived,
                                 Metric::CaptureKernelPacketsDropped,
+                                Metric::CaptureTruncatedPackets,
                                 Metric::CaptureHeartbeatsEmitted,
                                 Metric::CaptureBatchesReceived,
                                 Metric::CaptureZmqBatchesDropped,
