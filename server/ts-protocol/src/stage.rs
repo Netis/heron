@@ -126,6 +126,8 @@ pub fn spawn_protocol_stage(
                 Metric::HttpParseResp,
                 Metric::SseEventsParsed,
                 Metric::HttpResyncEvents,
+                Metric::TcpOutOfOrderDrops,
+                Metric::TcpRetransmissionsIgnored,
                 Metric::FlowsTimedOut,
             ],
         );

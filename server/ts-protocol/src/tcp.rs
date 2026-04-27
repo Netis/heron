@@ -62,6 +62,13 @@ pub struct TcpFlow {
     /// Timestamp of the last packet received on this flow (any direction).
     last_pkt_ts: i64,
 
+    /// Pending counters drained by FlowWorker into shared metrics after each
+    /// `push`. We keep the raw bumps inside `append_payload` (where the
+    /// branches live) and let the caller hand them off to the per-shard
+    /// `MetricsWorker` once per packet — TcpFlow itself stays IO-free.
+    ooo_drops_pending: u32,
+    rexmit_ignored_pending: u32,
+
     // HTTP parser operates on the reassembled buffers.
     http_parser: HttpParser,
 
@@ -86,6 +93,8 @@ impl TcpFlow {
             last_a_to_b_data_ts: 0,
             last_b_to_a_data_ts: 0,
             last_pkt_ts: 0,
+            ooo_drops_pending: 0,
+            rexmit_ignored_pending: 0,
             http_parser: HttpParser::new(),
             flow_key,
             addr_a,
@@ -235,10 +244,19 @@ impl TcpFlow {
                     if overlap < pkt.payload.len() {
                         buf.extend_from_slice(&pkt.payload[overlap..]);
                         *expected = pkt.tcp_seq.wrapping_add(pkt.payload.len() as u32);
+                    } else if !pkt.payload.is_empty() {
+                        // Pure retransmission of already-buffered bytes.
+                        self.rexmit_ignored_pending = self.rexmit_ignored_pending.saturating_add(1);
                     }
-                    // else: pure retransmission, ignore.
+                } else if !pkt.payload.is_empty() {
+                    // Out-of-order (diff > 0): segment ahead of `expected`.
+                    // Reassembler currently has no OOO buffer, so the bytes
+                    // are dropped and the flow's HTTP parser will stall on
+                    // the gap until RST/FIN. Counter exposes how often this
+                    // happens so we can correlate with stuck keep-alive
+                    // flows in the field.
+                    self.ooo_drops_pending = self.ooo_drops_pending.saturating_add(1);
                 }
-                // else: out-of-order (diff > 0), drop for now.
             }
             None => {
                 // No expected seq yet (mid-stream capture). Accept and start tracking.
@@ -341,6 +359,14 @@ impl TcpFlow {
     pub fn last_pkt_ts(&self) -> i64 {
         self.last_pkt_ts
     }
+
+    /// Drain the reassembler-branch counters accumulated since the last call.
+    /// Returned tuple: `(ooo_drops, rexmit_ignored)`.
+    pub fn take_append_stats(&mut self) -> (u32, u32) {
+        let ooo = std::mem::take(&mut self.ooo_drops_pending);
+        let rex = std::mem::take(&mut self.rexmit_ignored_pending);
+        (ooo, rex)
+    }
 }
 
 /// Check if a buffer starts with an HTTP request method.
@@ -420,6 +446,17 @@ impl FlowWorker {
         let resync = flow.push(&pkt, out);
         if resync {
             self.metrics.counter(Metric::HttpResyncEvents).inc();
+        }
+        let (ooo, rex) = flow.take_append_stats();
+        if ooo > 0 {
+            self.metrics
+                .counter(Metric::TcpOutOfOrderDrops)
+                .add(ooo as u64);
+        }
+        if rex > 0 {
+            self.metrics
+                .counter(Metric::TcpRetransmissionsIgnored)
+                .add(rex as u64);
         }
 
         for event in &out[start..] {
@@ -712,6 +749,8 @@ mod tests {
                 Metric::HttpParseResp,
                 Metric::SseEventsParsed,
                 Metric::HttpResyncEvents,
+                Metric::TcpOutOfOrderDrops,
+                Metric::TcpRetransmissionsIgnored,
                 Metric::FlowsTimedOut,
             ],
         );
@@ -918,6 +957,69 @@ mod tests {
             source_id: String::new(),
         });
         assert_eq!(worker.flow_count(), 0);
+    }
+
+    #[test]
+    fn test_ooo_drop_and_retransmit_counters() {
+        // After SYN handshake the flow has `next_seq=Some(1)`. A segment
+        // arriving at seq=11 is 10 bytes ahead of `expected` — the silent
+        // OOO branch — and must bump TcpOutOfOrderDrops. A subsequent
+        // segment that re-sends bytes already buffered must bump
+        // TcpRetransmissionsIgnored.
+        let (mut worker, metrics) = new_test_worker();
+        let fk = test_flow_key();
+
+        // SYN handshake → both sides have `next_seq` initialized.
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            &[],
+            0,
+            TCP_SYN,
+            0,
+        )));
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::BtoA,
+            &[],
+            0,
+            TCP_SYN | TCP_ACK,
+            0,
+        )));
+
+        // First request seq=1, 10 bytes — buffer advances to seq=11.
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            b"GET / HT",
+            1,
+            0,
+            1_000,
+        )));
+
+        // OOO: seq=21 (gap of 10) — drop_for_now branch.
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            b"AHEAD",
+            21,
+            0,
+            2_000,
+        )));
+        assert_eq!(metrics.counter(Metric::TcpOutOfOrderDrops).get(), 1);
+
+        // Pure retransmission: re-send bytes already at seq=1 covering
+        // the same 8-byte payload — overlap (8) >= payload.len() (8),
+        // so it's ignored.
+        let _ = worker.process(WorkerInput::Packet(make_pkt_ts(
+            &fk,
+            Direction::AtoB,
+            b"GET / HT",
+            1,
+            0,
+            3_000,
+        )));
+        assert_eq!(metrics.counter(Metric::TcpRetransmissionsIgnored).get(), 1);
     }
 
     #[test]
