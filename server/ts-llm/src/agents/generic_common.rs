@@ -49,10 +49,30 @@ pub enum AssistantSig {
 
 /// Shared session_id composition: prefer canonicalized tool id (raw form,
 /// debuggable against capture data); fall back to `gen-<16hex>` text hash.
+///
+/// Use `compose_session_id_tracked` when you need to know whether the
+/// canonicalization actually modified the tool id (e.g., for metrics).
 pub fn compose_session_id(user_text: &str, sig: AssistantSig) -> String {
+    compose_session_id_tracked(user_text, sig).0
+}
+
+/// Like canonicalize_tool_id but reports whether the input was modified.
+/// The caller increments `LlmGenericToolIdCanonicalized` when changed.
+pub fn canonicalize_tool_id_tracked(id: &str) -> (String, bool) {
+    let canon = canonicalize_tool_id(id);
+    let changed = canon != id;
+    (canon, changed)
+}
+
+/// Returns `(session_id, tool_id_was_canonicalized)`. The boolean lets the
+/// caller bump a counter without re-running the canonicalization rule.
+pub fn compose_session_id_tracked(user_text: &str, sig: AssistantSig) -> (String, bool) {
     match sig {
-        AssistantSig::ToolId(id) => canonicalize_tool_id(&id),
-        AssistantSig::Text(text) => format!("gen-{}", synth_text_hash(user_text, &text)),
+        AssistantSig::ToolId(id) => {
+            let (canon, changed) = canonicalize_tool_id_tracked(&id);
+            (canon, changed)
+        }
+        AssistantSig::Text(text) => (format!("gen-{}", synth_text_hash(user_text, &text)), false),
     }
 }
 
@@ -117,5 +137,20 @@ mod tests {
         let sid = compose_session_id("hello", AssistantSig::Text("world".to_string()));
         assert!(sid.starts_with("gen-"));
         assert_eq!(sid.len(), "gen-".len() + 16);
+    }
+
+    #[test]
+    fn compose_tracks_canonicalization() {
+        let (id, changed) = compose_session_id_tracked("u", AssistantSig::ToolId("call_abc".into()));
+        assert_eq!(id, "call_abc");
+        assert!(!changed);
+
+        let (id, changed) = compose_session_id_tracked("u", AssistantSig::ToolId("callabc".into()));
+        assert_eq!(id, "call_abc");
+        assert!(changed);
+
+        let (id, changed) = compose_session_id_tracked("u", AssistantSig::Text("t".into()));
+        assert!(id.starts_with("gen-"));
+        assert!(!changed);
     }
 }

@@ -11,7 +11,7 @@ use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
 use serde_json::Value;
 
-use super::generic_common::{compose_session_id, AssistantSig};
+use super::generic_common::{compose_session_id_tracked, AssistantSig};
 
 pub struct GenericOpenAiResponsesProfile;
 
@@ -108,9 +108,8 @@ impl AgentProfile for GenericOpenAiResponsesProfile {
         let user_text = user_text?;
         let sig = sig_from_input
             .or_else(|| call.response_body.as_deref().and_then(first_assistant_sig_from_response))?;
-        Some(ExtractedIds {
-            session_id: compose_session_id(&user_text, sig),
-        })
+        let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
+        Some(ExtractedIds { session_id, tool_id_canonicalized })
     }
 
     fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {

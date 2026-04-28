@@ -91,6 +91,10 @@ pub trait AgentProfile: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedIds {
     pub session_id: String,
+    /// True if the tool id used to derive `session_id` was modified by
+    /// `canonicalize_tool_id`. Used by the llm stage to bump
+    /// `LlmGenericToolIdCanonicalized`.
+    pub tool_id_canonicalized: bool,
 }
 
 /// First-match registry. Order matters: the first matching profile wins.
@@ -187,6 +191,7 @@ mod tests {
         fn extract_ids(&self, _: &LlmCall) -> Option<ExtractedIds> {
             Some(ExtractedIds {
                 session_id: "s".into(),
+                tool_id_canonicalized: false,
             })
         }
         fn is_user_turn_start(&self, _: &LlmCall) -> Option<bool> {

@@ -70,6 +70,8 @@ pub fn spawn_llm_stage(
                 Metric::WireIgnored,
                 Metric::LlmCallsWithAgent,
                 Metric::LlmCallsWithoutAgent,
+                Metric::LlmGenericToolIdCanonicalized,
+                Metric::LlmGenericSessionIdUnsynth,
             ],
         );
         handles.push(tokio::spawn(async move {

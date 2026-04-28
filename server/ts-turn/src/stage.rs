@@ -126,12 +126,28 @@ mod tests {
     use ts_llm::wire_apis as wa;
     use ts_llm::wire_apis::build_default_wire_api_registry;
 
+    fn llm_test_metrics() -> ts_common::internal_metrics::MetricsWorker {
+        let mut sys = MetricsSystem::new();
+        let w = sys.register_worker(
+            "test-llm",
+            &[
+                Metric::WireDetected,
+                Metric::WireIgnored,
+                Metric::LlmGenericToolIdCanonicalized,
+                Metric::LlmGenericSessionIdUnsynth,
+            ],
+        );
+        let _svc = sys.start();
+        w
+    }
+
     /// Build a full `AgentCallInfo` for `call` via the production pipeline —
     /// keeps test fixtures aligned with what ts-llm actually produces.
     fn call_info_for(call: &LlmCall) -> AgentCallInfo {
         let reg = build_default_registry();
         let wa_reg = build_default_wire_api_registry();
-        ts_llm::build_agent_call_info(call, &reg, &wa_reg).expect("call info")
+        let metrics = llm_test_metrics();
+        ts_llm::build_agent_call_info(call, &reg, &wa_reg, &metrics).expect("call info")
     }
 
     /// `is_user_start`: true ⇒ text body (new-turn marker); false ⇒ tool_result body (continuation).

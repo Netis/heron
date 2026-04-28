@@ -61,7 +61,7 @@ impl AgentProfile for CodexCliProfile {
         let raw = header(call, TURN_META_HEADER)?;
         let v = parse_turn_metadata(raw)?;
         let session_id = v.get("session_id")?.as_str()?.to_string();
-        Some(ExtractedIds { session_id })
+        Some(ExtractedIds { session_id, tool_id_canonicalized: false })
     }
 
     fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {

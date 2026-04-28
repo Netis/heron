@@ -9,7 +9,7 @@ use crate::profile::{AgentProfile, ExtractedIds};
 use crate::wire_apis as wa;
 use serde_json::Value;
 
-use super::generic_common::{compose_session_id, AssistantSig};
+use super::generic_common::{compose_session_id_tracked, AssistantSig};
 
 pub struct GenericAnthropicProfile;
 
@@ -101,9 +101,8 @@ impl AgentProfile for GenericAnthropicProfile {
         let user_text = first_user_text(msgs)?;
         let sig = first_assistant_sig_from_request(msgs)
             .or_else(|| call.response_body.as_deref().and_then(first_assistant_sig_from_response))?;
-        Some(ExtractedIds {
-            session_id: compose_session_id(&user_text, sig),
-        })
+        let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
+        Some(ExtractedIds { session_id, tool_id_canonicalized })
     }
 
     fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
