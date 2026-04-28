@@ -8,6 +8,7 @@ pub mod claude_cli;
 pub mod codex_cli;
 pub mod generic_anthropic;
 pub mod generic_common;
+pub mod generic_openai_chat;
 
 /// Default registry with all built-in agent profiles.
 pub fn build_default_registry() -> AgentProfileRegistry {
