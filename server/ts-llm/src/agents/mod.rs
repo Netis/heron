@@ -6,6 +6,7 @@ use crate::profile::AgentProfileRegistry;
 
 pub mod claude_cli;
 pub mod codex_cli;
+pub mod generic_anthropic;
 pub mod generic_common;
 
 /// Default registry with all built-in agent profiles.
