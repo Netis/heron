@@ -1179,7 +1179,7 @@ impl AgentProfile for GenericOpenAiResponsesProfile {
 
     fn is_turn_terminal(&self, call: &LlmCall, _wire_apis: &WireApiRegistry) -> bool {
         // Same protocol-level reasoning as CodexCliProfile.
-        crate::wire_apis::openai::responses::body_has_terminal_message_only(
+        crate::wire_apis::openai::body_has_terminal_message_only(
             call.response_body.as_deref(),
         )
     }

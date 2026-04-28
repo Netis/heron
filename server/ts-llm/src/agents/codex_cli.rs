@@ -122,37 +122,17 @@ impl AgentProfile for CodexCliProfile {
     }
 
     fn is_turn_terminal(&self, call: &LlmCall, _wire_apis: &WireApiRegistry) -> bool {
-        // Codex's per-call finish_reason maps `response.completed` → Complete
-        // for every successful API call, so it cannot distinguish "agent done"
-        // from "tool roundtrip pending". Inspect response.output instead:
-        // any item whose type triggers a follow-up API call (function_call,
-        // custom_tool_call, local_shell_call, MCP variants, etc.) means the
-        // turn is not terminal. A response containing only message/reasoning
-        // items is the agent's final answer.
+        // OpenAI Responses' `status: "completed"` cannot distinguish "agent
+        // done" from "tool roundtrip pending" — delegate to the wire-api
+        // helper that inspects `response.output[]` directly. Override does
+        // NOT fall back to the trait default; the wire-api signal is unusable.
         //
-        // Override does NOT delegate to the trait default — the wire-api
-        // signal is unreliable for this protocol.
-        let Some(body) = call.response_body.as_deref() else {
-            return false;
-        };
-        let Ok(v) = serde_json::from_str::<Value>(body) else {
-            return false;
-        };
-        let Some(output) = v.get("output").and_then(|o| o.as_array()) else {
-            return false;
-        };
-        let mut has_message = false;
-        for item in output {
-            match item.get("type").and_then(|t| t.as_str()) {
-                Some("message") => has_message = true,
-                Some("reasoning") => {}
-                // Any *_call item means codex will execute a tool and POST
-                // back another request — turn is not terminal.
-                Some(t) if t.ends_with("_call") => return false,
-                _ => {}
-            }
-        }
-        has_message
+        // Path note: re-exported from wire_apis::openai (the `responses`
+        // submodule itself is private). Future generic profiles should use
+        // the same path.
+        crate::wire_apis::openai::body_has_terminal_message_only(
+            call.response_body.as_deref(),
+        )
     }
 
     fn extract_assistant_text(&self, call: &LlmCall) -> Option<String> {
@@ -425,58 +405,14 @@ mod tests {
     }
 
     #[test]
-    fn is_turn_terminal_true_when_output_only_has_message() {
-        let body = r#"{"output":[
-            {"type":"reasoning","summary":[]},
-            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"done."}]}
-        ]}"#;
+    fn is_turn_terminal_delegates_to_wire_api_helper() {
+        // Behavioral coverage lives in wire_apis::openai::responses::terminal_helper_tests.
+        // This test only confirms the profile actually delegates to that helper.
+        let body = r#"{"output":[{"type":"message","role":"assistant","content":[]}]}"#;
         let mut c = call_with(wa::OPENAI_RESPONSES, vec![], None);
         c.response_body = Some(body.to_string());
         let wa_reg = crate::wire_apis::build_default_wire_api_registry();
         assert!(CodexCliProfile.is_turn_terminal(&c, &wa_reg));
-    }
-
-    #[test]
-    fn is_turn_terminal_false_when_output_has_function_call() {
-        let body = r#"{"output":[
-            {"type":"reasoning","summary":[]},
-            {"type":"function_call","name":"shell","arguments":"{}","call_id":"c1"}
-        ]}"#;
-        let mut c = call_with(wa::OPENAI_RESPONSES, vec![], None);
-        c.response_body = Some(body.to_string());
-        let wa_reg = crate::wire_apis::build_default_wire_api_registry();
-        assert!(!CodexCliProfile.is_turn_terminal(&c, &wa_reg));
-    }
-
-    #[test]
-    fn is_turn_terminal_false_when_output_has_message_and_function_call() {
-        // Codex sometimes returns text alongside a tool call; the call still
-        // forces another roundtrip.
-        let body = r#"{"output":[
-            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"running"}]},
-            {"type":"function_call","name":"shell","arguments":"{}","call_id":"c1"}
-        ]}"#;
-        let mut c = call_with(wa::OPENAI_RESPONSES, vec![], None);
-        c.response_body = Some(body.to_string());
-        let wa_reg = crate::wire_apis::build_default_wire_api_registry();
-        assert!(!CodexCliProfile.is_turn_terminal(&c, &wa_reg));
-    }
-
-    #[test]
-    fn is_turn_terminal_false_when_output_only_reasoning() {
-        // No final message → not a final answer.
-        let body = r#"{"output":[{"type":"reasoning","summary":[]}]}"#;
-        let mut c = call_with(wa::OPENAI_RESPONSES, vec![], None);
-        c.response_body = Some(body.to_string());
-        let wa_reg = crate::wire_apis::build_default_wire_api_registry();
-        assert!(!CodexCliProfile.is_turn_terminal(&c, &wa_reg));
-    }
-
-    #[test]
-    fn is_turn_terminal_false_when_no_response_body() {
-        let c = call_with(wa::OPENAI_RESPONSES, vec![], None);
-        let wa_reg = crate::wire_apis::build_default_wire_api_registry();
-        assert!(!CodexCliProfile.is_turn_terminal(&c, &wa_reg));
     }
 
     #[test]

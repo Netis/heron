@@ -245,6 +245,84 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
     }
 }
 
+/// Decide whether an OpenAI Responses body represents a terminal turn
+/// (agent done, no more tool roundtrips pending).
+///
+/// Logic: scan `response.output[]`. Any item whose `type` ends with `_call`
+/// (e.g., `function_call`, `custom_tool_call`, `local_shell_call`, MCP
+/// variants) means the agent will execute a tool and re-POST → not terminal.
+/// `message` items count as the final answer; `reasoning` is ignored.
+/// Return true iff at least one `message` is present and no `*_call` is.
+///
+/// Used by both `CodexCliProfile` and `GenericOpenAiResponsesProfile` —
+/// the OpenAI Responses protocol always sets `status: "completed"` on
+/// successful API calls regardless of whether the agent continues, so the
+/// wire-api `finish_reason` is unreliable for turn-boundary purposes. This
+/// helper is the authoritative override.
+///
+/// Re-exported via `crate::wire_apis::openai::body_has_terminal_message_only`
+/// (the `responses` submodule itself is private). Profiles should use the
+/// re-exported path.
+pub fn body_has_terminal_message_only(response_body: Option<&str>) -> bool {
+    let Some(body) = response_body else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let Some(output) = v.get("output").and_then(|o| o.as_array()) else {
+        return false;
+    };
+    let mut has_message = false;
+    for item in output {
+        match item.get("type").and_then(|t| t.as_str()) {
+            Some("message") => has_message = true,
+            Some("reasoning") => {}
+            Some(t) if t.ends_with("_call") => return false,
+            _ => {}
+        }
+    }
+    has_message
+}
+
+#[cfg(test)]
+mod terminal_helper_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_when_output_only_has_message() {
+        let body = r#"{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}"#;
+        assert!(body_has_terminal_message_only(Some(body)));
+    }
+
+    #[test]
+    fn not_terminal_when_function_call_present() {
+        let body = r#"{"output":[{"type":"message"},{"type":"function_call","call_id":"fc_1"}]}"#;
+        assert!(!body_has_terminal_message_only(Some(body)));
+    }
+
+    #[test]
+    fn not_terminal_when_no_message() {
+        let body = r#"{"output":[{"type":"reasoning"}]}"#;
+        assert!(!body_has_terminal_message_only(Some(body)));
+    }
+
+    #[test]
+    fn not_terminal_when_no_body() {
+        assert!(!body_has_terminal_message_only(None));
+    }
+
+    #[test]
+    fn not_terminal_when_malformed_json() {
+        assert!(!body_has_terminal_message_only(Some("garbage")));
+    }
+
+    #[test]
+    fn not_terminal_when_output_array_is_empty() {
+        assert!(!body_has_terminal_message_only(Some(r#"{"output":[]}"#)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
