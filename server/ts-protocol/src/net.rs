@@ -86,7 +86,14 @@ pub struct ParsedPacket {
     pub tcp_flags: u8,
     pub tcp_seq: u32,
     pub tcp_ack: u32,
+    /// Captured TCP segment bytes. May be shorter than [`Self::wire_payload_len`]
+    /// when the capture was snaplen-truncated.
     pub payload: Bytes,
+    /// On-wire TCP segment payload length (bytes), derived from the IP and TCP
+    /// header fields rather than `payload.len()`. The reassembler uses this
+    /// for sequence-number math so that snaplen truncation does not silently
+    /// desynchronize the per-direction byte stream.
+    pub wire_payload_len: u32,
     pub timestamp_us: i64,
 }
 

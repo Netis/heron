@@ -194,6 +194,31 @@ impl TcpFlow {
             self.state = TcpState::Established;
         }
 
+        // Snaplen truncation: the on-wire segment carried more bytes than the
+        // capture preserved. Splicing the captured bytes into `dir.buf` while
+        // advancing `next_seq` by the wire length would leave a phantom gap
+        // (Content-Length bodies hang at NeedMore forever; chunked decoders
+        // mis-frame the next chunk). Discard everything on this flow and let
+        // the next intact request re-sync via the existing mid-stream path.
+        // Bounded loss: the truncated call only. Same cleanup shape as the
+        // `NeedResync` site below — `client_side` is preserved and overwritten
+        // by the next sync.
+        if (pkt.wire_payload_len as usize) > pkt.payload.len() {
+            tracing::trace!(
+                flow = %self.flow_key,
+                wire_len = pkt.wire_payload_len,
+                cap_len = pkt.payload.len(),
+                "resync: snaplen-truncated segment"
+            );
+            self.synced = false;
+            self.a_to_b.discard_buffers();
+            self.b_to_a.discard_buffers();
+            self.http_parser.reset();
+            self.a_to_b.next_seq = None;
+            self.b_to_a.next_seq = None;
+            return true;
+        }
+
         // Process payload.
         if !pkt.payload.is_empty() {
             if !self.synced {
@@ -272,17 +297,20 @@ impl TcpFlow {
             // The OOO buffer cannot have entries yet because nothing was ever
             // tracked relative to an expected seq.
             dir.buf.extend_from_slice(&pkt.payload);
-            dir.next_seq = Some(pkt.tcp_seq.wrapping_add(pkt.payload.len() as u32));
+            dir.next_seq = Some(pkt.tcp_seq.wrapping_add(pkt.wire_payload_len));
             return;
         };
 
+        // Seq math runs on the on-wire segment length (same as `payload.len()`
+        // for intact packets — `push` filters truncated packets out earlier).
+        let wire_len = pkt.wire_payload_len;
         let diff = pkt.tcp_seq.wrapping_sub(*expected) as i32;
         if diff == 0 {
             // Hot path — in-order. Append, advance, then drain any OOO segments
             // that just became contiguous. The `is_some_and` check is one
             // discriminant test on the lazily-allocated map.
             dir.buf.extend_from_slice(&pkt.payload);
-            *expected = pkt.tcp_seq.wrapping_add(pkt.payload.len() as u32);
+            *expected = pkt.tcp_seq.wrapping_add(wire_len);
             if dir.ooo.as_ref().is_some_and(|m| !m.is_empty()) {
                 drain_ooo(dir);
             }
@@ -291,7 +319,7 @@ impl TcpFlow {
             let overlap = (-diff) as usize;
             if overlap < pkt.payload.len() {
                 dir.buf.extend_from_slice(&pkt.payload[overlap..]);
-                *expected = pkt.tcp_seq.wrapping_add(pkt.payload.len() as u32);
+                *expected = pkt.tcp_seq.wrapping_add(wire_len);
                 if dir.ooo.as_ref().is_some_and(|m| !m.is_empty()) {
                     drain_ooo(dir);
                 }
@@ -692,6 +720,7 @@ mod tests {
             tcp_seq: seq,
             tcp_ack: 0,
             payload: Bytes::copy_from_slice(payload),
+            wire_payload_len: payload.len() as u32,
             timestamp_us: 0,
         }
     }
@@ -863,6 +892,150 @@ mod tests {
             .filter(|e| matches!(e, HttpParseEvent::HttpRequest(_)))
             .count();
         assert_eq!(req_count, 2, "should recover after resync");
+    }
+
+    /// Build a packet whose wire segment was longer than what the capture
+    /// preserved (snaplen truncation). Mirrors the lo.pcap repro where
+    /// `cap_len < len` left tail bytes behind.
+    fn make_truncated_pkt(
+        flow_key: &FlowKey,
+        direction: Direction,
+        captured: &[u8],
+        wire_len: u32,
+        seq: u32,
+    ) -> ParsedPacket {
+        let mut pkt = make_pkt(flow_key, direction, captured, seq, 0);
+        pkt.wire_payload_len = wire_len;
+        pkt
+    }
+
+    #[test]
+    fn test_truncated_segment_forces_resync_and_subsequent_request_parses() {
+        // Reproduces the lo.pcap cascade: a keep-alive flow carries a long
+        // POST whose body segment got snaplen-truncated, then a follow-up
+        // request on the same flow. Without the truncation guard, every
+        // subsequent in-order packet drifts into the OOO buffer (because
+        // `next_seq` undershoots by the truncation amount) and the
+        // follow-up request's HttpRequest is never emitted. With the guard,
+        // the truncated segment forces a resync — the truncated POST is
+        // intentionally lost (its body bytes are unrecoverable) but the
+        // follow-up request mid-stream-syncs cleanly.
+        let fk = test_flow_key();
+        let mut flow = TcpFlow::new(fk.clone());
+        let mut output = Vec::new();
+
+        flow.push(
+            &make_pkt(&fk, Direction::AtoB, &[], 0, TCP_SYN),
+            &mut output,
+        );
+        flow.push(
+            &make_pkt(&fk, Direction::BtoA, &[], 0, TCP_SYN | TCP_ACK),
+            &mut output,
+        );
+
+        // Client begins a POST whose body extends across multiple segments;
+        // headers + first body bytes arrive intact.
+        let head = b"POST /v1/x HTTP/1.1\r\nHost: h\r\nContent-Length: 200\r\n\r\nABCDEFGHIJ";
+        flow.push(&make_pkt(&fk, Direction::AtoB, head, 1, 0), &mut output);
+        assert_eq!(
+            output
+                .iter()
+                .filter(|e| matches!(e, HttpParseEvent::HttpRequest(_)))
+                .count(),
+            0,
+            "first request body still incomplete; no event yet"
+        );
+
+        // Continuation segment is snaplen-truncated: wire carried 100 bytes,
+        // capture only preserved 80. Without the guard, `next_seq` would
+        // advance by 80 instead of 100 and the next packet's seq would diff
+        // by +20 → buffered as OOO and the parser starves.
+        let captured = vec![b'X'; 80];
+        let trunc_pkt = make_truncated_pkt(
+            &fk,
+            Direction::AtoB,
+            &captured,
+            100,
+            1 + head.len() as u32,
+        );
+        let resync = flow.push(&trunc_pkt, &mut output);
+        assert!(
+            resync,
+            "truncated segment must force a resync (return true)"
+        );
+
+        // Follow-up keep-alive request on the same flow at the wire-correct
+        // seq (continuing from the truncated segment's tail).
+        let req2 = b"GET /v1/models HTTP/1.1\r\nHost: h\r\n\r\n";
+        flow.push(
+            &make_pkt(
+                &fk,
+                Direction::AtoB,
+                req2,
+                1 + head.len() as u32 + 100,
+                0,
+            ),
+            &mut output,
+        );
+
+        let req_count = output
+            .iter()
+            .filter(|e| matches!(e, HttpParseEvent::HttpRequest(_)))
+            .count();
+        assert_eq!(
+            req_count, 1,
+            "follow-up request must mid-stream-sync after truncation resync"
+        );
+    }
+
+    #[test]
+    fn test_truncated_segment_clears_ooo_on_both_directions() {
+        // Stronger structural assertion: after a truncated segment, *both*
+        // directions' OOO maps must be empty and `next_seq` must be `None`,
+        // so any pending stale state cannot leak across the resync.
+        let fk = test_flow_key();
+        let mut flow = TcpFlow::new(fk.clone());
+        let mut output = Vec::new();
+
+        flow.push(
+            &make_pkt(&fk, Direction::AtoB, &[], 0, TCP_SYN),
+            &mut output,
+        );
+        flow.push(
+            &make_pkt(&fk, Direction::BtoA, &[], 0, TCP_SYN | TCP_ACK),
+            &mut output,
+        );
+
+        // Plant an OOO segment on each direction.
+        flow.push(
+            &make_pkt(&fk, Direction::AtoB, b"AHEAD-A", 5_000, 0),
+            &mut output,
+        );
+        flow.push(
+            &make_pkt(&fk, Direction::BtoA, b"AHEAD-B", 5_000, 0),
+            &mut output,
+        );
+        assert!(flow.a_to_b.ooo.is_some());
+        assert!(flow.b_to_a.ooo.is_some());
+
+        // Truncated client→server segment: wire 50, captured 30.
+        let captured = vec![b'Y'; 30];
+        flow.push(
+            &make_truncated_pkt(&fk, Direction::AtoB, &captured, 50, 1),
+            &mut output,
+        );
+
+        assert!(
+            flow.a_to_b.ooo.is_none(),
+            "AtoB OOO must be cleared on truncation resync"
+        );
+        assert!(
+            flow.b_to_a.ooo.is_none(),
+            "BtoA OOO must be cleared on truncation resync"
+        );
+        assert_eq!(flow.a_to_b.next_seq, None);
+        assert_eq!(flow.b_to_a.next_seq, None);
+        assert!(!flow.synced);
     }
 
     fn make_pkt_ts(

@@ -13,6 +13,10 @@ pub struct L4Info {
     pub seq: u32,
     pub ack: u32,
     pub flags: u8,
+    /// Length (bytes) of the TCP header itself (i.e. `data_offset * 4`).
+    /// Combined with `L3Info::payload_length` this yields the on-wire TCP
+    /// segment payload length even when capture is truncated.
+    pub header_length: u32,
 }
 
 /// Dispatch L4 parsing based on `protocol` and advance the buffer past the
@@ -45,6 +49,7 @@ fn decode_tcp(buf: &mut PacketBuf) -> DecodeResult<L4Info> {
         seq,
         ack,
         flags,
+        header_length: data_offset as u32,
     })
 }
 

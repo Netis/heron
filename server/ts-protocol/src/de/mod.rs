@@ -61,6 +61,11 @@ pub fn decode(
     let l4 = dispatch_l4(&mut buf, l3.protocol)?;
 
     let payload = Bytes::copy_from_slice(buf.remaining_slice());
+    // Wire segment length comes from the (intact, header-front) IP+TCP header
+    // fields. When snaplen truncation drops bytes off the tail, `payload.len()`
+    // is short of this — the reassembler uses `wire_payload_len` for seq math
+    // so the per-direction byte stream stays synchronized regardless.
+    let wire_payload_len = l3.payload_length.saturating_sub(l4.header_length);
 
     let flow_key = FlowKey::new(source_id, l3.src_ip, l4.src_port, l3.dst_ip, l4.dst_port);
     let direction = if (l3.src_ip, l4.src_port) <= (l3.dst_ip, l4.dst_port) {
@@ -80,6 +85,7 @@ pub fn decode(
         tcp_seq: l4.seq,
         tcp_ack: l4.ack,
         payload,
+        wire_payload_len,
         timestamp_us,
     })
 }
@@ -330,5 +336,51 @@ mod tests {
             decode(&pkt, 999, 0, String::new()).unwrap_err(),
             crate::de::error::DecodeError::NotSupported
         );
+    }
+
+    #[test]
+    fn wire_payload_len_reflects_ip_header_not_captured_bytes() {
+        // Build a frame whose IP total_length declares a 100-byte TCP segment
+        // payload, but only feed the decoder the first 50 bytes of payload —
+        // simulating a snaplen-truncated capture. The decoded packet's
+        // `payload.len()` is 50, while `wire_payload_len` must report the
+        // 100-byte on-wire length.
+        let src = [10, 0, 0, 1];
+        let dst = [10, 0, 0, 2];
+        let tcp = tcp_hdr(12345, 80, 0, 0, 0x18);
+        // total_length = ip_hdr(20) + tcp_hdr(20) + 100 wire-payload = 140.
+        let ip = ipv4_hdr(6, src, dst, tcp.len() + 100);
+        let eth = ethernet_hdr(ETHERTYPE_IPV4);
+
+        let mut pkt = eth;
+        pkt.extend_from_slice(&ip);
+        pkt.extend_from_slice(&tcp);
+        // Only 50 bytes of body present in the captured slice.
+        pkt.extend_from_slice(&[0u8; 50]);
+
+        let result = decode(&pkt, LINKTYPE_ETHERNET, 0, String::new()).expect("should decode");
+        assert_eq!(result.payload.len(), 50, "captured payload only");
+        assert_eq!(
+            result.wire_payload_len, 100,
+            "wire payload length comes from IP+TCP header, not capture"
+        );
+    }
+
+    #[test]
+    fn wire_payload_len_matches_payload_len_for_intact_packet() {
+        let payload = b"hello world";
+        let src = [10, 0, 0, 1];
+        let dst = [10, 0, 0, 2];
+        let tcp = tcp_hdr(12345, 80, 0, 0, 0x18);
+        let ip = ipv4_hdr(6, src, dst, tcp.len() + payload.len());
+        let eth = ethernet_hdr(ETHERTYPE_IPV4);
+
+        let mut pkt = eth;
+        pkt.extend_from_slice(&ip);
+        pkt.extend_from_slice(&tcp);
+        pkt.extend_from_slice(payload);
+
+        let result = decode(&pkt, LINKTYPE_ETHERNET, 0, String::new()).expect("should decode");
+        assert_eq!(result.payload.len() as u32, result.wire_payload_len);
     }
 }

@@ -11,6 +11,10 @@ pub struct L3Info {
     pub src_ip: IpAddr,
     pub dst_ip: IpAddr,
     pub protocol: u8,
+    /// Length (bytes) of the L3 payload as declared by the IP header — the
+    /// transport segment length on the wire, regardless of capture truncation.
+    /// IPv4: `total_length - ihl`. IPv6: header `payload_length`.
+    pub payload_length: u32,
 }
 
 /// Dispatch L3 parsing based on `ether_type` and advance the buffer past the
@@ -51,6 +55,7 @@ fn decode_ipv4(buf: &mut PacketBuf) -> DecodeResult<L3Info> {
         src_ip,
         dst_ip,
         protocol,
+        payload_length: (total_len as u32).saturating_sub(ihl as u32),
     })
 }
 
@@ -70,6 +75,7 @@ fn decode_ipv6(buf: &mut PacketBuf) -> DecodeResult<L3Info> {
         src_ip,
         dst_ip,
         protocol,
+        payload_length: payload_length as u32,
     })
 }
 
