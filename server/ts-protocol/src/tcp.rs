@@ -676,7 +676,7 @@ impl FlowWorker {
             if let Some(mut flow) = self.flows.remove(key) {
                 flow.finish_pending_response(out);
             }
-            self.metrics.counter(Metric::FlowsTimedOut).inc();
+            self.metrics.counter(Metric::FlowsExpired).inc();
         }
     }
 }
@@ -1087,7 +1087,7 @@ mod tests {
                 Metric::TcpOutOfOrderDrops,
                 Metric::TcpOutOfOrderBuffered,
                 Metric::TcpRetransmissionsIgnored,
-                Metric::FlowsTimedOut,
+                Metric::FlowsExpired,
             ],
         );
         // start() just finalizes the registry; handles already hold their own Arcs.
@@ -1140,7 +1140,7 @@ mod tests {
         // fk1 and fk2 should be cleaned, fk3 should remain.
         assert_eq!(worker.flows.len(), 1, "stale flows should be removed");
         assert!(worker.flows.contains_key(&fk3), "new flow should remain");
-        assert_eq!(metrics.counter(Metric::FlowsTimedOut).get(), 2);
+        assert_eq!(metrics.counter(Metric::FlowsExpired).get(), 2);
     }
 
     #[test]
@@ -1190,7 +1190,7 @@ mod tests {
             worker.flows.contains_key(&fk),
             "active flow should survive cleanup"
         );
-        assert_eq!(metrics.counter(Metric::FlowsTimedOut).get(), 0);
+        assert_eq!(metrics.counter(Metric::FlowsExpired).get(), 0);
     }
 
     #[test]
@@ -1250,7 +1250,7 @@ mod tests {
             !worker.flows.contains_key(&fk_a),
             "source-a flow must be evicted by its own source's heartbeat"
         );
-        assert_eq!(metrics.counter(Metric::FlowsTimedOut).get(), 1);
+        assert_eq!(metrics.counter(Metric::FlowsExpired).get(), 1);
     }
 
     #[test]

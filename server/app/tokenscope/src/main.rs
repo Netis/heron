@@ -444,7 +444,7 @@ async fn main() {
 
         // NOTE: reporters keep running through capture-stop and pipeline-drain
         // so their final-tick numbers reflect the truly drained state
-        // (`flushed.* == buf.*`, `q.* == 0`). They get the stop signal *after*
+        // (`flushed_* == buf_*`, `q_* == 0`). They get the stop signal *after*
         // drain at the bottom of this block.
 
         let mut force_exit = false;
@@ -497,7 +497,7 @@ async fn main() {
         }
 
         // Stop reporters now that drain is done — their final tick captures
-        // post-drain totals (every `flushed.*` should equal its `buf.*`).
+        // post-drain totals (every `flushed_*` should equal its `buf_*`).
         // Stage the shutdown so `global` is logged *last*: signal every
         // per-pipeline reporter, await each task's exit (its final tick has
         // been logged by then), and only then signal `global` and await it.

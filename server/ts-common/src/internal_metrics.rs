@@ -130,88 +130,88 @@ macro_rules! define_metrics {
 
 define_metrics! {
     // -- Capture --
-    CapturePacketsReceived       => { kind: Counter, group: Capture,  short: "pkts_recv"       },
-    CaptureKernelPacketsDropped  => { kind: Counter, group: Capture,  short: "kern_pkts_drop"  },
-    CaptureTruncatedPackets      => { kind: Counter, group: Capture,  short: "pkts_truncated"  },
-    CaptureBatchesReceived       => { kind: Counter, group: Capture,  short: "batches_recv"    },
-    CaptureZmqBatchesDropped     => { kind: Counter, group: Capture,  short: "zmq_batches_drop"},
-    CaptureHeartbeatsEmitted     => { kind: Counter, group: Capture,  short: "heartbeats"      },
-    CaptureReadErrors            => { kind: Counter, group: Capture,  short: "read_errors"     },
-    CaptureDumpErrors            => { kind: Counter, group: Capture,  short: "dump_errors"     },
+    CapturePacketsReceived       => { kind: Counter, group: Capture,  short: "pkts_received"        },
+    CaptureKernelPacketsDropped  => { kind: Counter, group: Capture,  short: "pkts_dropped_kernel"  },
+    CaptureTruncatedPackets      => { kind: Counter, group: Capture,  short: "pkts_truncated"       },
+    CaptureBatchesReceived       => { kind: Counter, group: Capture,  short: "batches_received"     },
+    CaptureZmqBatchesDropped     => { kind: Counter, group: Capture,  short: "batches_dropped_zmq"  },
+    CaptureHeartbeatsEmitted     => { kind: Counter, group: Capture,  short: "heartbeats_emitted"   },
+    CaptureReadErrors            => { kind: Counter, group: Capture,  short: "read_errors"          },
+    CaptureDumpErrors            => { kind: Counter, group: Capture,  short: "dump_errors"          },
 
     // -- Protocol (dispatcher + flow workers) --
-    DispatcherPacketsRouted      => { kind: Counter, group: Protocol, short: "pkts_routed"       },
-    DispatcherHeartbeatsDropped  => { kind: Counter, group: Protocol, short: "heartbeats_drop"   },
-    NetPacketsParsed             => { kind: Counter, group: Protocol, short: "net_parsed"        },
-    NetParseDroppedNotIp         => { kind: Counter, group: Protocol, short: "parse_drop_notip"  },
-    NetParseDroppedNotTcp        => { kind: Counter, group: Protocol, short: "parse_drop_nottcp" },
-    NetParseDroppedMalformed     => { kind: Counter, group: Protocol, short: "parse_drop_bad"    },
-    HttpParseReq                 => { kind: Counter, group: Protocol, short: "http_parse_req"    },
-    HttpParseResp                => { kind: Counter, group: Protocol, short: "http_parse_resp"   },
-    SseEventsParsed              => { kind: Counter, group: Protocol, short: "sse_events"        },
-    HttpResyncEvents             => { kind: Counter, group: Protocol, short: "http_resync"       },
-    TcpOutOfOrderDrops           => { kind: Counter, group: Protocol, short: "tcp_ooo_drop"      },
-    TcpOutOfOrderBuffered        => { kind: Counter, group: Protocol, short: "tcp_ooo_buf"       },
-    TcpRetransmissionsIgnored    => { kind: Counter, group: Protocol, short: "tcp_rexmit"        },
-    FlowsTimedOut                => { kind: Counter, group: Protocol, short: "flows_expired"     },
-    FlowsActive                  => { kind: Gauge,   group: Protocol, short: "flows_active"      },
+    DispatcherPacketsRouted      => { kind: Counter, group: Protocol, short: "pkts_routed"            },
+    DispatcherHeartbeatsDropped  => { kind: Counter, group: Protocol, short: "heartbeats_dropped"     },
+    NetPacketsParsed             => { kind: Counter, group: Protocol, short: "pkts_parsed"            },
+    NetParseDroppedNotIp         => { kind: Counter, group: Protocol, short: "pkts_dropped_not_ip"    },
+    NetParseDroppedNotTcp        => { kind: Counter, group: Protocol, short: "pkts_dropped_not_tcp"   },
+    NetParseDroppedMalformed     => { kind: Counter, group: Protocol, short: "pkts_dropped_malformed" },
+    HttpParseReq                 => { kind: Counter, group: Protocol, short: "http_reqs_parsed"       },
+    HttpParseResp                => { kind: Counter, group: Protocol, short: "http_resps_parsed"      },
+    SseEventsParsed              => { kind: Counter, group: Protocol, short: "sse_events_parsed"      },
+    HttpResyncEvents             => { kind: Counter, group: Protocol, short: "http_resyncs"           },
+    TcpOutOfOrderDrops           => { kind: Counter, group: Protocol, short: "tcp_ooo_dropped"        },
+    TcpOutOfOrderBuffered        => { kind: Counter, group: Protocol, short: "tcp_ooo_buffered"       },
+    TcpRetransmissionsIgnored    => { kind: Counter, group: Protocol, short: "tcp_rexmits_ignored"    },
+    FlowsExpired                 => { kind: Counter, group: Protocol, short: "flows_expired"          },
+    FlowsActive                  => { kind: Gauge,   group: Protocol, short: "flows_active"           },
 
     // -- HTTP exchange pairing (HttpJoiner) --
-    HttpJoinerDone     => { kind: Counter, group: Protocol, short: "http_joiner_done"     },
-    HttpJoinerUnpaired => { kind: Counter, group: Protocol, short: "http_joiner_unpaired" },
-    HttpJoinerExpired  => { kind: Counter, group: Protocol, short: "http_joiner_expired"  },
+    HttpJoinerDone     => { kind: Counter, group: Protocol, short: "http_exchanges_joined"   },
+    HttpJoinerUnpaired => { kind: Counter, group: Protocol, short: "http_exchanges_unpaired" },
+    HttpJoinerExpired  => { kind: Counter, group: Protocol, short: "http_exchanges_expired"  },
 
     // -- LLM extraction --
-    WireDetected            => { kind: Counter, group: Llm, short: "wire_detected"  },
-    WireIgnored             => { kind: Counter, group: Llm, short: "wire_ignored"   },
-    LlmCallsWithAgent       => { kind: Counter, group: Llm, short: "calls_agent"    },
-    LlmCallsWithoutAgent    => { kind: Counter, group: Llm, short: "calls_no_agent" },
+    WireDetected            => { kind: Counter, group: Llm, short: "wires_detected"      },
+    WireIgnored             => { kind: Counter, group: Llm, short: "wires_ignored"       },
+    LlmCallsWithAgent       => { kind: Counter, group: Llm, short: "calls_with_agent"    },
+    LlmCallsWithoutAgent    => { kind: Counter, group: Llm, short: "calls_without_agent" },
 
     // -- Turn tracking --
-    TurnCallsIngested        => { kind: Counter, group: Turn, short: "calls_ingested" },
-    TurnCallsAuxiliary       => { kind: Counter, group: Turn, short: "calls_aux"      },
-    TurnCallsDroppedLate     => { kind: Counter, group: Turn, short: "calls_late"     },
-    TurnsCompleted           => { kind: Counter, group: Turn, short: "completed"      },
-    TurnClosedByGrace        => { kind: Counter, group: Turn, short: "closed_grace"   },
-    TurnClosedByIdle         => { kind: Counter, group: Turn, short: "closed_idle"    },
-    TurnDiscardedNoUserStart => { kind: Counter, group: Turn, short: "no_user_start"  },
-    TurnActive               => { kind: Gauge,   group: Turn, short: "active"         },
+    TurnCallsIngested        => { kind: Counter, group: Turn, short: "calls_ingested"                },
+    TurnCallsAuxiliary       => { kind: Counter, group: Turn, short: "calls_auxiliary"               },
+    TurnCallsDroppedLate     => { kind: Counter, group: Turn, short: "calls_dropped_late"            },
+    TurnsCompleted           => { kind: Counter, group: Turn, short: "turns_completed"               },
+    TurnClosedByGrace        => { kind: Counter, group: Turn, short: "turns_closed_grace"            },
+    TurnClosedByIdle         => { kind: Counter, group: Turn, short: "turns_closed_idle"             },
+    TurnDiscardedNoUserStart => { kind: Counter, group: Turn, short: "turns_discarded_no_user_start" },
+    TurnActive               => { kind: Gauge,   group: Turn, short: "turns_active"                  },
 
     // -- Metrics aggregation --
     // LlmEvent variants are split so heartbeat fan-out (= flow_shards × metrics_shards)
     // doesn't drown out the real call signal.
-    MetricsLlmEventsStart     => { kind: Counter, group: Metrics, short: "llm_event_start"     },
-    MetricsLlmEventsComplete  => { kind: Counter, group: Metrics, short: "llm_event_complete"  },
-    MetricsLlmEventsHeartbeat => { kind: Counter, group: Metrics, short: "llm_event_heartbeat" },
-    MetricsWindowsEmitted     => { kind: Counter, group: Metrics, short: "windows_emitted"     },
+    MetricsLlmEventsStart     => { kind: Counter, group: Metrics, short: "llm_events_start"     },
+    MetricsLlmEventsComplete  => { kind: Counter, group: Metrics, short: "llm_events_complete"  },
+    MetricsLlmEventsHeartbeat => { kind: Counter, group: Metrics, short: "llm_events_heartbeat" },
+    MetricsWindowsEmitted     => { kind: Counter, group: Metrics, short: "windows_emitted"      },
 
     // -- Storage --
     // buffered/flushed split per entity so the line tells you which stream
     // dominates (was previously one shared counter across 4 WriteBuffers).
-    StorageBufferedCalls         => { kind: Counter, group: Storage, short: "buf.calls"        },
-    StorageBufferedTurns         => { kind: Counter, group: Storage, short: "buf.turns"        },
-    StorageBufferedMetrics       => { kind: Counter, group: Storage, short: "buf.metrics"      },
-    StorageBufferedHttpExchanges => { kind: Counter, group: Storage, short: "buf.exchanges"    },
-    StorageFlushedCalls          => { kind: Counter, group: Storage, short: "flushed.calls"    },
-    StorageFlushedTurns          => { kind: Counter, group: Storage, short: "flushed.turns"    },
-    StorageFlushedMetrics        => { kind: Counter, group: Storage, short: "flushed.metrics"  },
-    StorageFlushedHttpExchanges  => { kind: Counter, group: Storage, short: "flushed.exchanges"},
-    StorageFlushErrors           => { kind: Counter, group: Storage, short: "flush_errors"     },
+    StorageBufferedCalls         => { kind: Counter, group: Storage, short: "buf_calls"         },
+    StorageBufferedTurns         => { kind: Counter, group: Storage, short: "buf_turns"         },
+    StorageBufferedMetrics       => { kind: Counter, group: Storage, short: "buf_metrics"       },
+    StorageBufferedHttpExchanges => { kind: Counter, group: Storage, short: "buf_exchanges"     },
+    StorageFlushedCalls          => { kind: Counter, group: Storage, short: "flushed_calls"     },
+    StorageFlushedTurns          => { kind: Counter, group: Storage, short: "flushed_turns"     },
+    StorageFlushedMetrics        => { kind: Counter, group: Storage, short: "flushed_metrics"   },
+    StorageFlushedHttpExchanges  => { kind: Counter, group: Storage, short: "flushed_exchanges" },
+    StorageFlushErrors           => { kind: Counter, group: Storage, short: "flush_errors"      },
 
     // -- Queue depths (gauges) --
     // Each queue is named after the content it carries (not in/out),
     // so grep lands uniquely regardless of which side of the stage
     // you're thinking from.
-    QueueDepthRaw                  => { kind: Gauge, group: Protocol, short: "q.raw"        },
-    QueueDepthParsed               => { kind: Gauge, group: Protocol, short: "q.parsed"     },
-    QueueDepthHttpParseEvent       => { kind: Gauge, group: Llm,      short: "q.http_parse_evt"  },
-    QueueDepthHttpJoinerEvent      => { kind: Gauge, group: Llm,      short: "q.http_joiner_evt" },
-    QueueDepthAgentCall            => { kind: Gauge, group: Turn,     short: "q.agent_call" },
-    QueueDepthLlmEvent             => { kind: Gauge, group: Metrics,  short: "q.llm_evt"    },
-    StorageQueueDepthCalls         => { kind: Gauge, group: Storage,  short: "q.calls"      },
-    StorageQueueDepthTurns         => { kind: Gauge, group: Storage,  short: "q.turns"      },
-    StorageQueueDepthMetrics       => { kind: Gauge, group: Storage,  short: "q.metrics"    },
-    StorageQueueDepthHttpExchanges => { kind: Gauge, group: Storage,  short: "q.exchanges"  },
+    QueueDepthRaw                  => { kind: Gauge, group: Protocol, short: "q_raw_pkts"           },
+    QueueDepthParsed               => { kind: Gauge, group: Protocol, short: "q_parsed_pkts"        },
+    QueueDepthHttpParseEvent       => { kind: Gauge, group: Llm,      short: "q_http_parse_events"  },
+    QueueDepthHttpJoinerEvent      => { kind: Gauge, group: Llm,      short: "q_http_joiner_events" },
+    QueueDepthAgentCall            => { kind: Gauge, group: Turn,     short: "q_agent_calls"        },
+    QueueDepthLlmEvent             => { kind: Gauge, group: Metrics,  short: "q_llm_events"         },
+    StorageQueueDepthCalls         => { kind: Gauge, group: Storage,  short: "q_calls"              },
+    StorageQueueDepthTurns         => { kind: Gauge, group: Storage,  short: "q_turns"              },
+    StorageQueueDepthMetrics       => { kind: Gauge, group: Storage,  short: "q_metrics"            },
+    StorageQueueDepthHttpExchanges => { kind: Gauge, group: Storage,  short: "q_exchanges"          },
 }
 
 impl Metric {
@@ -738,12 +738,12 @@ mod tests {
 
         assert_eq!(grouped.len(), 3);
         assert_eq!(grouped[0].0, "capture");
-        assert!(grouped[0].1.contains("pkts_recv=1000/1000"));
+        assert!(grouped[0].1.contains("pkts_received=1000/1000"));
         assert_eq!(grouped[1].0, "protocol");
-        assert!(grouped[1].1.contains("net_parsed=500/500"));
+        assert!(grouped[1].1.contains("pkts_parsed=500/500"));
         assert_eq!(grouped[2].0, "storage");
-        assert!(grouped[2].1.contains("buf.calls=100/100"));
-        assert!(grouped[2].1.contains("q.calls=5"));
+        assert!(grouped[2].1.contains("buf_calls=100/100"));
+        assert!(grouped[2].1.contains("q_calls=5"));
     }
 
     #[test]
@@ -792,7 +792,7 @@ mod tests {
         assert_eq!(grouped.len(), 1);
         assert_eq!(grouped[0].0, "protocol");
         let line = &grouped[0].1;
-        assert!(line.contains("q.raw=4000/4096(97%)"), "got: {line}");
+        assert!(line.contains("q_raw_pkts=4000/4096(97%)"), "got: {line}");
         assert!(line.contains("flows_active=7"), "got: {line}");
         assert!(!line.contains("flows_active=7/"), "got: {line}");
     }
@@ -808,8 +808,8 @@ mod tests {
         let poll = mon.poll();
         let grouped = poll.format_grouped();
         // Capacity 0 means no division — fall back to plain `name=value`.
-        assert!(grouped[0].1.contains("q.raw=5"), "got: {}", grouped[0].1);
-        assert!(!grouped[0].1.contains("q.raw=5/"), "got: {}", grouped[0].1);
+        assert!(grouped[0].1.contains("q_raw_pkts=5"), "got: {}", grouped[0].1);
+        assert!(!grouped[0].1.contains("q_raw_pkts=5/"), "got: {}", grouped[0].1);
     }
 
     #[test]

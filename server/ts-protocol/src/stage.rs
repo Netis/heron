@@ -129,7 +129,7 @@ pub fn spawn_protocol_stage(
                 Metric::TcpOutOfOrderDrops,
                 Metric::TcpOutOfOrderBuffered,
                 Metric::TcpRetransmissionsIgnored,
-                Metric::FlowsTimedOut,
+                Metric::FlowsExpired,
             ],
         );
 
