@@ -371,7 +371,7 @@ function MessagesSection({
   ctx?: OutputCtx
   overlay?: CallOverlay | null
 }) {
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState(false)
   if (messages.length === 0) return null
   return (
     <div className="rounded border border-border/60 bg-background text-xs">
@@ -476,7 +476,7 @@ function SamplingSection({ request }: { request: AnthropicRequest }) {
     <div className="rounded border border-border/60 bg-background text-xs">
       <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
         {open ? <ChevronDown className="size-3 text-muted-foreground" /> : <ChevronRight className="size-3 text-muted-foreground" />}
-        <span className="font-medium">Sampling</span>
+        <span className="font-medium">Parameters</span>
       </button>
       {open && (
         <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 px-3 py-2 text-[11px]">

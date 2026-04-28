@@ -743,13 +743,13 @@ function InstructionsSection({ instructions }: { instructions: string | null }) 
 }
 
 function InputItemsSection({ request, overlay, ctx }: { request: ResponsesRequest; overlay?: CallOverlay | null; ctx?: OutputCtx }) {
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState(false)
   if (request.input.length === 0) return null
   return (
     <div className="rounded border border-border/60 bg-background text-xs">
       <button onClick={() => setOpen((o) => !o)} className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-left">
         {open ? <ChevronDown className="size-3 text-muted-foreground" /> : <ChevronRight className="size-3 text-muted-foreground" />}
-        <span className="font-medium">Input items</span>
+        <span className="font-medium">Input</span>
         <span className="text-muted-foreground">({request.input.length})</span>
         <ItemTypeChips items={request.input} />
       </button>
@@ -853,7 +853,7 @@ function SamplingSection({ request }: { request: ResponsesRequest }) {
     <div className="rounded border border-border/60 bg-background text-xs">
       <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
         {open ? <ChevronDown className="size-3 text-muted-foreground" /> : <ChevronRight className="size-3 text-muted-foreground" />}
-        <span className="font-medium">Sampling / control</span>
+        <span className="font-medium">Parameters</span>
       </button>
       {open && (
         <div className="space-y-1 px-3 py-2 text-[11px]">
@@ -946,14 +946,18 @@ function UsageCard({ response }: { response: ResponsesResponse }) {
   )
 }
 
-// ── output aggregate ───────────────────────────────────────────────────────
+// ── output assistant message (rendered inline, not collapsible) ───────────
 
-function AggregatedOutputText({ text }: { text: string }) {
-  if (!text) return null
+// Assistant text in `response.output` is the primary content — render it
+// directly like anthropic's TextBlockView rather than wrapping it in the
+// InputItemRow collapsible used by request-side items.
+function AssistantMessageOutputView({ item }: { item: ResponsesMessageItem }) {
+  if (typeof item.content === "string") {
+    return <div className="text-[11px]"><Markdown text={item.content} /></div>
+  }
   return (
-    <div className="rounded border border-border/60 bg-background px-3 py-2 text-[11px]">
-      <div className="mb-1 text-[10px] font-medium text-muted-foreground">aggregated output text</div>
-      <Markdown text={text} />
+    <div className="space-y-2">
+      {item.content.map((p, i) => <ContentPartView key={i} part={p} />)}
     </div>
   )
 }
@@ -1017,8 +1021,12 @@ export function OpenAiResponsesOutputBlocks({
   }
   return (
     <div className="space-y-2">
-      <AggregatedOutputText text={response.output_text_aggregated} />
-      {response.output.map((item, i) => <ItemView key={i} item={item} index={i} overlay={overlay} ctx={ctx} />)}
+      {response.output.map((item, i) => {
+        if (item.kind === "message" && item.role === "assistant") {
+          return <AssistantMessageOutputView key={i} item={item} />
+        }
+        return <ItemView key={i} item={item} index={i} overlay={overlay} ctx={ctx} />
+      })}
     </div>
   )
 }
