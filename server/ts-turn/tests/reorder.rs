@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use ts_common::internal_metrics::{Metric, MetricsSystem, MetricsWorker};
 use ts_llm::agents;
-use ts_llm::model::{AgentCall, AgentIdentity, ApiType, FinishReason, LlmCall};
+use ts_llm::model::{AgentCall, AgentIdentity, ApiType, LlmCall};
 use ts_llm::wire_apis as wa;
 use ts_turn::tracker::{TrackerConfig, TurnEvent, TurnTracker};
 use ts_turn::{AgentTurn, TurnStatus};
@@ -43,6 +43,7 @@ fn test_metrics() -> MetricsWorker {
 fn mk_tracker() -> TurnTracker {
     TurnTracker::new(
         Arc::new(agents::build_default_registry()),
+        Arc::new(ts_llm::wire_apis::build_default_wire_api_registry()),
         TrackerConfig::default(),
         test_metrics(),
     )
@@ -55,7 +56,7 @@ fn anthropic_call(
     session: &str,
     request_time_us: i64,
     body_kind: &str,
-    finish: FinishReason,
+    finish: &str,
     tools: &[&str],
     response_text: Option<&str>,
 ) -> LlmCall {
@@ -88,7 +89,7 @@ fn anthropic_call(
         is_stream: true,
         request_body: Some(body),
         status_code: Some(200),
-        finish_reason: Some(finish),
+        finish_reason: Some(finish.to_string()),
         response_body,
         input_tokens: Some(10),
         output_tokens: Some(5),
@@ -154,7 +155,7 @@ fn bug_a_late_user_start_splits_turn() {
         "S",
         1_000_000,
         "text",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         None,
     );
@@ -162,7 +163,7 @@ fn bug_a_late_user_start_splits_turn() {
         "S",
         2_000_000,
         "tool_result",
-        FinishReason::Complete,
+        "end_turn",
         &["Agent", "Bash"],
         Some("done"),
     );
@@ -196,7 +197,7 @@ fn bug_b_state_corruption_when_terminal_arrives_before_predecessors() {
         "S",
         1_000_000,
         "text",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         None,
     );
@@ -204,7 +205,7 @@ fn bug_b_state_corruption_when_terminal_arrives_before_predecessors() {
         "S",
         2_000_000,
         "tool_result",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         None,
     );
@@ -212,7 +213,7 @@ fn bug_b_state_corruption_when_terminal_arrives_before_predecessors() {
         "S",
         3_000_000,
         "tool_result",
-        FinishReason::Complete,
+        "end_turn",
         &["Agent", "Bash"],
         Some("final"),
     );
@@ -253,7 +254,7 @@ fn bug_c_final_call_id_and_last_activity_track_request_time_not_arrival() {
         "S",
         1_000_000,
         "text",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         Some("welcome"),
     );
@@ -261,7 +262,7 @@ fn bug_c_final_call_id_and_last_activity_track_request_time_not_arrival() {
         "S",
         2_000_000,
         "tool_result",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         Some("step 2"),
     );
@@ -269,7 +270,7 @@ fn bug_c_final_call_id_and_last_activity_track_request_time_not_arrival() {
         "S",
         3_000_000,
         "tool_result",
-        FinishReason::Complete,
+        "end_turn",
         &["Agent", "Bash"],
         Some("final"),
     );
@@ -318,7 +319,7 @@ fn bug_d_late_call_after_finalize_is_orphan_not_phantom() {
         "S",
         2_000_000,
         "text",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         None,
     );
@@ -326,7 +327,7 @@ fn bug_d_late_call_after_finalize_is_orphan_not_phantom() {
         "S",
         3_000_000,
         "tool_result",
-        FinishReason::Complete,
+        "end_turn",
         &["Agent", "Bash"],
         Some("done"),
     );
@@ -334,7 +335,7 @@ fn bug_d_late_call_after_finalize_is_orphan_not_phantom() {
         "S",
         1_000_000, // older than c1
         "text",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         None,
     );
@@ -398,7 +399,7 @@ fn bug_e_partition_without_user_start_is_discarded() {
         "S",
         1_000_000,
         "tool_result", // continuation body, is_user_turn_start = Some(false)
-        FinishReason::Complete,
+        "end_turn",
         &["Agent", "Bash"],
         Some("answer"),
     );
@@ -430,7 +431,7 @@ fn bug_f_heartbeat_advance_does_not_open_phantom_for_late_call() {
         "S",
         2_000_000,
         "text",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         None,
     );
@@ -438,7 +439,7 @@ fn bug_f_heartbeat_advance_does_not_open_phantom_for_late_call() {
         "S",
         3_000_000,
         "tool_result",
-        FinishReason::Complete,
+        "end_turn",
         &["Agent", "Bash"],
         Some("done"),
     );
@@ -468,7 +469,7 @@ fn bug_f_heartbeat_advance_does_not_open_phantom_for_late_call() {
         "S",
         1_000_000,
         "text",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         None,
     );
@@ -502,7 +503,7 @@ fn anthropic_call_on_source(
     session: &str,
     request_time_us: i64,
     body_kind: &str,
-    finish: FinishReason,
+    finish: &str,
     tools: &[&str],
     response_text: Option<&str>,
 ) -> LlmCall {
@@ -556,7 +557,7 @@ fn f1_intra_source_hb_does_not_orphan_same_session_laggard() {
         "S",
         10_000_000,
         "text",
-        FinishReason::Complete,
+        "end_turn",
         &["Agent", "Bash"],
         Some("final"),
     ));
@@ -567,7 +568,7 @@ fn f1_intra_source_hb_does_not_orphan_same_session_laggard() {
         "S",
         5_000_000,
         "tool_result",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         None,
     ));
@@ -638,7 +639,7 @@ fn f2_cross_session_ingest_does_not_collapse_other_session_grace() {
         "A",
         10_000_000,
         "text",
-        FinishReason::Complete,
+        "end_turn",
         &["Agent", "Bash"],
         Some("a-final"),
     ));
@@ -647,7 +648,7 @@ fn f2_cross_session_ingest_does_not_collapse_other_session_grace() {
         "A",
         5_000_000,
         "tool_result",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         None,
     ));
@@ -657,7 +658,7 @@ fn f2_cross_session_ingest_does_not_collapse_other_session_grace() {
         "B",
         10_000_000_000, // 10^10 us = 10_000 s
         "text",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         None,
     ));
@@ -726,7 +727,7 @@ fn f3_cross_source_hb_does_not_expire_other_source_grace() {
         "SA",
         10_000_000,
         "text",
-        FinishReason::Complete,
+        "end_turn",
         &["Agent", "Bash"],
         Some("a-final"),
     ));
@@ -783,6 +784,7 @@ fn finalize_by_grace_counter_does_not_double_count_across_discarded_partition() 
     let metrics = test_metrics();
     let mut t = TurnTracker::new(
         Arc::new(agents::build_default_registry()),
+        Arc::new(ts_llm::wire_apis::build_default_wire_api_registry()),
         TrackerConfig::default(),
         metrics.clone(),
     );
@@ -792,7 +794,7 @@ fn finalize_by_grace_counter_does_not_double_count_across_discarded_partition() 
         "S",
         1_000_000,
         "text",
-        FinishReason::ToolUse,
+        "tool_use",
         &["Agent", "Bash"],
         None,
     ));
@@ -800,7 +802,7 @@ fn finalize_by_grace_counter_does_not_double_count_across_discarded_partition() 
         "S",
         2_000_000,
         "tool_result",
-        FinishReason::Complete,
+        "end_turn",
         &["Agent", "Bash"],
         Some("a-done"),
     ));
@@ -809,7 +811,7 @@ fn finalize_by_grace_counter_does_not_double_count_across_discarded_partition() 
         "S",
         3_000_000,
         "tool_result",
-        FinishReason::Complete,
+        "end_turn",
         &["Agent", "Bash"],
         Some("b-done"),
     ));

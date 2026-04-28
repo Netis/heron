@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use ts_common::internal_metrics::{Metric, MetricsWorker};
-use ts_llm::model::{AgentCall, FinishReason};
+use ts_llm::model::AgentCall;
 use ts_llm::profile::{AgentProfile, AgentProfileRegistry};
+use ts_llm::wire_api_registry::WireApiRegistry;
 
 use crate::model::{AgentTurn, TurnStatus};
 
@@ -106,6 +107,11 @@ struct SessionBuffer {
 /// * `Instant` taken at ingest / advance — wall-clock. Used only for grace.
 pub struct TurnTracker {
     registry: Arc<AgentProfileRegistry>,
+    /// Wire-API registry, used by `is_main_terminal` to ask each call's
+    /// wire_api whether its `finish_reason` is terminal (and not a tool_use).
+    /// Keeping the predicate ownership on the wire-API trait means the tracker
+    /// stays agnostic of provider-specific finish_reason vocabulary.
+    wire_apis: Arc<WireApiRegistry>,
     config: TrackerConfig,
     buffers: HashMap<(String, String), SessionBuffer>,
     /// Event-time watermark, keyed by `source_id`. `0` ≡ "never seen".
@@ -119,11 +125,13 @@ pub struct TurnTracker {
 impl TurnTracker {
     pub fn new(
         registry: Arc<AgentProfileRegistry>,
+        wire_apis: Arc<WireApiRegistry>,
         config: TrackerConfig,
         metrics: MetricsWorker,
     ) -> Self {
         Self {
             registry,
+            wire_apis,
             config,
             buffers: HashMap::new(),
             virtual_now_by_source: HashMap::new(),
@@ -194,7 +202,7 @@ impl TurnTracker {
             }
         }
 
-        let is_terminal = is_main_terminal(profile, &ic);
+        let is_terminal = is_main_terminal(profile, &self.wire_apis, &ic);
         let request_time = ic.call.request_time;
         buf.pending
             .entry(request_time)
@@ -246,6 +254,7 @@ impl TurnTracker {
             let buf = self.buffers.get_mut(&key).expect("key just listed");
             finalize_session(
                 profile,
+                &self.wire_apis,
                 &key.0,
                 &key.1,
                 buf,
@@ -367,6 +376,7 @@ impl TurnTracker {
             // emit_or_discard; the returned bool isn't needed here.
             let _ = emit_or_discard(
                 profile,
+                &self.wire_apis,
                 &key.0,
                 &key.1,
                 &drained,
@@ -422,6 +432,7 @@ impl TurnTracker {
                 let buf = self.buffers.get_mut(&key).expect("listed above");
                 finalize_session(
                     profile,
+                    &self.wire_apis,
                     &key.0,
                     &key.1,
                     buf,
@@ -451,6 +462,7 @@ impl TurnTracker {
             // beyond TurnsCompleted (bumped inside emit_or_discard).
             let _ = emit_or_discard(
                 profile,
+                &self.wire_apis,
                 &key.0,
                 &key.1,
                 &drained,
@@ -476,6 +488,7 @@ enum FinalizeKind {
 #[allow(clippy::too_many_arguments)]
 fn finalize_session(
     profile: &dyn AgentProfile,
+    wire_apis: &WireApiRegistry,
     source_id: &str,
     session_id: &str,
     buf: &mut SessionBuffer,
@@ -526,6 +539,7 @@ fn finalize_session(
         // discarded partition.
         let emitted = emit_or_discard(
             profile,
+            wire_apis,
             source_id,
             session_id,
             &turn_calls,
@@ -550,9 +564,11 @@ fn finalize_session(
 /// that need to count grace-finalizations can rely on this instead of
 /// peeking at `events.last()`, which is unsafe when the loop has produced
 /// earlier Completed events in prior iterations.
+#[allow(clippy::too_many_arguments)]
 #[must_use]
 fn emit_or_discard(
     profile: &dyn AgentProfile,
+    wire_apis: &WireApiRegistry,
     source_id: &str,
     session_id: &str,
     calls: &[BufferedCall],
@@ -572,7 +588,7 @@ fn emit_or_discard(
     }
 
     let refs: Vec<&AgentCall> = calls.iter().map(|bc| &bc.ic).collect();
-    let mut turn = build_turn(profile, &refs);
+    let mut turn = build_turn(profile, wire_apis, &refs);
     // The buffer key is authoritative for source/session — call.source_id
     // can legitimately be empty in tests; identity.session_id may differ
     // from a future cross-bucket scheme. Using the key keeps us consistent.
@@ -590,24 +606,32 @@ fn emit_or_discard(
 ///
 /// Sub-agent calls are excluded outright. For profiles that provide an
 /// explicit `turn_id_hint` (Codex), only the profile's own `is_turn_terminal`
-/// predicate counts — Codex's `finish_reason=Complete` means "API call
-/// succeeded," not "turn done." For implicit-path profiles (Anthropic),
-/// definitive finish reasons fall through.
-fn is_main_terminal(profile: &dyn AgentProfile, ic: &AgentCall) -> bool {
+/// predicate counts — Codex's `finish_reason=completed` means "API call
+/// succeeded," not "turn done." For implicit-path profiles (Anthropic), the
+/// call's wire_api decides: a finish_reason is terminal iff the WireApi says
+/// it's terminal AND not a tool_use. `tool_use` keeps the agent loop running,
+/// so it must NOT close the turn.
+fn is_main_terminal(
+    profile: &dyn AgentProfile,
+    wire_apis: &WireApiRegistry,
+    ic: &AgentCall,
+) -> bool {
     if profile.subagent(&ic.call).is_some() {
         return false;
     }
     if profile.is_turn_terminal(&ic.call) {
         return true;
     }
-    if ic.agent.turn_id_hint.is_none() {
-        matches!(
-            ic.call.finish_reason,
-            Some(FinishReason::Complete) | Some(FinishReason::Length)
-        )
-    } else {
-        false
+    if ic.agent.turn_id_hint.is_some() {
+        return false;
     }
+    let Some(reason) = ic.call.finish_reason.as_deref() else {
+        return false;
+    };
+    let Some(api) = wire_apis.find_by_name(ic.call.wire_api) else {
+        return false;
+    };
+    api.is_terminal(reason) && !api.is_tool_use(reason)
 }
 
 fn push_unique(list: &mut Vec<String>, value: String) {
@@ -625,7 +649,11 @@ fn push_unique(list: &mut Vec<String>, value: String) {
 /// `Complete` regardless of whether the model asked for a tool call). For
 /// partitions drained via idle-sweep / EOF-flush with no terminal in the
 /// buffer, `final_*` stay `None` and status falls to `Incomplete`.
-fn build_turn(profile: &dyn AgentProfile, calls: &[&AgentCall]) -> AgentTurn {
+fn build_turn(
+    profile: &dyn AgentProfile,
+    wire_apis: &WireApiRegistry,
+    calls: &[&AgentCall],
+) -> AgentTurn {
     assert!(!calls.is_empty(), "build_turn requires at least one call");
     let first = calls[0];
     let source_id = first.call.source_id.clone();
@@ -706,15 +734,16 @@ fn build_turn(profile: &dyn AgentProfile, calls: &[&AgentCall]) -> AgentTurn {
     let terminal: Option<&AgentCall> = calls
         .iter()
         .rev()
-        .find(|ic| is_main_terminal(profile, ic))
+        .find(|ic| is_main_terminal(profile, wire_apis, ic))
         .copied();
 
-    let status = match terminal.and_then(|ic| ic.call.finish_reason) {
-        Some(FinishReason::Complete) => TurnStatus::Complete,
-        Some(FinishReason::Length) => TurnStatus::Length,
-        Some(FinishReason::Cancelled) => TurnStatus::Cancelled,
-        Some(FinishReason::Error) => TurnStatus::Failed,
-        _ => TurnStatus::Incomplete,
+    // `terminal` is `Some` iff a real wire-level terminal landed before
+    // finalize. Wire-level vocabulary (`end_turn`, `max_tokens`, `refusal`,
+    // `completed`, …) lives entirely in `final_finish_reason` below; status
+    // is the binary "did we close cleanly" signal.
+    let status = match terminal {
+        Some(_) => TurnStatus::Complete,
+        None => TurnStatus::Incomplete,
     };
 
     let (final_answer_preview, final_call_id, final_finish_reason) = match terminal {
@@ -725,7 +754,7 @@ fn build_turn(profile: &dyn AgentProfile, calls: &[&AgentCall]) -> AgentTurn {
             (
                 preview,
                 Some(ic.call.id.clone()),
-                ic.call.finish_reason.map(|r| r.to_string()),
+                ic.call.finish_reason.clone(),
             )
         }
         None => (None, None, None),
@@ -791,6 +820,7 @@ mod tests {
     fn mk_tracker_no_grace() -> TurnTracker {
         TurnTracker::new(
             Arc::new(agents::build_default_registry()),
+            Arc::new(ts_llm::wire_apis::build_default_wire_api_registry()),
             TrackerConfig {
                 grace: Duration::ZERO,
                 ..TrackerConfig::default()
@@ -832,7 +862,7 @@ mod tests {
         session: &str,
         request_time_us: i64,
         body_kind: &str,
-        finish: FinishReason,
+        finish: &str,
     ) -> LlmCall {
         // Tools: include "Agent" so the call is classified as main-agent
         // (looks_like_subagent → false). Tests that need sub-agent context
@@ -855,7 +885,7 @@ mod tests {
             is_stream: true,
             request_body: Some(body),
             status_code: Some(200),
-            finish_reason: Some(finish),
+            finish_reason: Some(finish.to_string()),
             response_body: None,
             input_tokens: Some(10),
             output_tokens: Some(5),
@@ -881,7 +911,7 @@ mod tests {
         session: &str,
         turn: &str,
         body_input_type: &str,
-        finish: FinishReason,
+        finish: &str,
     ) -> LlmCall {
         let meta = format!(r#"{{"session_id":"{session}","turn_id":"{turn}"}}"#);
         let body = match body_input_type {
@@ -903,7 +933,7 @@ mod tests {
             is_stream: true,
             request_body: Some(body),
             status_code: Some(200),
-            finish_reason: Some(finish),
+            finish_reason: Some(finish.to_string()),
             response_body: None,
             input_tokens: Some(100),
             output_tokens: Some(10),
@@ -936,6 +966,7 @@ mod tests {
     fn tracker_starts_empty() {
         let t = TurnTracker::new(
             Arc::new(AgentProfileRegistry::new()),
+            Arc::new(ts_llm::wire_apis::build_default_wire_api_registry()),
             TrackerConfig::default(),
             test_metrics(),
         );
@@ -946,6 +977,7 @@ mod tests {
     fn flush_all_on_empty_tracker_returns_no_events() {
         let mut t = TurnTracker::new(
             Arc::new(AgentProfileRegistry::new()),
+            Arc::new(ts_llm::wire_apis::build_default_wire_api_registry()),
             TrackerConfig::default(),
             test_metrics(),
         );
@@ -957,8 +989,8 @@ mod tests {
         // c1 (user-start, ToolUse) → c2 (cont, Complete = main terminal).
         // grace=0 → c2 grace expires immediately on its own ingest.
         let mut t = mk_tracker_no_grace();
-        let c1 = anthropic_call("S", 1_000_000, "text", FinishReason::ToolUse);
-        let c2 = anthropic_call("S", 2_000_000, "tool_result", FinishReason::Complete);
+        let c1 = anthropic_call("S", 1_000_000, "text", "tool_use");
+        let c2 = anthropic_call("S", 2_000_000, "tool_result", "end_turn");
         let id1 = identity_for_anthropic(&c1);
         let id2 = identity_for_anthropic(&c2);
         let mut events = t.ingest(ic(c1.clone(), id1));
@@ -973,11 +1005,11 @@ mod tests {
     #[test]
     fn anthropic_captures_user_input_and_final_answer() {
         let mut t = mk_tracker_no_grace();
-        let mut c1 = anthropic_call("S", 1_000_000, "text", FinishReason::ToolUse);
+        let mut c1 = anthropic_call("S", 1_000_000, "text", "tool_use");
         c1.request_body = Some(
             r#"{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>ignore</system-reminder>plan the refactor"}]}],"tools":[{"name":"Agent"},{"name":"Bash"}]}"#.into(),
         );
-        let mut c2 = anthropic_call("S", 2_000_000, "tool_result", FinishReason::Complete);
+        let mut c2 = anthropic_call("S", 2_000_000, "tool_result", "end_turn");
         c2.response_body =
             Some(r#"{"content":[{"type":"text","text":"Done. Here is the result."}]}"#.into());
         let id1 = identity_for_anthropic(&c1);
@@ -1005,8 +1037,8 @@ mod tests {
         let mut t = mk_tracker_no_grace();
         let long_text = "x".repeat(1000);
         let body = format!(r#"{{"content":[{{"type":"text","text":"{long_text}"}}]}}"#);
-        let c1 = anthropic_call("S", 1_000_000, "text", FinishReason::ToolUse);
-        let mut c2 = anthropic_call("S", 2_000_000, "tool_result", FinishReason::Complete);
+        let c1 = anthropic_call("S", 1_000_000, "text", "tool_use");
+        let mut c2 = anthropic_call("S", 2_000_000, "tool_result", "end_turn");
         c2.response_body = Some(body);
         let id1 = identity_for_anthropic(&c1);
         let id2 = identity_for_anthropic(&c2);
@@ -1025,9 +1057,9 @@ mod tests {
         let body = format!(
             r#"{{"messages":[{{"role":"user","content":[{{"type":"text","text":"{long_text}"}}]}}],"tools":[{{"name":"Agent"}},{{"name":"Bash"}}]}}"#
         );
-        let mut c1 = anthropic_call("S", 1_000_000, "text", FinishReason::ToolUse);
+        let mut c1 = anthropic_call("S", 1_000_000, "text", "tool_use");
         c1.request_body = Some(body);
-        let c2 = anthropic_call("S", 2_000_000, "tool_result", FinishReason::Complete);
+        let c2 = anthropic_call("S", 2_000_000, "tool_result", "end_turn");
         let id1 = identity_for_anthropic(&c1);
         let id2 = identity_for_anthropic(&c2);
         let c1_id = c1.id.clone();
@@ -1045,12 +1077,12 @@ mod tests {
         // Sub-agent's Complete is not is_main_terminal, so no grace fires
         // until the main-agent's own terminal arrives.
         let mut t = mk_tracker_no_grace();
-        let c1 = anthropic_call("S", 1_000_000, "text", FinishReason::ToolUse);
-        let mut c2 = anthropic_call("S", 2_000_000, "text", FinishReason::Complete);
+        let c1 = anthropic_call("S", 1_000_000, "text", "tool_use");
+        let mut c2 = anthropic_call("S", 2_000_000, "text", "end_turn");
         c2.request_body = Some(
             r#"{"messages":[{"role":"user","content":[{"type":"text","text":"do research"}]}],"tools":[{"name":"Read"},{"name":"Grep"}]}"#.into(),
         );
-        let c3 = anthropic_call("S", 3_000_000, "tool_result", FinishReason::ToolUse);
+        let c3 = anthropic_call("S", 3_000_000, "tool_result", "tool_use");
         let id1 = identity_for_anthropic(&c1);
         let id2 = identity_for_anthropic(&c2);
         let id3 = identity_for_anthropic(&c3);
@@ -1067,18 +1099,18 @@ mod tests {
     #[test]
     fn subagent_assistant_text_does_not_leak_to_parent_final_answer() {
         let mut t = mk_tracker_no_grace();
-        let mut c1 = anthropic_call("S", 1_000_000, "text", FinishReason::ToolUse);
+        let mut c1 = anthropic_call("S", 1_000_000, "text", "tool_use");
         c1.request_body = Some(
             r#"{"messages":[{"role":"user","content":[{"type":"text","text":"start"}]}],"tools":[{"name":"Agent"}]}"#.into(),
         );
         c1.response_body = Some(r#"{"content":[{"type":"text","text":"parent progress"}]}"#.into());
-        let mut c2 = anthropic_call("S", 2_000_000, "text", FinishReason::Complete);
+        let mut c2 = anthropic_call("S", 2_000_000, "text", "end_turn");
         c2.request_body = Some(
             r#"{"messages":[{"role":"user","content":[{"type":"text","text":"sub task"}]}],"tools":[{"name":"Read"}]}"#.into(),
         );
         c2.response_body =
             Some(r#"{"content":[{"type":"text","text":"sub-agent conclusion"}]}"#.into());
-        let mut c3 = anthropic_call("S", 3_000_000, "tool_result", FinishReason::Complete);
+        let mut c3 = anthropic_call("S", 3_000_000, "tool_result", "end_turn");
         c3.response_body = Some(r#"{"content":[{"type":"text","text":"final answer"}]}"#.into());
         let id1 = identity_for_anthropic(&c1);
         let id2 = identity_for_anthropic(&c2);
@@ -1099,8 +1131,8 @@ mod tests {
     fn anthropic_tool_use_keeps_turn_open() {
         // No terminal — buffer grows, no events emitted.
         let mut t = mk_tracker_no_grace();
-        let c1 = anthropic_call("S", 1_000_000, "text", FinishReason::ToolUse);
-        let c2 = anthropic_call("S", 2_000_000, "tool_result", FinishReason::ToolUse);
+        let c1 = anthropic_call("S", 1_000_000, "text", "tool_use");
+        let c2 = anthropic_call("S", 2_000_000, "tool_result", "tool_use");
         let id1 = identity_for_anthropic(&c1);
         let id2 = identity_for_anthropic(&c2);
         let mut events = t.ingest(ic(c1, id1));
@@ -1112,7 +1144,7 @@ mod tests {
     #[test]
     fn single_call_complete_closes_after_grace() {
         let mut t = mk_tracker_no_grace();
-        let c = anthropic_call("S", 1_000_000, "text", FinishReason::Complete);
+        let c = anthropic_call("S", 1_000_000, "text", "end_turn");
         let id = identity_for_anthropic(&c);
         let events = t.ingest(ic(c, id));
         let turns = drain_completed(events);
@@ -1122,29 +1154,43 @@ mod tests {
     }
 
     #[test]
-    fn single_call_length_closes_after_grace() {
+    fn single_call_max_tokens_closes_after_grace() {
+        // `max_tokens` is wire-terminal (model finished, just truncated). The
+        // raw reason lives in `final_finish_reason`; status is the binary
+        // "did a terminal land" — Complete.
         let mut t = mk_tracker_no_grace();
-        let c = anthropic_call("S", 1_000_000, "text", FinishReason::Length);
+        let c = anthropic_call("S", 1_000_000, "text", "max_tokens");
         let id = identity_for_anthropic(&c);
         let turns = drain_completed(t.ingest(ic(c, id)));
         assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].status, TurnStatus::Length);
+        assert_eq!(turns[0].status, TurnStatus::Complete);
+        assert_eq!(
+            turns[0].final_finish_reason.as_deref(),
+            Some("max_tokens"),
+            "raw wire reason preserved on the row"
+        );
     }
 
     #[test]
-    fn single_call_error_stays_buffered() {
+    fn single_call_pause_turn_stays_buffered() {
+        // Anthropic `pause_turn` is intentionally NOT terminal — the
+        // server-tool loop yielded mid-turn and the assistant turn continues
+        // on a follow-up call. Tracker must keep the call buffered.
         let mut t = mk_tracker_no_grace();
-        let c = anthropic_call("S", 1_000_000, "text", FinishReason::Error);
+        let c = anthropic_call("S", 1_000_000, "text", "pause_turn");
         let id = identity_for_anthropic(&c);
         let events = t.ingest(ic(c, id));
-        assert!(drain_completed(events).is_empty(), "Error is not terminal");
+        assert!(
+            drain_completed(events).is_empty(),
+            "pause_turn is not terminal"
+        );
         assert_eq!(t.active_count(), 1);
     }
 
     #[test]
     fn auxiliary_call_is_skipped_entirely() {
         let mut t = mk_tracker_no_grace();
-        let mut c = anthropic_call("S", 1_000_000, "text", FinishReason::Complete);
+        let mut c = anthropic_call("S", 1_000_000, "text", "end_turn");
         c.request_body =
             Some(r#"{"messages":[{"role":"user","content":"generate title"}],"tools":[]}"#.into());
         let id = AgentIdentity {
@@ -1161,7 +1207,7 @@ mod tests {
     fn flush_all_emits_remaining_buffered_turn_as_incomplete() {
         // Pure user-start, no terminal → flush_all emits Incomplete.
         let mut t = mk_tracker_no_grace();
-        let c = anthropic_call("S", 1_000_000, "text", FinishReason::ToolUse);
+        let c = anthropic_call("S", 1_000_000, "text", "tool_use");
         let id = identity_for_anthropic(&c);
         t.ingest(ic(c, id));
         assert_eq!(t.active_count(), 1);
@@ -1180,7 +1226,7 @@ mod tests {
     fn flush_all_discards_partition_without_user_start() {
         // A lone continuation: terminal but no user-start → discard, not emit.
         let mut t = mk_tracker_no_grace();
-        let c = anthropic_call("S", 1_000_000, "tool_result", FinishReason::Complete);
+        let c = anthropic_call("S", 1_000_000, "tool_result", "end_turn");
         let id = identity_for_anthropic(&c);
         // is_user_turn_start returns Some(false) for tool_result-only body.
         let turns = drain_completed(t.ingest(ic(c, id)));
@@ -1192,7 +1238,7 @@ mod tests {
         // turn_id_hint=Some + finish=Complete + no terminal-output predicate
         // → not main-terminal. Buffer grows; no events.
         let mut t = mk_tracker_no_grace();
-        let c = codex_call("s1", "t1", "message", FinishReason::Complete);
+        let c = codex_call("s1", "t1", "message", "completed");
         let id = identity_for_codex(&c);
         let events = t.ingest(ic(c, id));
         assert!(drain_completed(events).is_empty());
@@ -1202,7 +1248,7 @@ mod tests {
     #[test]
     fn codex_terminal_output_closes_after_grace() {
         let mut t = mk_tracker_no_grace();
-        let mut c = codex_call("s1", "t1", "message", FinishReason::Complete);
+        let mut c = codex_call("s1", "t1", "message", "completed");
         c.response_body = Some(
             r#"{"output":[
                 {"type":"reasoning","summary":[]},
@@ -1219,7 +1265,7 @@ mod tests {
     #[test]
     fn codex_pending_function_call_keeps_turn_open() {
         let mut t = mk_tracker_no_grace();
-        let mut c = codex_call("s1", "t1", "message", FinishReason::Complete);
+        let mut c = codex_call("s1", "t1", "message", "completed");
         c.response_body = Some(
             r#"{"output":[
                 {"type":"reasoning","summary":[]},
@@ -1241,7 +1287,7 @@ mod tests {
         // `Complete` on openai-responses; only `is_turn_terminal` (no *_call
         // in output) can tell "final answer" apart from "tool pending".
         let mut t = mk_tracker_no_grace();
-        let mut c = codex_call("s1", "t1", "message", FinishReason::Complete);
+        let mut c = codex_call("s1", "t1", "message", "completed");
         c.response_body = Some(
             r#"{"output":[
                 {"type":"reasoning","summary":[]},
@@ -1269,11 +1315,12 @@ mod tests {
         };
         let mut t = TurnTracker::new(
             Arc::new(agents::build_default_registry()),
+            Arc::new(ts_llm::wire_apis::build_default_wire_api_registry()),
             cfg,
             test_metrics(),
         );
         // Non-terminal call (ToolUse) — sits in buffer with no grace.
-        let c = anthropic_call("S", 1_000_000, "text", FinishReason::ToolUse);
+        let c = anthropic_call("S", 1_000_000, "text", "tool_use");
         let source_id = c.source_id.clone();
         let id = identity_for_anthropic(&c);
         let arrival = c.complete_time.unwrap();
@@ -1292,11 +1339,11 @@ mod tests {
     fn ingest_populates_call_ids_into_finalized_turn() {
         let mut t = mk_tracker_no_grace();
         // Two codex calls, second is terminal-output → grace fires.
-        let mut c1 = codex_call("s1", "t1", "message", FinishReason::Complete);
+        let mut c1 = codex_call("s1", "t1", "message", "completed");
         c1.id = "c1".into();
         c1.request_time = 1_000_000;
         c1.complete_time = Some(1_500_000);
-        let mut c2 = codex_call("s1", "t1", "message", FinishReason::Complete);
+        let mut c2 = codex_call("s1", "t1", "message", "completed");
         c2.id = "c2".into();
         c2.request_time = 2_000_000;
         c2.complete_time = Some(2_500_000);
@@ -1318,14 +1365,14 @@ mod tests {
     #[test]
     fn orphan_call_strictly_older_than_finalized_is_dropped() {
         let mut t = mk_tracker_no_grace();
-        let c1 = anthropic_call("S", 2_000_000, "text", FinishReason::ToolUse);
-        let c2 = anthropic_call("S", 3_000_000, "tool_result", FinishReason::Complete);
+        let c1 = anthropic_call("S", 2_000_000, "text", "tool_use");
+        let c2 = anthropic_call("S", 3_000_000, "tool_result", "end_turn");
         let id1 = identity_for_anthropic(&c1);
         let id2 = identity_for_anthropic(&c2);
         t.ingest(ic(c1, id1));
         let _ = t.ingest(ic(c2, id2));
         // Now last_finalized_request_time = 3_000_000 for this session.
-        let c0 = anthropic_call("S", 1_000_000, "text", FinishReason::ToolUse);
+        let c0 = anthropic_call("S", 1_000_000, "text", "tool_use");
         let id0 = identity_for_anthropic(&c0);
         let events = t.ingest(ic(c0, id0));
         assert!(

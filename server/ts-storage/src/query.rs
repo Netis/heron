@@ -45,8 +45,6 @@ pub struct CallsQuery {
     pub finish_reasons: Vec<String>,
     pub client_ips: Vec<String>,
     pub request_path_contains: Option<String>,
-    /// When true, restrict to rows with `status_code >= 400`. Composes (AND) with `status_codes`.
-    pub errors_only: bool,
     pub sort_by: String,
     pub sort_order: String,
     pub page: u32,
@@ -58,6 +56,38 @@ pub struct MetricsTimeseriesRow {
     pub timestamp: i64,
     pub group: Option<String>,
     pub values: Vec<Option<f64>>,
+}
+
+/// One series of per-bucket counts for a single raw `finish_reason` value, as
+/// served by `GET /api/metrics/finish-reasons`. Read directly from
+/// `llm_finish_metrics`; no normalization is applied.
+#[derive(Debug, Clone, Serialize)]
+pub struct FinishReasonTimeseries {
+    pub finish_reason: String,
+    /// `(timestamp_us, count)` pairs, ordered by timestamp ascending.
+    pub points: Vec<(i64, u64)>,
+}
+
+/// Query for `GET /api/metrics/finish-reasons`. `wire_apis` / `models` /
+/// `server_ips` filter to specific dimensions when non-empty (matches any value
+/// in the list, like `MetricsTimeseriesQuery`); empty rolls up across all values
+/// via the pre-aggregated `*` dimension tier in `llm_finish_metrics`.
+#[derive(Debug, Clone)]
+pub struct FinishReasonsQuery {
+    pub time_range: TimeRange,
+    pub granularity: String,
+    pub wire_apis: Vec<String>,
+    pub models: Vec<String>,
+    pub server_ips: Vec<String>,
+}
+
+/// One distinct `(wire_api, finish_reason)` pair observed in the
+/// `llm_finish_metrics` table. Served by `GET /api/filters/finish-reasons` and
+/// used by the calls-page filter dropdown to populate its options dynamically.
+#[derive(Debug, Clone, Serialize)]
+pub struct DistinctFinishReason {
+    pub wire_api: String,
+    pub finish_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

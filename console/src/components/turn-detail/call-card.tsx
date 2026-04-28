@@ -5,14 +5,17 @@ import { formatMs, formatNumber } from "@/lib/format"
 import { Markdown } from "@/components/ui/markdown"
 import { CallOutputDispatch, CallInputDispatch } from "@/components/call-renderers/dispatch"
 import { CallChipDispatch } from "@/components/call-renderers/chips/dispatch"
+import { finishTone } from "@/lib/finish-tone"
 import type { AgentTurnCallItem, AgentTurnDetail } from "@/types/api"
 import type { ToolIndex } from "@/lib/turn-index"
 
 const SLOW_THRESHOLD_MS = 10_000
 
-function classify(call: AgentTurnCallItem): "normal" | "slow" | "error" {
+function classify(call: AgentTurnCallItem): "normal" | "slow" | "warn" | "error" {
   if ((call.status_code ?? 0) >= 400) return "error"
-  if (call.finish_reason === "error" || call.finish_reason === "truncated") return "error"
+  const tone = finishTone(call.finish_reason)
+  if (tone === "err") return "error"
+  if (tone === "warn") return "warn"
   if ((call.e2e_latency_ms ?? 0) > SLOW_THRESHOLD_MS) return "slow"
   return "normal"
 }
@@ -46,7 +49,7 @@ export function CallCard({
       id={`call-${call.sequence}`}
       className={cn(
         "rounded-lg border bg-background transition-colors",
-        speed === "slow" && "border-l-2 border-l-amber-500/70 border-border",
+        (speed === "slow" || speed === "warn") && "border-l-2 border-l-amber-500/70 border-border",
         speed === "error" && "border-l-2 border-l-red-500/70 border-border",
         isFinalCall && speed === "normal" && "border-l-2 border-l-emerald-500/70 border-border",
         speed === "normal" && !isFinalCall && "border-border",
@@ -70,7 +73,7 @@ export function CallCard({
           <span className="flex-1 truncate text-xs text-muted-foreground">{call.model}</span>
           <span className={cn(
             "shrink-0 text-xs tabular-nums",
-            speed === "slow" && "text-amber-600",
+            (speed === "slow" || speed === "warn") && "text-amber-600",
             speed === "error" && "text-red-600",
             speed === "normal" && "text-muted-foreground",
           )}>

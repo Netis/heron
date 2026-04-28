@@ -165,7 +165,6 @@ impl LlmProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::FinishReason;
     use crate::wire_apis as wa;
     use bytes::Bytes;
     use std::net::IpAddr;
@@ -323,7 +322,7 @@ mod tests {
             LlmEvent::Complete { call, .. } => {
                 assert_eq!(call.wire_api, wa::OPENAI_CHAT);
                 assert_eq!(call.request_path, "/v1/chat/completions");
-                assert_eq!(call.finish_reason, Some(FinishReason::Complete));
+                assert_eq!(call.finish_reason.as_deref(), Some("stop"));
                 assert_eq!(call.input_tokens, Some(5));
                 assert_eq!(call.output_tokens, Some(3));
                 assert_eq!(call.total_tokens, Some(8));
@@ -367,7 +366,7 @@ mod tests {
         match &events[0] {
             LlmEvent::Complete { call, .. } => {
                 assert!(call.is_stream);
-                assert_eq!(call.finish_reason, Some(FinishReason::Complete));
+                assert_eq!(call.finish_reason.as_deref(), Some("stop"));
                 assert_eq!(call.input_tokens, Some(5));
                 assert_eq!(call.output_tokens, Some(2));
                 assert!(call.response_body.is_some());

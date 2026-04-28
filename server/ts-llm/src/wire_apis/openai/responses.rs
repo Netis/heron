@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
-use crate::model::{FinishReason, RequestInfo, ResponseInfo, RouteVerdict, WireApi};
+use crate::model::{RequestInfo, ResponseInfo, RouteVerdict, WireApi};
 
 use super::shared::{has_bearer_auth, is_anthropic_request};
 
@@ -55,6 +55,19 @@ impl WireApi for OpenAiResponsesWireApi {
     fn extract_sse(&self, events: &[SseEventData]) -> ResponseInfo {
         extract_sse(events)
     }
+
+    fn is_terminal(&self, finish_reason: &str) -> bool {
+        matches!(
+            finish_reason,
+            "completed" | "incomplete" | "failed" | "cancelled"
+        )
+    }
+
+    fn is_tool_use(&self, _finish_reason: &str) -> bool {
+        // Responses API surfaces tool use via output items, not finish_reason.
+        // Keep predicate false; tracker should rely on output-item inspection.
+        false
+    }
 }
 
 fn extract_request(_req: &HttpRequestData, body: &Value) -> RequestInfo {
@@ -86,7 +99,7 @@ fn extract_response(resp: &HttpResponseData) -> ResponseInfo {
     let finish_reason = body
         .get("status")
         .and_then(|v| v.as_str())
-        .map(map_finish_reason);
+        .map(|s| s.to_string());
 
     let usage = body.get("usage");
     let input_tokens = usage
@@ -122,7 +135,7 @@ fn extract_response(resp: &HttpResponseData) -> ResponseInfo {
 
 fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
     let mut model: Option<String> = None;
-    let mut finish_reason: Option<FinishReason> = None;
+    let mut finish_reason: Option<String> = None;
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
     let mut total_tokens: Option<u32> = None;
@@ -176,7 +189,7 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
                         model = Some(m.to_string());
                     }
                     if let Some(status) = response.get("status").and_then(|v| v.as_str()) {
-                        finish_reason = Some(map_finish_reason(status));
+                        finish_reason = Some(status.to_string());
                     }
                     if let Some(usage) = response.get("usage") {
                         if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
@@ -232,16 +245,6 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
     }
 }
 
-fn map_finish_reason(status: &str) -> FinishReason {
-    match status {
-        "completed" => FinishReason::Complete,
-        "failed" => FinishReason::Error,
-        "cancelled" => FinishReason::Cancelled,
-        "incomplete" => FinishReason::Length,
-        _ => FinishReason::Error,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,13 +261,6 @@ mod tests {
             data: data.to_string(),
             timestamp_us: 0,
         }
-    }
-
-    #[test]
-    fn test_map_finish_reason() {
-        assert_eq!(map_finish_reason("completed"), FinishReason::Complete);
-        assert_eq!(map_finish_reason("failed"), FinishReason::Error);
-        assert_eq!(map_finish_reason("incomplete"), FinishReason::Length);
     }
 
     #[test]
@@ -382,11 +378,27 @@ mod tests {
         let info = extract_response(&resp);
         assert_eq!(info.model.as_deref(), Some("gpt-5"));
         assert_eq!(info.response_id.as_deref(), Some("resp_1"));
-        assert_eq!(info.finish_reason, Some(FinishReason::Complete));
+        assert_eq!(info.finish_reason.as_deref(), Some("completed"));
         assert_eq!(info.input_tokens, Some(10));
         assert_eq!(info.output_tokens, Some(5));
         assert_eq!(info.total_tokens, Some(15));
         assert_eq!(info.cache_read_input_tokens, Some(3));
+    }
+
+    #[test]
+    fn predicates_openai_responses() {
+        let w = OpenAiResponsesWireApi;
+        assert!(w.is_terminal("completed"));
+        assert!(w.is_terminal("incomplete"));
+        assert!(w.is_terminal("failed"));
+        assert!(w.is_terminal("cancelled"));
+        assert!(!w.is_terminal("in_progress"));
+        assert!(!w.is_terminal("unknown_future_value"));
+        // Responses surfaces tool use via output items, not finish_reason —
+        // predicate is false even for known terminals.
+        assert!(!w.is_tool_use("completed"));
+        assert!(!w.is_tool_use("failed"));
+        assert!(!w.is_tool_use("tool_calls"));
     }
 
     #[test]

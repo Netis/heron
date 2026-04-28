@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils"
 import { formatDuration, formatMs } from "@/lib/format"
 import { classifyType } from "@/lib/wire-apis/dispatch"
 import { GanttCallTypeIcon } from "@/components/call-renderers/chips/dispatch"
+import { finishTone } from "@/lib/finish-tone"
 import type { AgentTurnCallItem, AgentTurnDetail } from "@/types/api"
 
 interface Props {
@@ -14,9 +15,11 @@ interface Props {
 
 const SLOW_THRESHOLD_MS = 10_000
 
-function classifySpeed(call: AgentTurnCallItem): "normal" | "slow" | "error" {
+function classifySpeed(call: AgentTurnCallItem): "normal" | "slow" | "warn" | "error" {
   if ((call.status_code ?? 0) >= 400) return "error"
-  if (call.finish_reason === "error" || call.finish_reason === "truncated") return "error"
+  const tone = finishTone(call.finish_reason)
+  if (tone === "err") return "error"
+  if (tone === "warn") return "warn"
   if ((call.e2e_latency_ms ?? 0) > SLOW_THRESHOLD_MS) return "slow"
   return "normal"
 }
@@ -57,7 +60,7 @@ export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
                 className={cn(
                   "grid w-full grid-cols-[16px_16px_1fr_36px] items-center gap-1 rounded px-1 py-1 text-left text-[10px]",
                   activeSequence === c.sequence ? "bg-blue-50 dark:bg-blue-950/40" : "hover:bg-muted/60",
-                  speed === "slow" && "border-l-2 border-amber-500/70",
+                  (speed === "slow" || speed === "warn") && "border-l-2 border-amber-500/70",
                   speed === "error" && "border-l-2 border-red-500/70",
                 )}
               >
@@ -67,7 +70,7 @@ export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
                   <div
                     className={cn(
                       "absolute top-0 h-full rounded",
-                      speed === "slow" && "bg-amber-500/80",
+                      (speed === "slow" || speed === "warn") && "bg-amber-500/80",
                       speed === "error" && "bg-red-500/80",
                       speed === "normal" && "bg-blue-400",
                     )}
@@ -76,7 +79,7 @@ export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
                 </div>
                 <span className={cn(
                   "text-right tabular-nums",
-                  speed === "slow" && "text-amber-600",
+                  (speed === "slow" || speed === "warn") && "text-amber-600",
                   speed === "error" && "text-red-600",
                   speed === "normal" && "text-muted-foreground",
                 )}>

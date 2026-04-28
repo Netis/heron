@@ -13,13 +13,13 @@ use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_llm::model::LlmEvent;
 
 use crate::aggregator::MetricsAggregator;
-use crate::model::LlmMetric;
+use crate::model::LlmMetricsBatch;
 
 /// Spawn one metrics-aggregator task per shard (inferred from `shard_rxs.len()`).
 /// Panics on empty `shard_rxs` — a wiring bug in the composition root.
 pub fn spawn_metrics_stage(
     shard_rxs: Vec<mpsc::Receiver<LlmEvent>>,
-    metrics_tx: mpsc::Sender<LlmMetric>,
+    metrics_tx: mpsc::Sender<LlmMetricsBatch>,
     metrics_sys: &mut MetricsSystem,
 ) -> Vec<JoinHandle<()>> {
     assert!(
@@ -77,7 +77,7 @@ pub fn spawn_metrics_stage(
 mod tests {
     use super::*;
     use std::net::IpAddr;
-    use ts_llm::model::{AgentIdentity, ApiType, FinishReason, LlmCall, LlmCallStart};
+    use ts_llm::model::{AgentIdentity, ApiType, LlmCall, LlmCallStart};
     use ts_llm::wire_apis as wa;
 
     fn start_event(ts_us: i64, model: &str) -> LlmEvent {
@@ -106,7 +106,7 @@ mod tests {
                 is_stream: true,
                 request_body: None,
                 status_code: Some(200),
-                finish_reason: Some(FinishReason::Complete),
+                finish_reason: Some("stop".to_string()),
                 response_body: None,
                 input_tokens: Some(10),
                 output_tokens: Some(5),
@@ -134,7 +134,7 @@ mod tests {
     #[tokio::test]
     async fn single_shard_produces_metrics() {
         let (tx, rx) = mpsc::channel::<LlmEvent>(16);
-        let (mtx, mut mrx) = mpsc::channel::<LlmMetric>(64);
+        let (mtx, mut mrx) = mpsc::channel::<LlmMetricsBatch>(64);
 
         let mut sys = MetricsSystem::new();
         spawn_metrics_stage(vec![rx], mtx.clone(), &mut sys);
@@ -167,7 +167,7 @@ mod tests {
             txs.push(tx);
             rxs.push(rx);
         }
-        let (mtx, mut mrx) = mpsc::channel::<LlmMetric>(256);
+        let (mtx, mut mrx) = mpsc::channel::<LlmMetricsBatch>(256);
         let mut sys = MetricsSystem::new();
         spawn_metrics_stage(rxs, mtx.clone(), &mut sys);
         let _svc = sys.start();
@@ -190,7 +190,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "spawn_metrics_stage: shard_rxs must be non-empty")]
     async fn panics_on_empty_shard_rxs() {
-        let (_mtx, _mrx) = mpsc::channel::<LlmMetric>(1);
+        let (_mtx, _mrx) = mpsc::channel::<LlmMetricsBatch>(1);
         let mut sys = MetricsSystem::new();
         spawn_metrics_stage(vec![], _mtx, &mut sys);
     }

@@ -2991,6 +2991,7 @@ dependencies = [
  "tracing",
  "ts-common",
  "ts-llm",
+ "ts-metrics",
  "ts-storage",
 ]
 

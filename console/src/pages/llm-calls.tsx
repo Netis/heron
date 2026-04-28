@@ -1,7 +1,8 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useMemo } from "react"
 import { ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Loader2, Filter } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useLlmCalls } from "@/hooks/use-llm-calls"
+import { useFinishReasons } from "@/hooks/use-filter-values"
 import { useSearchParamState } from "@/hooks/use-search-param-state"
 import { formatTime, formatMs, formatNumber } from "@/lib/format"
 import { StatusBadge } from "@/components/ui/status-badge"
@@ -11,7 +12,7 @@ import { LlmCallDetailPanel } from "./llm-call-detail-panel"
 import type { LlmCallListItem } from "@/types/api"
 
 const STATUS_OPTIONS = ["200", "400", "401", "403", "404", "429", "500", "502", "503"]
-const FINISH_OPTIONS = ["complete", "stop", "length", "tool_use", "error", "cancelled"]
+const KNOWN_STATUS_OPTIONS = new Set(STATUS_OPTIONS)
 
 const PAGE_SIZES = [20, 50, 100] as const
 
@@ -91,13 +92,32 @@ export function LlmCallsPage() {
   const [finishStr, setFinishStr] = useSearchParamState("finish", "")
   const [clientIpStr, setClientIpStr] = useSearchParamState("client_ip", "")
   const [pathStr, setPathStr] = useSearchParamState("path", "")
-  const [errorsOnlyStr, setErrorsOnlyStr] = useSearchParamState("errors_only", "")
 
   const page = Number(pageStr) || 1
   const pageSize = Number(pageSizeStr) || 50
-  const statusFilter = statusStr ? statusStr.split(",") : []
+  const statusFilter = statusStr
+    ? statusStr.split(",").filter((v) => KNOWN_STATUS_OPTIONS.has(v))
+    : []
+  // No client-side validation for finish_reason — values come from data
+  // (useFinishReasons), so any URL value is honest: backend returns zero rows
+  // for unknown reasons. Stale bookmarks degrade to empty results, no flash.
   const finishFilter = finishStr ? finishStr.split(",") : []
-  const errorsOnly = errorsOnlyStr === "true"
+  const statusQuery = statusFilter.join(",") || undefined
+  const finishQuery = finishFilter.join(",") || undefined
+
+  const { data: finishReasonsData } = useFinishReasons()
+  const finishGroups = useMemo(() => {
+    const pairs = finishReasonsData?.pairs ?? []
+    const byWireApi = new Map<string, string[]>()
+    for (const { wire_api, finish_reason } of pairs) {
+      const list = byWireApi.get(wire_api) ?? []
+      list.push(finish_reason)
+      byWireApi.set(wire_api, list)
+    }
+    return [...byWireApi.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([label, options]) => ({ label, options: [...options].sort() }))
+  }, [finishReasonsData])
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedIndex, setSelectedIndex] = useState(-1)
@@ -107,11 +127,10 @@ export function LlmCallsPage() {
     pageSize,
     sortBy,
     sortOrder: sortOrder as "asc" | "desc",
-    statusCode: statusStr || undefined,
-    finishReason: finishStr || undefined,
+    statusCode: statusQuery,
+    finishReason: finishQuery,
     clientIp: clientIpStr || undefined,
     requestPath: pathStr || undefined,
-    errorsOnly,
   })
 
   const items = data?.items ?? []
@@ -161,20 +180,6 @@ export function LlmCallsPage() {
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-4 py-2">
         <Filter className="size-3.5 text-muted-foreground" />
         <span className="text-xs text-muted-foreground">Filters:</span>
-        <button
-          onClick={() => {
-            setErrorsOnlyStr(errorsOnly ? "" : "true")
-            setPageStr("1")
-          }}
-          className={cn(
-            "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-colors hover:bg-muted",
-            errorsOnly
-              ? "border-foreground/20 bg-muted font-medium"
-              : "border-border text-muted-foreground",
-          )}
-        >
-          Errors only
-        </button>
         <FilterDropdown
           label="Status"
           options={STATUS_OPTIONS}
@@ -183,7 +188,7 @@ export function LlmCallsPage() {
         />
         <FilterDropdown
           label="Finish Reason"
-          options={FINISH_OPTIONS}
+          groups={finishGroups}
           selected={finishFilter}
           onChange={(v) => { setFinishStr(v.join(",")); setPageStr("1") }}
         />

@@ -12,29 +12,22 @@ pub struct TurnKey {
     pub turn_id: String,
 }
 
-/// Terminal state of a turn.
+/// Whether this turn closed cleanly. The wire-level reason (e.g. `end_turn`,
+/// `max_tokens`, `refusal`) lives in `final_finish_reason: Option<String>` —
+/// status only encodes "did a terminal land before finalize". `Incomplete`
+/// means we never saw a wire-level terminal: idle timeout, pcap EOF, server
+/// shutdown, or connection RST mid-stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnStatus {
-    /// Saw explicit end signal (Anthropic end_turn, OpenAI stop, Responses message).
     Complete,
-    /// Hit max_tokens / length.
-    Length,
-    /// Last call was an error and no retry arrived before finalize.
-    Failed,
-    /// Idle timeout, pcap EOF, or server shutdown before any end signal.
     Incomplete,
-    /// Explicit user-initiated cancellation (connection RST mid-stream, etc.).
-    Cancelled,
 }
 
 impl fmt::Display for TurnStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TurnStatus::Complete => write!(f, "complete"),
-            TurnStatus::Length => write!(f, "length"),
-            TurnStatus::Failed => write!(f, "failed"),
             TurnStatus::Incomplete => write!(f, "incomplete"),
-            TurnStatus::Cancelled => write!(f, "cancelled"),
         }
     }
 }
@@ -63,7 +56,7 @@ pub struct AgentTurn {
     pub total_cost_usd: Option<f64>, // None when pricing unknown
 
     pub status: TurnStatus,
-    pub final_finish_reason: Option<String>, // FinishReason.to_string() of last call
+    pub final_finish_reason: Option<String>, // raw provider finish_reason of last call
 
     /// Up to ~500 chars of the user prompt that opened this turn. Full body
     /// lives on the `llm_calls` row pointed at by `user_call_id`.

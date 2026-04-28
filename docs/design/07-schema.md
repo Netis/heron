@@ -2,11 +2,15 @@
 
 ## Overview
 
-Three data entities, described in a storage-agnostic format (no SQL DDL). Each entity maps to a table/collection in the chosen storage backend (DuckDB / PostgreSQL / ClickHouse).
+Four data entities, described in a storage-agnostic format (no SQL DDL). Each entity maps to a table/collection in the chosen storage backend (DuckDB / PostgreSQL / ClickHouse).
 
 ```
-llm_calls  ──── aggregated into ──── llm_metrics
+agent_turns  ─── 1:N ───  llm_calls  ─── aggregated into ───  llm_metrics
+                                                         ╲
+                                                          ─── llm_finish_metrics
 ```
+
+Per the project-wide read-path rule, cross-entity reads never use `JOIN` — `agent_turns` carries its child `call_ids` inline and detail reads issue a follow-up `IN (?, ?, ...)` lookup against `llm_calls`. Finish-reason counts live in their own long-format table (`llm_finish_metrics`) so the wide pre-aggregation table can keep a fixed column set.
 
 ---
 
@@ -38,7 +42,7 @@ llm_calls
 │
 ├── Response Info
 │   ├── status_code: u16?
-│   └── finish_reason: string?       # complete / length / error / cancelled / tool_use (normalized)
+│   └── finish_reason: string?       # raw provider value, verbatim (see "finish_reason vocabulary" below)
 │
 ├── Token Stats
 │   ├── input_tokens: u32?
@@ -76,9 +80,63 @@ Indexes:
 - **Headers storage**: `request_headers` and `response_headers` store complete HTTP headers as JSON arrays of `[key, value]` pairs, preserving order and allowing duplicate keys. Rate limit info, request IDs, processing time, etc. can be queried from stored headers without top-level extraction.
 - **`response_id`**: Wire API's response/message ID (e.g., OpenAI `chatcmpl-xxx`, Anthropic `msg_xxx`). Promoted to top-level for fast cross-referencing with vendor logs.
 
+### `finish_reason` vocabulary
+
+Raw provider value, verbatim. The owning row's `wire_api` determines which vocabulary applies:
+
+| `wire_api` | Possible values |
+|---|---|
+| `anthropic` | `end_turn`, `stop_sequence`, `max_tokens`, `tool_use`, `pause_turn`, `refusal`, `model_context_window_exceeded` |
+| `openai-chat` | `stop`, `length`, `tool_calls`, `function_call`, `content_filter` |
+| `openai-responses` | `completed`, `incomplete`, `failed`, `cancelled` |
+
+Future provider values flow through verbatim; no normalization is performed. The `WireApi::is_terminal(&str)` and `WireApi::is_tool_use(&str)` predicates encode wire-level semantics and are the canonical way to interpret these values in code — consumers (tracker, metrics, UI) MUST NOT hardcode comparisons against the strings above.
+
+> **Migration note.** Rows written before the raw-string refactor (see `CHANGELOG`) carry the legacy normalized labels (`complete`, `length`, `tool_use`, `error`, `cancelled`). No reverse migration is performed; queries that mix old and new data must handle both. New rows always carry raw provider values, distinguishable by row date.
+
 ---
 
-## 2. `llm_metrics` — Pre-Aggregated Time-Series
+## 2. `agent_turns` — One Agent Interaction (1:N over `llm_calls`)
+
+One record per agent turn (a contiguous sequence of `llm_calls` for a single agent run). Inline `call_ids` keeps cross-entity reads JOIN-free per the project-wide rule.
+
+```
+agent_turns
+├── Primary Key
+│   └── id: string (UUID v7, time-ordered, minted at finalize)
+│
+├── Identity & Association
+│   ├── agent_kind: string            # e.g. anthropic / openai-codex / generic
+│   ├── session_id: string?           # client-supplied session marker, when available
+│   ├── source_id: u32                # capture source (matches llm_metrics.source_id)
+│   └── call_ids: string[]            # ordered list of llm_calls.id in this turn
+│
+├── Timestamps
+│   ├── start_time: timestamp         # first call's request_time
+│   └── end_time: timestamp           # last call's complete_time (or finalize-time if incomplete)
+│
+├── Outcome
+│   ├── status: string                # complete | incomplete (see below)
+│   └── final_finish_reason: string?  # raw finish_reason of the call that closed the turn
+│
+└── Text
+    ├── user_input_preview: string?
+    └── final_answer_preview: string?
+
+Indexes:
+  - end_time
+  - agent_kind, end_time
+```
+
+### Field notes
+
+- **`status`** (`VARCHAR NOT NULL`) — Two values only: `complete` (a wire-level terminal landed before finalize) or `incomplete` (idle timeout, pcap EOF, server shutdown, or connection RST mid-stream). The wire-level reason — `end_turn`, `max_tokens`, `refusal`, etc. — lives in `final_finish_reason`. Older databases written when the column carried `length` / `failed` / `cancelled` are upgraded in place on init: `length → complete`, `failed`/`cancelled → incomplete`. The wire reason for those legacy rows is unrecoverable.
+- **`final_finish_reason`** (`VARCHAR`, nullable) — Raw `finish_reason` of the call that closed this turn. Same vocabulary as `llm_calls.finish_reason` (per `wire_api`); same migration caveat for rows pre-dating the raw-string refactor.
+- **`call_ids`** carries the ordered child UUIDs inline so detail reads can issue a single `SELECT ... FROM llm_calls WHERE id IN (?, ?, ...)` follow-up. See `query_turn_calls` in `ts-storage/src/duckdb.rs` for the canonical pattern. Storing this list inline is the project's chosen alternative to a relational JOIN.
+
+---
+
+## 3. `llm_metrics` — Pre-Aggregated Time-Series
 
 Pre-aggregated metrics by time window + dimension combination. Frontend dashboards query this table exclusively for trend charts and overview panels — never the detail tables.
 
@@ -116,12 +174,9 @@ llm_metrics
 │   ├── error_429_count: u64         # Rate limiting (ops focus)
 │   └── error_5xx_count: u64         # Server errors (500-599)
 │
-├── Finish Reason Counts
-│   ├── finish_complete_count: u64   # Normal completion
-│   ├── finish_length_count: u64     # Truncated by max_tokens
-│   ├── finish_tool_use_count: u64   # Tool/function call (agent pattern)
-│   ├── finish_error_count: u64      # Generation error
-│   └── finish_cancelled_count: u64  # Client cancelled
+│   # NOTE: per-finish_reason counts now live in `llm_finish_metrics` (long-format,
+│   # see section 4). The five legacy `finish_*_count` columns were dropped because
+│   # the raw-string refactor made the value space unbounded and future-extensible.
 │
 ├── TTFT Distribution (milliseconds)
 │   ├── ttft_sum: f64                # Σ TTFT samples (exact)
@@ -166,6 +221,37 @@ Indexes:
 
 ---
 
+## 4. `llm_finish_metrics` — Long-Format Finish-Reason Counts
+
+Per-bucket counts of `finish_reason` occurrences. Long-format because the value space is unbounded (raw provider values, future-extensible per provider). Splitting this out of `llm_metrics` keeps the wide table's column set fixed while letting finish-reason cardinality grow.
+
+```
+llm_finish_metrics
+├── Row Key (composite; same multi-row caveat as llm_metrics)
+│   ├── timestamp: timestamp         # Bucket start
+│   ├── source_id: string            # Capture source ('*' for rolled-up tier)
+│   ├── granularity: string          # 10s / 1m / 5m / 1h
+│   ├── wire_api: string             # '*' = all
+│   ├── model: string                # '*' = all
+│   ├── server_ip: string            # always '*' (no per-server tier)
+│   └── finish_reason: string        # raw provider value
+│
+└── Counter
+    └── count: u64                   # calls in this bucket with this finish_reason
+
+Indexes:
+  - timestamp, granularity
+```
+
+### Design Notes
+
+- **No JOIN on read.** Readers query `llm_finish_metrics` directly via the `/api/metrics/finish-reasons` endpoint; nothing in the read path joins it back to `llm_metrics`. Splitting the table does not introduce a JOIN — it only narrows each row.
+- **Dimension tiers.** The aggregator emits up to four tiers per bucket: `(W, M, S)`, `(W, M, *)`, `(*, *, S)`, `(*, *, *)`. Reads pick the matching tier based on the request's filter shape; `wire_api` / `model` filters with multiple values use SQL `IN` to OR within a tier.
+- **Vocabulary.** `finish_reason` carries the same raw provider values listed in section 1. The `wire_api` column distinguishes which vocabulary the value belongs to; for the `(*, *, *)` rolled-up tier the `wire_api` column is `*` and the underlying values may be from any provider — readers that need per-provider breakdowns must request a `(W, ...)` tier explicitly.
+- **Multi-row per key.** Same drain-cadence semantics as `llm_metrics`: late completes can produce additional rows for an already-drained window. Queries always use `GROUP BY ... finish_reason` with `SUM(count)` to collapse.
+
+---
+
 ## Data Lifecycle
 
 Retention is **disabled by default**; operators opt in via `[storage.retention]` in config. Once enabled, a background sweeper (spawned at startup, cancelled on Ctrl+C) runs every `check_interval_secs` (default 3600) and deletes rows older than the per-table / per-granularity cutoff. A value of `0` (or a field absent) means "never expire" for that table/granularity.
@@ -174,6 +260,7 @@ Retention is **disabled by default**; operators opt in via `[storage.retention]`
 - `llm_calls.request_time`
 - `agent_turns.end_time` (NOT NULL; turn completion — safer than start_time)
 - `llm_metrics.timestamp`, further keyed by `granularity`
+- `llm_finish_metrics.timestamp`, further keyed by `granularity` (sweeper reuses the `llm_metrics` per-granularity cutoffs)
 
 **Recommended defaults** (set explicitly in config; no built-in defaults to avoid surprise deletion):
 
@@ -207,6 +294,7 @@ Each backend implements `StorageBackend::apply_retention` with a dialect-appropr
 | `request_body` / `response_body` | VARCHAR or JSON | TEXT | String |
 | `llm_calls` ordering | B-tree on `request_time` | B-tree on `request_time` | `ORDER BY (request_time, id)` MergeTree |
 | `llm_metrics` optimization | plain table | TimescaleDB hypertable on `timestamp` (optional) | `ORDER BY (granularity, timestamp, model)` |
+| `llm_finish_metrics` optimization | plain table | TimescaleDB hypertable on `timestamp` (optional) | `ORDER BY (granularity, timestamp, finish_reason)` |
 | Percentile storage | plain DOUBLE | plain f64 | plain f64, or `AggregateFunction(quantilesTDigest, Float64)` for re-aggregation |
 | Batch write | batch INSERT (appender API) | `COPY` | batch INSERT (≥1000 rows per batch) |
 | Data expiry | periodic DELETE | `pg_partman` time partition + DROP | TTL expression |
@@ -215,8 +303,18 @@ Each backend implements `StorageBackend::apply_retention` with a dialect-appropr
 
 ## Upgrade Notes
 
-The `AgentTurn` rename (formerly `LlmTurn`) changed the DuckDB schema:
+### `AgentTurn` rename (`LlmTurn` → `AgentTurn`)
+
 - Table `llm_turns` → `agent_turns`
 - Column `client_kind` → `agent_kind`
 
 No online migration is performed. Existing `server/data/tokenscope.duckdb` files from before the rename should be deleted before restart — the backend will recreate the new schema on first run via `CREATE TABLE IF NOT EXISTS`.
+
+### `finish_reason` raw-string refactor (see `CHANGELOG`)
+
+Idempotent on-init migrations on the DuckDB backend:
+
+- `llm_metrics`: `ALTER TABLE ... DROP COLUMN IF EXISTS finish_complete_count` (and the four sibling columns: `finish_length_count`, `finish_tool_use_count`, `finish_error_count`, `finish_cancelled_count`).
+- `agent_turns`: one-time `UPDATE agent_turns SET status='complete' WHERE status='length'` and `UPDATE agent_turns SET status='incomplete' WHERE status IN ('failed','cancelled')`. After this update the legacy `length` / `failed` / `cancelled` values cannot reappear; the wire reason for those rows is unrecoverable.
+- `llm_calls.finish_reason` is **not** rewritten. Pre-refactor rows keep their normalized labels (`complete`, `length`, `tool_use`, `error`, `cancelled`); post-refactor rows carry raw provider values. The two are distinguishable by row date. Application code that filters or groups across the boundary must handle both vocabularies.
+- `llm_finish_metrics` is created via `CREATE TABLE IF NOT EXISTS` on first run; no historical backfill from the old `finish_*_count` columns is performed.

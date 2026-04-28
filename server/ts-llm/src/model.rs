@@ -17,33 +17,6 @@ impl fmt::Display for ApiType {
     }
 }
 
-/// Normalized finish reason across providers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FinishReason {
-    /// Normal completion (OpenAI: "stop", Anthropic: "end_turn")
-    Complete,
-    /// Max tokens reached
-    Length,
-    /// Tool use — agent trace continues
-    ToolUse,
-    /// Error during generation
-    Error,
-    /// Request was cancelled
-    Cancelled,
-}
-
-impl fmt::Display for FinishReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FinishReason::Complete => write!(f, "complete"),
-            FinishReason::Length => write!(f, "length"),
-            FinishReason::ToolUse => write!(f, "tool_use"),
-            FinishReason::Error => write!(f, "error"),
-            FinishReason::Cancelled => write!(f, "cancelled"),
-        }
-    }
-}
-
 /// A fully extracted LLM API call record.
 #[derive(Debug, Clone)]
 pub struct LlmCall {
@@ -62,7 +35,10 @@ pub struct LlmCall {
     pub is_stream: bool,
     pub request_body: Option<String>,
     pub status_code: Option<u16>,
-    pub finish_reason: Option<FinishReason>,
+    /// Raw provider finish_reason (`stop_reason` for Anthropic, `finish_reason`
+    /// for OpenAI Chat, etc.). Verbatim string from the wire — no normalization.
+    /// Use the owning `wire_api` to interpret.
+    pub finish_reason: Option<String>,
     pub response_body: Option<String>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
@@ -169,7 +145,7 @@ pub struct RequestInfo {
 #[derive(Debug, Clone)]
 pub struct ResponseInfo {
     pub model: Option<String>,
-    pub finish_reason: Option<FinishReason>,
+    pub finish_reason: Option<String>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
     pub total_tokens: Option<u32>,
@@ -244,6 +220,16 @@ pub trait WireApi: Send + Sync {
 
     /// Extract fields from accumulated SSE events (streaming response).
     fn extract_sse(&self, events: &[ts_protocol::model::SseEventData]) -> ResponseInfo;
+
+    /// True iff `finish_reason` is a wire-level terminal — i.e. the model has
+    /// finished emitting this message and the agent loop must decide whether to
+    /// continue (e.g. tool result) or finalize. Anthropic `pause_turn` is NOT
+    /// terminal: the assistant turn continues after the server-tool loop yields.
+    fn is_terminal(&self, finish_reason: &str) -> bool;
+
+    /// True iff `finish_reason` indicates the model is requesting tool execution
+    /// and expects a tool_result message in the next turn.
+    fn is_tool_use(&self, finish_reason: &str) -> bool;
 }
 
 /// Truncate a string to max_len characters, appending "..." if truncated.
@@ -377,9 +363,7 @@ impl fmt::Display for LlmCall {
             self.status_code
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "-".into()),
-            self.finish_reason
-                .map(|r| r.to_string())
-                .unwrap_or_else(|| "-".into()),
+            self.finish_reason.as_deref().unwrap_or("-"),
             self.response_id.as_deref().unwrap_or("-"),
         )?;
         if self.input_tokens.is_some() || self.output_tokens.is_some() {

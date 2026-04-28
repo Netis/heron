@@ -53,12 +53,10 @@ pub struct LlmMetric {
     pub error_429_count: u64,
     pub error_5xx_count: u64,
 
-    // Finish reason counts
-    pub finish_complete_count: u64,
-    pub finish_length_count: u64,
-    pub finish_tool_use_count: u64,
-    pub finish_error_count: u64,
-    pub finish_cancelled_count: u64,
+    // Finish-reason counts moved to the long-format `LlmFinishMetric` /
+    // `llm_finish_metrics` table (Phase 4). One row per distinct raw provider
+    // value, keyed by `(timestamp, dim..., finish_reason)` instead of fanning
+    // each value into its own column on this wide row.
 
     // TTFT distribution (milliseconds).
     //
@@ -86,6 +84,32 @@ pub struct LlmMetric {
     pub tpot_p50: Option<f64>,
     pub tpot_p95: Option<f64>,
     pub tpot_p99: Option<f64>,
+}
+
+/// One row of finish-reason counts in the long-format `llm_finish_metrics`
+/// table. Emitted alongside `LlmMetric` by the bucket finalizer; one row per
+/// distinct raw `finish_reason` observed in a given bucket dimension.
+#[derive(Debug, Clone)]
+pub struct LlmFinishMetric {
+    pub timestamp_us: i64,
+    pub source_id: String,
+    pub granularity: String,
+    pub wire_api: String,
+    pub model: String,
+    pub server_ip: String,
+    /// Raw provider value: `end_turn`, `stop`, `pause_turn`, `STOP`, etc.
+    pub finish_reason: String,
+    pub count: u64,
+}
+
+/// One bucket flush emits exactly one `LlmMetric` (the wide row) and zero or
+/// more `LlmFinishMetric` rows (one per distinct raw `finish_reason` seen in
+/// the bucket). Carrying them together keeps the storage flush transactional
+/// per bucket — both kinds land in the same write batch.
+#[derive(Debug, Clone)]
+pub struct LlmMetricsBatch {
+    pub metric: LlmMetric,
+    pub finish_metrics: Vec<LlmFinishMetric>,
 }
 
 fn safe_avg(sum: f64, count: u64) -> Option<f64> {
@@ -171,16 +195,11 @@ impl fmt::Display for LlmMetric {
         )?;
         writeln!(
             f,
-            "  tokens: in={} out={} cache_read={} cache_create={} | finish: ok={} len={} tool={} err={} cancel={}",
+            "  tokens: in={} out={} cache_read={} cache_create={}",
             self.total_input_tokens,
             self.total_output_tokens,
             self.total_cache_read_input_tokens,
             self.total_cache_creation_input_tokens,
-            self.finish_complete_count,
-            self.finish_length_count,
-            self.finish_tool_use_count,
-            self.finish_error_count,
-            self.finish_cancelled_count,
         )?;
         writeln!(
             f,

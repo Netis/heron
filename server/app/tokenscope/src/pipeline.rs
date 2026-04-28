@@ -48,7 +48,7 @@ use ts_capture::{RawPacket, RoutingSender};
 use ts_common::config::{CaptureSourceConfig, PipelineDef};
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_llm::model::{LlmCall, LlmEvent, TurnShardInput};
-use ts_metrics::model::LlmMetric;
+use ts_metrics::model::LlmMetricsBatch;
 use ts_protocol::{
     spawn_flow_dispatcher, spawn_http_joiner_stage, spawn_protocol_stage, HttpExchange,
     HttpJoinerEvent, WorkerInput,
@@ -141,7 +141,7 @@ impl Pipeline {
 
         let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(sink_capacity);
         let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(sink_capacity);
-        let (metrics_out_tx, metrics_out_rx) = mpsc::channel::<LlmMetric>(sink_capacity);
+        let (metrics_out_tx, metrics_out_rx) = mpsc::channel::<LlmMetricsBatch>(sink_capacity);
         let (http_exchanges_tx, http_exchanges_rx) = mpsc::channel::<HttpExchange>(sink_capacity);
 
         let registry = Arc::new(ts_llm::agents::build_default_registry());
@@ -351,6 +351,7 @@ impl Pipeline {
                 turn_shard_rxs,
                 turns_tx.clone(),
                 registry.clone(),
+                wire_api_registry.clone(),
                 metrics_sys,
             );
             debug_assert_eq!(turn_handles.len(), turn_shards);

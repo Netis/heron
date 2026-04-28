@@ -1,7 +1,9 @@
-use tdigest::TDigest;
-use ts_llm::model::{FinishReason, LlmCall};
+use std::collections::BTreeMap;
 
-use crate::model::LlmMetric;
+use tdigest::TDigest;
+use ts_llm::model::LlmCall;
+
+use crate::model::{LlmFinishMetric, LlmMetric, LlmMetricsBatch};
 
 const BUFFER_CAPACITY: usize = 500;
 
@@ -91,11 +93,9 @@ pub struct WindowBucket {
     pub error_429_count: u64,
     pub error_5xx_count: u64,
 
-    pub finish_complete_count: u64,
-    pub finish_length_count: u64,
-    pub finish_tool_use_count: u64,
-    pub finish_error_count: u64,
-    pub finish_cancelled_count: u64,
+    /// Per-raw-string finish_reason counts. Keys are the verbatim provider
+    /// values (`"end_turn"`, `"stop"`, `"tool_use"`, `"tool_calls"`, ...).
+    pub finish_counts: BTreeMap<String, u64>,
 
     // Latency distributions (milliseconds).
     ttft: DistributionDigest,
@@ -127,11 +127,7 @@ impl WindowBucket {
             error_4xx_count: 0,
             error_429_count: 0,
             error_5xx_count: 0,
-            finish_complete_count: 0,
-            finish_length_count: 0,
-            finish_tool_use_count: 0,
-            finish_error_count: 0,
-            finish_cancelled_count: 0,
+            finish_counts: BTreeMap::new(),
             ttft: DistributionDigest::new(),
             e2e: DistributionDigest::new(),
             tpot: DistributionDigest::new(),
@@ -191,14 +187,8 @@ impl WindowBucket {
             }
         }
 
-        if let Some(reason) = call.finish_reason {
-            match reason {
-                FinishReason::Complete => self.finish_complete_count += 1,
-                FinishReason::Length => self.finish_length_count += 1,
-                FinishReason::ToolUse => self.finish_tool_use_count += 1,
-                FinishReason::Error => self.finish_error_count += 1,
-                FinishReason::Cancelled => self.finish_cancelled_count += 1,
-            }
+        if let Some(reason) = call.finish_reason.as_deref() {
+            *self.finish_counts.entry(reason.to_string()).or_insert(0) += 1;
         }
 
         if let Some(ttft) = call.ttft_ms {
@@ -226,10 +216,11 @@ impl WindowBucket {
         self.call_count > 0 || self.complete_count > 0
     }
 
-    /// Flush this bucket into an `LlmMetric` row. Non-populated fields stay
-    /// at their neutral default (0 for counters, `None` for averages /
-    /// percentiles) — query-time SUM over such rows yields the correct total
-    /// for additive fields.
+    /// Flush this bucket into an `LlmMetricsBatch`: one wide `LlmMetric` row
+    /// plus a long-format `LlmFinishMetric` per raw provider `finish_reason`
+    /// observed. Non-populated fields stay at their neutral default (0 for
+    /// counters, `None` for averages / percentiles) — query-time SUM over
+    /// such rows yields the correct total for additive fields.
     pub fn flush(
         &mut self,
         timestamp_us: i64,
@@ -238,8 +229,23 @@ impl WindowBucket {
         wire_api: String,
         model: String,
         server_ip: String,
-    ) -> LlmMetric {
-        LlmMetric {
+    ) -> LlmMetricsBatch {
+        let finish_metrics: Vec<LlmFinishMetric> = self
+            .finish_counts
+            .iter()
+            .map(|(reason, count)| LlmFinishMetric {
+                timestamp_us,
+                source_id: source_id.to_string(),
+                granularity: granularity.to_string(),
+                wire_api: wire_api.clone(),
+                model: model.clone(),
+                server_ip: server_ip.clone(),
+                finish_reason: reason.clone(),
+                count: *count,
+            })
+            .collect();
+
+        let metric = LlmMetric {
             timestamp_us,
             source_id: source_id.to_string(),
             granularity,
@@ -262,11 +268,6 @@ impl WindowBucket {
             error_4xx_count: self.error_4xx_count,
             error_429_count: self.error_429_count,
             error_5xx_count: self.error_5xx_count,
-            finish_complete_count: self.finish_complete_count,
-            finish_length_count: self.finish_length_count,
-            finish_tool_use_count: self.finish_tool_use_count,
-            finish_error_count: self.finish_error_count,
-            finish_cancelled_count: self.finish_cancelled_count,
             ttft_sum: self.ttft.sum(),
             ttft_count: self.ttft.count(),
             ttft_p50: self.ttft.quantile(0.5),
@@ -282,6 +283,11 @@ impl WindowBucket {
             tpot_p50: self.tpot.quantile(0.5),
             tpot_p95: self.tpot.quantile(0.95),
             tpot_p99: self.tpot.quantile(0.99),
+        };
+
+        LlmMetricsBatch {
+            metric,
+            finish_metrics,
         }
     }
 }
@@ -290,7 +296,7 @@ impl WindowBucket {
 mod tests {
     use super::*;
     use std::net::IpAddr;
-    use ts_llm::model::{ApiType, FinishReason, LlmCall};
+    use ts_llm::model::{ApiType, LlmCall};
     use ts_llm::wire_apis as wa;
 
     #[test]
@@ -349,7 +355,7 @@ mod tests {
             is_stream: true,
             request_body: None,
             status_code: Some(200),
-            finish_reason: Some(FinishReason::Complete),
+            finish_reason: Some("stop".to_string()),
             response_body: None,
             input_tokens: Some(100),
             output_tokens: Some(50),
@@ -434,7 +440,7 @@ mod tests {
         b.sample_active_calls(1);
         b.on_call_complete(&test_call());
 
-        let m = b.flush(
+        let batch = b.flush(
             1_000_000,
             "s",
             "10s",
@@ -442,6 +448,7 @@ mod tests {
             "gpt-4".to_string(),
             "10.0.0.1".to_string(),
         );
+        let m = &batch.metric;
         // Start-side
         assert_eq!(m.call_count, 1);
         assert_eq!(m.stream_count, 1);
@@ -457,7 +464,10 @@ mod tests {
         assert!(m.ttft_sum > 0.0);
         assert_eq!(m.e2e_count, 1);
         assert_eq!(m.tpot_count, 1);
-        assert_eq!(m.finish_complete_count, 1);
+        assert!(batch
+            .finish_metrics
+            .iter()
+            .any(|f| f.finish_reason == "stop" && f.count == 1));
         // Per-row averages derived from sum/count.
         assert!(m.ttft_avg().is_some());
         assert!(m.e2e_avg().is_some());
@@ -471,7 +481,7 @@ mod tests {
         // `SUM(call_count)` across rows counts traffic exactly once.
         let mut b = WindowBucket::new();
         b.on_call_complete(&test_call());
-        let m = b.flush(
+        let batch = b.flush(
             0,
             "s",
             "10s",
@@ -479,6 +489,7 @@ mod tests {
             "gpt-4".to_string(),
             "10.0.0.1".to_string(),
         );
+        let m = &batch.metric;
         assert_eq!(m.call_count, 0);
         assert_eq!(m.stream_count, 0);
         assert_eq!(m.active_calls_max, 0);
@@ -495,27 +506,28 @@ mod tests {
         let mut b = WindowBucket::new();
         let mut call = test_call();
 
-        call.finish_reason = Some(FinishReason::Complete);
+        call.finish_reason = Some("stop".to_string());
         b.on_call_complete(&call);
         b.on_call_complete(&call);
 
-        call.finish_reason = Some(FinishReason::Length);
+        call.finish_reason = Some("length".to_string());
         b.on_call_complete(&call);
 
-        call.finish_reason = Some(FinishReason::ToolUse);
+        call.finish_reason = Some("tool_calls".to_string());
         b.on_call_complete(&call);
 
-        call.finish_reason = Some(FinishReason::Cancelled);
+        call.finish_reason = Some("content_filter".to_string());
         b.on_call_complete(&call);
 
         call.finish_reason = None;
         b.on_call_complete(&call);
 
-        assert_eq!(b.finish_complete_count, 2);
-        assert_eq!(b.finish_length_count, 1);
-        assert_eq!(b.finish_tool_use_count, 1);
-        assert_eq!(b.finish_error_count, 0);
-        assert_eq!(b.finish_cancelled_count, 1);
+        assert_eq!(b.finish_counts.get("stop").copied(), Some(2));
+        assert_eq!(b.finish_counts.get("length").copied(), Some(1));
+        assert_eq!(b.finish_counts.get("tool_calls").copied(), Some(1));
+        assert_eq!(b.finish_counts.get("content_filter").copied(), Some(1));
+        // None should not have produced any entry.
+        assert_eq!(b.finish_counts.values().sum::<u64>(), 5);
     }
 
     #[test]

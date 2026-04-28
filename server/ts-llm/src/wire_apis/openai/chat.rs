@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
-use crate::model::{FinishReason, RequestInfo, ResponseInfo, RouteVerdict, WireApi};
+use crate::model::{RequestInfo, ResponseInfo, RouteVerdict, WireApi};
 
 use super::shared::{has_bearer_auth, is_anthropic_request};
 
@@ -58,6 +58,17 @@ impl WireApi for OpenAiChatWireApi {
     fn extract_sse(&self, events: &[SseEventData]) -> ResponseInfo {
         extract_sse(events)
     }
+
+    fn is_terminal(&self, finish_reason: &str) -> bool {
+        matches!(
+            finish_reason,
+            "stop" | "length" | "tool_calls" | "function_call" | "content_filter"
+        )
+    }
+
+    fn is_tool_use(&self, finish_reason: &str) -> bool {
+        matches!(finish_reason, "tool_calls" | "function_call")
+    }
 }
 
 fn extract_request(_req: &HttpRequestData, body: &Value) -> RequestInfo {
@@ -93,7 +104,7 @@ fn extract_response(resp: &HttpResponseData) -> ResponseInfo {
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("finish_reason"))
         .and_then(|v| v.as_str())
-        .map(map_finish_reason);
+        .map(|s| s.to_string());
 
     let usage = body.get("usage");
     let input_tokens = usage
@@ -134,10 +145,7 @@ fn extract_response(resp: &HttpResponseData) -> ResponseInfo {
 fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
     let mut response_id: Option<String> = None;
     let mut model: Option<String> = None;
-    let mut finish_reason: Option<FinishReason> = None;
-    // Preserve the raw `finish_reason` string for the synthetic body so
-    // downstream consumers see what the wire said, not our normalized enum.
-    let mut finish_reason_str: Option<String> = None;
+    let mut finish_reason: Option<String> = None;
     let mut content = String::new();
     let mut tool_calls: BTreeMap<u64, (String, String, String)> = BTreeMap::new();
     let mut input_tokens: Option<u32> = None;
@@ -169,8 +177,7 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
 
         if let Some(choice) = data.get("choices").and_then(|c| c.get(0)) {
             if let Some(fr) = choice.get("finish_reason").and_then(|v| v.as_str()) {
-                finish_reason = Some(map_finish_reason(fr));
-                finish_reason_str = Some(fr.to_string());
+                finish_reason = Some(fr.to_string());
             }
             if let Some(delta) = choice.get("delta") {
                 if let Some(c) = delta.get("content").and_then(|v| v.as_str()) {
@@ -227,7 +234,7 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
             model.as_deref(),
             &content,
             tool_calls,
-            finish_reason_str.as_deref(),
+            finish_reason.as_deref(),
             input_tokens,
             output_tokens,
             total_tokens,
@@ -315,16 +322,6 @@ fn build_synthetic_body(
     result.to_string()
 }
 
-fn map_finish_reason(reason: &str) -> FinishReason {
-    match reason {
-        "stop" => FinishReason::Complete,
-        "length" => FinishReason::Length,
-        "tool_calls" | "function_call" => FinishReason::ToolUse,
-        "content_filter" => FinishReason::Cancelled,
-        _ => FinishReason::Error,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,13 +338,6 @@ mod tests {
             data: data.to_string(),
             timestamp_us: 0,
         }
-    }
-
-    #[test]
-    fn test_map_finish_reason() {
-        assert_eq!(map_finish_reason("stop"), FinishReason::Complete);
-        assert_eq!(map_finish_reason("tool_calls"), FinishReason::ToolUse);
-        assert_eq!(map_finish_reason("length"), FinishReason::Length);
     }
 
     #[test]
@@ -478,7 +468,7 @@ mod tests {
             make_sse("", "[DONE]"),
         ];
         let info = extract_sse(&events);
-        assert_eq!(info.finish_reason, Some(FinishReason::Complete));
+        assert_eq!(info.finish_reason.as_deref(), Some("stop"));
     }
 
     #[test]
@@ -494,7 +484,7 @@ mod tests {
             ),
         ];
         let info = extract_sse(&events);
-        assert_eq!(info.finish_reason, Some(FinishReason::ToolUse));
+        assert_eq!(info.finish_reason.as_deref(), Some("tool_calls"));
     }
 
     #[test]
@@ -580,6 +570,20 @@ mod tests {
     }
 
     #[test]
+    fn predicates_openai_chat() {
+        let w = OpenAiChatWireApi;
+        assert!(w.is_terminal("stop"));
+        assert!(w.is_terminal("length"));
+        assert!(w.is_terminal("tool_calls"));
+        assert!(w.is_terminal("function_call"));
+        assert!(w.is_terminal("content_filter"));
+        assert!(!w.is_terminal("unknown_future_value"));
+        assert!(w.is_tool_use("tool_calls"));
+        assert!(w.is_tool_use("function_call"));
+        assert!(!w.is_tool_use("stop"));
+    }
+
+    #[test]
     fn test_extract_sse_ignores_responses_events() {
         // Defensive: if a Responses event slipped into a Chat stream, we skip
         // it rather than misinterpret it. In practice the router prevents
@@ -601,6 +605,6 @@ mod tests {
         let info = extract_sse(&events);
         assert_eq!(info.response_id.as_deref(), Some("chatcmpl-1"));
         assert_eq!(info.model.as_deref(), Some("gpt-4"));
-        assert_eq!(info.finish_reason, Some(FinishReason::Complete));
+        assert_eq!(info.finish_reason.as_deref(), Some("stop"));
     }
 }

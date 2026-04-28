@@ -10,7 +10,7 @@ use ts_common::error::{AppError, Result};
 use ts_llm::agents::build_default_registry;
 use ts_llm::model::{ApiType, LlmCall};
 use ts_llm::wire_apis as wa;
-use ts_metrics::model::LlmMetric;
+use ts_metrics::model::{LlmFinishMetric, LlmMetric};
 use ts_protocol::HttpExchange;
 use ts_turn::AgentTurn;
 
@@ -210,11 +210,6 @@ CREATE TABLE IF NOT EXISTS llm_metrics (
     error_4xx_count     UBIGINT NOT NULL,
     error_429_count     UBIGINT NOT NULL,
     error_5xx_count     UBIGINT NOT NULL,
-    finish_complete_count  UBIGINT NOT NULL,
-    finish_length_count    UBIGINT NOT NULL,
-    finish_tool_use_count  UBIGINT NOT NULL,
-    finish_error_count     UBIGINT NOT NULL,
-    finish_cancelled_count UBIGINT NOT NULL,
     ttft_sum            DOUBLE NOT NULL,
     ttft_count          UBIGINT NOT NULL,
     ttft_p50            DOUBLE,
@@ -231,6 +226,21 @@ CREATE TABLE IF NOT EXISTS llm_metrics (
     tpot_p95            DOUBLE,
     tpot_p99            DOUBLE
 );
+";
+
+const CREATE_LLM_FINISH_METRICS: &str = "
+CREATE TABLE IF NOT EXISTS llm_finish_metrics (
+    timestamp     TIMESTAMP NOT NULL,
+    source_id     VARCHAR NOT NULL,
+    granularity   VARCHAR NOT NULL,
+    wire_api      VARCHAR NOT NULL,
+    model         VARCHAR NOT NULL,
+    server_ip     VARCHAR NOT NULL,
+    finish_reason VARCHAR NOT NULL,
+    count         UBIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_finish_metrics_ts
+    ON llm_finish_metrics (timestamp, granularity);
 ";
 
 const CREATE_LLM_TURNS: &str = "
@@ -536,11 +546,8 @@ const VALID_METRIC_FIELDS: &[&str] = &[
     "error_4xx_count",
     "error_429_count",
     "error_5xx_count",
-    "finish_complete_count",
-    "finish_length_count",
-    "finish_tool_use_count",
-    "finish_error_count",
-    "finish_cancelled_count",
+    // Phase 5 will read llm_finish_metrics directly via a dedicated query
+    // path; finish-reason fields are no longer columns of llm_metrics.
     "ttft_avg",
     "ttft_sum",
     "ttft_count",
@@ -641,11 +648,6 @@ const SUM_FIELDS: &[&str] = &[
     "error_4xx_count",
     "error_429_count",
     "error_5xx_count",
-    "finish_complete_count",
-    "finish_length_count",
-    "finish_tool_use_count",
-    "finish_error_count",
-    "finish_cancelled_count",
     "ttft_sum",
     "ttft_count",
     "e2e_sum",
@@ -794,7 +796,7 @@ fn prepare_call(call: LlmCall) -> PreparedCall {
         is_stream: call.is_stream,
         request_path: call.request_path,
         status_code: call.status_code,
-        finish_reason: call.finish_reason.map(|r| r.to_string()),
+        finish_reason: call.finish_reason,
         input_tokens: call.input_tokens,
         output_tokens: call.output_tokens,
         total_tokens: call.total_tokens,
@@ -963,10 +965,60 @@ impl StorageBackend for DuckDbBackend {
                 .map_err(|e| AppError::Storage(format!("failed to create llm_calls: {e}")))?;
             conn.execute_batch(CREATE_LLM_METRICS)
                 .map_err(|e| AppError::Storage(format!("failed to create llm_metrics: {e}")))?;
+            conn.execute_batch(CREATE_LLM_FINISH_METRICS).map_err(|e| {
+                AppError::Storage(format!("failed to create llm_finish_metrics: {e}"))
+            })?;
             conn.execute_batch(CREATE_LLM_TURNS)
                 .map_err(|e| AppError::Storage(format!("failed to create agent_turns: {e}")))?;
             conn.execute_batch(CREATE_HTTP_EXCHANGES)
                 .map_err(|e| AppError::Storage(format!("failed to create http_exchanges: {e}")))?;
+
+            // Phase 4 migration: drop the legacy finish_*_count columns from
+            // llm_metrics on databases created before this change. DuckDB
+            // accepts `DROP COLUMN IF EXISTS` (added in 0.7.0), so each ALTER
+            // is a no-op on a fresh schema. Run each statement on its own so
+            // a failure on one column does not abort the rest, and log the
+            // outcome instead of swallowing it silently.
+            for stmt in [
+                "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_complete_count;",
+                "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_length_count;",
+                "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_tool_use_count;",
+                "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_error_count;",
+                "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_cancelled_count;",
+            ] {
+                match conn.execute_batch(stmt) {
+                    Ok(()) => tracing::debug!(
+                        sql = stmt,
+                        "phase4 migration: llm_metrics finish_* column dropped (or absent)"
+                    ),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        sql = stmt,
+                        "phase4 migration: drop finish_* column failed (non-fatal — fresh DB or unsupported DuckDB version)"
+                    ),
+                }
+            }
+
+            // Phase 3 collapsed TurnStatus to Complete | Incomplete. Migrate
+            // legacy values:
+            //   'length'             -> 'complete'   (max_tokens IS a wire terminal)
+            //   'failed'/'cancelled' -> 'incomplete' (no wire terminal landed)
+            // Rich provider state (e.g. 'max_tokens', 'refusal') already
+            // lives in agent_turns.final_finish_reason, so no information
+            // loss beyond the status-axis collapse.
+            match conn.execute_batch(
+                "UPDATE agent_turns SET status='complete'   WHERE status = 'length';\n\
+                 UPDATE agent_turns SET status='incomplete' WHERE status IN ('failed', 'cancelled');",
+            ) {
+                Ok(()) => tracing::debug!(
+                    "phase3 migration: agent_turns.status legacy values rewritten (or absent)"
+                ),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "phase3 migration: agent_turns.status rewrite failed (non-fatal — fresh DB or unsupported DuckDB version)"
+                ),
+            }
+
             info!("storage tables initialized");
             Ok(())
         })
@@ -1334,11 +1386,6 @@ impl StorageBackend for DuckDbBackend {
                         m.error_4xx_count,
                         m.error_429_count,
                         m.error_5xx_count,
-                        m.finish_complete_count,
-                        m.finish_length_count,
-                        m.finish_tool_use_count,
-                        m.finish_error_count,
-                        m.finish_cancelled_count,
                         m.ttft_sum,
                         m.ttft_count,
                         m.ttft_p50,
@@ -1360,6 +1407,61 @@ impl StorageBackend for DuckDbBackend {
             appender
                 .flush()
                 .map_err(|e| AppError::Storage(format!("failed to flush metrics: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    async fn write_finish_metrics(&self, metrics: Vec<LlmFinishMetric>) -> Result<()> {
+        if metrics.is_empty() {
+            return Ok(());
+        }
+        // Shares the metrics writer Mutex with `write_metrics` so the two
+        // long/wide rollups for one bucket flush serialize against each other
+        // — they always come in pairs from the bucket finalizer and writing
+        // them on the same connection avoids cross-table interleaving.
+        let conn = self.write_metrics_conn.clone();
+        tokio::task::spawn_blocking(move || {
+            // Pre-format the timestamp Value outside the writer lock, same
+            // pattern as `prepare_metric`.
+            let prepared: Vec<(Value, LlmFinishMetric)> = metrics
+                .into_iter()
+                .map(|m| {
+                    (
+                        Value::Timestamp(TimeUnit::Microsecond, m.timestamp_us),
+                        m,
+                    )
+                })
+                .collect();
+
+            let conn = conn
+                .lock()
+                .map_err(|e| AppError::Storage(format!("failed to lock writer: {e}")))?;
+            let mut appender = conn.appender("llm_finish_metrics").map_err(|e| {
+                AppError::Storage(format!(
+                    "failed to create llm_finish_metrics appender: {e}"
+                ))
+            })?;
+            for (ts, m) in &prepared {
+                appender
+                    .append_row(duckdb::params![
+                        ts,
+                        m.source_id,
+                        m.granularity,
+                        m.wire_api,
+                        m.model,
+                        m.server_ip,
+                        m.finish_reason,
+                        m.count,
+                    ])
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to append finish metric: {e}"))
+                    })?;
+            }
+            appender.flush().map_err(|e| {
+                AppError::Storage(format!("failed to flush llm_finish_metrics: {e}"))
+            })?;
             Ok(())
         })
         .await
@@ -1745,6 +1847,110 @@ impl StorageBackend for DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
+    async fn query_finish_reasons(
+        &self,
+        query: &FinishReasonsQuery,
+    ) -> Result<Vec<FinishReasonTimeseries>> {
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+
+            // Pick the matching pre-aggregated dimension tier:
+            //   - wire_apis/models both non-empty → (W, M, *) tier, IN-list filter
+            //   - both empty → (*, *, *) tier
+            //   - only one non-empty → drop to (W, M, *) tier and SUM over
+            //     `<other_dim> != '*'` rows. The writer emits (W,M,*), (W,M,·),
+            //     (*,*,·), (*,*,*) tiers (see `dimension_keys`); selecting
+            //     `wire_api IN (…) AND model != '*' AND server_ip = '*'` lands
+            //     squarely on the (W, M, *) rows for the requested wire_apis,
+            //     and SUM gives the cross-model rollup the caller wants.
+            //
+            // Inlined via format! to match the file's `sql_in_list` convention
+            // for IN-list filters. DuckDB has no backslash escaping in string
+            // literals, so the doubled-quote escape (`''`) inside `sql_in_list`
+            // is complete and safe against injection.
+            let has_wire = !query.wire_apis.is_empty();
+            let has_model = !query.models.is_empty();
+            let has_server = !query.server_ips.is_empty();
+            let wire_clause = if has_wire {
+                format!("wire_api IN ({})", sql_in_list(&query.wire_apis))
+            } else if has_model {
+                "wire_api != '*'".to_string()
+            } else {
+                "wire_api = '*'".to_string()
+            };
+            let model_clause = if has_model {
+                format!("model IN ({})", sql_in_list(&query.models))
+            } else if has_wire {
+                "model != '*'".to_string()
+            } else {
+                "model = '*'".to_string()
+            };
+            // server_ip is independent of wire/model: aggregator emits both
+            // (·,·,S) and (·,·,*) tiers in parallel for each (W,M) state.
+            let server_clause = if has_server {
+                format!("server_ip IN ({})", sql_in_list(&query.server_ips))
+            } else {
+                "server_ip = '*'".to_string()
+            };
+
+            let sql = format!(
+                "SELECT epoch_us(timestamp) AS ts_us, finish_reason, SUM(count) AS c \
+                 FROM llm_finish_metrics \
+                 WHERE granularity = ? \
+                   AND timestamp >= ? AND timestamp < ? \
+                   AND {wire_clause} AND {model_clause} \
+                   AND {server_clause} \
+                 GROUP BY ts_us, finish_reason \
+                 ORDER BY finish_reason ASC, ts_us ASC"
+            );
+
+            let mut stmt = conn.prepare(&sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare finish-reasons query: {e}"))
+            })?;
+            let mut query_rows = stmt
+                .query(duckdb::params![query.granularity, start_ts, end_ts])
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute finish-reasons query: {e}"))
+                })?;
+
+            // Bucket rows into series by finish_reason. ORDER BY guarantees
+            // each series' points arrive contiguously and timestamp-sorted.
+            let mut out: Vec<FinishReasonTimeseries> = Vec::new();
+            while let Some(row) = query_rows
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                let ts_us: i64 = row
+                    .get(0)
+                    .map_err(|e| AppError::Storage(format!("ts read error: {e}")))?;
+                let finish_reason: String = row
+                    .get(1)
+                    .map_err(|e| AppError::Storage(format!("reason read error: {e}")))?;
+                let count: u64 = row
+                    .get(2)
+                    .map_err(|e| AppError::Storage(format!("count read error: {e}")))?;
+
+                match out.last_mut() {
+                    Some(last) if last.finish_reason == finish_reason => {
+                        last.points.push((ts_us, count));
+                    }
+                    _ => out.push(FinishReasonTimeseries {
+                        finish_reason,
+                        points: vec![(ts_us, count)],
+                    }),
+                }
+            }
+
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
     async fn query_calls(&self, query: &CallsQuery) -> Result<CallsPage> {
         const VALID_SORT_FIELDS: &[&str] = &[
             "request_time",
@@ -1839,10 +2045,6 @@ impl StorageBackend for DuckDbBackend {
                     substr.replace('\'', "''")
                 ));
             }
-            if query.errors_only {
-                where_parts.push("status_code IS NOT NULL AND status_code >= 400".to_string());
-            }
-
             let where_sql = where_parts.join(" AND ");
             let sort_by = &query.sort_by;
 
@@ -3093,6 +3295,50 @@ impl StorageBackend for DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
+    async fn query_distinct_finish_reasons(&self) -> Result<Vec<DistinctFinishReason>> {
+        let conn = self.read_pool.acquire().await?;
+        tokio::task::spawn_blocking(move || {
+            // Source: llm_finish_metrics. The `wire_api != '*'` filter excludes
+            // the cross-wire-api rollup tier; finish_reason is always concrete
+            // in this table (no `*` rows for finish_reason itself), but we keep
+            // the symmetry for safety against future schema changes.
+            let mut stmt = conn
+                .prepare(
+                    "SELECT DISTINCT wire_api, finish_reason \
+                     FROM llm_finish_metrics \
+                     WHERE wire_api != '*' AND finish_reason != '*' \
+                     ORDER BY wire_api, finish_reason",
+                )
+                .map_err(|e| {
+                    AppError::Storage(format!(
+                        "failed to prepare distinct_finish_reasons query: {e}"
+                    ))
+                })?;
+            let mut rows = stmt.query([]).map_err(|e| {
+                AppError::Storage(format!("failed to execute distinct_finish_reasons query: {e}"))
+            })?;
+            let mut result = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                let wire_api: String = row
+                    .get(0)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let finish_reason: String = row
+                    .get(1)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                result.push(DistinctFinishReason {
+                    wire_api,
+                    finish_reason,
+                });
+            }
+            Ok(result)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
     async fn apply_retention(&self, policy: RetentionPolicy) -> Result<RetentionReport> {
         let calls_conn = self.write_calls_conn.clone();
         let turns_conn = self.write_turns_conn.clone();
@@ -3159,6 +3405,18 @@ impl StorageBackend for DuckDbBackend {
                     .map_err(|e| {
                         AppError::Storage(format!("failed to delete llm_metrics[{label}]: {e}"))
                     })?;
+                // Mirror the sweep on the long-format finish-reason table so
+                // the two stay in lock-step (same writer connection / same
+                // (granularity, timestamp) cutoff).
+                conn.execute(
+                    "DELETE FROM llm_finish_metrics WHERE granularity = ?1 AND timestamp < ?2",
+                    duckdb::params![label, ts],
+                )
+                .map_err(|e| {
+                    AppError::Storage(format!(
+                        "failed to delete llm_finish_metrics[{label}]: {e}"
+                    ))
+                })?;
                 report.metrics_deleted.insert(label.clone(), n as u64);
             }
 
@@ -3194,7 +3452,7 @@ mod tests {
     use super::*;
     use crate::StorageBackend;
     use std::net::IpAddr;
-    use ts_llm::model::{ApiType, FinishReason};
+    use ts_llm::model::ApiType;
 
     fn in_memory_backend() -> DuckDbBackend {
         DuckDbBackend::open(":memory:").unwrap()
@@ -3333,7 +3591,7 @@ mod tests {
             is_stream: true,
             request_body: Some(r#"{"model":"gpt-4"}"#.to_string()),
             status_code: Some(200),
-            finish_reason: Some(FinishReason::Complete),
+            finish_reason: Some("stop".to_string()),
             response_body: Some(r#"{"choices":[...]}"#.to_string()),
             input_tokens: Some(100),
             output_tokens: Some(50),
@@ -3486,11 +3744,6 @@ mod tests {
             error_4xx_count: 1,
             error_429_count: 0,
             error_5xx_count: 1,
-            finish_complete_count: 35,
-            finish_length_count: 3,
-            finish_tool_use_count: 2,
-            finish_error_count: 1,
-            finish_cancelled_count: 1,
             // ttft_avg 150 × 42 = 6300.
             ttft_sum: 6300.0,
             ttft_count: 42,
@@ -3558,9 +3811,7 @@ mod tests {
         let conn = backend.test_conn().lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT total_output_tokens, output_token_count, tpot_sum, tpot_count, \
-                 finish_complete_count, finish_length_count, finish_tool_use_count, \
-                 finish_error_count, finish_cancelled_count \
+                "SELECT total_output_tokens, output_token_count, tpot_sum, tpot_count \
                  FROM llm_metrics",
             )
             .unwrap();
@@ -3571,11 +3822,6 @@ mod tests {
                     row.get::<_, u64>(1)?,
                     row.get::<_, f64>(2)?,
                     row.get::<_, u64>(3)?,
-                    row.get::<_, u64>(4)?,
-                    row.get::<_, u64>(5)?,
-                    row.get::<_, u64>(6)?,
-                    row.get::<_, u64>(7)?,
-                    row.get::<_, u64>(8)?,
                 ))
             })
             .unwrap();
@@ -3584,11 +3830,310 @@ mod tests {
         // tpot_sum 666 / tpot_count 30 = 22.2
         assert!((row.2 - 666.0).abs() < 1e-6);
         assert_eq!(row.3, 30);
-        assert_eq!(row.4, 35);
-        assert_eq!(row.5, 3);
-        assert_eq!(row.6, 2);
-        assert_eq!(row.7, 1);
-        assert_eq!(row.8, 1);
+    }
+
+    #[tokio::test]
+    async fn test_write_finish_metrics_round_trip() {
+        // Phase 4 long-format finish-reason table. Inserts mixed raw provider
+        // values and verifies that the row count, key columns, and per-reason
+        // counts round-trip without any normalization.
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+
+        let base = LlmFinishMetric {
+            timestamp_us: 1_700_000_000_000_000,
+            source_id: String::new(),
+            granularity: "1m".to_string(),
+            wire_api: wa::OPENAI_CHAT.to_string(),
+            model: "gpt-4".to_string(),
+            server_ip: "10.0.0.2".to_string(),
+            finish_reason: String::new(),
+            count: 0,
+        };
+        let rows = vec![
+            LlmFinishMetric {
+                finish_reason: "stop".into(),
+                count: 35,
+                ..base.clone()
+            },
+            LlmFinishMetric {
+                finish_reason: "length".into(),
+                count: 3,
+                ..base.clone()
+            },
+            LlmFinishMetric {
+                finish_reason: "tool_calls".into(),
+                count: 2,
+                ..base.clone()
+            },
+            // Unknown / future provider value preserved verbatim.
+            LlmFinishMetric {
+                finish_reason: "pause_turn".into(),
+                count: 1,
+                ..base
+            },
+        ];
+        backend.write_finish_metrics(rows).await.unwrap();
+
+        let conn = backend.test_conn().lock().unwrap();
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM llm_finish_metrics", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 4);
+
+        let stop_count: u64 = conn
+            .query_row(
+                "SELECT count FROM llm_finish_metrics WHERE finish_reason = 'stop'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stop_count, 35);
+
+        let pause_count: u64 = conn
+            .query_row(
+                "SELECT count FROM llm_finish_metrics WHERE finish_reason = 'pause_turn'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pause_count, 1);
+    }
+
+    #[tokio::test]
+    async fn query_finish_reasons_groups_by_raw_value() {
+        // Phase 5: long-format read path. Two timestamps × three raw provider
+        // finish_reason values, written at the (*, *, *) tier so the default
+        // (no wire_api / no model filter) read picks them up.
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+
+        let bucket_a: i64 = 1_700_000_000_000_000;
+        let bucket_b: i64 = 1_700_000_060_000_000; // +60s, next 1m bucket
+        let mk = |ts_us: i64, reason: &str, count: u64| LlmFinishMetric {
+            timestamp_us: ts_us,
+            source_id: String::new(),
+            granularity: "1m".to_string(),
+            wire_api: "*".to_string(),
+            model: "*".to_string(),
+            server_ip: "*".to_string(),
+            finish_reason: reason.to_string(),
+            count,
+        };
+
+        backend
+            .write_finish_metrics(vec![
+                mk(bucket_a, "end_turn", 12),
+                mk(bucket_a, "tool_use", 4),
+                mk(bucket_a, "max_tokens", 1),
+                mk(bucket_b, "end_turn", 7),
+                mk(bucket_b, "pause_turn", 2),
+            ])
+            .await
+            .unwrap();
+
+        let q = FinishReasonsQuery {
+            time_range: TimeRange {
+                start_us: bucket_a - 1,
+                end_us: bucket_b + 1_000_000,
+            },
+            granularity: "1m".to_string(),
+            wire_apis: Vec::new(),
+            models: Vec::new(),
+            server_ips: Vec::new(),
+        };
+        let series = backend.query_finish_reasons(&q).await.unwrap();
+
+        // One series per distinct raw value; alphabetical by finish_reason.
+        let names: Vec<&str> = series.iter().map(|s| s.finish_reason.as_str()).collect();
+        assert_eq!(names, vec!["end_turn", "max_tokens", "pause_turn", "tool_use"]);
+
+        let end_turn = series
+            .iter()
+            .find(|s| s.finish_reason == "end_turn")
+            .unwrap();
+        assert_eq!(end_turn.points, vec![(bucket_a, 12), (bucket_b, 7)]);
+
+        let pause_turn = series
+            .iter()
+            .find(|s| s.finish_reason == "pause_turn")
+            .unwrap();
+        assert_eq!(pause_turn.points, vec![(bucket_b, 2)]);
+
+        let max_tokens = series
+            .iter()
+            .find(|s| s.finish_reason == "max_tokens")
+            .unwrap();
+        assert_eq!(max_tokens.points, vec![(bucket_a, 1)]);
+    }
+
+    #[tokio::test]
+    async fn query_finish_reasons_filters_by_wire_api() {
+        // With `wire_api = Some("openai_chat")` and no model filter, the read
+        // sums per-model rows at the (W, M, *) tier.
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+
+        let ts: i64 = 1_700_000_000_000_000;
+        let mk = |wire: &str, model: &str, reason: &str, count: u64| LlmFinishMetric {
+            timestamp_us: ts,
+            source_id: String::new(),
+            granularity: "1m".to_string(),
+            wire_api: wire.to_string(),
+            model: model.to_string(),
+            server_ip: "*".to_string(),
+            finish_reason: reason.to_string(),
+            count,
+        };
+
+        backend
+            .write_finish_metrics(vec![
+                mk(wa::OPENAI_CHAT, "gpt-4", "stop", 5),
+                mk(wa::OPENAI_CHAT, "gpt-4o", "stop", 2),
+                mk(wa::OPENAI_CHAT, "gpt-4", "length", 1),
+                mk(wa::ANTHROPIC, "claude-3", "end_turn", 9),
+                // Fully-rolled-up tier for the same window — must be excluded
+                // by the read (server_ip='*' AND wire_api filter).
+                mk("*", "*", "stop", 99),
+            ])
+            .await
+            .unwrap();
+
+        let q = FinishReasonsQuery {
+            time_range: TimeRange {
+                start_us: ts - 1,
+                end_us: ts + 1_000_000,
+            },
+            granularity: "1m".to_string(),
+            wire_apis: vec![wa::OPENAI_CHAT.to_string()],
+            models: Vec::new(),
+            server_ips: Vec::new(),
+        };
+        let series = backend.query_finish_reasons(&q).await.unwrap();
+
+        // Only openai_chat finish reasons; counts summed across models.
+        let names: Vec<&str> = series.iter().map(|s| s.finish_reason.as_str()).collect();
+        assert_eq!(names, vec!["length", "stop"]);
+        let stop = series.iter().find(|s| s.finish_reason == "stop").unwrap();
+        assert_eq!(stop.points, vec![(ts, 7)]); // 5 + 2
+        let length = series.iter().find(|s| s.finish_reason == "length").unwrap();
+        assert_eq!(length.points, vec![(ts, 1)]);
+    }
+
+    #[tokio::test]
+    async fn query_finish_reasons_filters_by_multi_wire_api() {
+        // With `wire_apis = ["openai_chat", "anthropic"]` (CSV expansion at the
+        // API layer), the read sums per-model rows at the (W, M, *) tier across
+        // all listed wire_apis — same finish_reason in different wire_apis
+        // collapses into a single series.
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+
+        let ts: i64 = 1_700_000_000_000_000;
+        let mk = |wire: &str, model: &str, reason: &str, count: u64| LlmFinishMetric {
+            timestamp_us: ts,
+            source_id: String::new(),
+            granularity: "1m".to_string(),
+            wire_api: wire.to_string(),
+            model: model.to_string(),
+            server_ip: "*".to_string(),
+            finish_reason: reason.to_string(),
+            count,
+        };
+
+        backend
+            .write_finish_metrics(vec![
+                mk(wa::OPENAI_CHAT, "gpt-4", "stop", 5),
+                mk(wa::OPENAI_CHAT, "gpt-4o", "stop", 2),
+                mk(wa::ANTHROPIC, "claude-3", "stop", 3),
+                mk(wa::ANTHROPIC, "claude-3", "end_turn", 9),
+                // A wire_api outside the filter must NOT contribute.
+                mk("gemini", "gemini-pro", "stop", 100),
+                // Fully-rolled-up tier — must be excluded by server_ip='*' AND
+                // the wire_api IN-list filter.
+                mk("*", "*", "stop", 99),
+            ])
+            .await
+            .unwrap();
+
+        let q = FinishReasonsQuery {
+            time_range: TimeRange {
+                start_us: ts - 1,
+                end_us: ts + 1_000_000,
+            },
+            granularity: "1m".to_string(),
+            wire_apis: vec![wa::OPENAI_CHAT.to_string(), wa::ANTHROPIC.to_string()],
+            models: Vec::new(),
+            server_ips: Vec::new(),
+        };
+        let series = backend.query_finish_reasons(&q).await.unwrap();
+
+        let names: Vec<&str> = series.iter().map(|s| s.finish_reason.as_str()).collect();
+        assert_eq!(names, vec!["end_turn", "stop"]);
+        // stop sums across both wire_apis and their models: 5 + 2 + 3 = 10.
+        let stop = series.iter().find(|s| s.finish_reason == "stop").unwrap();
+        assert_eq!(stop.points, vec![(ts, 10)]);
+        let end_turn = series
+            .iter()
+            .find(|s| s.finish_reason == "end_turn")
+            .unwrap();
+        assert_eq!(end_turn.points, vec![(ts, 9)]);
+    }
+
+    #[tokio::test]
+    async fn query_finish_reasons_filters_by_server_ip() {
+        // With `server_ips = ["10.0.0.1"]` and no wire/model filter, the read
+        // lands on the (*, *, S) tier and SUMs only the listed servers.
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+
+        let ts: i64 = 1_700_000_000_000_000;
+        let mk = |server: &str, reason: &str, count: u64| LlmFinishMetric {
+            timestamp_us: ts,
+            source_id: String::new(),
+            granularity: "1m".to_string(),
+            wire_api: "*".to_string(),
+            model: "*".to_string(),
+            server_ip: server.to_string(),
+            finish_reason: reason.to_string(),
+            count,
+        };
+
+        backend
+            .write_finish_metrics(vec![
+                mk("10.0.0.1", "end_turn", 5),
+                mk("10.0.0.1", "tool_use", 2),
+                mk("10.0.0.2", "end_turn", 7),
+                // Cross-server rollup tier — must be excluded by the IN-list.
+                mk("*", "end_turn", 99),
+            ])
+            .await
+            .unwrap();
+
+        let q = FinishReasonsQuery {
+            time_range: TimeRange {
+                start_us: ts - 1,
+                end_us: ts + 1_000_000,
+            },
+            granularity: "1m".to_string(),
+            wire_apis: Vec::new(),
+            models: Vec::new(),
+            server_ips: vec!["10.0.0.1".to_string()],
+        };
+        let series = backend.query_finish_reasons(&q).await.unwrap();
+
+        let names: Vec<&str> = series.iter().map(|s| s.finish_reason.as_str()).collect();
+        assert_eq!(names, vec!["end_turn", "tool_use"]);
+        let end_turn = series
+            .iter()
+            .find(|s| s.finish_reason == "end_turn")
+            .unwrap();
+        assert_eq!(end_turn.points, vec![(ts, 5)]);
+        let tool_use = series
+            .iter()
+            .find(|s| s.finish_reason == "tool_use")
+            .unwrap();
+        assert_eq!(tool_use.points, vec![(ts, 2)]);
     }
 
     // ===== Task 3: query_distinct_* tests =====
@@ -3670,6 +4215,54 @@ mod tests {
 
         let server_ips = backend.query_distinct_server_ips().await.unwrap();
         assert_eq!(server_ips, vec!["10.0.0.1", "10.0.0.2"]);
+    }
+
+    #[tokio::test]
+    async fn query_distinct_finish_reasons_returns_pairs() {
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+
+        let ts: i64 = 1_700_000_000_000_000;
+        let mk = |wire: &str, reason: &str| LlmFinishMetric {
+            timestamp_us: ts,
+            source_id: String::new(),
+            granularity: "1m".to_string(),
+            wire_api: wire.to_string(),
+            model: "m".to_string(),
+            server_ip: "*".to_string(),
+            finish_reason: reason.to_string(),
+            count: 1,
+        };
+
+        backend
+            .write_finish_metrics(vec![
+                mk(wa::ANTHROPIC, "end_turn"),
+                mk(wa::ANTHROPIC, "tool_use"),
+                mk(wa::ANTHROPIC, "end_turn"), // duplicate — DISTINCT collapses
+                mk(wa::OPENAI_CHAT, "stop"),
+                mk(wa::OPENAI_CHAT, "tool_calls"),
+                // Cross-wire-api rollup tier — must be excluded.
+                mk("*", "stop"),
+            ])
+            .await
+            .unwrap();
+
+        let pairs = backend.query_distinct_finish_reasons().await.unwrap();
+        let as_tuples: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|p| (p.wire_api.as_str(), p.finish_reason.as_str()))
+            .collect();
+        // Sorted by (wire_api, finish_reason) ascending — alphabetical so
+        // anthropic comes before openai-chat.
+        assert_eq!(
+            as_tuples,
+            vec![
+                (wa::ANTHROPIC, "end_turn"),
+                (wa::ANTHROPIC, "tool_use"),
+                (wa::OPENAI_CHAT, "stop"),
+                (wa::OPENAI_CHAT, "tool_calls"),
+            ]
+        );
     }
 
     // ===== Task 4: query_metrics_timeseries tests =====
@@ -4352,7 +4945,6 @@ mod tests {
             finish_reasons: vec![],
             client_ips: vec![],
             request_path_contains: None,
-            errors_only: false,
             sort_by: "request_time".to_string(),
             sort_order: "DESC".to_string(),
             page: 1,
@@ -4395,7 +4987,6 @@ mod tests {
             finish_reasons: vec![],
             client_ips: vec![],
             request_path_contains: None,
-            errors_only: false,
             sort_by: "request_time".to_string(),
             sort_order: "DESC".to_string(),
             page: 1,
@@ -4446,7 +5037,7 @@ mod tests {
 mod turn_tests {
     use super::*;
     use std::net::IpAddr;
-    use ts_llm::model::{ApiType, FinishReason};
+    use ts_llm::model::ApiType;
     use ts_turn::{AgentTurn, TurnStatus};
 
     fn sample_turn(
@@ -4502,7 +5093,7 @@ mod turn_tests {
             is_stream: false,
             request_body: None,
             status_code: Some(200),
-            finish_reason: Some(FinishReason::Complete),
+            finish_reason: Some("stop".to_string()),
             response_body: None,
             input_tokens: Some(10),
             output_tokens: Some(5),
@@ -4593,7 +5184,7 @@ mod turn_tests {
                 300,
                 3,
                 vec!["c4"],
-                TurnStatus::Length,
+                TurnStatus::Incomplete,
             ),
             sample_turn(
                 "t4",
@@ -4604,7 +5195,7 @@ mod turn_tests {
                 400,
                 4,
                 vec!["c5"],
-                TurnStatus::Failed,
+                TurnStatus::Complete,
             ),
         ];
         backend.write_turns(turns).await.unwrap();
@@ -4634,9 +5225,9 @@ mod turn_tests {
         assert!(ids.contains(&"t1".to_string()));
         assert!(ids.contains(&"t4".to_string()));
 
-        // Status filter (TurnStatus Display: length)
+        // Status filter (TurnStatus Display: incomplete)
         let mut q = base_turns_query();
-        q.statuses = vec!["length".into()];
+        q.statuses = vec!["incomplete".into()];
         let page = backend.query_turns(&q).await.unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].turn_id, "t3");
@@ -5164,7 +5755,7 @@ mod concurrent_tests {
     use std::net::IpAddr;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use ts_llm::model::{ApiType, FinishReason};
+    use ts_llm::model::ApiType;
     use ts_metrics::model::LlmMetric;
     use ts_turn::{AgentTurn, TurnStatus};
 
@@ -5182,7 +5773,7 @@ mod concurrent_tests {
             is_stream: false,
             request_body: None,
             status_code: Some(200),
-            finish_reason: Some(FinishReason::Complete),
+            finish_reason: Some("stop".to_string()),
             response_body: None,
             input_tokens: Some(10),
             output_tokens: Some(5),
@@ -5254,11 +5845,6 @@ mod concurrent_tests {
             error_4xx_count: 0,
             error_429_count: 0,
             error_5xx_count: 0,
-            finish_complete_count: 1,
-            finish_length_count: 0,
-            finish_tool_use_count: 0,
-            finish_error_count: 0,
-            finish_cancelled_count: 0,
             ttft_sum: 0.0,
             ttft_count: 0,
             ttft_p50: None,
@@ -5345,8 +5931,8 @@ mod retention_tests {
     use crate::StorageBackend;
     use std::net::IpAddr;
     use std::time::{Duration, SystemTime};
-    use ts_llm::model::{ApiType, FinishReason};
-    use ts_metrics::model::LlmMetric;
+    use ts_llm::model::ApiType;
+    use ts_metrics::model::{LlmFinishMetric, LlmMetric};
     use ts_turn::{AgentTurn, TurnStatus};
 
     fn mk_call(id: &str, request_time_us: i64) -> LlmCall {
@@ -5363,7 +5949,7 @@ mod retention_tests {
             is_stream: false,
             request_body: None,
             status_code: Some(200),
-            finish_reason: Some(FinishReason::Complete),
+            finish_reason: Some("stop".to_string()),
             response_body: None,
             input_tokens: Some(10),
             output_tokens: Some(5),
@@ -5411,6 +5997,24 @@ mod retention_tests {
         }
     }
 
+    fn mk_finish_metric(
+        granularity: &'static str,
+        ts_us: i64,
+        finish_reason: &str,
+        count: u64,
+    ) -> LlmFinishMetric {
+        LlmFinishMetric {
+            timestamp_us: ts_us,
+            source_id: String::new(),
+            granularity: granularity.into(),
+            wire_api: wa::OPENAI_CHAT.into(),
+            model: "gpt-4".into(),
+            server_ip: "10.0.0.2".into(),
+            finish_reason: finish_reason.into(),
+            count,
+        }
+    }
+
     fn mk_metric(granularity: &'static str, ts_us: i64) -> LlmMetric {
         LlmMetric {
             timestamp_us: ts_us,
@@ -5435,11 +6039,6 @@ mod retention_tests {
             error_4xx_count: 0,
             error_429_count: 0,
             error_5xx_count: 0,
-            finish_complete_count: 1,
-            finish_length_count: 0,
-            finish_tool_use_count: 0,
-            finish_error_count: 0,
-            finish_cancelled_count: 0,
             ttft_sum: 0.0,
             ttft_count: 0,
             ttft_p50: None,
@@ -5505,6 +6104,22 @@ mod retention_tests {
             .await
             .unwrap();
 
+        // Finish metrics: 2 paired rows per granularity (one old, one new),
+        // mirroring llm_metrics so retention sweeps both tables in lock-step.
+        backend
+            .write_finish_metrics(vec![
+                mk_finish_metric("10s", old_ts, "stop", 5),
+                mk_finish_metric("10s", new_ts, "stop", 7),
+                mk_finish_metric("1m", old_ts, "stop", 5),
+                mk_finish_metric("1m", new_ts, "stop", 7),
+                mk_finish_metric("5m", old_ts, "stop", 5),
+                mk_finish_metric("5m", new_ts, "stop", 7),
+                mk_finish_metric("1h", old_ts, "stop", 5),
+                mk_finish_metric("1h", new_ts, "stop", 7),
+            ])
+            .await
+            .unwrap();
+
         let policy = RetentionPolicy {
             calls_before: Some(now - Duration::from_secs(7 * 86_400)),
             turns_before: Some(now - Duration::from_secs(14 * 86_400)),
@@ -5547,6 +6162,35 @@ mod retention_tests {
         // 8 rows, 3 deleted, 1h untouched → 5 left.
         assert_eq!(total_metrics, 5);
         assert_eq!(h1_metrics, 2, "1h granularity must not be swept");
+
+        // Phase 4 long-format finish-reason table is swept by the same
+        // (granularity, timestamp) cutoffs as llm_metrics. Inserted 8 rows
+        // (4 granularities × old/new); 3 old rows for 10s/1m/5m must be
+        // deleted, both 1h rows must remain → 5 rows total.
+        let total_finish_metrics: i64 = conn
+            .query_row("SELECT COUNT(*) FROM llm_finish_metrics", [], |r| r.get(0))
+            .unwrap();
+        let h1_finish_metrics: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM llm_finish_metrics WHERE granularity = '1h'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // For each swept granularity, the old (10d-ago) row must be gone
+        // and the new (10m-ago) row must survive.
+        for gran in ["10s", "1m", "5m"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM llm_finish_metrics WHERE granularity = ?1",
+                    duckdb::params![gran],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "granularity {gran}: only the new row should remain");
+        }
+        assert_eq!(total_finish_metrics, 5);
+        assert_eq!(h1_finish_metrics, 2, "1h granularity must not be swept");
     }
 
     #[tokio::test]

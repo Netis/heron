@@ -1,29 +1,91 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { ArrowUpDown } from "lucide-react"
 import { useTimeseries, useModels } from "@/hooks/use-metrics"
+import {
+  useFinishReasonTimeseries,
+  type FinishReasonSeries,
+} from "@/hooks/use-finish-reason-timeseries"
+import { finishTone, type FinishTone } from "@/lib/finish-tone"
 import { formatMs, formatNumber } from "@/lib/format"
 import { TimeseriesLineChart } from "@/components/charts/timeseries-line-chart"
 import { StackedBarChart } from "@/components/charts/stacked-bar-chart"
 import { ModelDonutChart } from "@/components/charts/model-donut-chart"
-import type { MetricsModelRow } from "@/types/api"
+import type { MetricsModelRow, TimeseriesData } from "@/types/api"
 
 const TOKEN_USAGE_SERIES = [
   { key: "total_input_tokens", label: "Input Tokens", color: "#3b82f6" },
   { key: "total_output_tokens", label: "Output Tokens", color: "#10b981" },
 ]
 
-const FINISH_REASON_SERIES = [
-  { key: "finish_complete_count", label: "Complete", color: "#10b981" },
-  { key: "finish_length_count", label: "Length", color: "#f59e0b" },
-  { key: "finish_tool_use_count", label: "Tool Use", color: "#3b82f6" },
-  { key: "finish_error_count", label: "Error", color: "#ef4444" },
-  { key: "finish_cancelled_count", label: "Cancelled", color: "#6b7280" },
-]
-
 const TOKEN_AVG_SERIES = [
   { key: "input_tokens_avg", label: "Avg Input", color: "#3b82f6" },
   { key: "output_tokens_avg", label: "Avg Output", color: "#10b981" },
 ]
+
+/**
+ * Tone → hex map for finish-reason chart colors. Recharts can't read Tailwind
+ * classes from `lib/finish-tone`, so we mirror those tones here as the -500
+ * shade of the same color families.
+ */
+const TONE_HEX: Record<FinishTone, string> = {
+  ok: "#10b981", // emerald-500
+  warn: "#f59e0b", // amber-500
+  tool: "#3b82f6", // blue-500
+  pause: "#0ea5e9", // sky-500
+  err: "#ef4444", // red-500
+  muted: "#9ca3af", // gray-400
+}
+
+interface FinishChartShape {
+  series: { key: string; label: string; color: string }[]
+  data: TimeseriesData
+}
+
+/**
+ * Pivot the long-format finish-reasons response into the wide-row
+ * `TimeseriesData` that `TimeseriesLineChart` consumes. Series are sorted
+ * alphabetically so legend / stacking order stays stable as new
+ * finish_reasons appear or disappear from the response.
+ *
+ * Backend emits microsecond timestamps; the chart component renders seconds
+ * (multiplies by 1000 internally), so we divide by 1_000_000 here.
+ */
+function buildFinishChart(series: FinishReasonSeries[] | undefined): FinishChartShape | null {
+  if (!series || series.length === 0) return null
+
+  const sorted = [...series].sort((a, b) => a.finish_reason.localeCompare(b.finish_reason))
+
+  // Collect unique microsecond timestamps across all series.
+  const tsSet = new Set<number>()
+  for (const s of sorted) for (const [ts] of s.points) tsSet.add(ts)
+  if (tsSet.size === 0) return null
+
+  const timestampsUs = [...tsSet].sort((a, b) => a - b)
+  const timestamps = timestampsUs.map((us) => Math.floor(us / 1_000_000))
+
+  const tsIndex = new Map<number, number>()
+  timestampsUs.forEach((ts, i) => tsIndex.set(ts, i))
+
+  const wideSeries = sorted.map((s) => {
+    const values: (number | null)[] = new Array(timestampsUs.length).fill(null)
+    for (const [ts, count] of s.points) {
+      const i = tsIndex.get(ts)
+      if (i !== undefined) values[i] = count
+    }
+    return { name: s.finish_reason, group: null, values }
+  })
+
+  const seriesConfig = sorted.map((s) => ({
+    key: s.finish_reason,
+    label: s.finish_reason,
+    color: TONE_HEX[finishTone(s.finish_reason)],
+  }))
+
+  return {
+    series: seriesConfig,
+    data: { timestamps, series: wideSeries },
+  }
+}
 
 function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -130,9 +192,11 @@ function TopModelsTable({ models }: { models: MetricsModelRow[] }) {
 export function TrafficPage() {
   const { data: volumeData } = useTimeseries("call_count", { groupBy: "wire_api" })
   const { data: tokenUsageData } = useTimeseries("total_input_tokens,total_output_tokens")
-  const { data: finishReasonData } = useTimeseries("finish_complete_count,finish_length_count,finish_tool_use_count,finish_error_count,finish_cancelled_count")
+  const { data: finishReasonData } = useFinishReasonTimeseries()
   const { data: tokenAvgData } = useTimeseries("input_tokens_avg,output_tokens_avg")
   const { data: modelsData } = useModels()
+
+  const finishChart = useMemo(() => buildFinishChart(finishReasonData?.series), [finishReasonData])
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -157,12 +221,18 @@ export function TrafficPage() {
           <ModelDonutChart models={modelsData?.models ?? []} />
         </ChartCard>
         <ChartCard title="Finish Reason Breakdown">
-          <TimeseriesLineChart
-            data={finishReasonData ?? null}
-            series={FINISH_REASON_SERIES}
-            yFormatter={(v) => formatNumber(v)}
-            variant="area"
-          />
+          {finishChart ? (
+            <TimeseriesLineChart
+              data={finishChart.data}
+              series={finishChart.series}
+              yFormatter={(v) => formatNumber(v)}
+              variant="area"
+            />
+          ) : (
+            <div className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">
+              No finish-reason data in this range
+            </div>
+          )}
         </ChartCard>
       </div>
 

@@ -2,14 +2,20 @@ import { useState, useRef, useEffect } from "react"
 import { ChevronDown, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-interface Props {
+interface FilterGroup {
   label: string
   options: string[]
+}
+
+interface Props {
+  label: string
+  options?: string[]
+  groups?: FilterGroup[]
   selected: string[]
   onChange: (selected: string[]) => void
 }
 
-export function FilterDropdown({ label, options, selected, onChange }: Props) {
+export function FilterDropdown({ label, options, groups, selected, onChange }: Props) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -71,45 +77,85 @@ export function FilterDropdown({ label, options, selected, onChange }: Props) {
 
       {open && (
         <div className="absolute left-0 top-full z-50 mt-1 min-w-[180px] rounded-lg border border-border bg-background p-1 shadow-lg">
-          {options.length === 0 ? (
+          {groups ? (
+            groups.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-muted-foreground">No options</div>
+            ) : (
+              <div className="max-h-[320px] overflow-auto">
+                {groups.map((group, idx) => (
+                  <div
+                    key={group.label}
+                    className={cn(idx > 0 && "mt-1 border-t border-border pt-1")}
+                  >
+                    <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {group.label}
+                    </div>
+                    {group.options.map((opt) => (
+                      <OptionButton
+                        key={opt}
+                        opt={opt}
+                        isChecked={selected.includes(opt)}
+                        onClick={() => toggle(opt)}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )
+          ) : !options || options.length === 0 ? (
             <div className="px-3 py-2 text-xs text-muted-foreground">No options</div>
           ) : (
             <div className="max-h-[240px] overflow-auto">
-              {options.map((opt) => {
-                const isChecked = selected.includes(opt)
-                return (
-                  <button
-                    key={opt}
-                    onClick={() => toggle(opt)}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-muted",
-                      isChecked && "font-medium",
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        "flex size-3.5 shrink-0 items-center justify-center rounded border",
-                        isChecked
-                          ? "border-foreground bg-foreground text-background"
-                          : "border-border",
-                      )}
-                    >
-                      {isChecked && (
-                        <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-                          <path d="M1 4L3 6L7 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      )}
-                    </div>
-                    <span className="truncate" title={opt}>
-                      {opt}
-                    </span>
-                  </button>
-                )
-              })}
+              {options.map((opt) => (
+                <OptionButton
+                  key={opt}
+                  opt={opt}
+                  isChecked={selected.includes(opt)}
+                  onClick={() => toggle(opt)}
+                />
+              ))}
             </div>
           )}
         </div>
       )}
     </div>
+  )
+}
+
+function OptionButton({
+  opt,
+  isChecked,
+  onClick,
+}: {
+  opt: string
+  isChecked: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-muted",
+        isChecked && "font-medium",
+      )}
+    >
+      <div
+        className={cn(
+          "flex size-3.5 shrink-0 items-center justify-center rounded border",
+          isChecked
+            ? "border-foreground bg-foreground text-background"
+            : "border-border",
+        )}
+      >
+        {isChecked && (
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+            <path d="M1 4L3 6L7 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
+      </div>
+      <span className="truncate" title={opt}>
+        {opt}
+      </span>
+    </button>
   )
 }

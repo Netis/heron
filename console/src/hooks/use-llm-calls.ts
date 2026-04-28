@@ -14,7 +14,6 @@ interface UseLlmCallsParams {
   finishReason?: string
   clientIp?: string
   requestPath?: string
-  errorsOnly?: boolean
 }
 
 export function useLlmCalls({
@@ -26,7 +25,6 @@ export function useLlmCalls({
   finishReason,
   clientIp,
   requestPath,
-  errorsOnly,
 }: UseLlmCallsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
@@ -36,7 +34,7 @@ export function useLlmCalls({
     queryKey: ["llm-calls", {
       start, end, page, pageSize, sortBy, sortOrder,
       ...fp,
-      statusCode, finishReason, clientIp, requestPath, errorsOnly,
+      statusCode, finishReason, clientIp, requestPath,
     }],
     queryFn: () =>
       apiFetch<LlmCallsPage>("/api/llm-calls", {
@@ -51,7 +49,6 @@ export function useLlmCalls({
         finish_reason: finishReason || undefined,
         client_ip: clientIp || undefined,
         request_path: requestPath || undefined,
-        errors_only: errorsOnly ? true : undefined,
       }),
     placeholderData: (prev) => prev,
   })

@@ -13,6 +13,7 @@ use tokio::task::JoinHandle;
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_llm::model::TurnShardInput;
 use ts_llm::profile::AgentProfileRegistry;
+use ts_llm::wire_api_registry::WireApiRegistry;
 
 use crate::model::AgentTurn;
 use crate::tracker::{TrackerConfig, TurnEvent, TurnTracker};
@@ -24,6 +25,7 @@ pub fn spawn_turn_stage(
     shard_rxs: Vec<mpsc::Receiver<TurnShardInput>>,
     turns_tx: mpsc::Sender<AgentTurn>,
     registry: Arc<AgentProfileRegistry>,
+    wire_apis: Arc<WireApiRegistry>,
     metrics_sys: &mut MetricsSystem,
 ) -> Vec<JoinHandle<()>> {
     assert!(
@@ -53,6 +55,7 @@ pub fn spawn_turn_stage(
     {
         let turns_tx = turns_tx.clone();
         let registry = registry.clone();
+        let wire_apis = wire_apis.clone();
         let worker_metrics = metrics_sys.register_worker(
             &format!("turn.{i}"),
             &[
@@ -67,7 +70,8 @@ pub fn spawn_turn_stage(
         );
         handles.push(tokio::spawn(async move {
             let shard = i;
-            let mut tracker = TurnTracker::new(registry, tracker_cfg, worker_metrics);
+            let mut tracker =
+                TurnTracker::new(registry, wire_apis, tracker_cfg, worker_metrics);
             let reason = 'main: loop {
                 let input = match rx.recv().await {
                     Some(x) => x,
@@ -125,14 +129,15 @@ mod tests {
     use std::net::IpAddr;
     use std::sync::Arc;
     use ts_llm::agents::build_default_registry;
-    use ts_llm::model::{AgentCall, AgentIdentity, ApiType, FinishReason, LlmCall};
+    use ts_llm::model::{AgentCall, AgentIdentity, ApiType, LlmCall};
     use ts_llm::wire_apis as wa;
+    use ts_llm::wire_apis::build_default_wire_api_registry;
 
     /// `is_user_start`: true ⇒ text body (new-turn marker); false ⇒ tool_result body (continuation).
     fn anthropic_call(
         session: &str,
         ts_us: i64,
-        finish: FinishReason,
+        finish: &str,
         is_user_start: bool,
     ) -> LlmCall {
         let body = if is_user_start {
@@ -153,7 +158,7 @@ mod tests {
             is_stream: true,
             request_body: Some(body.to_string()),
             status_code: Some(200),
-            finish_reason: Some(finish),
+            finish_reason: Some(finish.to_string()),
             response_body: None,
             input_tokens: Some(1),
             output_tokens: Some(1),
@@ -194,18 +199,14 @@ mod tests {
             vec![shard_rx],
             turns_tx.clone(),
             Arc::new(build_default_registry()),
+            Arc::new(build_default_wire_api_registry()),
             &mut metrics_sys,
         );
         let _svc = metrics_sys.start();
         drop(turns_tx);
 
-        let c1 = Arc::new(anthropic_call("S", 1_000_000, FinishReason::ToolUse, true));
-        let c2 = Arc::new(anthropic_call(
-            "S",
-            2_000_000,
-            FinishReason::Complete,
-            false,
-        ));
+        let c1 = Arc::new(anthropic_call("S", 1_000_000, "tool_use", true));
+        let c2 = Arc::new(anthropic_call("S", 2_000_000, "end_turn", false));
         let (id1, id2) = (c1.id.clone(), c2.id.clone());
 
         shard_tx
@@ -249,6 +250,7 @@ mod tests {
             shard_rxs,
             turns_tx.clone(),
             Arc::new(build_default_registry()),
+            Arc::new(build_default_wire_api_registry()),
             &mut metrics_sys,
         );
         let _svc = metrics_sys.start();
@@ -259,13 +261,13 @@ mod tests {
             let c1 = Arc::new(anthropic_call(
                 &session,
                 1_000_000 + i as i64,
-                FinishReason::ToolUse,
+                "tool_use",
                 true,
             ));
             let c2 = Arc::new(anthropic_call(
                 &session,
                 2_000_000 + i as i64,
-                FinishReason::Complete,
+                "end_turn",
                 false,
             ));
             tx.send(TurnShardInput::Call(AgentCall {
@@ -304,6 +306,7 @@ mod tests {
             vec![],
             _turns_tx,
             Arc::new(build_default_registry()),
+            Arc::new(build_default_wire_api_registry()),
             &mut metrics_sys,
         );
     }

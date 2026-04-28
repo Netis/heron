@@ -4,7 +4,7 @@ use ts_common::internal_metrics::{Metric, MetricsWorker};
 use ts_llm::model::{LlmCall, LlmCallStart, LlmEvent};
 
 use crate::bucket::WindowBucket;
-use crate::model::LlmMetric;
+use crate::model::LlmMetricsBatch;
 
 struct GranularityConfig {
     label: &'static str,
@@ -89,8 +89,10 @@ impl MetricsAggregator {
         }
     }
 
-    /// Process an LlmEvent. Returns any metric rows emitted by cadence drain.
-    pub fn process(&mut self, event: &LlmEvent) -> Vec<LlmMetric> {
+    /// Process an LlmEvent. Returns any metric batches emitted by cadence
+    /// drain. Each batch carries one wide `LlmMetric` row plus zero or more
+    /// long-format `LlmFinishMetric` rows for the same bucket.
+    pub fn process(&mut self, event: &LlmEvent) -> Vec<LlmMetricsBatch> {
         let (source_id, ts) = event_clock(event);
 
         match event {
@@ -119,13 +121,13 @@ impl MetricsAggregator {
     }
 
     /// Flush all remaining buckets. Call at end of capture.
-    pub fn flush_all(&mut self) -> Vec<LlmMetric> {
+    pub fn flush_all(&mut self) -> Vec<LlmMetricsBatch> {
         let keys: Vec<_> = self.buckets.keys().cloned().collect();
-        let mut metrics = Vec::new();
+        let mut batches = Vec::new();
         for key in keys {
             if let Some(mut bucket) = self.buckets.remove(&key) {
                 if bucket.has_data() {
-                    metrics.push(bucket.flush(
+                    batches.push(bucket.flush(
                         key.window_start_us,
                         &key.source_id,
                         GRANULARITIES[key.granularity_idx].label,
@@ -137,15 +139,16 @@ impl MetricsAggregator {
                 }
             }
         }
-        metrics.sort_by(|a, b| {
-            a.granularity
-                .cmp(b.granularity)
-                .then(a.timestamp_us.cmp(&b.timestamp_us))
-                .then(a.wire_api.cmp(&b.wire_api))
-                .then(a.model.cmp(&b.model))
-                .then(a.server_ip.cmp(&b.server_ip))
+        batches.sort_by(|a, b| {
+            a.metric
+                .granularity
+                .cmp(b.metric.granularity)
+                .then(a.metric.timestamp_us.cmp(&b.metric.timestamp_us))
+                .then(a.metric.wire_api.cmp(&b.metric.wire_api))
+                .then(a.metric.model.cmp(&b.metric.model))
+                .then(a.metric.server_ip.cmp(&b.metric.server_ip))
         });
-        metrics
+        batches
     }
 
     fn on_call_start(&mut self, start: &LlmCallStart) {
@@ -222,8 +225,8 @@ impl MetricsAggregator {
     /// Per-granularity cadence drain. For each `(source, gran)` pair where
     /// at least `gran.window_secs` of event-time have elapsed since the
     /// anchor, emit and clear all dirty buckets for that pair.
-    fn maybe_drain(&mut self, source_id: &str, now_ts: i64) -> Vec<LlmMetric> {
-        let mut metrics = Vec::new();
+    fn maybe_drain(&mut self, source_id: &str, now_ts: i64) -> Vec<LlmMetricsBatch> {
+        let mut batches = Vec::new();
 
         for (gi, gran) in GRANULARITIES.iter().enumerate() {
             let interval_us = gran.window_secs * 1_000_000;
@@ -247,7 +250,7 @@ impl MetricsAggregator {
             for key in dirty_keys {
                 if let Some(mut bucket) = self.buckets.remove(&key) {
                     if bucket.has_data() {
-                        metrics.push(bucket.flush(
+                        batches.push(bucket.flush(
                             key.window_start_us,
                             &key.source_id,
                             gran.label,
@@ -261,7 +264,7 @@ impl MetricsAggregator {
             }
         }
 
-        metrics
+        batches
     }
 }
 
@@ -328,7 +331,7 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
     use std::sync::Arc;
-    use ts_llm::model::{ApiType, FinishReason, LlmCall, LlmCallStart};
+    use ts_llm::model::{ApiType, LlmCall, LlmCallStart};
     use ts_llm::wire_apis as wa;
 
     fn test_metrics() -> MetricsWorker {
@@ -386,7 +389,7 @@ mod tests {
                 is_stream: true,
                 request_body: None,
                 status_code: Some(200),
-                finish_reason: Some(FinishReason::Complete),
+                finish_reason: Some("stop".to_string()),
                 response_body: None,
                 input_tokens: Some(100),
                 output_tokens: Some(50),
@@ -435,18 +438,21 @@ mod tests {
 
         let rows_10s: Vec<_> = flushed
             .iter()
-            .filter(|m| m.granularity == "10s" && m.timestamp_us == t0)
+            .filter(|b| b.metric.granularity == "10s" && b.metric.timestamp_us == t0)
             .collect();
         assert_eq!(rows_10s.len(), 4, "one merged row per dim");
         let finest = rows_10s
             .iter()
-            .find(|m| m.model == "gpt-4" && m.server_ip != "*")
+            .find(|b| b.metric.model == "gpt-4" && b.metric.server_ip != "*")
             .expect("finest dim present");
-        assert_eq!(finest.call_count, 1);
-        assert_eq!(finest.total_input_tokens, 100);
-        assert_eq!(finest.ttft_count, 1);
-        assert!(finest.ttft_sum > 0.0);
-        assert_eq!(finest.finish_complete_count, 1);
+        assert_eq!(finest.metric.call_count, 1);
+        assert_eq!(finest.metric.total_input_tokens, 100);
+        assert_eq!(finest.metric.ttft_count, 1);
+        assert!(finest.metric.ttft_sum > 0.0);
+        assert!(finest
+            .finish_metrics
+            .iter()
+            .any(|f| f.finish_reason == "stop" && f.count == 1));
     }
 
     #[test]
@@ -463,17 +469,17 @@ mod tests {
         // Start row already emitted (call_count=1, tokens=0).
         let start_row = all
             .iter()
-            .find(|m| {
-                m.granularity == "10s"
-                    && m.timestamp_us == t0
-                    && m.model == "gpt-4"
-                    && m.server_ip != "*"
+            .find(|b| {
+                b.metric.granularity == "10s"
+                    && b.metric.timestamp_us == t0
+                    && b.metric.model == "gpt-4"
+                    && b.metric.server_ip != "*"
             })
             .expect("start row for t0");
-        assert_eq!(start_row.call_count, 1);
-        assert_eq!(start_row.total_input_tokens, 0);
-        assert_eq!(start_row.ttft_count, 0);
-        assert_eq!(start_row.ttft_sum, 0.0);
+        assert_eq!(start_row.metric.call_count, 1);
+        assert_eq!(start_row.metric.total_input_tokens, 0);
+        assert_eq!(start_row.metric.ttft_count, 0);
+        assert_eq!(start_row.metric.ttft_sum, 0.0);
 
         // Complete returns late.
         all.extend(agg.process(&make_complete(t0, t0 + 35_000_000, "gpt-4")));
@@ -483,11 +489,11 @@ mod tests {
         // Second row for the same window carries Complete payload.
         let complete_rows: Vec<_> = all
             .iter()
-            .filter(|m| {
-                m.granularity == "10s"
-                    && m.timestamp_us == t0
-                    && m.model == "gpt-4"
-                    && m.server_ip != "*"
+            .filter(|b| {
+                b.metric.granularity == "10s"
+                    && b.metric.timestamp_us == t0
+                    && b.metric.model == "gpt-4"
+                    && b.metric.server_ip != "*"
             })
             .collect();
         assert_eq!(
@@ -497,12 +503,15 @@ mod tests {
         );
         let late = complete_rows
             .iter()
-            .find(|m| m.total_input_tokens > 0)
+            .find(|b| b.metric.total_input_tokens > 0)
             .expect("late complete row");
-        assert_eq!(late.call_count, 0, "late complete row has zero traffic");
-        assert_eq!(late.total_input_tokens, 100);
-        assert_eq!(late.ttft_count, 1);
-        assert!(late.ttft_sum > 0.0);
+        assert_eq!(
+            late.metric.call_count, 0,
+            "late complete row has zero traffic"
+        );
+        assert_eq!(late.metric.total_input_tokens, 100);
+        assert_eq!(late.metric.ttft_count, 1);
+        assert!(late.metric.ttft_sum > 0.0);
     }
 
     #[test]
@@ -528,13 +537,13 @@ mod tests {
 
         let traffic: u64 = all
             .iter()
-            .filter(|m| {
-                m.granularity == "10s"
-                    && m.timestamp_us == t0
-                    && m.model == "gpt-4"
-                    && m.server_ip != "*"
+            .filter(|b| {
+                b.metric.granularity == "10s"
+                    && b.metric.timestamp_us == t0
+                    && b.metric.model == "gpt-4"
+                    && b.metric.server_ip != "*"
             })
-            .map(|m| m.call_count)
+            .map(|b| b.metric.call_count)
             .sum();
         assert_eq!(
             traffic, 2,
@@ -553,9 +562,9 @@ mod tests {
         agg.process(&make_complete(t0, t0 + 500_000, "gpt-4"));
         let flushed = agg.process(&make_heartbeat(t0 + 10_000_000, ""));
 
-        assert!(flushed.iter().any(|m| m.granularity == "10s"));
+        assert!(flushed.iter().any(|b| b.metric.granularity == "10s"));
         assert!(
-            !flushed.iter().any(|m| m.granularity == "1m"),
+            !flushed.iter().any(|b| b.metric.granularity == "1m"),
             "1m cadence must not fire at 10s"
         );
     }
@@ -574,7 +583,7 @@ mod tests {
 
         let rows_10s: Vec<_> = flushed
             .iter()
-            .filter(|m| m.granularity == "10s" && m.timestamp_us == t0)
+            .filter(|b| b.metric.granularity == "10s" && b.metric.timestamp_us == t0)
             .collect();
         assert_eq!(rows_10s.len(), 4, "Complete event alone triggers drain");
     }
@@ -589,7 +598,7 @@ mod tests {
 
         let immediate = agg.process(&make_complete(t0, t0 + 5_000_000, "gpt-4"));
         assert!(
-            !immediate.iter().any(|m| m.granularity == "10s"),
+            !immediate.iter().any(|b| b.metric.granularity == "10s"),
             "first Complete inside the window should not trigger an immediate emit"
         );
     }
@@ -605,7 +614,13 @@ mod tests {
         let metrics = agg.flush_all();
         assert_eq!(metrics.len(), 16, "4 grans × 4 dims, one merged row each");
         for gran in ["10s", "1m", "5m", "1h"] {
-            assert_eq!(metrics.iter().filter(|m| m.granularity == gran).count(), 4);
+            assert_eq!(
+                metrics
+                    .iter()
+                    .filter(|b| b.metric.granularity == gran)
+                    .count(),
+                4
+            );
         }
     }
 
@@ -625,11 +640,11 @@ mod tests {
 
         let rows_t0: Vec<_> = all
             .iter()
-            .filter(|m| {
-                m.granularity == "10s"
-                    && m.timestamp_us == t0
-                    && m.model == "gpt-4"
-                    && m.server_ip != "*"
+            .filter(|b| {
+                b.metric.granularity == "10s"
+                    && b.metric.timestamp_us == t0
+                    && b.metric.model == "gpt-4"
+                    && b.metric.server_ip != "*"
             })
             .collect();
         assert!(
@@ -652,7 +667,11 @@ mod tests {
 
         let s0_rows: Vec<_> = s0_flushed
             .iter()
-            .filter(|m| m.granularity == "10s" && m.source_id == "s0" && m.timestamp_us == t0)
+            .filter(|b| {
+                b.metric.granularity == "10s"
+                    && b.metric.source_id == "s0"
+                    && b.metric.timestamp_us == t0
+            })
             .collect();
         assert_eq!(s0_rows.len(), 4, "s0 drains for t0");
 
@@ -662,7 +681,7 @@ mod tests {
         assert_eq!(
             s1_flushed
                 .iter()
-                .filter(|m| m.granularity == "10s" && m.source_id == "s1")
+                .filter(|b| b.metric.granularity == "10s" && b.metric.source_id == "s1")
                 .count(),
             0
         );
@@ -686,20 +705,20 @@ mod tests {
         // Drain fires at t1 (watermark = t0+15s, interval = 10s, anchor = t0).
         let global = all
             .iter()
-            .find(|m| {
-                m.granularity == "10s"
-                    && m.timestamp_us == t0
-                    && m.wire_api == "*"
-                    && m.model == "*"
-                    && m.server_ip == "*"
+            .find(|b| {
+                b.metric.granularity == "10s"
+                    && b.metric.timestamp_us == t0
+                    && b.metric.wire_api == "*"
+                    && b.metric.model == "*"
+                    && b.metric.server_ip == "*"
             })
             .expect("global 10s row for t0");
         assert!(
-            global.active_calls_max >= 3,
+            global.metric.active_calls_max >= 3,
             "active_calls_max should be >= 3, got {}",
-            global.active_calls_max
+            global.metric.active_calls_max
         );
-        assert_eq!(global.call_count, 3);
+        assert_eq!(global.metric.call_count, 3);
     }
 
     #[test]
@@ -711,19 +730,22 @@ mod tests {
         agg.process(&make_complete(t0, t0 + 500_000, "gpt-4"));
 
         let metrics = agg.flush_all();
-        let rows_10s: Vec<_> = metrics.iter().filter(|m| m.granularity == "10s").collect();
+        let rows_10s: Vec<_> = metrics
+            .iter()
+            .filter(|b| b.metric.granularity == "10s")
+            .collect();
         assert_eq!(rows_10s.len(), 4);
-        assert!(rows_10s.iter().any(|m| m.wire_api == wa::OPENAI_CHAT
-            && m.model == "gpt-4"
-            && m.server_ip == "10.0.0.1"));
-        assert!(rows_10s
-            .iter()
-            .any(|m| m.wire_api == wa::OPENAI_CHAT && m.model == "gpt-4" && m.server_ip == "*"));
-        assert!(rows_10s
-            .iter()
-            .any(|m| m.wire_api == "*" && m.model == "*" && m.server_ip == "10.0.0.1"));
-        assert!(rows_10s
-            .iter()
-            .any(|m| m.wire_api == "*" && m.model == "*" && m.server_ip == "*"));
+        assert!(rows_10s.iter().any(|b| b.metric.wire_api == wa::OPENAI_CHAT
+            && b.metric.model == "gpt-4"
+            && b.metric.server_ip == "10.0.0.1"));
+        assert!(rows_10s.iter().any(|b| b.metric.wire_api == wa::OPENAI_CHAT
+            && b.metric.model == "gpt-4"
+            && b.metric.server_ip == "*"));
+        assert!(rows_10s.iter().any(|b| b.metric.wire_api == "*"
+            && b.metric.model == "*"
+            && b.metric.server_ip == "10.0.0.1"));
+        assert!(rows_10s.iter().any(|b| b.metric.wire_api == "*"
+            && b.metric.model == "*"
+            && b.metric.server_ip == "*"));
     }
 }

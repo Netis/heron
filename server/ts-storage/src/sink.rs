@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use ts_llm::model::LlmCall;
-use ts_metrics::model::LlmMetric;
+use ts_metrics::model::{LlmFinishMetric, LlmMetric, LlmMetricsBatch};
 use ts_protocol::HttpExchange;
 use ts_turn::AgentTurn;
 
@@ -39,7 +39,7 @@ pub fn spawn_storage_sink_stage(
     config: StorageSinkConfig,
     calls_rx: mpsc::Receiver<Arc<LlmCall>>,
     turns_rx: mpsc::Receiver<AgentTurn>,
-    metrics_rx: mpsc::Receiver<LlmMetric>,
+    metrics_rx: mpsc::Receiver<LlmMetricsBatch>,
     http_exchanges_rx: mpsc::Receiver<HttpExchange>,
     backend: Arc<dyn StorageBackend>,
     metrics: MetricsWorker,
@@ -151,9 +151,22 @@ pub fn spawn_storage_sink_stage(
     );
     let metrics_task = tokio::spawn(async move {
         metrics_buffer
-            .run(move |batch| {
+            .run(move |batch: Vec<LlmMetricsBatch>| {
+                // Split each `LlmMetricsBatch` into the wide row and the
+                // long-format finish-reason rows. The pair always travels
+                // together so this stays one logical flush; the two backend
+                // calls share the metrics writer Mutex (see DuckDbBackend).
                 let b = metrics_storage.clone();
-                async move { b.write_metrics(batch).await }
+                let mut wide: Vec<LlmMetric> = Vec::with_capacity(batch.len());
+                let mut finish: Vec<LlmFinishMetric> = Vec::with_capacity(batch.len());
+                for item in batch {
+                    wide.push(item.metric);
+                    finish.extend(item.finish_metrics);
+                }
+                async move {
+                    b.write_metrics(wide).await?;
+                    b.write_finish_metrics(finish).await
+                }
             })
             .await;
     });
@@ -198,11 +211,12 @@ pub fn spawn_storage_sink_stage(
 mod tests {
     use super::*;
     use crate::query::{
-        CallDetail, CallsPage, CallsQuery, HttpExchangeDetail, HttpExchangesPage,
-        HttpExchangesQuery, MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery,
-        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, SessionDetail,
-        SessionListQuery, SessionTurnsPage, SessionTurnsQuery, SessionsPage, TurnCallItem,
-        TurnDetail, TurnsPage, TurnsQuery,
+        CallDetail, CallsPage, CallsQuery, DistinctFinishReason, FinishReasonTimeseries,
+        FinishReasonsQuery, HttpExchangeDetail, HttpExchangesPage, HttpExchangesQuery,
+        MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery, MetricsSummaryRow,
+        MetricsTimeseriesQuery, MetricsTimeseriesRow, SessionDetail, SessionListQuery,
+        SessionTurnsPage, SessionTurnsQuery, SessionsPage, TurnCallItem, TurnDetail, TurnsPage,
+        TurnsQuery,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -232,6 +246,12 @@ mod tests {
         }
         async fn write_metrics(&self, batch: Vec<LlmMetric>) -> Result<()> {
             self.metrics.fetch_add(batch.len(), Ordering::SeqCst);
+            Ok(())
+        }
+        async fn write_finish_metrics(&self, _batch: Vec<LlmFinishMetric>) -> Result<()> {
+            // Counting backend ignores finish-reason rows: the sink test
+            // exercises the `LlmMetricsBatch` split path; the count of wide
+            // rows is the assertion of interest.
             Ok(())
         }
         async fn write_exchanges(&self, batch: Vec<HttpExchange>) -> Result<()> {
@@ -277,6 +297,12 @@ mod tests {
             &self,
             _query: &MetricsModelsQuery,
         ) -> Result<Vec<MetricsModelRow>> {
+            Ok(vec![])
+        }
+        async fn query_finish_reasons(
+            &self,
+            _query: &FinishReasonsQuery,
+        ) -> Result<Vec<FinishReasonTimeseries>> {
             Ok(vec![])
         }
         async fn query_calls(&self, _query: &CallsQuery) -> Result<CallsPage> {
@@ -331,6 +357,9 @@ mod tests {
         async fn query_distinct_server_ips(&self) -> Result<Vec<String>> {
             Ok(vec![])
         }
+        async fn query_distinct_finish_reasons(&self) -> Result<Vec<DistinctFinishReason>> {
+            Ok(vec![])
+        }
         async fn apply_retention(
             &self,
             _policy: crate::retention::RetentionPolicy,
@@ -357,7 +386,7 @@ mod tests {
 
         let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(16);
         let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(16);
-        let (metrics_tx, metrics_rx) = mpsc::channel::<LlmMetric>(16);
+        let (metrics_tx, metrics_rx) = mpsc::channel::<LlmMetricsBatch>(16);
         let (exch_tx, exch_rx) = mpsc::channel::<HttpExchange>(16);
 
         let cfg = StorageSinkConfig {
@@ -512,50 +541,48 @@ mod tests {
         }
     }
 
-    fn dummy_metric(i: usize) -> LlmMetric {
-        LlmMetric {
-            timestamp_us: i as i64,
-            source_id: String::new(),
-            granularity: "10s",
-            wire_api: ts_llm::wire_apis::OPENAI_CHAT.into(),
-            model: "m".into(),
-            server_ip: "*".into(),
-            call_count: 1,
-            stream_count: 0,
-            non_stream_count: 1,
-            active_calls_sum: 0,
-            active_calls_sample_count: 0,
-            active_calls_max: 0,
-            total_input_tokens: 0,
-            input_token_count: 0,
-            total_output_tokens: 0,
-            output_token_count: 0,
-            total_cache_read_input_tokens: 0,
-            total_cache_creation_input_tokens: 0,
-            error_count: 0,
-            error_4xx_count: 0,
-            error_429_count: 0,
-            error_5xx_count: 0,
-            finish_complete_count: 0,
-            finish_length_count: 0,
-            finish_tool_use_count: 0,
-            finish_error_count: 0,
-            finish_cancelled_count: 0,
-            ttft_sum: 0.0,
-            ttft_count: 0,
-            ttft_p50: None,
-            ttft_p95: None,
-            ttft_p99: None,
-            e2e_sum: 0.0,
-            e2e_count: 0,
-            e2e_p50: None,
-            e2e_p95: None,
-            e2e_p99: None,
-            tpot_sum: 0.0,
-            tpot_count: 0,
-            tpot_p50: None,
-            tpot_p95: None,
-            tpot_p99: None,
+    fn dummy_metric(i: usize) -> LlmMetricsBatch {
+        LlmMetricsBatch {
+            metric: LlmMetric {
+                timestamp_us: i as i64,
+                source_id: String::new(),
+                granularity: "10s",
+                wire_api: ts_llm::wire_apis::OPENAI_CHAT.into(),
+                model: "m".into(),
+                server_ip: "*".into(),
+                call_count: 1,
+                stream_count: 0,
+                non_stream_count: 1,
+                active_calls_sum: 0,
+                active_calls_sample_count: 0,
+                active_calls_max: 0,
+                total_input_tokens: 0,
+                input_token_count: 0,
+                total_output_tokens: 0,
+                output_token_count: 0,
+                total_cache_read_input_tokens: 0,
+                total_cache_creation_input_tokens: 0,
+                error_count: 0,
+                error_4xx_count: 0,
+                error_429_count: 0,
+                error_5xx_count: 0,
+                ttft_sum: 0.0,
+                ttft_count: 0,
+                ttft_p50: None,
+                ttft_p95: None,
+                ttft_p99: None,
+                e2e_sum: 0.0,
+                e2e_count: 0,
+                e2e_p50: None,
+                e2e_p95: None,
+                e2e_p99: None,
+                tpot_sum: 0.0,
+                tpot_count: 0,
+                tpot_p50: None,
+                tpot_p95: None,
+                tpot_p99: None,
+            },
+            finish_metrics: Vec::new(),
         }
     }
 }

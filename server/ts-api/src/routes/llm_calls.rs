@@ -29,9 +29,6 @@ pub struct CallsParams {
     /// Substring match against `request_path` (case-sensitive, `LIKE '%…%'`).
     #[serde(default)]
     pub request_path: Option<String>,
-    /// When `true`, restrict to rows with `status_code >= 400`.
-    #[serde(default)]
-    pub errors_only: Option<bool>,
     #[serde(default = "default_calls_sort_by")]
     pub sort_by: String,
     #[serde(default = "default_calls_sort_order")]
@@ -75,7 +72,6 @@ pub async fn list(
         finish_reasons: parse_csv(&params.finish_reason),
         client_ips: parse_csv(&params.client_ip),
         request_path_contains: params.request_path.filter(|s| !s.is_empty()),
-        errors_only: params.errors_only.unwrap_or(false),
         sort_by: params.sort_by,
         sort_order: params.sort_order,
         page: params.page,
@@ -145,7 +141,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn errors_only_and_contains_params_parse() {
+    async fn contains_params_parse() {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         <DuckDbBackend as ts_storage::StorageBackend>::init(&backend)
             .await
@@ -156,7 +152,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/llm-calls?start=0&end=1&errors_only=true&client_ip=10.0.0.1&request_path=/v1/chat")
+                    .uri("/api/llm-calls?start=0&end=1&client_ip=10.0.0.1&request_path=/v1/chat")
                     .body(Body::empty())
                     .unwrap(),
             )

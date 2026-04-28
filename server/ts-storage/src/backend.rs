@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ts_llm::model::LlmCall;
-use ts_metrics::model::LlmMetric;
+use ts_metrics::model::{LlmFinishMetric, LlmMetric};
 use ts_protocol::HttpExchange;
 use ts_turn::AgentTurn;
 
@@ -20,6 +20,10 @@ pub trait StorageBackend: Send + Sync {
 
     /// Batch-write LlmMetric records.
     async fn write_metrics(&self, metrics: Vec<LlmMetric>) -> Result<()>;
+
+    /// Batch-write LlmFinishMetric records into the long-format
+    /// `llm_finish_metrics` table.
+    async fn write_finish_metrics(&self, metrics: Vec<LlmFinishMetric>) -> Result<()>;
 
     /// Batch-write AgentTurn records.
     async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()>;
@@ -46,6 +50,15 @@ pub trait StorageBackend: Send + Sync {
         &self,
         query: &MetricsModelsQuery,
     ) -> Result<Vec<MetricsModelRow>>;
+
+    /// Per-bucket finish-reason counts in the requested time range. One series
+    /// per distinct raw `finish_reason` observed. The `wire_api`/`model`
+    /// filters select a specific dimension; `None` rolls up across all values
+    /// via the pre-aggregated `*` tier in `llm_finish_metrics`.
+    async fn query_finish_reasons(
+        &self,
+        query: &FinishReasonsQuery,
+    ) -> Result<Vec<FinishReasonTimeseries>>;
     async fn query_calls(&self, query: &CallsQuery) -> Result<CallsPage>;
     async fn query_call_by_id(&self, id: &str) -> Result<Option<CallDetail>>;
     async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage>;
@@ -73,6 +86,12 @@ pub trait StorageBackend: Send + Sync {
     async fn query_distinct_wire_apis(&self) -> Result<Vec<String>>;
     async fn query_distinct_models(&self) -> Result<Vec<String>>;
     async fn query_distinct_server_ips(&self) -> Result<Vec<String>>;
+
+    /// Distinct `(wire_api, finish_reason)` pairs observed in
+    /// `llm_finish_metrics`. Excludes the `*` rollup tiers. Used by the calls
+    /// page filter dropdown to populate options dynamically — values are raw
+    /// provider strings, grouped on the frontend by `wire_api`.
+    async fn query_distinct_finish_reasons(&self) -> Result<Vec<DistinctFinishReason>>;
 
     /// Delete rows older than the cutoffs in `policy`. `None` cutoffs are
     /// skipped. Returns per-table / per-granularity row counts.

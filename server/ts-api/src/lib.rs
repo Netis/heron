@@ -42,9 +42,17 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/api/filters/wire-apis", get(routes::filters::wire_apis))
         .route("/api/filters/models", get(routes::filters::models))
         .route("/api/filters/server-ips", get(routes::filters::server_ips))
+        .route(
+            "/api/filters/finish-reasons",
+            get(routes::filters::finish_reasons),
+        )
         .route("/api/metrics/timeseries", get(routes::metrics::timeseries))
         .route("/api/metrics/summary", get(routes::metrics::summary))
         .route("/api/metrics/models", get(routes::metrics::models))
+        .route(
+            "/api/metrics/finish-reasons",
+            get(routes::metrics::finish_reasons),
+        )
         .route("/api/llm-calls", get(routes::llm_calls::list))
         .route("/api/llm-calls/{id}", get(routes::llm_calls::detail))
         .route("/api/http-exchanges", get(routes::http_exchanges::list))

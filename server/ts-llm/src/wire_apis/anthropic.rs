@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
-use crate::model::{FinishReason, RequestInfo, ResponseInfo, RouteVerdict, WireApi};
+use crate::model::{RequestInfo, ResponseInfo, RouteVerdict, WireApi};
 
 /// Check whether the request carries an Anthropic-style API key, either via
 /// `x-api-key` (direct keys) or `Authorization: Bearer` (OAuth tokens issued
@@ -103,6 +103,23 @@ impl WireApi for AnthropicWireApi {
     fn extract_sse(&self, events: &[SseEventData]) -> ResponseInfo {
         extract_from_sse(events)
     }
+
+    fn is_terminal(&self, finish_reason: &str) -> bool {
+        matches!(
+            finish_reason,
+            "end_turn"
+                | "stop_sequence"
+                | "max_tokens"
+                | "tool_use"
+                | "refusal"
+                | "model_context_window_exceeded"
+        )
+        // pause_turn intentionally absent — server-tool loop yielded mid-turn.
+    }
+
+    fn is_tool_use(&self, finish_reason: &str) -> bool {
+        finish_reason == "tool_use"
+    }
 }
 
 /// Extract request info from an Anthropic API request. `body` is the
@@ -140,7 +157,7 @@ pub fn extract_from_response(resp: &HttpResponseData) -> ResponseInfo {
     let finish_reason = body
         .get("stop_reason")
         .and_then(|v| v.as_str())
-        .map(map_stop_reason);
+        .map(|s| s.to_string());
 
     let input_tokens = body
         .get("usage")
@@ -182,7 +199,7 @@ pub fn extract_from_response(resp: &HttpResponseData) -> ResponseInfo {
 /// Extract response info from accumulated SSE events (streaming response).
 pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
     let mut model: Option<String> = None;
-    let mut finish_reason: Option<FinishReason> = None;
+    let mut finish_reason: Option<String> = None;
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
     let mut cache_read_input_tokens: Option<u32> = None;
@@ -231,7 +248,7 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
                 // message_delta contains stop_reason and final usage.
                 if let Some(delta) = data.get("delta") {
                     if let Some(sr) = delta.get("stop_reason").and_then(|v| v.as_str()) {
-                        finish_reason = Some(map_stop_reason(sr));
+                        finish_reason = Some(sr.to_string());
                     }
                 }
                 if let Some(usage) = data.get("usage") {
@@ -434,17 +451,6 @@ fn flush_block(
     }
 }
 
-/// Map Anthropic stop_reason to normalized FinishReason.
-fn map_stop_reason(reason: &str) -> FinishReason {
-    match reason {
-        "end_turn" => FinishReason::Complete,
-        "stop_sequence" => FinishReason::Complete,
-        "max_tokens" => FinishReason::Length,
-        "tool_use" => FinishReason::ToolUse,
-        _ => FinishReason::Error,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,13 +474,6 @@ mod tests {
             .iter()
             .map(|e| serde_json::from_str(&e.data).unwrap_or(Value::Null))
             .collect()
-    }
-
-    #[test]
-    fn test_map_stop_reason() {
-        assert_eq!(map_stop_reason("end_turn"), FinishReason::Complete);
-        assert_eq!(map_stop_reason("tool_use"), FinishReason::ToolUse);
-        assert_eq!(map_stop_reason("max_tokens"), FinishReason::Length);
     }
 
     #[test]
@@ -613,6 +612,19 @@ mod tests {
             info.response_id.as_deref(),
             Some("msg_01XFDUDYJgAACzvnptvVoYEL")
         );
+    }
+
+    #[test]
+    fn predicates_anthropic() {
+        let w = AnthropicWireApi;
+        assert!(w.is_terminal("end_turn"));
+        assert!(w.is_terminal("max_tokens"));
+        assert!(w.is_terminal("refusal"));
+        assert!(w.is_terminal("model_context_window_exceeded"));
+        assert!(!w.is_terminal("pause_turn"));
+        assert!(!w.is_terminal("unknown_future_value"));
+        assert!(w.is_tool_use("tool_use"));
+        assert!(!w.is_tool_use("end_turn"));
     }
 
     #[test]
