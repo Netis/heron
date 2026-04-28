@@ -75,11 +75,7 @@ impl AgentProfile for ClaudeCliProfile {
 
     fn extract_ids(&self, call: &LlmCall) -> Option<ExtractedIds> {
         let session_id = header(call, SESSION_HEADER)?.to_string();
-        // Anthropic: no protocol-level turn_id; tracker will generate it.
-        Some(ExtractedIds {
-            session_id,
-            turn_id: None,
-        })
+        Some(ExtractedIds { session_id })
     }
 
     fn extract_user_input(&self, call: &LlmCall) -> Option<String> {
@@ -141,17 +137,43 @@ impl AgentProfile for ClaudeCliProfile {
     }
 
     fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
-        // Reuse extract_user_input: it already strips <system-reminder> blocks
-        // and trims whitespace, so Claude CLI compaction requests (whose last
-        // user message contains only a system-reminder summary) collapse to
-        // None and are correctly treated as continuations, not new turns.
+        // Structural: last message is `role=user` AND its content contains at
+        // least one user-visible block. "User-visible" means:
+        //   - tool_result blocks → DON'T count (continuation of a prior
+        //     assistant tool_use)
+        //   - text blocks → only count if non-empty after stripping
+        //     `<system-reminder>` wrapping (Claude CLI compaction requests
+        //     send a system-reminder-only text block which is a continuation,
+        //     not a new turn)
+        //   - any other block type (image, future block types) → count as
+        //     user-visible (this is the future-proof bit; the previous impl
+        //     binding to `extract_user_input.is_some()` misclassified
+        //     image-only messages as continuations)
+        //
+        // Decoupled from `extract_user_input`: that one is a preview
+        // extractor for text only; this one is the structural turn-start
+        // predicate. Sub-agent filtering happens at the ts-llm stage.
         let body = call.request_body.as_deref()?;
-        // Sub-agent Task invocations carry fresh user text but belong to the
-        // parent main-agent turn; they must not open a new turn.
-        if looks_like_subagent(body) {
+        let v: Value = serde_json::from_str(body).ok()?;
+        let last = v.get("messages")?.as_array()?.last()?;
+        if last.get("role").and_then(|r| r.as_str()) != Some("user") {
             return Some(false);
         }
-        Some(self.extract_user_input(call).is_some())
+        match last.get("content")? {
+            Value::String(s) => Some(!strip_system_reminders(s).trim().is_empty()),
+            Value::Array(blocks) => Some(blocks.iter().any(|b| {
+                match b.get("type").and_then(|t| t.as_str()) {
+                    Some("tool_result") => false,
+                    Some("text") => {
+                        let t = b.get("text").and_then(|x| x.as_str()).unwrap_or("");
+                        !strip_system_reminders(t).trim().is_empty()
+                    }
+                    Some(_) => true,
+                    None => false,
+                }
+            })),
+            _ => None,
+        }
     }
 
     fn is_auxiliary(&self, call: &LlmCall) -> bool {
@@ -256,7 +278,6 @@ mod tests {
         );
         let ids = ClaudeCliProfile.extract_ids(&c).unwrap();
         assert_eq!(ids.session_id, "7dd4ea24-82c9-4035-afa1-89f6b2c742b9");
-        assert!(ids.turn_id.is_none());
     }
 
     #[test]
@@ -304,15 +325,18 @@ mod tests {
     }
 
     #[test]
-    fn is_user_turn_start_false_for_subagent_with_user_text() {
-        // Sub-agent: tools non-empty but no "Agent" tool → carry user text but
-        // must not open a new main-agent turn.
+    fn is_user_turn_start_returns_raw_structural_for_subagent_body() {
+        // Sub-agent dispatch carries fresh user text. The profile predicate is
+        // structural and answers Some(true) here; sub-agent filtering happens
+        // at the ts-llm stage by combining `subagent_name` with this verdict.
         let body = r#"{
             "messages":[{"role":"user","content":[{"type":"text","text":"do research"}]}],
             "tools":[{"name":"Read"},{"name":"Grep"}]
         }"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(false));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
+        // And the call is correctly tagged as sub-agent.
+        assert_eq!(ClaudeCliProfile.subagent(&c), Some("task".to_string()));
     }
 
     #[test]
@@ -324,6 +348,38 @@ mod tests {
         }"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
+    }
+
+    #[test]
+    fn is_user_turn_start_true_for_image_only_user_message() {
+        // Image-only user message: no text blocks at all. Structural check
+        // must still recognize this as a fresh user turn — `extract_user_input`
+        // returns None (it filters to text), but turn-start IS Some(true).
+        // Decoupling: `is_user_turn_start` is structural, `extract_user_input`
+        // is text preview; they can disagree on non-text user input.
+        let body = r#"{
+            "messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBOR"}}]}],
+            "tools":[{"name":"Agent"},{"name":"Bash"}]
+        }"#;
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
+        assert!(
+            ClaudeCliProfile.extract_user_input(&c).is_none(),
+            "extract_user_input is text-only by design; image bodies have no text preview"
+        );
+    }
+
+    #[test]
+    fn is_user_turn_start_false_for_system_reminder_only_compaction() {
+        // Claude CLI compaction: last user message is a single text block whose
+        // content is wrapped entirely in <system-reminder>. After stripping,
+        // the text is empty → not a fresh user turn (continuation).
+        let body = r#"{
+            "messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>summary of prior turn</system-reminder>"}]}],
+            "tools":[{"name":"Agent"},{"name":"Bash"}]
+        }"#;
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(false));
     }
 
     #[test]

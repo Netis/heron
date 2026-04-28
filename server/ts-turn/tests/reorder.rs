@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use ts_common::internal_metrics::{Metric, MetricsSystem, MetricsWorker};
 use ts_llm::agents;
-use ts_llm::model::{AgentCall, AgentIdentity, ApiType, LlmCall};
+use ts_llm::model::{AgentCall, ApiType, LlmCall};
 use ts_llm::wire_apis as wa;
 use ts_turn::tracker::{TrackerConfig, TurnEvent, TurnTracker};
 use ts_turn::{AgentTurn, TurnStatus};
@@ -41,12 +41,7 @@ fn test_metrics() -> MetricsWorker {
 }
 
 fn mk_tracker() -> TurnTracker {
-    TurnTracker::new(
-        Arc::new(agents::build_default_registry()),
-        Arc::new(ts_llm::wire_apis::build_default_wire_api_registry()),
-        TrackerConfig::default(),
-        test_metrics(),
-    )
+    TurnTracker::new(TrackerConfig::default(), test_metrics())
 }
 
 /// Anthropic call with a session header; `body_kind` selects user-start
@@ -111,11 +106,18 @@ fn anthropic_call(
     }
 }
 
-fn id_for(session: &str) -> AgentIdentity {
-    AgentIdentity {
-        agent_kind: "claude-cli",
-        session_id: session.into(),
-        turn_id_hint: None,
+/// Build an `AgentCall` by running the production call-info pipeline against
+/// `call`. Replaces the previous pattern of constructing a stub `AgentCallInfo`
+/// by hand: classification fields (`is_turn_terminal`, `is_user_turn_start`,
+/// `subagent_name`, ...) now live on `AgentCallInfo` and the tracker reads
+/// them, so tests must populate them the way the real pipeline would.
+fn agent_call(call: LlmCall) -> AgentCall {
+    let reg = agents::build_default_registry();
+    let wa_reg = ts_llm::wire_apis::build_default_wire_api_registry();
+    let agent = ts_llm::build_agent_call_info(&call, &reg, &wa_reg).expect("call info");
+    AgentCall {
+        call: Arc::new(call),
+        agent,
     }
 }
 
@@ -127,16 +129,13 @@ fn collect_turns(events: Vec<TurnEvent>) -> Vec<AgentTurn> {
         .collect()
 }
 
-/// Drive a sequence of (call, identity) pairs through the tracker in the
-/// given arrival order, then flush. Returns every Completed turn the
-/// tracker produced.
-fn run_in_order(t: &mut TurnTracker, sequence: Vec<(LlmCall, AgentIdentity)>) -> Vec<AgentTurn> {
+/// Drive a sequence of calls through the tracker in the given arrival order,
+/// then flush. Identity is built per-call via the production pipeline (see
+/// [`agent_call`]). Returns every Completed turn the tracker produced.
+fn run_in_order(t: &mut TurnTracker, sequence: Vec<LlmCall>) -> Vec<AgentTurn> {
     let mut events = Vec::new();
-    for (c, id) in sequence {
-        events.extend(t.ingest(AgentCall {
-            call: Arc::new(c),
-            agent: id,
-        }));
+    for c in sequence {
+        events.extend(t.ingest(agent_call(c)));
     }
     events.extend(t.flush_all());
     collect_turns(events)
@@ -167,10 +166,7 @@ fn bug_a_late_user_start_splits_turn() {
         &["Agent", "Bash"],
         Some("done"),
     );
-    let turns = run_in_order(
-        &mut t,
-        vec![(c2.clone(), id_for("S")), (c1.clone(), id_for("S"))],
-    );
+    let turns = run_in_order(&mut t, vec![c2.clone(), c1.clone()]);
 
     assert_eq!(
         turns.len(),
@@ -217,14 +213,7 @@ fn bug_b_state_corruption_when_terminal_arrives_before_predecessors() {
         &["Agent", "Bash"],
         Some("final"),
     );
-    let turns = run_in_order(
-        &mut t,
-        vec![
-            (c3.clone(), id_for("S")),
-            (c1.clone(), id_for("S")),
-            (c2.clone(), id_for("S")),
-        ],
-    );
+    let turns = run_in_order(&mut t, vec![c3.clone(), c1.clone(), c2.clone()]);
 
     assert_eq!(
         turns.len(),
@@ -274,14 +263,7 @@ fn bug_c_final_call_id_and_last_activity_track_request_time_not_arrival() {
         &["Agent", "Bash"],
         Some("final"),
     );
-    let turns = run_in_order(
-        &mut t,
-        vec![
-            (c3.clone(), id_for("S")),
-            (c1.clone(), id_for("S")),
-            (c2.clone(), id_for("S")),
-        ],
-    );
+    let turns = run_in_order(&mut t, vec![c3.clone(), c1.clone(), c2.clone()]);
 
     assert_eq!(turns.len(), 1, "expected single merged turn");
     let turn = &turns[0];
@@ -346,28 +328,10 @@ fn bug_d_late_call_after_finalize_is_orphan_not_phantom() {
     let t0 = Instant::now();
     let past_grace = t0 + TrackerConfig::default().grace + Duration::from_micros(1);
     let mut events = Vec::new();
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(c1.clone()),
-            agent: id_for("S"),
-        },
-        t0,
-    ));
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(c2.clone()),
-            agent: id_for("S"),
-        },
-        t0,
-    ));
+    events.extend(t.ingest_at(agent_call(c1.clone()), t0));
+    events.extend(t.ingest_at(agent_call(c2.clone()), t0));
     events.extend(t.advance_time_at(c2.complete_time.unwrap() + 1, &c2.source_id, past_grace));
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(c0.clone()),
-            agent: id_for("S"),
-        },
-        past_grace,
-    ));
+    events.extend(t.ingest_at(agent_call(c0.clone()), past_grace));
     events.extend(t.flush_all_at(past_grace));
     let turns = collect_turns(events);
 
@@ -404,10 +368,7 @@ fn bug_e_partition_without_user_start_is_discarded() {
         Some("answer"),
     );
     let mut events = Vec::new();
-    events.extend(t.ingest(AgentCall {
-        call: Arc::new(c_orphan),
-        agent: id_for("S"),
-    }));
+    events.extend(t.ingest(agent_call(c_orphan)));
     events.extend(t.flush_all());
     let turns = collect_turns(events);
     assert!(
@@ -447,20 +408,8 @@ fn bug_f_heartbeat_advance_does_not_open_phantom_for_late_call() {
     let t0 = Instant::now();
     let past_grace = t0 + TrackerConfig::default().grace + Duration::from_micros(1);
     let mut events = Vec::new();
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(c1.clone()),
-            agent: id_for("S"),
-        },
-        t0,
-    ));
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(c2.clone()),
-            agent: id_for("S"),
-        },
-        t0,
-    ));
+    events.extend(t.ingest_at(agent_call(c1.clone()), t0));
+    events.extend(t.ingest_at(agent_call(c2.clone()), t0));
     // Heartbeat well past the finalized turn (wall-clock drives grace).
     events.extend(t.advance_time_at(60_000_000, &c2.source_id, past_grace));
 
@@ -473,13 +422,7 @@ fn bug_f_heartbeat_advance_does_not_open_phantom_for_late_call() {
         &["Agent", "Bash"],
         None,
     );
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(c0),
-            agent: id_for("S"),
-        },
-        past_grace,
-    ));
+    events.extend(t.ingest_at(agent_call(c0), past_grace));
     events.extend(t.flush_all_at(past_grace));
 
     let turns = collect_turns(events);
@@ -577,26 +520,14 @@ fn f1_intra_source_hb_does_not_orphan_same_session_laggard() {
     let mut events = Vec::new();
 
     // Terminal arrives first at the turn-shard.
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(terminal.clone()),
-            agent: id_for("S"),
-        },
-        t0,
-    ));
+    events.extend(t.ingest_at(agent_call(terminal.clone()), t0));
 
     // Aggressive HB from a fast worker on the same source — event-time jumps
     // far past any reasonable event-time grace. Wall-clock stays at t0.
     events.extend(t.advance_time_at(terminal.complete_time.unwrap() + 60_000_000, "sA", t0));
 
     // Laggard shows up "next nanosecond" in wall-clock.
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(laggard.clone()),
-            agent: id_for("S"),
-        },
-        t0,
-    ));
+    events.extend(t.ingest_at(agent_call(laggard.clone()), t0));
 
     // Only after the wall-clock grace has actually elapsed should the turn
     // finalize — and now the laggard is part of it.
@@ -666,29 +597,11 @@ fn f2_cross_session_ingest_does_not_collapse_other_session_grace() {
     let t0 = Instant::now();
     let mut events = Vec::new();
 
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(a_terminal.clone()),
-            agent: id_for("A"),
-        },
-        t0,
-    ));
+    events.extend(t.ingest_at(agent_call(a_terminal.clone()), t0));
     // Busy session B ingests with a huge event-time at the same wall-clock.
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(b_call),
-            agent: id_for("B"),
-        },
-        t0,
-    ));
+    events.extend(t.ingest_at(agent_call(b_call), t0));
     // A's laggard comes in right after — wall-clock still t0.
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(a_laggard.clone()),
-            agent: id_for("A"),
-        },
-        t0,
-    ));
+    events.extend(t.ingest_at(agent_call(a_laggard.clone()), t0));
 
     // Nothing should have finalized yet: wall-clock has not moved past grace.
     assert!(
@@ -735,13 +648,7 @@ fn f3_cross_source_hb_does_not_expire_other_source_grace() {
     let t0 = Instant::now();
     let mut events = Vec::new();
 
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(a_terminal.clone()),
-            agent: id_for("SA"),
-        },
-        t0,
-    ));
+    events.extend(t.ingest_at(agent_call(a_terminal.clone()), t0));
 
     // Stream sB heartbeats far into its own future. Same wall-clock.
     for ts in [20_000_000, 40_000_000, 80_000_000, 160_000_000] {
@@ -782,12 +689,7 @@ fn finalize_by_grace_counter_does_not_double_count_across_discarded_partition() 
 
     // Build the tracker with a shared metrics worker we can read back.
     let metrics = test_metrics();
-    let mut t = TurnTracker::new(
-        Arc::new(agents::build_default_registry()),
-        Arc::new(ts_llm::wire_apis::build_default_wire_api_registry()),
-        TrackerConfig::default(),
-        metrics.clone(),
-    );
+    let mut t = TurnTracker::new(TrackerConfig::default(), metrics.clone());
 
     // Partition A: user-start + continuation-terminal.
     let c_user = unique_call(anthropic_call(
@@ -818,27 +720,9 @@ fn finalize_by_grace_counter_does_not_double_count_across_discarded_partition() 
 
     let t0 = Instant::now();
     let mut events = Vec::new();
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(c_user),
-            agent: id_for("S"),
-        },
-        t0,
-    ));
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(c_term_a),
-            agent: id_for("S"),
-        },
-        t0,
-    ));
-    events.extend(t.ingest_at(
-        AgentCall {
-            call: Arc::new(c_term_b),
-            agent: id_for("S"),
-        },
-        t0,
-    ));
+    events.extend(t.ingest_at(agent_call(c_user), t0));
+    events.extend(t.ingest_at(agent_call(c_term_a), t0));
+    events.extend(t.ingest_at(agent_call(c_term_b), t0));
     // Push wall-clock past grace so finalize_session iterates both terminals.
     let past_grace = t0 + TrackerConfig::default().grace + Duration::from_micros(1);
     events.extend(t.flush_all_at(past_grace));

@@ -1,4 +1,5 @@
 use crate::model::LlmCall;
+use crate::wire_api_registry::WireApiRegistry;
 
 /// Per-agent knowledge about how to extract session/turn IDs and identify
 /// whether a call is user-initiated. Each concrete impl represents one
@@ -17,10 +18,16 @@ pub trait AgentProfile: Send + Sync {
     /// the call will be flagged as unassociated and skipped by the tracker.
     fn extract_ids(&self, call: &LlmCall) -> Option<ExtractedIds>;
 
-    /// Decide whether this call represents a fresh user-initiated turn start.
-    /// `Some(true)` = new turn starts here; `Some(false)` = tool-result continuation;
-    /// `None` = cannot decide (e.g., body missing or unparseable) — tracker falls back to
-    /// "same turn as last call" behavior.
+    /// Decide whether this call's *body* represents a fresh user-initiated
+    /// message. `Some(true)` = body is a fresh user prompt; `Some(false)` =
+    /// tool-result / continuation body; `None` = cannot decide (body missing
+    /// or unparseable).
+    ///
+    /// **Raw structural answer.** Sub-agent / auxiliary filtering is applied
+    /// by the ts-llm stage when it builds `AgentCallInfo`, not inside the
+    /// profile — a sub-agent dispatch with fresh user text correctly returns
+    /// `Some(true)` here, and the consumer combines it with `subagent_name`
+    /// to decide whether a *main-agent* turn starts.
     fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool>;
 
     /// Extract the sub-agent tag (e.g., Codex "review"). `None` = main agent.
@@ -56,15 +63,27 @@ pub trait AgentProfile: Send + Sync {
 
     /// Decide whether this call is the agent-turn terminator — i.e., the
     /// model has produced a final answer and no further API call is expected
-    /// in this turn. Used by the tracker's explicit-turn_id path (Codex) to
-    /// close turns immediately instead of waiting for the next turn_id or the
-    /// idle-timeout sweep.
+    /// in this turn.
     ///
-    /// Default `false` preserves the existing implicit-path semantics
-    /// (Anthropic), where finish_reason mapping already drives termination.
-    fn is_turn_terminal(&self, call: &LlmCall) -> bool {
-        let _ = call;
-        false
+    /// **Default** runs the implicit-path dispatch via the wire API: a call
+    /// is terminal iff its `finish_reason` is wire-terminal AND not
+    /// `tool_use`. This covers Anthropic, OpenAI Chat, and any other profile
+    /// whose turn boundary is faithfully encoded in `finish_reason`.
+    ///
+    /// **Override** when the wire-api `finish_reason` cannot distinguish
+    /// "agent done" from "tool roundtrip pending" (e.g. Codex over
+    /// openai-responses, where every successful API call reports
+    /// `response.completed`). Overrides own the full decision and do NOT
+    /// fall through to the default — if a profile inspects the response
+    /// body explicitly, the wire-api signal is presumed unreliable.
+    fn is_turn_terminal(&self, call: &LlmCall, wire_apis: &WireApiRegistry) -> bool {
+        let Some(reason) = call.finish_reason.as_deref() else {
+            return false;
+        };
+        let Some(api) = wire_apis.find_by_name(call.wire_api) else {
+            return false;
+        };
+        api.is_terminal(reason) && !api.is_tool_use(reason)
     }
 }
 
@@ -72,9 +91,6 @@ pub trait AgentProfile: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedIds {
     pub session_id: String,
-    /// `None` ⇒ tracker will generate a turn_id via state machine (Anthropic path).
-    /// `Some(_)` ⇒ direct grouping (Codex path).
-    pub turn_id: Option<String>,
 }
 
 /// First-match registry. Order matters: the first matching profile wins.
@@ -171,7 +187,6 @@ mod tests {
         fn extract_ids(&self, _: &LlmCall) -> Option<ExtractedIds> {
             Some(ExtractedIds {
                 session_id: "s".into(),
-                turn_id: None,
             })
         }
         fn is_user_turn_start(&self, _: &LlmCall) -> Option<bool> {

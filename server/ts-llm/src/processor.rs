@@ -5,7 +5,7 @@ use ts_protocol::joiner::HttpJoinerEvent;
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 use uuid::Uuid;
 
-use crate::model::{AgentIdentity, ApiType, LlmCall, LlmCallStart, LlmEvent};
+use crate::model::{AgentCallInfo, ApiType, LlmCall, LlmCallStart, LlmEvent};
 use crate::profile::AgentProfileRegistry;
 use crate::wire_api_registry::WireApiRegistry;
 
@@ -144,22 +144,43 @@ impl LlmProcessor {
             response_headers: response.headers.clone(),
         };
 
-        let agent = self.build_identity(&call);
+        let agent = self.build_call_info(&call);
         vec![LlmEvent::Complete {
             call: Arc::new(call),
             agent,
         }]
     }
 
-    fn build_identity(&self, call: &LlmCall) -> Option<AgentIdentity> {
-        let profile = self.registry.find(call)?;
-        let ids = profile.extract_ids(call)?;
-        Some(AgentIdentity {
-            agent_kind: profile.name(),
-            session_id: ids.session_id,
-            turn_id_hint: ids.turn_id,
-        })
+    fn build_call_info(&self, call: &LlmCall) -> Option<AgentCallInfo> {
+        build_agent_call_info(call, &self.registry, &self.wire_apis)
     }
+}
+
+/// Compute the full per-call classification and return it as an `AgentCallInfo`.
+///
+/// Returns `None` when no profile matches the call or the profile cannot
+/// extract a `(session_id, turn_id?)` pair — those calls are non-agent traffic
+/// and never enter turn assembly.
+///
+/// Public so tests in downstream crates (ts-turn) can construct call-info
+/// records the same way the production pipeline does.
+pub fn build_agent_call_info(
+    call: &LlmCall,
+    registry: &AgentProfileRegistry,
+    wire_apis: &WireApiRegistry,
+) -> Option<AgentCallInfo> {
+    let profile = registry.find(call)?;
+    let ids = profile.extract_ids(call)?;
+    Some(AgentCallInfo {
+        agent_kind: profile.name(),
+        session_id: ids.session_id,
+        subagent_name: profile.subagent(call),
+        is_user_turn_start: profile.is_user_turn_start(call),
+        is_turn_terminal: profile.is_turn_terminal(call, wire_apis),
+        is_auxiliary: profile.is_auxiliary(call),
+        user_input: profile.extract_user_input(call),
+        assistant_text: profile.extract_assistant_text(call),
+    })
 }
 
 #[cfg(test)]
@@ -446,6 +467,110 @@ mod tests {
             }
             _ => panic!("expected Complete"),
         }
+    }
+
+    /// Build a minimal `LlmCall` with the given Claude-CLI request body. Other
+    /// fields are filled with defaults — only the body and headers matter for
+    /// the classification predicates.
+    fn claude_call(body: &str, finish_reason: Option<&str>) -> LlmCall {
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        LlmCall {
+            source_id: String::new(),
+            id: "c1".into(),
+            wire_api: crate::wire_apis::ANTHROPIC,
+            model: "claude-sonnet".into(),
+            api_type: ApiType::Chat,
+            request_time: 0,
+            response_time: None,
+            complete_time: None,
+            request_path: "/v1/messages".into(),
+            is_stream: false,
+            request_body: Some(body.to_string()),
+            status_code: Some(200),
+            finish_reason: finish_reason.map(str::to_string),
+            response_body: None,
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            ttft_ms: None,
+            e2e_latency_ms: None,
+            client_ip: ip,
+            client_port: 0,
+            server_ip: ip,
+            server_port: 0,
+            response_id: None,
+            request_headers: vec![
+                ("user-agent".into(), "claude-cli/2.1.98".into()),
+                ("x-claude-code-session-id".into(), "sess-1".into()),
+                ("anthropic-version".into(), "2023-06-01".into()),
+            ],
+            response_headers: vec![],
+        }
+    }
+
+    #[test]
+    fn classification_main_agent_user_start_tool_use() {
+        let registry = crate::agents::build_default_registry();
+        let wa = crate::wire_apis::build_default_wire_api_registry();
+        let body = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"Agent"},{"name":"Bash"}]}"#;
+        let call = claude_call(body, Some("tool_use"));
+        let id = build_agent_call_info(&call, &registry, &wa).expect("call info");
+        assert!(id.subagent_name.is_none());
+        assert_eq!(id.is_user_turn_start, Some(true));
+        assert!(!id.is_turn_terminal, "tool_use is not terminal");
+        assert!(!id.is_auxiliary);
+        assert!(id.user_input.is_some(), "user_input populated for fresh prompt");
+    }
+
+    #[test]
+    fn classification_main_agent_continuation_terminal() {
+        let registry = crate::agents::build_default_registry();
+        let wa = crate::wire_apis::build_default_wire_api_registry();
+        let body = r#"{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}],"tools":[{"name":"Agent"},{"name":"Bash"}]}"#;
+        let call = claude_call(body, Some("end_turn"));
+        let id = build_agent_call_info(&call, &registry, &wa).expect("call info");
+        assert!(id.subagent_name.is_none());
+        assert_eq!(id.is_user_turn_start, Some(false));
+        assert!(id.is_turn_terminal, "end_turn is wire-terminal");
+        assert!(!id.is_auxiliary);
+    }
+
+    #[test]
+    fn classification_subagent_carries_raw_protocol_terminal() {
+        // Sub-agent layering is orthogonal: `is_turn_terminal` reports the raw
+        // protocol semantics (here, `end_turn` IS terminal at the wire level).
+        // The sub-agent dispatch is identified separately via `subagent_name`,
+        // and consumers (turn tracker) compose the two:
+        //   `subagent_name.is_none() && is_turn_terminal` → main-agent terminal.
+        let registry = crate::agents::build_default_registry();
+        let wa = crate::wire_apis::build_default_wire_api_registry();
+        let body = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"do research"}]}],"tools":[{"name":"Read"},{"name":"Grep"}]}"#;
+        let call = claude_call(body, Some("end_turn"));
+        let id = build_agent_call_info(&call, &registry, &wa).expect("call info");
+        assert_eq!(id.subagent_name.as_deref(), Some("task"));
+        assert_eq!(id.is_user_turn_start, Some(true));
+        assert!(
+            id.is_turn_terminal,
+            "wire-level end_turn is terminal regardless of sub-agent layering"
+        );
+        // Composed view at the consumer:
+        assert!(
+            !(id.subagent_name.is_none() && id.is_turn_terminal),
+            "sub-agent terminal must not close the parent's turn"
+        );
+    }
+
+    #[test]
+    fn classification_auxiliary_call() {
+        // claude-cli session-title: tools field present and empty → auxiliary.
+        let registry = crate::agents::build_default_registry();
+        let wa = crate::wire_apis::build_default_wire_api_registry();
+        let body = r#"{"messages":[{"role":"user","content":"generate title"}],"tools":[]}"#;
+        let call = claude_call(body, Some("end_turn"));
+        let id = build_agent_call_info(&call, &registry, &wa).expect("call info");
+        assert!(id.is_auxiliary, "tools=[] flags auxiliary one-shot");
     }
 
     #[test]

@@ -12,8 +12,6 @@ use tokio::task::JoinHandle;
 
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_llm::model::TurnShardInput;
-use ts_llm::profile::AgentProfileRegistry;
-use ts_llm::wire_api_registry::WireApiRegistry;
 
 use crate::model::AgentTurn;
 use crate::tracker::{TrackerConfig, TurnEvent, TurnTracker};
@@ -24,8 +22,6 @@ pub fn spawn_turn_stage(
     tracker_cfg: TrackerConfig,
     shard_rxs: Vec<mpsc::Receiver<TurnShardInput>>,
     turns_tx: mpsc::Sender<AgentTurn>,
-    registry: Arc<AgentProfileRegistry>,
-    wire_apis: Arc<WireApiRegistry>,
     metrics_sys: &mut MetricsSystem,
 ) -> Vec<JoinHandle<()>> {
     assert!(
@@ -54,8 +50,6 @@ pub fn spawn_turn_stage(
         .enumerate()
     {
         let turns_tx = turns_tx.clone();
-        let registry = registry.clone();
-        let wire_apis = wire_apis.clone();
         let worker_metrics = metrics_sys.register_worker(
             &format!("turn.{i}"),
             &[
@@ -70,8 +64,7 @@ pub fn spawn_turn_stage(
         );
         handles.push(tokio::spawn(async move {
             let shard = i;
-            let mut tracker =
-                TurnTracker::new(registry, wire_apis, tracker_cfg, worker_metrics);
+            let mut tracker = TurnTracker::new(tracker_cfg, worker_metrics);
             let reason = 'main: loop {
                 let input = match rx.recv().await {
                     Some(x) => x,
@@ -129,9 +122,17 @@ mod tests {
     use std::net::IpAddr;
     use std::sync::Arc;
     use ts_llm::agents::build_default_registry;
-    use ts_llm::model::{AgentCall, AgentIdentity, ApiType, LlmCall};
+    use ts_llm::model::{AgentCall, AgentCallInfo, ApiType, LlmCall};
     use ts_llm::wire_apis as wa;
     use ts_llm::wire_apis::build_default_wire_api_registry;
+
+    /// Build a full `AgentCallInfo` for `call` via the production pipeline —
+    /// keeps test fixtures aligned with what ts-llm actually produces.
+    fn call_info_for(call: &LlmCall) -> AgentCallInfo {
+        let reg = build_default_registry();
+        let wa_reg = build_default_wire_api_registry();
+        ts_llm::build_agent_call_info(call, &reg, &wa_reg).expect("call info")
+    }
 
     /// `is_user_start`: true ⇒ text body (new-turn marker); false ⇒ tool_result body (continuation).
     fn anthropic_call(
@@ -180,14 +181,6 @@ mod tests {
         }
     }
 
-    fn id_for(session: &str) -> AgentIdentity {
-        AgentIdentity {
-            agent_kind: "claude-cli",
-            session_id: session.into(),
-            turn_id_hint: None,
-        }
-    }
-
     #[tokio::test]
     async fn single_shard_produces_turn() {
         let (shard_tx, shard_rx) = mpsc::channel::<TurnShardInput>(16);
@@ -198,28 +191,28 @@ mod tests {
             TrackerConfig::default(),
             vec![shard_rx],
             turns_tx.clone(),
-            Arc::new(build_default_registry()),
-            Arc::new(build_default_wire_api_registry()),
             &mut metrics_sys,
         );
         let _svc = metrics_sys.start();
         drop(turns_tx);
 
-        let c1 = Arc::new(anthropic_call("S", 1_000_000, "tool_use", true));
-        let c2 = Arc::new(anthropic_call("S", 2_000_000, "end_turn", false));
+        let c1 = anthropic_call("S", 1_000_000, "tool_use", true);
+        let c2 = anthropic_call("S", 2_000_000, "end_turn", false);
         let (id1, id2) = (c1.id.clone(), c2.id.clone());
+        let agent1 = call_info_for(&c1);
+        let agent2 = call_info_for(&c2);
 
         shard_tx
             .send(TurnShardInput::Call(AgentCall {
-                call: c1,
-                agent: id_for("S"),
+                call: Arc::new(c1),
+                agent: agent1,
             }))
             .await
             .unwrap();
         shard_tx
             .send(TurnShardInput::Call(AgentCall {
-                call: c2,
-                agent: id_for("S"),
+                call: Arc::new(c2),
+                agent: agent2,
             }))
             .await
             .unwrap();
@@ -249,8 +242,6 @@ mod tests {
             TrackerConfig::default(),
             shard_rxs,
             turns_tx.clone(),
-            Arc::new(build_default_registry()),
-            Arc::new(build_default_wire_api_registry()),
             &mut metrics_sys,
         );
         let _svc = metrics_sys.start();
@@ -258,27 +249,19 @@ mod tests {
 
         for (i, tx) in shard_txs.iter().enumerate() {
             let session = format!("S{i}");
-            let c1 = Arc::new(anthropic_call(
-                &session,
-                1_000_000 + i as i64,
-                "tool_use",
-                true,
-            ));
-            let c2 = Arc::new(anthropic_call(
-                &session,
-                2_000_000 + i as i64,
-                "end_turn",
-                false,
-            ));
+            let c1 = anthropic_call(&session, 1_000_000 + i as i64, "tool_use", true);
+            let c2 = anthropic_call(&session, 2_000_000 + i as i64, "end_turn", false);
+            let agent1 = call_info_for(&c1);
+            let agent2 = call_info_for(&c2);
             tx.send(TurnShardInput::Call(AgentCall {
-                call: c1,
-                agent: id_for(&session),
+                call: Arc::new(c1),
+                agent: agent1,
             }))
             .await
             .unwrap();
             tx.send(TurnShardInput::Call(AgentCall {
-                call: c2,
-                agent: id_for(&session),
+                call: Arc::new(c2),
+                agent: agent2,
             }))
             .await
             .unwrap();
@@ -305,8 +288,6 @@ mod tests {
             TrackerConfig::default(),
             vec![],
             _turns_tx,
-            Arc::new(build_default_registry()),
-            Arc::new(build_default_wire_api_registry()),
             &mut metrics_sys,
         );
     }

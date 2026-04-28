@@ -345,13 +345,13 @@ impl Pipeline {
             }
 
             // Turn stage — `turn_shards` workers per pipeline. Feeds the
-            // shared `turns_tx`.
+            // shared `turns_tx`. No profile/wire_api registry needed here:
+            // classification is pre-computed at ts-llm and carried on
+            // `AgentCall.agent`.
             let turn_handles = ts_turn::spawn_turn_stage(
                 tracker_cfg,
                 turn_shard_rxs,
                 turns_tx.clone(),
-                registry.clone(),
-                wire_api_registry.clone(),
                 metrics_sys,
             );
             debug_assert_eq!(turn_handles.len(), turn_shards);

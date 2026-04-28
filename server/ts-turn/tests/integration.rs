@@ -112,8 +112,6 @@ async fn run_pcap_full_sharded(
         TrackerConfig::default(),
         turn_shard_rxs,
         turns_tx,
-        Arc::new(ts_llm::agents::build_default_registry()),
-        wire_api_registry,
         &mut metrics_sys,
     );
 

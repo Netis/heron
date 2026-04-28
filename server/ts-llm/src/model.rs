@@ -59,19 +59,50 @@ pub struct LlmCall {
     pub response_headers: Vec<(String, String)>,
 }
 
-/// Identity of an LLM call once an `AgentProfile` has matched — i.e. the call
-/// is attributed to a known agent client (claude-cli, codex-cli, …). Non-agent
-/// traffic never produces an `AgentIdentity`.
+/// Per-call agent-side info produced once an `AgentProfile` has matched —
+/// i.e. the call is attributed to a known agent client (claude-cli, codex-cli,
+/// …). Non-agent traffic never produces an `AgentCallInfo`.
+///
+/// Carries the full per-call classification computed once at the ts-llm
+/// boundary (identity + verdicts + extracted text). Downstream stages (turn
+/// assembly) read fields and never re-invoke profile predicates — keeps
+/// cross-cutting filters (sub-agent vs main) at one site instead of re-applied
+/// at every consumer.
 #[derive(Debug, Clone)]
-pub struct AgentIdentity {
+pub struct AgentCallInfo {
     /// Short stable agent name (e.g. `"claude-cli"`). Doubles as the profile
     /// selector (look up via `AgentProfileRegistry::find_by_name`) and the
     /// persisted `AgentTurn.agent_kind` storage value.
     pub agent_kind: &'static str,
     pub session_id: String,
-    /// Explicit turn_id from request body when the profile provides one (e.g. Codex).
-    /// `None` when the turn shard will generate the turn_id (Anthropic path).
-    pub turn_id_hint: Option<String>,
+    /// `Some(name)` if this call belongs to a sub-agent (e.g. `"task"` for
+    /// Claude Task tool, the explicit header value for Codex). `None` ⇒
+    /// main-agent. Derived from `AgentProfile::subagent`.
+    pub subagent_name: Option<String>,
+    /// Raw structural verdict from `AgentProfile::is_user_turn_start`. Sub-agent
+    /// filtering is NOT applied here — consumers must also check
+    /// `subagent_name.is_none()` if they want main-agent user starts only.
+    pub is_user_turn_start: Option<bool>,
+    /// True iff this call's protocol semantics close the agent's current
+    /// turn. Profile-and-wire-api dispatch only — the profile decides, with
+    /// the trait's default impl handling the implicit wire-api path. **Sub-
+    /// agent layering is NOT applied here.** Consumers that want "this call
+    /// closes the *main* agent's turn" must combine
+    /// `subagent_name.is_none() && is_turn_terminal`, the same way they
+    /// combine `subagent_name.is_none() && is_user_turn_start == Some(true)`
+    /// for main-agent user starts.
+    pub is_turn_terminal: bool,
+    /// True iff this call is an auxiliary one-shot (e.g. claude-cli session
+    /// title generation) that should bypass turn assembly entirely.
+    pub is_auxiliary: bool,
+    /// Full user prompt text extracted from the request body, with profile-
+    /// specific scaffolding stripped. Eagerly computed (matches the prior
+    /// per-call extraction pattern in tracker). `None` when body is absent
+    /// or yields no user text.
+    pub user_input: Option<String>,
+    /// Full assistant text extracted from the response body. `None` when
+    /// body is absent or yields no assistant text.
+    pub assistant_text: Option<String>,
 }
 
 /// An LlmCall attributed to a specific agent. The `call` is an `Arc` because
@@ -80,7 +111,7 @@ pub struct AgentIdentity {
 #[derive(Debug, Clone)]
 pub struct AgentCall {
     pub call: Arc<LlmCall>,
-    pub agent: AgentIdentity,
+    pub agent: AgentCallInfo,
 }
 
 /// Input type for a turn shard. Calls flow in hashed by session_id;
@@ -101,7 +132,7 @@ pub enum LlmEvent {
     /// `agent` is `Some` iff an `AgentProfile` matched and extracted session info.
     Complete {
         call: Arc<LlmCall>,
-        agent: Option<AgentIdentity>,
+        agent: Option<AgentCallInfo>,
     },
     /// Time-advancing heartbeat. Carries `wall_ts_us` (Unix-epoch µs).
     /// Broadcast to all metrics shards so each can close stale windows even
@@ -249,19 +280,24 @@ mod extension_tests {
     use std::sync::Arc;
 
     #[test]
-    fn agent_identity_round_trips() {
-        let id = AgentIdentity {
+    fn agent_call_info_round_trips() {
+        let id = AgentCallInfo {
             agent_kind: "claude-cli",
             session_id: "sess-1".to_string(),
-            turn_id_hint: None,
+            subagent_name: None,
+            is_user_turn_start: None,
+            is_turn_terminal: false,
+            is_auxiliary: false,
+            user_input: None,
+            assistant_text: None,
         };
         assert_eq!(id.agent_kind, "claude-cli");
         assert_eq!(id.session_id, "sess-1");
-        assert!(id.turn_id_hint.is_none());
+        assert!(id.subagent_name.is_none());
     }
 
     #[test]
-    fn agent_call_carries_arc_and_identity() {
+    fn agent_call_carries_arc_and_info() {
         let call = LlmCall {
             source_id: String::new(),
             id: "c".into(),
@@ -293,10 +329,15 @@ mod extension_tests {
             response_headers: vec![],
         };
         let arc = Arc::new(call);
-        let id = AgentIdentity {
+        let id = AgentCallInfo {
             agent_kind: "x",
             session_id: "s".into(),
-            turn_id_hint: None,
+            subagent_name: None,
+            is_user_turn_start: None,
+            is_turn_terminal: false,
+            is_auxiliary: false,
+            user_input: None,
+            assistant_text: None,
         };
         let ic = AgentCall {
             call: Arc::clone(&arc),

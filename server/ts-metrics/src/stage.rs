@@ -77,7 +77,7 @@ pub fn spawn_metrics_stage(
 mod tests {
     use super::*;
     use std::net::IpAddr;
-    use ts_llm::model::{AgentIdentity, ApiType, LlmCall, LlmCallStart};
+    use ts_llm::model::{AgentCallInfo, ApiType, LlmCall, LlmCallStart};
     use ts_llm::wire_apis as wa;
 
     fn start_event(ts_us: i64, model: &str) -> LlmEvent {
@@ -123,10 +123,15 @@ mod tests {
                 request_headers: vec![],
                 response_headers: vec![],
             }),
-            agent: Some(AgentIdentity {
+            agent: Some(AgentCallInfo {
                 agent_kind: "x",
                 session_id: "s".into(),
-                turn_id_hint: None,
+                subagent_name: None,
+                is_user_turn_start: None,
+                is_turn_terminal: false,
+                is_auxiliary: false,
+                user_input: None,
+                assistant_text: None,
             }),
         }
     }

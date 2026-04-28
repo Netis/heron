@@ -1,12 +1,12 @@
 use crate::model::LlmCall;
 use crate::profile::{AgentProfile, ExtractedIds};
+use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
 use serde_json::Value;
 
 pub struct CodexCliProfile;
 
 const TURN_META_HEADER: &str = "x-codex-turn-metadata";
-const CLIENT_REQ_ID_HEADER: &str = "x-client-request-id";
 const SUBAGENT_HEADER: &str = "x-openai-subagent";
 const ORIGINATOR_HEADER: &str = "originator";
 const UA_PREFIXES: &[&str] = &["codex_cli_rs/", "codex-tui/", "codex_exec/"];
@@ -51,26 +51,17 @@ impl AgentProfile for CodexCliProfile {
     }
 
     fn extract_ids(&self, call: &LlmCall) -> Option<ExtractedIds> {
-        // Preferred: parse X-Codex-Turn-Metadata JSON.
-        if let Some(raw) = header(call, TURN_META_HEADER) {
-            if let Some(v) = parse_turn_metadata(raw) {
-                let session_id = v.get("session_id")?.as_str()?.to_string();
-                let turn_id = v
-                    .get("turn_id")
-                    .and_then(|t| t.as_str())
-                    .map(str::to_string);
-                return Some(ExtractedIds {
-                    session_id,
-                    turn_id,
-                });
-            }
-        }
-        // Fallback: X-Client-Request-Id as session; no turn_id ⇒ tracker generates.
-        let session_id = header(call, CLIENT_REQ_ID_HEADER)?.to_string();
-        Some(ExtractedIds {
-            session_id,
-            turn_id: None,
-        })
+        // session_id comes ONLY from X-Codex-Turn-Metadata. We deliberately
+        // do NOT fall back to X-Client-Request-Id: by HTTP convention that
+        // header is per-request, and feeding a per-request UUID into the
+        // turn tracker as session_id would shatter one logical session into
+        // many phantom sessions. If metadata is missing or unparseable,
+        // return None — the call becomes unassociated and turn assembly
+        // skips it cleanly, which is the correct conservative failure mode.
+        let raw = header(call, TURN_META_HEADER)?;
+        let v = parse_turn_metadata(raw)?;
+        let session_id = v.get("session_id")?.as_str()?.to_string();
+        Some(ExtractedIds { session_id })
     }
 
     fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
@@ -130,7 +121,7 @@ impl AgentProfile for CodexCliProfile {
         }
     }
 
-    fn is_turn_terminal(&self, call: &LlmCall) -> bool {
+    fn is_turn_terminal(&self, call: &LlmCall, _wire_apis: &WireApiRegistry) -> bool {
         // Codex's per-call finish_reason maps `response.completed` → Complete
         // for every successful API call, so it cannot distinguish "agent done"
         // from "tool roundtrip pending". Inspect response.output instead:
@@ -138,6 +129,9 @@ impl AgentProfile for CodexCliProfile {
         // custom_tool_call, local_shell_call, MCP variants, etc.) means the
         // turn is not terminal. A response containing only message/reasoning
         // items is the agent's final answer.
+        //
+        // Override does NOT delegate to the trait default — the wire-api
+        // signal is unreliable for this protocol.
         let Some(body) = call.response_body.as_deref() else {
             return false;
         };
@@ -314,14 +308,14 @@ mod tests {
         );
         let ids = CodexCliProfile.extract_ids(&c).unwrap();
         assert_eq!(ids.session_id, "019d7170-77f6-7eb3-9c93-2e19cbdf9a86");
-        assert_eq!(
-            ids.turn_id.as_deref(),
-            Some("019d7170-7806-7ff0-9d84-8c917b132acd")
-        );
     }
 
     #[test]
-    fn extract_ids_fallback_to_client_request_id() {
+    fn extract_ids_none_when_metadata_missing() {
+        // X-Client-Request-Id alone is NOT a session source — by HTTP
+        // convention it's per-request. Without X-Codex-Turn-Metadata we
+        // return None so the call is treated as unassociated rather than
+        // attributed to a phantom per-request "session".
         let c = call_with(
             wa::OPENAI_RESPONSES,
             vec![
@@ -330,9 +324,24 @@ mod tests {
             ],
             None,
         );
-        let ids = CodexCliProfile.extract_ids(&c).unwrap();
-        assert_eq!(ids.session_id, "abc-123");
-        assert!(ids.turn_id.is_none());
+        assert!(CodexCliProfile.extract_ids(&c).is_none());
+    }
+
+    #[test]
+    fn extract_ids_none_when_metadata_unparseable() {
+        // Defensive: malformed metadata header (e.g. future base64 form we
+        // don't yet support) must not silently fall through to a phantom
+        // session — it must return None.
+        let c = call_with(
+            wa::OPENAI_RESPONSES,
+            vec![
+                ("Originator", "codex_cli_rs"),
+                ("X-Codex-Turn-Metadata", "this-is-not-json"),
+                ("X-Client-Request-Id", "abc-123"),
+            ],
+            None,
+        );
+        assert!(CodexCliProfile.extract_ids(&c).is_none());
     }
 
     #[test]
@@ -423,7 +432,8 @@ mod tests {
         ]}"#;
         let mut c = call_with(wa::OPENAI_RESPONSES, vec![], None);
         c.response_body = Some(body.to_string());
-        assert!(CodexCliProfile.is_turn_terminal(&c));
+        let wa_reg = crate::wire_apis::build_default_wire_api_registry();
+        assert!(CodexCliProfile.is_turn_terminal(&c, &wa_reg));
     }
 
     #[test]
@@ -434,7 +444,8 @@ mod tests {
         ]}"#;
         let mut c = call_with(wa::OPENAI_RESPONSES, vec![], None);
         c.response_body = Some(body.to_string());
-        assert!(!CodexCliProfile.is_turn_terminal(&c));
+        let wa_reg = crate::wire_apis::build_default_wire_api_registry();
+        assert!(!CodexCliProfile.is_turn_terminal(&c, &wa_reg));
     }
 
     #[test]
@@ -447,7 +458,8 @@ mod tests {
         ]}"#;
         let mut c = call_with(wa::OPENAI_RESPONSES, vec![], None);
         c.response_body = Some(body.to_string());
-        assert!(!CodexCliProfile.is_turn_terminal(&c));
+        let wa_reg = crate::wire_apis::build_default_wire_api_registry();
+        assert!(!CodexCliProfile.is_turn_terminal(&c, &wa_reg));
     }
 
     #[test]
@@ -456,13 +468,15 @@ mod tests {
         let body = r#"{"output":[{"type":"reasoning","summary":[]}]}"#;
         let mut c = call_with(wa::OPENAI_RESPONSES, vec![], None);
         c.response_body = Some(body.to_string());
-        assert!(!CodexCliProfile.is_turn_terminal(&c));
+        let wa_reg = crate::wire_apis::build_default_wire_api_registry();
+        assert!(!CodexCliProfile.is_turn_terminal(&c, &wa_reg));
     }
 
     #[test]
     fn is_turn_terminal_false_when_no_response_body() {
         let c = call_with(wa::OPENAI_RESPONSES, vec![], None);
-        assert!(!CodexCliProfile.is_turn_terminal(&c));
+        let wa_reg = crate::wire_apis::build_default_wire_api_registry();
+        assert!(!CodexCliProfile.is_turn_terminal(&c, &wa_reg));
     }
 
     #[test]
