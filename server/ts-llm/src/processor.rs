@@ -178,7 +178,7 @@ pub fn build_agent_call_info(
         }
         return None;
     };
-    if ids.tool_id_canonicalized {
+    if is_generic && ids.tool_id_canonicalized {
         metrics.counter(ts_common::internal_metrics::Metric::LlmGenericToolIdCanonicalized).inc();
     }
     Some(AgentCallInfo {
