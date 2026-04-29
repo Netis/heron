@@ -1,6 +1,17 @@
-//! Shared helpers for `generic-*` profiles. Not exposed as part of any
-//! `AgentProfile` trait — each generic profile parses its own JSON shape
-//! and only reaches in here for cross-profile canonicalization / hashing.
+//! Session-id synthesis strategies shared by profiles that derive
+//! `session_id` from request/response payloads (currently `generic` and
+//! `openclaw`). Not part of any `AgentProfile` trait — callers parse the
+//! body's wire-api shape via `crate::wire_apis::*` first and pass the
+//! resulting `AssistantSig` here for canonicalization / hashing.
+//!
+//! Two strategies live here:
+//!   1. Tool-id canonicalization: restore the LLM-side `prefix_<rest>`
+//!      form when a client strips the underscore between prefix and body
+//!      (observed with OpenClaw's GLM-via-OpenAI/JS SDK quirk).
+//!   2. FNV-1a text hash: synthesize `gen-<16hex>` from first-user-text +
+//!      first-assistant-text when no tool id is available.
+
+use crate::wire_apis::AssistantSig;
 
 /// Tool-id canonicalization. Restores the LLM-side `prefix_<rest>` form
 /// when a client has stripped the underscore between the prefix and the
@@ -37,14 +48,6 @@ pub fn synth_text_hash(user_text: &str, assistant_text: &str) -> String {
         h = h.wrapping_mul(0x100000001b3);
     }
     format!("{:016x}", h)
-}
-
-/// Internal classification of the first assistant message's signature.
-/// Generic profiles produce one of these from request body (call #2+) or
-/// response body (call #1) and feed it to `compose_session_id`.
-pub enum AssistantSig {
-    ToolId(String),
-    Text(String),
 }
 
 /// Shared session_id composition: prefer canonicalized tool id (raw form,

@@ -285,6 +285,159 @@ pub fn body_has_terminal_message_only(response_body: Option<&str>) -> bool {
     has_message
 }
 
+// ────────────────────────── Body shape parsers ─────────────────────────────
+//
+// Helpers that walk OpenAI Responses request `input[]` / response
+// `output[]` arrays for the pieces agent profiles need. The Responses
+// shape is item-oriented (each item has its own `type`), so most helpers
+// take `&[Value]` rather than the wrapper `&Value` — agent profiles
+// extract the array once via `v.get("input")` / `v.get("output")` and
+// pass the slice in.
+
+use crate::wire_apis::AssistantSig;
+
+/// Concatenate visible text from a single Responses `message` item's
+/// content. Accepts the legacy string shorthand and the canonical
+/// `[{"type":"output_text","text":...}]` (or `"input_text"`/`"text"`)
+/// array form.
+pub fn message_text(item: &Value) -> Option<String> {
+    let c = item.get("content")?;
+    match c {
+        Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
+        Value::Array(blocks) => {
+            let parts: Vec<String> = blocks
+                .iter()
+                .filter_map(|b| {
+                    let t = b.get("type").and_then(|v| v.as_str())?;
+                    if t == "text" || t == "input_text" || t == "output_text" {
+                        b.get("text").and_then(|v| v.as_str()).map(str::to_string)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
+        }
+        _ => None,
+    }
+}
+
+pub fn first_user_text(items: &[Value]) -> Option<String> {
+    for it in items {
+        if it.get("type").and_then(|v| v.as_str()) != Some("message") {
+            continue;
+        }
+        if it.get("role").and_then(|v| v.as_str()) != Some("user") {
+            continue;
+        }
+        if let Some(t) = message_text(it) {
+            return Some(t);
+        }
+    }
+    None
+}
+
+/// First-pass scan of `input[]`: prefer the earliest `function_call.call_id`
+/// (tool dispatched on a prior turn); fall back to the first assistant
+/// `message`'s text. The `function_call` precedence matches Anthropic's
+/// `tool_use` precedence in `wire_apis::anthropic::first_assistant_sig_*`.
+pub fn first_assistant_sig_from_input(items: &[Value]) -> Option<AssistantSig> {
+    let mut tool_id: Option<String> = None;
+    let mut text: Option<String> = None;
+    for it in items {
+        let t = it.get("type").and_then(|v| v.as_str());
+        if tool_id.is_none() && t == Some("function_call") {
+            if let Some(id) = it.get("call_id").and_then(|v| v.as_str()) {
+                tool_id = Some(id.to_string());
+            }
+        }
+        if text.is_none()
+            && t == Some("message")
+            && it.get("role").and_then(|v| v.as_str()) == Some("assistant")
+        {
+            if let Some(t) = message_text(it) {
+                text = Some(t);
+            }
+        }
+        if tool_id.is_some() && text.is_some() {
+            break;
+        }
+    }
+    if let Some(id) = tool_id {
+        Some(AssistantSig::ToolId(id))
+    } else {
+        text.map(AssistantSig::Text)
+    }
+}
+
+pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let output = v.get("output")?.as_array()?;
+    first_assistant_sig_from_input(output)
+}
+
+/// Extract the latest user-message text in `input[]`. Walks in reverse so
+/// multi-turn inputs return the most recent prompt. `input` may be a
+/// string (simplified single-prompt mode) or an array (canonical mode);
+/// both are handled here so callers don't have to peek at the shape.
+pub fn extract_user_input(v: &Value) -> Option<String> {
+    match v.get("input")? {
+        Value::Array(items) => {
+            for it in items.iter().rev() {
+                if it.get("type").and_then(|v| v.as_str()) != Some("message") {
+                    continue;
+                }
+                if it.get("role").and_then(|v| v.as_str()) != Some("user") {
+                    continue;
+                }
+                if let Some(t) = message_text(it) {
+                    return Some(t);
+                }
+            }
+            None
+        }
+        Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// True iff the last item in `input[]` is a non-empty `role=user` message
+/// (i.e. user turn, not a tool roundtrip continuation).
+/// `function_call_output` items at the tail break user-turn-start.
+pub fn is_user_turn_start(v: &Value) -> Option<bool> {
+    let items = match v.get("input")? {
+        Value::Array(items) => items,
+        Value::String(s) => return Some(!s.trim().is_empty()),
+        _ => return None,
+    };
+    let last = items.last()?;
+    let t = last.get("type").and_then(|v| v.as_str());
+    if t != Some("message") || last.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return Some(false);
+    }
+    Some(message_text(last).is_some())
+}
+
+/// First `message` item's text from `output[]`. `None` if the response
+/// only contains tool/function calls or `reasoning` items.
+pub fn extract_assistant_text(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let output = v.get("output")?.as_array()?;
+    for it in output {
+        if it.get("type").and_then(|v| v.as_str()) != Some("message") {
+            continue;
+        }
+        if let Some(t) = message_text(it) {
+            return Some(t);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod terminal_helper_tests {
     use super::*;

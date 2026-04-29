@@ -65,3 +65,17 @@ pub fn build_default_wire_api_registry() -> WireApiRegistry {
         .with(Box::new(OpenAiResponsesWireApi))
         .with(Box::new(OpenAiChatWireApi))
 }
+
+/// First-assistant signature extracted from a body parser. Returned by the
+/// per-wire-api `first_assistant_sig_from_*` helpers; consumed by callers
+/// that synthesize a stable session-id (see `agents/session_id.rs`).
+/// The variants reflect the only two anchors the wire APIs surface:
+///   - `ToolId(id)`: assistant emitted a tool/function call — `id` is the
+///     wire-canonical tool/function call id (`toolu_*`, `call_*`, `fc_*`).
+///   - `Text(joined)`: no tool, fall back to the assistant's first text
+///     response. Caller hashes this against the user prompt to synthesize
+///     `gen-<hex>`.
+pub enum AssistantSig {
+    ToolId(String),
+    Text(String),
+}

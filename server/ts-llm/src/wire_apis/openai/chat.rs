@@ -322,6 +322,166 @@ fn build_synthetic_body(
     result.to_string()
 }
 
+// ────────────────────────── Body shape parsers ─────────────────────────────
+//
+// Helpers that walk OpenAI Chat Completions request / response bodies for
+// the pieces agent profiles need (first/last user text, assistant
+// signature, tool names, system prompt). Mirror the surface in
+// `wire_apis::anthropic` — agent profiles dispatch on `wire_api` and call
+// the corresponding helper.
+
+use crate::wire_apis::AssistantSig;
+
+/// OpenAI Chat user content can be a plain string or a list of content
+/// blocks (`{"type":"text","text":...}` or the legacy `"input_text"`
+/// alias). Returns the concatenated visible text, or `None` if the input
+/// is missing / empty / wrong-typed.
+pub fn user_content_to_text(content: &Value) -> Option<String> {
+    match content {
+        Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
+        Value::Array(blocks) => {
+            let parts: Vec<String> = blocks
+                .iter()
+                .filter_map(|b| {
+                    let t = b.get("type").and_then(|v| v.as_str())?;
+                    if t == "text" || t == "input_text" {
+                        b.get("text").and_then(|v| v.as_str()).map(str::to_string)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract `tools[].function.name`. Same `Some(empty) | None` semantics as
+/// `wire_apis::anthropic::tool_names`: absent → empty list (parseable, no
+/// tools), wrong shape → `None` (not parseable).
+pub fn tool_names(v: &Value) -> Option<Vec<String>> {
+    match v.get("tools") {
+        None => Some(Vec::new()),
+        Some(Value::Array(arr)) => Some(
+            arr.iter()
+                .filter_map(|t| {
+                    t.get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|n| n.as_str())
+                        .map(str::to_string)
+                })
+                .collect(),
+        ),
+        Some(_) => None,
+    }
+}
+
+/// OpenAI Chat puts the system prompt as a `role:"system"` message at the
+/// head of `messages[]` — there's no top-level `system` field.
+pub fn first_system_text(v: &Value) -> Option<String> {
+    let msgs = v.get("messages")?.as_array()?;
+    for m in msgs {
+        if m.get("role").and_then(|r| r.as_str()) != Some("system") {
+            continue;
+        }
+        return user_content_to_text(m.get("content")?);
+    }
+    None
+}
+
+pub fn first_user_text(v: &Value) -> Option<String> {
+    let msgs = v.get("messages")?.as_array()?;
+    for m in msgs {
+        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        if let Some(t) = m.get("content").and_then(user_content_to_text) {
+            return Some(t);
+        }
+    }
+    None
+}
+
+pub fn first_assistant_sig_from_request(v: &Value) -> Option<AssistantSig> {
+    let msgs = v.get("messages")?.as_array()?;
+    for m in msgs {
+        if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+        if let Some(arr) = m.get("tool_calls").and_then(|v| v.as_array()) {
+            if let Some(id) = arr.first().and_then(|tc| tc.get("id")).and_then(|v| v.as_str()) {
+                return Some(AssistantSig::ToolId(id.to_string()));
+            }
+        }
+        if let Some(c) = m.get("content").and_then(|v| v.as_str()) {
+            if !c.trim().is_empty() {
+                return Some(AssistantSig::Text(c.to_string()));
+            }
+        }
+    }
+    None
+}
+
+pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let msg = v.get("choices")?.get(0)?.get("message")?;
+    if let Some(arr) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+        if let Some(id) = arr.first().and_then(|tc| tc.get("id")).and_then(|v| v.as_str()) {
+            return Some(AssistantSig::ToolId(id.to_string()));
+        }
+    }
+    if let Some(c) = msg.get("content").and_then(|v| v.as_str()) {
+        if !c.trim().is_empty() {
+            return Some(AssistantSig::Text(c.to_string()));
+        }
+    }
+    None
+}
+
+/// Last user message's text. `None` if last is not role=user or content
+/// has no visible text. Equivalent to `AgentProfile::extract_user_input`
+/// for OpenAI-Chat-shape bodies. Tool results in Chat Completions are
+/// `role:"tool"` messages, so the role check naturally excludes them.
+pub fn extract_user_input(v: &Value) -> Option<String> {
+    let last = v.get("messages")?.as_array()?.last()?;
+    if last.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return None;
+    }
+    last.get("content").and_then(user_content_to_text)
+}
+
+/// True iff the last message is role=user with non-empty visible text.
+/// Equivalent to `AgentProfile::is_user_turn_start` for OpenAI-Chat
+/// bodies. (Tool results are role=tool, so the role check alone suffices —
+/// no per-block filtering needed.)
+pub fn is_user_turn_start(v: &Value) -> Option<bool> {
+    let last = v.get("messages")?.as_array()?.last()?;
+    if last.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return Some(false);
+    }
+    Some(last.get("content").and_then(user_content_to_text).is_some())
+}
+
+pub fn extract_assistant_text(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let c = v
+        .get("choices")?
+        .get(0)?
+        .get("message")?
+        .get("content")?
+        .as_str()?;
+    if c.trim().is_empty() {
+        None
+    } else {
+        Some(c.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

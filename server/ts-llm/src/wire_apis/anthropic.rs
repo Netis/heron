@@ -458,6 +458,198 @@ fn finalize_block(partial: PartialBlock) -> Value {
     block
 }
 
+// ────────────────────────── Body shape parsers ─────────────────────────────
+//
+// Helpers that walk Anthropic Messages request / response bodies to pull
+// out the pieces agent profiles need (first/last user text, assistant
+// signature, tool names, system prompt). All operate on a parsed
+// `serde_json::Value` (request side) or raw `&str` (response side, where
+// the caller doesn't already have a parsed value handy).
+//
+// These are wire-api-shape concerns, shared by every profile that
+// classifies Anthropic traffic — `openclaw` and `generic` today.
+
+use super::AssistantSig;
+
+/// `Some(vec)` when `tools` is absent (treated as empty) or is an array
+/// (extracts each `.name`). `None` only when `tools` is present but has a
+/// wrong shape (e.g., scalar) — i.e. the body is genuinely unparseable.
+/// Treating absent as empty matches profiles whose marker-detection paths
+/// expect "no tools" to mean an empty list, not a parse failure.
+pub fn tool_names(v: &Value) -> Option<Vec<String>> {
+    match v.get("tools") {
+        None => Some(Vec::new()),
+        Some(Value::Array(arr)) => Some(
+            arr.iter()
+                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(str::to_string))
+                .collect(),
+        ),
+        Some(_) => None,
+    }
+}
+
+/// Anthropic uses a top-level `system` field. Accepts both the string
+/// shorthand and the `[{"type":"text", "text":"..."}]` array form.
+pub fn first_system_text(v: &Value) -> Option<String> {
+    match v.get("system")? {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .next()
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+pub fn first_user_text(v: &Value) -> Option<String> {
+    let msgs = v.get("messages")?.as_array()?;
+    for m in msgs {
+        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        match m.get("content")? {
+            Value::String(s) if !s.trim().is_empty() => return Some(s.clone()),
+            Value::Array(blocks) => {
+                let parts: Vec<String> = blocks
+                    .iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
+                    .collect();
+                if !parts.is_empty() {
+                    return Some(parts.join("\n"));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+pub fn first_assistant_sig_from_request(v: &Value) -> Option<AssistantSig> {
+    let msgs = v.get("messages")?.as_array()?;
+    for m in msgs {
+        if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+        let blocks = m.get("content")?.as_array()?;
+        for b in blocks {
+            if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                if let Some(id) = b.get("id").and_then(|x| x.as_str()) {
+                    return Some(AssistantSig::ToolId(id.to_string()));
+                }
+            }
+        }
+        let parts: Vec<String> = blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
+            .collect();
+        if !parts.is_empty() {
+            return Some(AssistantSig::Text(parts.join("\n")));
+        }
+    }
+    None
+}
+
+pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let blocks = v.get("content")?.as_array()?;
+    for b in blocks {
+        if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+            if let Some(id) = b.get("id").and_then(|x| x.as_str()) {
+                return Some(AssistantSig::ToolId(id.to_string()));
+            }
+        }
+    }
+    let parts: Vec<String> = blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+        .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(AssistantSig::Text(parts.join("\n")))
+    }
+}
+
+/// Extract the trimmed text of the **last** user message. `None` when the
+/// last message isn't role=user, content has no text, or text is
+/// whitespace-only. Equivalent to `AgentProfile::extract_user_input` for
+/// Anthropic-shape bodies.
+pub fn extract_user_input(v: &Value) -> Option<String> {
+    let last = v.get("messages")?.as_array()?.last()?;
+    if last.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return None;
+    }
+    let raw = match last.get("content")? {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => {
+            let parts: Vec<String> = blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
+                .collect();
+            parts.join("\n")
+        }
+        _ => return None,
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// True iff the **last** message is role=user AND contains at least one
+/// non-`tool_result` block with non-empty content (i.e. a fresh user-side
+/// turn rather than a tool roundtrip continuation). Equivalent to
+/// `AgentProfile::is_user_turn_start` for Anthropic-shape bodies.
+pub fn is_user_turn_start(v: &Value) -> Option<bool> {
+    let last = v.get("messages")?.as_array()?.last()?;
+    if last.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return Some(false);
+    }
+    match last.get("content")? {
+        Value::String(s) => Some(!s.trim().is_empty()),
+        Value::Array(blocks) => Some(blocks.iter().any(|b| {
+            match b.get("type").and_then(|t| t.as_str()) {
+                Some("tool_result") => false,
+                Some("text") => b
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false),
+                Some(_) => true, // image, future block types — count as user-visible
+                None => false,
+            }
+        })),
+        _ => None,
+    }
+}
+
+/// Concatenated text of the assistant's final response. `None` when body
+/// is unparseable, the response has no `content` blocks, or all text
+/// blocks are empty/whitespace. Equivalent to
+/// `AgentProfile::extract_assistant_text` for Anthropic-shape responses.
+pub fn extract_assistant_text(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let blocks = v.get("content")?.as_array()?;
+    let parts: Vec<String> = blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+        .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
+        .collect();
+    let joined = parts.join("\n");
+    if joined.trim().is_empty() {
+        None
+    } else {
+        Some(joined)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

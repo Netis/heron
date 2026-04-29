@@ -4,486 +4,18 @@
 //! OpenAI Chat Completions, OpenAI Responses).
 //!
 //! `agent_kind == "generic"` is wire-api-agnostic; downstream consumers read
-//! `wire_api` separately. Per-shape parsing lives in the three private
-//! sub-modules (`anthropic`, `openai_chat`, `openai_responses`); the public
-//! profile dispatches on `call.wire_api`. Mirrors the `openclaw.rs` pattern.
+//! `wire_api` separately. Per-shape parsing lives in `wire_apis::{anthropic,
+//! openai::chat, openai::responses}` and is shared with `openclaw`; the
+//! profile is a thin dispatcher on `call.wire_api`.
 
 use crate::model::LlmCall;
 use crate::profile::{AgentProfile, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
 
-use super::generic_common::{compose_session_id_tracked, AssistantSig};
+use super::session_id::compose_session_id_tracked;
 
 pub struct GenericProfile;
-
-// ───────────────────────── Anthropic Messages shape ─────────────────────────
-mod anthropic {
-    use super::AssistantSig;
-    use serde_json::Value;
-
-    pub fn first_user_text(msgs: &[Value]) -> Option<String> {
-        for m in msgs {
-            if m.get("role").and_then(|v| v.as_str()) != Some("user") {
-                continue;
-            }
-            match m.get("content")? {
-                Value::String(s) if !s.trim().is_empty() => return Some(s.clone()),
-                Value::Array(blocks) => {
-                    let parts: Vec<String> = blocks
-                        .iter()
-                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
-                        .collect();
-                    if !parts.is_empty() {
-                        return Some(parts.join("\n"));
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    pub fn first_assistant_sig_from_request(msgs: &[Value]) -> Option<AssistantSig> {
-        for m in msgs {
-            if m.get("role").and_then(|v| v.as_str()) != Some("assistant") {
-                continue;
-            }
-            let blocks = m.get("content")?.as_array()?;
-            for b in blocks {
-                if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                    if let Some(id) = b.get("id").and_then(|v| v.as_str()) {
-                        return Some(AssistantSig::ToolId(id.to_string()));
-                    }
-                }
-            }
-            let parts: Vec<String> = blocks
-                .iter()
-                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
-                .collect();
-            if !parts.is_empty() {
-                return Some(AssistantSig::Text(parts.join("\n")));
-            }
-        }
-        None
-    }
-
-    pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
-        let v: Value = serde_json::from_str(body).ok()?;
-        let blocks = v.get("content")?.as_array()?;
-        for b in blocks {
-            if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                if let Some(id) = b.get("id").and_then(|v| v.as_str()) {
-                    return Some(AssistantSig::ToolId(id.to_string()));
-                }
-            }
-        }
-        let parts: Vec<String> = blocks
-            .iter()
-            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-            .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
-            .collect();
-        if parts.is_empty() {
-            None
-        } else {
-            Some(AssistantSig::Text(parts.join("\n")))
-        }
-    }
-}
-
-// ────────────────────── OpenAI Chat Completions shape ──────────────────────
-mod openai_chat {
-    use super::AssistantSig;
-    use serde_json::Value;
-
-    pub fn user_content_to_text(content: &Value) -> Option<String> {
-        match content {
-            Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
-            Value::Array(blocks) => {
-                let parts: Vec<String> = blocks
-                    .iter()
-                    .filter_map(|b| {
-                        let t = b.get("type").and_then(|v| v.as_str())?;
-                        if t == "text" || t == "input_text" {
-                            b.get("text").and_then(|v| v.as_str()).map(str::to_string)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if parts.is_empty() {
-                    None
-                } else {
-                    Some(parts.join("\n"))
-                }
-            }
-            _ => None,
-        }
-    }
-
-    pub fn first_user_text(msgs: &[Value]) -> Option<String> {
-        for m in msgs {
-            if m.get("role").and_then(|v| v.as_str()) != Some("user") {
-                continue;
-            }
-            if let Some(t) = m.get("content").and_then(user_content_to_text) {
-                return Some(t);
-            }
-        }
-        None
-    }
-
-    pub fn first_assistant_sig_from_request(msgs: &[Value]) -> Option<AssistantSig> {
-        for m in msgs {
-            if m.get("role").and_then(|v| v.as_str()) != Some("assistant") {
-                continue;
-            }
-            if let Some(arr) = m.get("tool_calls").and_then(|v| v.as_array()) {
-                if let Some(id) = arr.first().and_then(|tc| tc.get("id")).and_then(|v| v.as_str()) {
-                    return Some(AssistantSig::ToolId(id.to_string()));
-                }
-            }
-            if let Some(c) = m.get("content").and_then(|v| v.as_str()) {
-                if !c.trim().is_empty() {
-                    return Some(AssistantSig::Text(c.to_string()));
-                }
-            }
-        }
-        None
-    }
-
-    pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
-        let v: Value = serde_json::from_str(body).ok()?;
-        let msg = v.get("choices")?.get(0)?.get("message")?;
-        if let Some(arr) = msg.get("tool_calls").and_then(|v| v.as_array()) {
-            if let Some(id) = arr.first().and_then(|tc| tc.get("id")).and_then(|v| v.as_str()) {
-                return Some(AssistantSig::ToolId(id.to_string()));
-            }
-        }
-        if let Some(c) = msg.get("content").and_then(|v| v.as_str()) {
-            if !c.trim().is_empty() {
-                return Some(AssistantSig::Text(c.to_string()));
-            }
-        }
-        None
-    }
-}
-
-// ──────────────────────── OpenAI Responses shape ────────────────────────────
-mod openai_responses {
-    use super::AssistantSig;
-    use serde_json::Value;
-
-    pub fn message_text(item: &Value) -> Option<String> {
-        let c = item.get("content")?;
-        match c {
-            Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
-            Value::Array(blocks) => {
-                let parts: Vec<String> = blocks
-                    .iter()
-                    .filter_map(|b| {
-                        let t = b.get("type").and_then(|v| v.as_str())?;
-                        if t == "text" || t == "input_text" || t == "output_text" {
-                            b.get("text").and_then(|v| v.as_str()).map(str::to_string)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if parts.is_empty() {
-                    None
-                } else {
-                    Some(parts.join("\n"))
-                }
-            }
-            _ => None,
-        }
-    }
-
-    pub fn first_user_text(items: &[Value]) -> Option<String> {
-        for it in items {
-            if it.get("type").and_then(|v| v.as_str()) != Some("message") {
-                continue;
-            }
-            if it.get("role").and_then(|v| v.as_str()) != Some("user") {
-                continue;
-            }
-            if let Some(t) = message_text(it) {
-                return Some(t);
-            }
-        }
-        None
-    }
-
-    pub fn first_assistant_sig_from_input(items: &[Value]) -> Option<AssistantSig> {
-        let mut tool_id: Option<String> = None;
-        let mut text: Option<String> = None;
-        for it in items {
-            let t = it.get("type").and_then(|v| v.as_str());
-            if tool_id.is_none() && t == Some("function_call") {
-                if let Some(id) = it.get("call_id").and_then(|v| v.as_str()) {
-                    tool_id = Some(id.to_string());
-                }
-            }
-            if text.is_none()
-                && t == Some("message")
-                && it.get("role").and_then(|v| v.as_str()) == Some("assistant")
-            {
-                if let Some(t) = message_text(it) {
-                    text = Some(t);
-                }
-            }
-            if tool_id.is_some() && text.is_some() {
-                break;
-            }
-        }
-        if let Some(id) = tool_id {
-            Some(AssistantSig::ToolId(id))
-        } else {
-            text.map(AssistantSig::Text)
-        }
-    }
-
-    pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
-        let v: Value = serde_json::from_str(body).ok()?;
-        let output = v.get("output")?.as_array()?;
-        first_assistant_sig_from_input(output)
-    }
-}
-
-// ──────────────────────── Per-wire-api method bodies ────────────────────────
-//
-// Kept as free functions on `GenericProfile` (rather than inlined into the
-// trait impl) so the dispatch in each method stays one match arm wide.
-
-impl GenericProfile {
-    fn extract_session_id_anthropic(call: &LlmCall) -> Option<SessionIdExtraction> {
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        let msgs = v.get("messages")?.as_array()?;
-        let user_text = anthropic::first_user_text(msgs)?;
-        let sig = anthropic::first_assistant_sig_from_request(msgs).or_else(|| {
-            call.response_body
-                .as_deref()
-                .and_then(anthropic::first_assistant_sig_from_response)
-        })?;
-        let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
-        Some(SessionIdExtraction {
-            session_id,
-            tool_id_canonicalized,
-        })
-    }
-
-    fn extract_session_id_openai_chat(call: &LlmCall) -> Option<SessionIdExtraction> {
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        let msgs = v.get("messages")?.as_array()?;
-        let user_text = openai_chat::first_user_text(msgs)?;
-        let sig = openai_chat::first_assistant_sig_from_request(msgs).or_else(|| {
-            call.response_body
-                .as_deref()
-                .and_then(openai_chat::first_assistant_sig_from_response)
-        })?;
-        let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
-        Some(SessionIdExtraction {
-            session_id,
-            tool_id_canonicalized,
-        })
-    }
-
-    fn extract_session_id_openai_responses(call: &LlmCall) -> Option<SessionIdExtraction> {
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        // input may be array (full mode) or string (simplified mode).
-        let (user_text, sig_from_input) = match v.get("input")? {
-            serde_json::Value::Array(items) => (
-                openai_responses::first_user_text(items),
-                openai_responses::first_assistant_sig_from_input(items),
-            ),
-            serde_json::Value::String(s) if !s.trim().is_empty() => (Some(s.clone()), None),
-            _ => (None, None),
-        };
-        let user_text = user_text?;
-        let sig = sig_from_input.or_else(|| {
-            call.response_body
-                .as_deref()
-                .and_then(openai_responses::first_assistant_sig_from_response)
-        })?;
-        let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
-        Some(SessionIdExtraction {
-            session_id,
-            tool_id_canonicalized,
-        })
-    }
-
-    fn is_user_turn_start_anthropic(call: &LlmCall) -> Option<bool> {
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        let last = v.get("messages")?.as_array()?.last()?;
-        if last.get("role").and_then(|r| r.as_str()) != Some("user") {
-            return Some(false);
-        }
-        match last.get("content")? {
-            serde_json::Value::String(s) => Some(!s.trim().is_empty()),
-            serde_json::Value::Array(blocks) => Some(blocks.iter().any(|b| {
-                match b.get("type").and_then(|t| t.as_str()) {
-                    Some("tool_result") => false,
-                    Some("text") => b
-                        .get("text")
-                        .and_then(|t| t.as_str())
-                        .map(|s| !s.trim().is_empty())
-                        .unwrap_or(false),
-                    Some(_) => true, // image, future block types — count as user-visible
-                    None => false,
-                }
-            })),
-            _ => None,
-        }
-    }
-
-    fn is_user_turn_start_openai_chat(call: &LlmCall) -> Option<bool> {
-        // Last message is role=user with non-empty content. (User content blocks
-        // in Chat Completions don't have a `tool_result` type — tool results
-        // are role=tool messages, not role=user.)
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        let last = v.get("messages")?.as_array()?.last()?;
-        if last.get("role").and_then(|r| r.as_str()) != Some("user") {
-            return Some(false);
-        }
-        Some(
-            last.get("content")
-                .and_then(openai_chat::user_content_to_text)
-                .is_some(),
-        )
-    }
-
-    fn is_user_turn_start_openai_responses(call: &LlmCall) -> Option<bool> {
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        let items = match v.get("input")? {
-            serde_json::Value::Array(items) => items,
-            serde_json::Value::String(s) => return Some(!s.trim().is_empty()),
-            _ => return None,
-        };
-        let last = items.last()?;
-        let t = last.get("type").and_then(|v| v.as_str());
-        if t != Some("message") || last.get("role").and_then(|r| r.as_str()) != Some("user") {
-            return Some(false);
-        }
-        Some(openai_responses::message_text(last).is_some())
-    }
-
-    fn extract_user_input_anthropic(call: &LlmCall) -> Option<String> {
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        let last = v.get("messages")?.as_array()?.last()?;
-        if last.get("role").and_then(|r| r.as_str()) != Some("user") {
-            return None;
-        }
-        let raw = match last.get("content")? {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Array(blocks) => {
-                let parts: Vec<String> = blocks
-                    .iter()
-                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
-                    .collect();
-                parts.join("\n")
-            }
-            _ => return None,
-        };
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    }
-
-    fn extract_user_input_openai_chat(call: &LlmCall) -> Option<String> {
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        let last = v.get("messages")?.as_array()?.last()?;
-        if last.get("role").and_then(|r| r.as_str()) != Some("user") {
-            return None;
-        }
-        last.get("content").and_then(openai_chat::user_content_to_text)
-    }
-
-    fn extract_user_input_openai_responses(call: &LlmCall) -> Option<String> {
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        match v.get("input")? {
-            serde_json::Value::Array(items) => {
-                for it in items.iter().rev() {
-                    if it.get("type").and_then(|v| v.as_str()) != Some("message") {
-                        continue;
-                    }
-                    if it.get("role").and_then(|v| v.as_str()) != Some("user") {
-                        continue;
-                    }
-                    if let Some(t) = openai_responses::message_text(it) {
-                        return Some(t);
-                    }
-                }
-                None
-            }
-            serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
-            _ => None,
-        }
-    }
-
-    fn extract_assistant_text_anthropic(call: &LlmCall) -> Option<String> {
-        let body = call.response_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        let blocks = v.get("content")?.as_array()?;
-        let parts: Vec<String> = blocks
-            .iter()
-            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-            .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
-            .collect();
-        let joined = parts.join("\n");
-        if joined.trim().is_empty() {
-            None
-        } else {
-            Some(joined)
-        }
-    }
-
-    fn extract_assistant_text_openai_chat(call: &LlmCall) -> Option<String> {
-        let body = call.response_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        let c = v
-            .get("choices")?
-            .get(0)?
-            .get("message")?
-            .get("content")?
-            .as_str()?;
-        if c.trim().is_empty() {
-            None
-        } else {
-            Some(c.to_string())
-        }
-    }
-
-    fn extract_assistant_text_openai_responses(call: &LlmCall) -> Option<String> {
-        let body = call.response_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        let output = v.get("output")?.as_array()?;
-        for it in output {
-            if it.get("type").and_then(|v| v.as_str()) != Some("message") {
-                continue;
-            }
-            if let Some(t) = openai_responses::message_text(it) {
-                return Some(t);
-            }
-        }
-        None
-    }
-}
 
 impl AgentProfile for GenericProfile {
     fn name(&self) -> &'static str {
@@ -498,37 +30,85 @@ impl AgentProfile for GenericProfile {
     }
 
     fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction> {
-        match call.wire_api {
-            wa::ANTHROPIC => Self::extract_session_id_anthropic(call),
-            wa::OPENAI_CHAT => Self::extract_session_id_openai_chat(call),
-            wa::OPENAI_RESPONSES => Self::extract_session_id_openai_responses(call),
-            _ => None,
-        }
+        let body = call.request_body.as_deref()?;
+        let v: serde_json::Value = serde_json::from_str(body).ok()?;
+        let (user_text, sig) = match call.wire_api {
+            wa::ANTHROPIC => {
+                let user_text = wa::anthropic::first_user_text(&v)?;
+                let sig = wa::anthropic::first_assistant_sig_from_request(&v).or_else(|| {
+                    call.response_body
+                        .as_deref()
+                        .and_then(wa::anthropic::first_assistant_sig_from_response)
+                })?;
+                (user_text, sig)
+            }
+            wa::OPENAI_CHAT => {
+                let user_text = wa::openai::chat::first_user_text(&v)?;
+                let sig = wa::openai::chat::first_assistant_sig_from_request(&v).or_else(|| {
+                    call.response_body
+                        .as_deref()
+                        .and_then(wa::openai::chat::first_assistant_sig_from_response)
+                })?;
+                (user_text, sig)
+            }
+            wa::OPENAI_RESPONSES => {
+                // Responses works on the `input` array (or string-shorthand)
+                // rather than `messages`, so it has its own walker layer.
+                let (user_text, sig_from_input) = match v.get("input")? {
+                    serde_json::Value::Array(items) => (
+                        wa::openai::responses::first_user_text(items),
+                        wa::openai::responses::first_assistant_sig_from_input(items),
+                    ),
+                    serde_json::Value::String(s) if !s.trim().is_empty() => {
+                        (Some(s.clone()), None)
+                    }
+                    _ => (None, None),
+                };
+                let user_text = user_text?;
+                let sig = sig_from_input.or_else(|| {
+                    call.response_body
+                        .as_deref()
+                        .and_then(wa::openai::responses::first_assistant_sig_from_response)
+                })?;
+                (user_text, sig)
+            }
+            _ => return None,
+        };
+        let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
+        Some(SessionIdExtraction {
+            session_id,
+            tool_id_canonicalized,
+        })
     }
 
     fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
+        let body = call.request_body.as_deref()?;
+        let v: serde_json::Value = serde_json::from_str(body).ok()?;
         match call.wire_api {
-            wa::ANTHROPIC => Self::is_user_turn_start_anthropic(call),
-            wa::OPENAI_CHAT => Self::is_user_turn_start_openai_chat(call),
-            wa::OPENAI_RESPONSES => Self::is_user_turn_start_openai_responses(call),
+            wa::ANTHROPIC => wa::anthropic::is_user_turn_start(&v),
+            wa::OPENAI_CHAT => wa::openai::chat::is_user_turn_start(&v),
+            wa::OPENAI_RESPONSES => wa::openai::responses::is_user_turn_start(&v),
             _ => None,
         }
     }
 
     fn extract_user_input(&self, call: &LlmCall) -> Option<String> {
+        let body = call.request_body.as_deref()?;
+        let v: serde_json::Value = serde_json::from_str(body).ok()?;
         match call.wire_api {
-            wa::ANTHROPIC => Self::extract_user_input_anthropic(call),
-            wa::OPENAI_CHAT => Self::extract_user_input_openai_chat(call),
-            wa::OPENAI_RESPONSES => Self::extract_user_input_openai_responses(call),
+            wa::ANTHROPIC => wa::anthropic::extract_user_input(&v),
+            wa::OPENAI_CHAT => wa::openai::chat::extract_user_input(&v),
+            wa::OPENAI_RESPONSES => wa::openai::responses::extract_user_input(&v),
             _ => None,
         }
     }
 
     fn extract_assistant_text(&self, call: &LlmCall) -> Option<String> {
+        let body = call.response_body.as_deref()?;
         match call.wire_api {
-            wa::ANTHROPIC => Self::extract_assistant_text_anthropic(call),
-            wa::OPENAI_CHAT => Self::extract_assistant_text_openai_chat(call),
-            wa::OPENAI_RESPONSES => Self::extract_assistant_text_openai_responses(call),
+            wa::ANTHROPIC => wa::anthropic::extract_assistant_text(body),
+            wa::OPENAI_CHAT => wa::openai::chat::extract_assistant_text(body),
+            wa::OPENAI_RESPONSES => wa::openai::responses::extract_assistant_text(body),
             _ => None,
         }
     }
@@ -808,20 +388,6 @@ mod tests {
         fn extract_session_id_none_when_malformed_json() {
             let c = oai(Some("garbage"), None);
             assert!(GenericProfile.extract_session_id(&c).is_none());
-        }
-
-        #[test]
-        fn first_user_skips_system() {
-            let req = r#"{"messages":[
-                {"role":"system","content":"you are X"},
-                {"role":"user","content":"actual prompt"}
-            ]}"#;
-            let v: serde_json::Value = serde_json::from_str(req).unwrap();
-            let msgs = v.get("messages").unwrap().as_array().unwrap();
-            assert_eq!(
-                openai_chat::first_user_text(msgs).as_deref(),
-                Some("actual prompt"),
-            );
         }
 
         #[test]

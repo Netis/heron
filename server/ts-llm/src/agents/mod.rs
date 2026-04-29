@@ -7,8 +7,8 @@ use crate::profile::AgentProfileRegistry;
 pub mod claude_cli;
 pub mod codex_cli;
 pub mod generic;
-pub mod generic_common;
 pub mod openclaw;
+pub mod session_id;
 
 /// Default registry with all built-in agent profiles.
 ///
@@ -21,7 +21,7 @@ pub fn build_default_registry() -> AgentProfileRegistry {
     AgentProfileRegistry::new()
         .with(Box::new(claude_cli::ClaudeCliProfile))
         .with(Box::new(codex_cli::CodexCliProfile))
-        .with(Box::new(openclaw::OpenClawProfile))
+        // .with(Box::new(openclaw::OpenClawProfile))
         .with(Box::new(generic::GenericProfile))
 }
 

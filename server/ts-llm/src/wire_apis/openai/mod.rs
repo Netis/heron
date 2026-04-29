@@ -4,8 +4,8 @@
 //! (see `shared.rs`). Parse-time field mapping is deliberately split so a
 //! change in one API cannot silently affect the other.
 
-mod chat;
-mod responses;
+pub mod chat;
+pub mod responses;
 mod shared;
 
 pub use chat::OpenAiChatWireApi;
