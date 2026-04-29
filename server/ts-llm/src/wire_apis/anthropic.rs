@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
@@ -294,12 +296,28 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
     }
 }
 
+/// Per-block accumulation state, keyed by the `index` field carried on every
+/// `content_block_*` event. Anthropic spec emits `index` on every delta and
+/// stop, but parallel-tool-use streams (e.g. GLM-5) interleave the deltas
+/// across indexes — keying by `index` is the only correct way to attribute
+/// each `input_json_delta` / `text_delta` to its block.
+struct PartialBlock {
+    /// Initial `content_block` payload from `content_block_start` (carries
+    /// `type`, `id`, `name`, etc.). Mutated in-place at finalize time.
+    block: Value,
+    /// `text_delta.text` or `thinking_delta.thinking` accumulator.
+    text: String,
+    /// `input_json_delta.partial_json` accumulator.
+    json: String,
+}
+
 /// Assemble a synthetic response JSON from SSE content events.
 ///
 /// Anthropic streaming emits content in `content_block_start` (block type/initial)
 /// and `content_block_delta` (incremental text/json) events. We reconstruct the
-/// final content blocks array, then wrap in a message-like JSON object that
-/// includes model, usage, and stop_reason from `message_start`/`message_delta`.
+/// final content blocks array keyed by the `index` field on every event, then
+/// wrap in a message-like JSON object that includes model, usage, and
+/// stop_reason from `message_start`/`message_delta`.
 ///
 /// Takes events alongside their already-parsed JSON values so we don't re-parse
 /// the same event bodies the caller (`extract_from_sse`) already parsed.
@@ -310,12 +328,10 @@ fn build_response_body(sse_events: &[SseEventData], parsed: &[Value]) -> Option<
     let mut stop_reason: Option<String> = None;
     let mut final_usage: Option<Value> = None;
 
-    // content_blocks: Vec<(type, accumulated_text_or_json)>
-    let mut content_blocks: Vec<Value> = Vec::new();
-    // Buffer for the current block being built via deltas
-    let mut current_block: Option<Value> = None;
-    let mut current_text = String::new();
-    let mut current_json = String::new();
+    // BTreeMap so end-of-stream drain emits blocks in index order. Same pattern
+    // as the OpenAI Chat tool_calls accumulator
+    // (`wire_apis/openai/chat.rs` -> `tool_calls: BTreeMap<u64, _>`).
+    let mut blocks: BTreeMap<u64, PartialBlock> = BTreeMap::new();
 
     for (event, data) in sse_events.iter().zip(parsed.iter()) {
         match event.event_type.as_str() {
@@ -325,49 +341,53 @@ fn build_response_body(sse_events: &[SseEventData], parsed: &[Value]) -> Option<
                 }
             }
             "content_block_start" => {
-                // Flush previous block if any
-                flush_block(
-                    &mut content_blocks,
-                    &mut current_block,
-                    &mut current_text,
-                    &mut current_json,
-                );
+                let Some(idx) = data.get("index").and_then(|v| v.as_u64()) else {
+                    continue;
+                };
                 if let Some(cb) = data.get("content_block") {
-                    current_block = Some(cb.clone());
-                    current_text.clear();
-                    current_json.clear();
+                    blocks.insert(
+                        idx,
+                        PartialBlock {
+                            block: cb.clone(),
+                            text: String::new(),
+                            json: String::new(),
+                        },
+                    );
                 }
             }
             "content_block_delta" => {
+                let Some(idx) = data.get("index").and_then(|v| v.as_u64()) else {
+                    continue;
+                };
+                let Some(entry) = blocks.get_mut(&idx) else {
+                    continue; // delta for an index we never saw a start for; drop
+                };
                 if let Some(delta) = data.get("delta") {
                     match delta.get("type").and_then(|v| v.as_str()) {
                         Some("text_delta") => {
                             if let Some(t) = delta.get("text").and_then(|v| v.as_str()) {
-                                current_text.push_str(t);
+                                entry.text.push_str(t);
                             }
                         }
                         Some("input_json_delta") => {
                             if let Some(j) = delta.get("partial_json").and_then(|v| v.as_str()) {
-                                current_json.push_str(j);
+                                entry.json.push_str(j);
                             }
                         }
                         Some("thinking_delta") => {
                             if let Some(t) = delta.get("thinking").and_then(|v| v.as_str()) {
-                                current_text.push_str(t);
+                                entry.text.push_str(t);
                             }
                         }
                         _ => {}
                     }
                 }
             }
-            "content_block_stop" => {
-                flush_block(
-                    &mut content_blocks,
-                    &mut current_block,
-                    &mut current_text,
-                    &mut current_json,
-                );
-            }
+            // content_block_stop carries no payload we need beyond what start
+            // and delta already supplied; per-index entries stay live until
+            // the end-of-stream drain so a late delta with the same index
+            // still lands.
+            "content_block_stop" => {}
             "message_delta" => {
                 if let Some(delta) = data.get("delta") {
                     if let Some(sr) = delta.get("stop_reason").and_then(|v| v.as_str()) {
@@ -382,13 +402,8 @@ fn build_response_body(sse_events: &[SseEventData], parsed: &[Value]) -> Option<
         }
     }
 
-    // Flush any remaining block
-    flush_block(
-        &mut content_blocks,
-        &mut current_block,
-        &mut current_text,
-        &mut current_json,
-    );
+    // Drain in index order and finalize each block.
+    let content_blocks: Vec<Value> = blocks.into_values().map(finalize_block).collect();
 
     if message_obj.is_null() && content_blocks.is_empty() {
         return None;
@@ -414,41 +429,33 @@ fn build_response_body(sse_events: &[SseEventData], parsed: &[Value]) -> Option<
     Some(result.to_string())
 }
 
-/// Flush the current content block into the blocks list,
-/// filling in accumulated text or input JSON.
-fn flush_block(
-    blocks: &mut Vec<Value>,
-    current_block: &mut Option<Value>,
-    text_buf: &mut String,
-    json_buf: &mut String,
-) {
-    if let Some(mut block) = current_block.take() {
-        if let Some(obj) = block.as_object_mut() {
-            let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            match block_type {
-                "text" => {
-                    obj.insert("text".to_string(), Value::String(std::mem::take(text_buf)));
-                }
-                "thinking" => {
-                    obj.insert(
-                        "thinking".to_string(),
-                        Value::String(std::mem::take(text_buf)),
-                    );
-                }
-                "tool_use" => {
-                    // Try to parse the accumulated JSON string into a Value
-                    let input = serde_json::from_str::<Value>(json_buf)
-                        .unwrap_or(Value::String(std::mem::take(json_buf)));
-                    obj.insert("input".to_string(), input);
-                    json_buf.clear();
-                }
-                _ => {}
+/// Move accumulated text/json from a `PartialBlock` into the final block JSON.
+/// `tool_use` falls back to the raw json string when parsing fails so the
+/// caller keeps the same observable behavior as the previous implementation
+/// for malformed streams.
+fn finalize_block(partial: PartialBlock) -> Value {
+    let PartialBlock {
+        mut block,
+        text,
+        json,
+    } = partial;
+    if let Some(obj) = block.as_object_mut() {
+        let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match block_type {
+            "text" => {
+                obj.insert("text".to_string(), Value::String(text));
             }
+            "thinking" => {
+                obj.insert("thinking".to_string(), Value::String(text));
+            }
+            "tool_use" => {
+                let input = serde_json::from_str::<Value>(&json).unwrap_or(Value::String(json));
+                obj.insert("input".to_string(), input);
+            }
+            _ => {}
         }
-        text_buf.clear();
-        json_buf.clear();
-        blocks.push(block);
     }
+    block
 }
 
 #[cfg(test)]
@@ -489,11 +496,11 @@ mod tests {
             ),
             make_sse(
                 "content_block_delta",
-                r#"{"delta":{"type":"text_delta","text":"Hello"}}"#,
+                r#"{"index":0,"delta":{"type":"text_delta","text":"Hello"}}"#,
             ),
             make_sse(
                 "content_block_delta",
-                r#"{"delta":{"type":"text_delta","text":" world"}}"#,
+                r#"{"index":0,"delta":{"type":"text_delta","text":" world"}}"#,
             ),
             make_sse("content_block_stop", r#"{"index":0}"#),
             make_sse(
@@ -523,7 +530,7 @@ mod tests {
             ),
             make_sse(
                 "content_block_delta",
-                r#"{"delta":{"type":"thinking_delta","thinking":"Let me think..."}}"#,
+                r#"{"index":0,"delta":{"type":"thinking_delta","thinking":"Let me think..."}}"#,
             ),
             make_sse("content_block_stop", r#"{"index":0}"#),
             make_sse(
@@ -532,7 +539,7 @@ mod tests {
             ),
             make_sse(
                 "content_block_delta",
-                r#"{"delta":{"type":"text_delta","text":"Answer"}}"#,
+                r#"{"index":1,"delta":{"type":"text_delta","text":"Answer"}}"#,
             ),
             make_sse("content_block_stop", r#"{"index":1}"#),
             make_sse("message_delta", r#"{"delta":{"stop_reason":"end_turn"}}"#),
@@ -562,11 +569,11 @@ mod tests {
             ),
             make_sse(
                 "content_block_delta",
-                r#"{"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}"#,
+                r#"{"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}"#,
             ),
             make_sse(
                 "content_block_delta",
-                r#"{"delta":{"type":"input_json_delta","partial_json":"\"foo.txt\"}"}}"#,
+                r#"{"index":0,"delta":{"type":"input_json_delta","partial_json":"\"foo.txt\"}"}}"#,
             ),
             make_sse("content_block_stop", r#"{"index":0}"#),
             make_sse("message_delta", r#"{"delta":{"stop_reason":"tool_use"}}"#),
@@ -577,6 +584,148 @@ mod tests {
         assert_eq!(v["content"][0]["type"], "tool_use");
         assert_eq!(v["content"][0]["input"]["path"], "foo.txt");
         assert_eq!(v["stop_reason"], "tool_use");
+    }
+
+    /// Reproduces the GLM-5 / openclaw pattern: parallel `tool_use` blocks
+    /// where all `content_block_start` events arrive before any deltas, and
+    /// per-index deltas/stops are interleaved out of natural order.
+    /// Pre-fix this test failed: index=1's `tool_use` ended up with `input:""`
+    /// and the `ps aux` command was silently dropped.
+    #[test]
+    fn test_build_response_body_interleaved_parallel_tool_use() {
+        let events = vec![
+            make_sse(
+                "message_start",
+                r#"{"message":{"id":"msg_glm","model":"glm-5","role":"assistant"}}"#,
+            ),
+            make_sse(
+                "content_block_start",
+                r#"{"index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            ),
+            make_sse(
+                "content_block_delta",
+                r#"{"index":0,"delta":{"type":"thinking_delta","thinking":"plan"}}"#,
+            ),
+            make_sse("content_block_stop", r#"{"index":0}"#),
+            // Both tool_use starts arrive before any delta — this is the
+            // shape that GLM emits and that the pre-fix accumulator
+            // mishandled.
+            make_sse(
+                "content_block_start",
+                r#"{"index":1,"content_block":{"type":"tool_use","id":"call_aaa","name":"exec"}}"#,
+            ),
+            make_sse(
+                "content_block_start",
+                r#"{"index":2,"content_block":{"type":"tool_use","id":"call_bbb","name":"exec"}}"#,
+            ),
+            // index=2 finalizes first.
+            make_sse(
+                "content_block_delta",
+                r#"{"index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"systemctl status\"}"}}"#,
+            ),
+            make_sse("content_block_stop", r#"{"index":2}"#),
+            // index=1's deltas arrive after index=2 already stopped.
+            make_sse(
+                "content_block_delta",
+                r#"{"index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ps aux\"}"}}"#,
+            ),
+            make_sse("content_block_stop", r#"{"index":1}"#),
+            make_sse("message_delta", r#"{"delta":{"stop_reason":"tool_use"}}"#),
+        ];
+        let parsed = parse_events(&events);
+        let body = build_response_body(&events, &parsed).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        // Blocks are emitted in index order regardless of stream interleaving.
+        assert_eq!(v["content"][0]["type"], "thinking");
+        assert_eq!(v["content"][0]["thinking"], "plan");
+        assert_eq!(v["content"][1]["type"], "tool_use");
+        assert_eq!(v["content"][1]["id"], "call_aaa");
+        assert_eq!(v["content"][1]["input"]["command"], "ps aux");
+        assert_eq!(v["content"][2]["type"], "tool_use");
+        assert_eq!(v["content"][2]["id"], "call_bbb");
+        assert_eq!(v["content"][2]["input"]["command"], "systemctl status");
+    }
+
+    /// Three parallel tool_use blocks — second openclaw response shape: all
+    /// starts first, then per-index delta+stop in order. Pre-fix two of the
+    /// three blocks ended up with `input:""` and the third inherited the
+    /// wrong block's command.
+    #[test]
+    fn test_build_response_body_three_parallel_tools_starts_first() {
+        let events = vec![
+            make_sse(
+                "message_start",
+                r#"{"message":{"id":"msg_3p","model":"glm-5","role":"assistant"}}"#,
+            ),
+            make_sse(
+                "content_block_start",
+                r#"{"index":0,"content_block":{"type":"tool_use","id":"call_1","name":"exec"}}"#,
+            ),
+            make_sse(
+                "content_block_start",
+                r#"{"index":1,"content_block":{"type":"tool_use","id":"call_2","name":"exec"}}"#,
+            ),
+            make_sse(
+                "content_block_start",
+                r#"{"index":2,"content_block":{"type":"tool_use","id":"call_3","name":"exec"}}"#,
+            ),
+            make_sse(
+                "content_block_delta",
+                r#"{"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"tail\"}"}}"#,
+            ),
+            make_sse("content_block_stop", r#"{"index":0}"#),
+            make_sse(
+                "content_block_delta",
+                r#"{"index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ss\"}"}}"#,
+            ),
+            make_sse("content_block_stop", r#"{"index":1}"#),
+            make_sse(
+                "content_block_delta",
+                r#"{"index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"tmux\"}"}}"#,
+            ),
+            make_sse("content_block_stop", r#"{"index":2}"#),
+            make_sse("message_delta", r#"{"delta":{"stop_reason":"tool_use"}}"#),
+        ];
+        let parsed = parse_events(&events);
+        let body = build_response_body(&events, &parsed).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["content"][0]["id"], "call_1");
+        assert_eq!(v["content"][0]["input"]["command"], "tail");
+        assert_eq!(v["content"][1]["id"], "call_2");
+        assert_eq!(v["content"][1]["input"]["command"], "ss");
+        assert_eq!(v["content"][2]["id"], "call_3");
+        assert_eq!(v["content"][2]["input"]["command"], "tmux");
+    }
+
+    /// A delta whose `index` was never opened by a `content_block_start` is
+    /// dropped silently and does not contaminate any other block.
+    #[test]
+    fn test_build_response_body_delta_for_unknown_index_dropped() {
+        let events = vec![
+            make_sse(
+                "message_start",
+                r#"{"message":{"id":"msg_orph","model":"claude-3","role":"assistant"}}"#,
+            ),
+            make_sse(
+                "content_block_start",
+                r#"{"index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            make_sse(
+                "content_block_delta",
+                r#"{"index":0,"delta":{"type":"text_delta","text":"Hello"}}"#,
+            ),
+            // Orphaned delta — never had a matching start.
+            make_sse(
+                "content_block_delta",
+                r#"{"index":99,"delta":{"type":"text_delta","text":"GHOST"}}"#,
+            ),
+            make_sse("content_block_stop", r#"{"index":0}"#),
+        ];
+        let parsed = parse_events(&events);
+        let body = build_response_body(&events, &parsed).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["content"].as_array().unwrap().len(), 1);
+        assert_eq!(v["content"][0]["text"], "Hello");
     }
 
     #[test]
@@ -640,7 +789,7 @@ mod tests {
             ),
             make_sse(
                 "content_block_delta",
-                r#"{"delta":{"type":"text_delta","text":"Hello"}}"#,
+                r#"{"index":0,"delta":{"type":"text_delta","text":"Hello"}}"#,
             ),
             make_sse("content_block_stop", r#"{"index":0}"#),
             make_sse(

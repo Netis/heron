@@ -157,6 +157,131 @@ async fn run_pcap(name: &str) -> Option<Vec<ts_turn::AgentTurn>> {
     run_pcap_sharded(name, 1, 1).await
 }
 
+/// Variant of `run_pcap_full_sharded` that retains every `LlmCall` instead of
+/// draining the channel. Used by tests that need to inspect reconstructed
+/// SSE bodies (e.g. asserting `tool_use.input` survived index-keyed
+/// accumulation).
+async fn run_pcap_collecting_calls(
+    name: &str,
+) -> Option<(
+    Vec<ts_turn::AgentTurn>,
+    Vec<Arc<ts_llm::model::LlmCall>>,
+)> {
+    let path = fixture(name)?;
+    let mut metrics_sys = MetricsSystem::new();
+
+    let source_metrics = metrics_sys.register_worker(
+        "capture.test",
+        &[
+            Metric::CapturePacketsReceived,
+            Metric::CaptureKernelPacketsDropped,
+        ],
+    );
+
+    let queue_size = 4096usize;
+    let (raw_tx, raw_rx) = mpsc::channel::<ts_capture::RawPacket>(queue_size);
+
+    let flow_shards = 1usize;
+    let turn_shards = 1usize;
+    let metrics_shards = 1usize;
+    let mut parsed_txs = Vec::with_capacity(flow_shards);
+    let mut parsed_rxs = Vec::with_capacity(flow_shards);
+    let mut protocol_event_txs = Vec::with_capacity(flow_shards);
+    let mut protocol_event_rxs = Vec::with_capacity(flow_shards);
+    let mut joiner_event_txs = Vec::with_capacity(flow_shards);
+    let mut joiner_event_rxs = Vec::with_capacity(flow_shards);
+    for _ in 0..flow_shards {
+        let (ptx, prx) = mpsc::channel::<ts_protocol::WorkerInput>(queue_size);
+        parsed_txs.push(ptx);
+        parsed_rxs.push(prx);
+        let (etx, erx) = mpsc::channel::<ts_protocol::model::HttpParseEvent>(queue_size);
+        protocol_event_txs.push(etx);
+        protocol_event_rxs.push(erx);
+        let (jtx, jrx) = mpsc::channel::<ts_protocol::HttpJoinerEvent>(queue_size);
+        joiner_event_txs.push(jtx);
+        joiner_event_rxs.push(jrx);
+    }
+
+    let mut turn_shard_txs = Vec::with_capacity(turn_shards);
+    let mut turn_shard_rxs = Vec::with_capacity(turn_shards);
+    for _ in 0..turn_shards {
+        let (tx, rx) = mpsc::channel::<ts_llm::model::TurnShardInput>(queue_size);
+        turn_shard_txs.push(tx);
+        turn_shard_rxs.push(rx);
+    }
+
+    let mut metrics_shard_txs = Vec::with_capacity(metrics_shards);
+    let mut metrics_shard_rxs = Vec::with_capacity(metrics_shards);
+    for _ in 0..metrics_shards {
+        let (tx, rx) = mpsc::channel::<ts_llm::model::LlmEvent>(queue_size);
+        metrics_shard_txs.push(tx);
+        metrics_shard_rxs.push(rx);
+    }
+
+    let (calls_tx, mut calls_rx) = mpsc::channel::<Arc<ts_llm::model::LlmCall>>(queue_size);
+    let (turns_tx, mut turns_rx) = mpsc::channel::<ts_turn::AgentTurn>(queue_size);
+    let (m_out_tx, mut m_out_rx) = mpsc::channel::<ts_metrics::model::LlmMetricsBatch>(queue_size);
+
+    spawn_flow_dispatcher(raw_rx, parsed_txs, "dispatcher", &mut metrics_sys);
+    spawn_protocol_stage(parsed_rxs, protocol_event_txs, &mut metrics_sys);
+    spawn_http_joiner_stage(protocol_event_rxs, joiner_event_txs, None, &mut metrics_sys);
+
+    let registry = Arc::new(ts_llm::agents::build_default_registry());
+    let wire_api_registry = Arc::new(ts_llm::wire_apis::build_default_wire_api_registry());
+    ts_llm::spawn_llm_stage(
+        joiner_event_rxs,
+        turn_shard_txs,
+        metrics_shard_txs,
+        calls_tx,
+        wire_api_registry.clone(),
+        registry,
+        &mut metrics_sys,
+    );
+
+    ts_turn::spawn_turn_stage(
+        TrackerConfig::default(),
+        turn_shard_rxs,
+        turns_tx,
+        &mut metrics_sys,
+    );
+
+    ts_metrics::spawn_metrics_stage(metrics_shard_rxs, m_out_tx, &mut metrics_sys);
+
+    let _metrics_svc = metrics_sys.start();
+
+    let source = PcapFileSource::new(path, "test".to_string(), None);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let src_task = tokio::spawn({
+        let tx = raw_tx.clone();
+        let cancel = cancel.clone();
+        async move {
+            let _ = Box::new(source)
+                .run(RoutingSender::single(tx), source_metrics, cancel)
+                .await;
+        }
+    });
+    drop(raw_tx);
+
+    let calls_collector = tokio::spawn(async move {
+        let mut acc: Vec<Arc<ts_llm::model::LlmCall>> = Vec::new();
+        while let Some(c) = calls_rx.recv().await {
+            acc.push(c);
+        }
+        acc
+    });
+    let metrics_drain = tokio::spawn(async move { while m_out_rx.recv().await.is_some() {} });
+
+    let mut finalized: Vec<ts_turn::AgentTurn> = Vec::new();
+    while let Some(turn) = turns_rx.recv().await {
+        finalized.push(turn);
+    }
+
+    let _ = src_task.await;
+    let calls = calls_collector.await.unwrap_or_default();
+    let _ = metrics_drain.await;
+    Some((finalized, calls))
+}
+
 #[tokio::test]
 async fn claude_cli_messages_expects_one_complete_turn() {
     let Some(turns) = run_pcap("claude-cli-messages.pcap").await else {
@@ -456,6 +581,110 @@ async fn openclaw_multi_sessions_pcap_shard_parity() {
     assert_eq!(
         single_keys, multi_keys,
         "turn sets must match across shard counts"
+    );
+}
+
+/// OpenClaw (Anthropic/JS SDK + GLM-5) capture covering one user conversation
+/// plus two compaction runs. GLM-5 emits parallel `tool_use` blocks where
+/// every `content_block_start` arrives before any `input_json_delta`, and
+/// per-index deltas/stops are interleaved in arbitrary order.
+///
+/// Asserts:
+///   1. Pipeline produces the expected turn / session shape on the new
+///      fixture (3 sessions, 8 turns, all `generic-anthropic` Complete).
+///   2. Bug-fix-specific: every reconstructed `tool_use` block has a
+///      non-empty parsed `input` object. Pre-fix, one or more `tool_use`
+///      blocks per parallel-tool response ended up with `input: ""` because
+///      the SSE accumulator ignored the `index` field; the lost JSON was
+///      either dropped or attached to the wrong block.
+#[tokio::test]
+async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
+    let Some((turns, calls)) = run_pcap_collecting_calls("openclaw-anthropic.pcap").await else {
+        eprintln!("skip: fixture not present");
+        return;
+    };
+
+    let anthropic: Vec<_> = turns
+        .iter()
+        .filter(|t| t.wire_api == wa::ANTHROPIC)
+        .collect();
+    eprintln!(
+        "openclaw-anthropic: {} anthropic turns, {} llm_calls",
+        anthropic.len(),
+        calls.len(),
+    );
+    for t in &anthropic {
+        eprintln!(
+            "  session={} status={:?} calls={} models={:?}",
+            t.session_id, t.status, t.call_count, t.models_used,
+        );
+    }
+
+    assert_eq!(anthropic.len(), 8, "expected 8 turns; got {}", anthropic.len());
+    assert!(anthropic.iter().all(|t| t.agent_kind == "generic-anthropic"));
+    assert!(
+        anthropic.iter().all(|t| t.status == TurnStatus::Complete),
+        "all turns expected Complete"
+    );
+    let sessions: std::collections::BTreeSet<_> =
+        anthropic.iter().map(|t| t.session_id.as_str()).collect();
+    assert_eq!(
+        sessions.len(),
+        3,
+        "expected 3 distinct sessions; got {sessions:?}",
+    );
+    // One session anchors on the first tool_use id of the user-facing
+    // conversation; the remaining two are compaction passes whose responses
+    // carry only text → fall through to `gen-<hash>` synthesis.
+    assert!(
+        sessions.iter().filter(|s| s.starts_with("gen-")).count() == 2,
+        "expected 2 gen-* sessions; got {sessions:?}",
+    );
+
+    // Bug-fix assertion: every tool_use block in every reconstructed response
+    // body must carry a non-empty parsed input. An `input == ""` string is the
+    // exact symptom of the pre-fix index-blind accumulator.
+    let mut tool_use_blocks_seen = 0usize;
+    let mut empty_input_block_ids: Vec<String> = Vec::new();
+    for call in &calls {
+        if call.wire_api != wa::ANTHROPIC {
+            continue;
+        }
+        let Some(body) = call.response_body.as_deref() else {
+            continue;
+        };
+        let v: serde_json::Value = match serde_json::from_str(body) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let Some(blocks) = v.get("content").and_then(|c| c.as_array()) else {
+            continue;
+        };
+        for b in blocks {
+            if b.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                continue;
+            }
+            tool_use_blocks_seen += 1;
+            let id = b
+                .get("id")
+                .and_then(|i| i.as_str())
+                .unwrap_or("<no-id>")
+                .to_string();
+            match b.get("input") {
+                Some(serde_json::Value::Object(o)) if !o.is_empty() => {} // healthy
+                _ => empty_input_block_ids.push(id),
+            }
+        }
+    }
+    assert!(
+        tool_use_blocks_seen >= 2,
+        "fixture should contain at least one parallel-tool_use response; saw only {tool_use_blocks_seen} tool_use blocks",
+    );
+    assert!(
+        empty_input_block_ids.is_empty(),
+        "{} tool_use block(s) had empty/non-object input — accumulator regressed: {:?}",
+        empty_input_block_ids.len(),
+        empty_input_block_ids,
     );
 }
 

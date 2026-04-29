@@ -16,6 +16,7 @@ TokenScope's post-TLS server-side deployment model.
 | `claude-cli-messages-multi.pcap` | Anthropic `/v1/messages?beta=true` | claude-cli | 5.4 MB | **3** (≥1 Complete) | Long multi-turn session, single `session_id`; auto title-gen (empty `tools`) filtered as auxiliary, Task sub-agent calls attach to parent turn |
 | `codex-cli-messages-multi.pcap` | OpenAI `/v1/responses` | codex-cli | 18 MB | **2** (1/1) | Multi-turn session, single `session_id` (see note); 2nd turn cut off mid-roundtrip by EOF |
 | `openclaw-openai.pcap` | OpenAI `/v1/chat/completions` | OpenClaw (OpenAI/JS SDK + GLM) | 1.4 MB | **4** (4/0) | Two distinct user sessions on `generic-openai-chat`; client echoes `assistant.tool_calls[].id` without the underscore (`calld9c1...`) — exercises `canonicalize_tool_id`. Without it the 4 turns would shatter into many single-call turns |
+| `openclaw-anthropic.pcap` | Anthropic `/v1/messages` | OpenClaw (Anthropic/JS SDK + GLM-5) | 1.0 MB | **8** (8/0) | Three sessions on `generic-anthropic` (one user conversation + two compaction runs producing `gen-*` synth ids). GLM-5 emits parallel `tool_use` blocks where every `content_block_start` arrives before any `input_json_delta` — exercises the index-keyed SSE accumulator. Without per-index tracking, parallel `tool_use.input` collapses to `""` or attaches to the wrong block |
 
 Turn counts are ground truth verified against the current implementation and
 are intended as assertions for turn-grouping tests
