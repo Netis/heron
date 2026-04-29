@@ -405,7 +405,7 @@ async fn claude_cli_messages_multi_shard_parity() {
 /// is firing on this fixture.
 #[tokio::test]
 async fn openclaw_multi_sessions_expects_two_sessions_four_turns() {
-    let Some(turns) = run_pcap("openclaw-multi-sessions.pcap").await else {
+    let Some(turns) = run_pcap("openclaw-openai.pcap").await else {
         eprintln!("skip: fixture not present");
         return;
     };
@@ -413,7 +413,7 @@ async fn openclaw_multi_sessions_expects_two_sessions_four_turns() {
         .iter()
         .filter(|t| t.wire_api == wa::OPENAI_CHAT)
         .collect();
-    eprintln!("openclaw-multi-sessions: {} openai-chat turns", chat.len());
+    eprintln!("openclaw-openai: {} openai-chat turns", chat.len());
     for t in &chat {
         eprintln!(
             "  session={} status={:?} calls={}",
@@ -437,11 +437,11 @@ async fn openclaw_multi_sessions_expects_two_sessions_four_turns() {
 
 #[tokio::test]
 async fn openclaw_multi_sessions_pcap_shard_parity() {
-    let Some(single) = run_pcap_sharded("openclaw-multi-sessions.pcap", 1, 1).await else {
+    let Some(single) = run_pcap_sharded("openclaw-openai.pcap", 1, 1).await else {
         eprintln!("skip: fixture not present");
         return;
     };
-    let multi = run_pcap_sharded("openclaw-multi-sessions.pcap", 4, 4)
+    let multi = run_pcap_sharded("openclaw-openai.pcap", 4, 4)
         .await
         .unwrap();
 

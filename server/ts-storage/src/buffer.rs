@@ -20,6 +20,10 @@ use ts_common::throttle::ThrottledWarn;
 const FLUSH_ERR_WARN_THROTTLE: Duration = Duration::from_secs(10);
 
 /// Optional metric handles for a WriteBuffer instance.
+///
+/// `buffered` is a gauge: the current pending batch length, set after every
+/// push and reset to 0 after each flush. `flushed` and `errors` remain
+/// monotonic counters carrying the throughput / failure signals.
 #[derive(Clone)]
 pub struct BufferMetrics {
     pub buffered: MetricHandle,
@@ -75,19 +79,23 @@ impl<T: Send + 'static> WriteBuffer<T> {
                     match item {
                         Some(item) => {
                             batch.push(item);
-                            if let Some(ref m) = self.metrics { m.buffered.inc(); }
+                            if let Some(ref m) = self.metrics {
+                                m.buffered.set(batch.len() as u64);
+                            }
                             if batch.len() >= self.batch_size {
                                 let to_flush = std::mem::replace(
                                     &mut batch,
                                     Vec::with_capacity(self.batch_size),
                                 );
                                 self.flush(&flush_fn, to_flush, "size").await;
+                                if let Some(ref m) = self.metrics { m.buffered.set(0); }
                                 interval.reset();
                             }
                         }
                         None => {
                             if !batch.is_empty() {
                                 self.flush(&flush_fn, batch, "shutdown").await;
+                                if let Some(ref m) = self.metrics { m.buffered.set(0); }
                             }
                             debug!(entity = self.entity, "write buffer stopping: upstream EOF");
                             return;
@@ -101,6 +109,7 @@ impl<T: Send + 'static> WriteBuffer<T> {
                             Vec::with_capacity(self.batch_size),
                         );
                         self.flush(&flush_fn, to_flush, "time").await;
+                        if let Some(ref m) = self.metrics { m.buffered.set(0); }
                     }
                 }
             }

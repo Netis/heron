@@ -160,6 +160,7 @@ define_metrics! {
     HttpJoinerDone     => { kind: Counter, group: Protocol, short: "http_exchanges_joined"   },
     HttpJoinerUnpaired => { kind: Counter, group: Protocol, short: "http_exchanges_unpaired" },
     HttpJoinerExpired  => { kind: Counter, group: Protocol, short: "http_exchanges_expired"  },
+    HttpJoinerPending  => { kind: Gauge,   group: Protocol, short: "http_exchanges_pending"  },
 
     // -- LLM extraction --
     WireDetected            => { kind: Counter, group: Llm, short: "wires_detected"      },
@@ -186,14 +187,23 @@ define_metrics! {
     MetricsLlmEventsComplete  => { kind: Counter, group: Metrics, short: "llm_events_complete"  },
     MetricsLlmEventsHeartbeat => { kind: Counter, group: Metrics, short: "llm_events_heartbeat" },
     MetricsWindowsEmitted     => { kind: Counter, group: Metrics, short: "windows_emitted"      },
+    // open_buckets: in-window aggregation slots awaiting drain (sawtooth).
+    // concurrency_table: size of the per-dim active-call counter map; entries
+    // are never removed (aggregator.rs clamps to 0, doesn't .remove()), so
+    // the gauge is a cardinality canary for OOM diagnosis.
+    MetricsAggregatorOpenBuckets      => { kind: Gauge, group: Metrics, short: "aggregator_open_buckets"      },
+    MetricsAggregatorConcurrencyTable => { kind: Gauge, group: Metrics, short: "aggregator_concurrency_table" },
 
     // -- Storage --
     // buffered/flushed split per entity so the line tells you which stream
     // dominates (was previously one shared counter across 4 WriteBuffers).
-    StorageBufferedCalls         => { kind: Counter, group: Storage, short: "buf_calls"         },
-    StorageBufferedTurns         => { kind: Counter, group: Storage, short: "buf_turns"         },
-    StorageBufferedMetrics       => { kind: Counter, group: Storage, short: "buf_metrics"       },
-    StorageBufferedHttpExchanges => { kind: Counter, group: Storage, short: "buf_exchanges"     },
+    // buffered_* are gauges of the WriteBuffer's current pending batch length
+    // (rises on push, drops to 0 after each flush). Counterpart `flushed_*`
+    // remain counters and carry the throughput signal.
+    StorageBufferedCalls         => { kind: Gauge,   group: Storage, short: "buf_calls"         },
+    StorageBufferedTurns         => { kind: Gauge,   group: Storage, short: "buf_turns"         },
+    StorageBufferedMetrics       => { kind: Gauge,   group: Storage, short: "buf_metrics"       },
+    StorageBufferedHttpExchanges => { kind: Gauge,   group: Storage, short: "buf_exchanges"     },
     StorageFlushedCalls          => { kind: Counter, group: Storage, short: "flushed_calls"     },
     StorageFlushedTurns          => { kind: Counter, group: Storage, short: "flushed_turns"     },
     StorageFlushedMetrics        => { kind: Counter, group: Storage, short: "flushed_metrics"   },
@@ -727,7 +737,8 @@ mod tests {
 
         w.counter(Metric::CapturePacketsReceived).add(1000);
         w.counter(Metric::NetPacketsParsed).add(500);
-        w.counter(Metric::StorageBufferedCalls).add(100);
+        // buf_calls is a Gauge: set the current pending batch length directly.
+        w.counter(Metric::StorageBufferedCalls).set(3);
 
         let poll = mon.poll();
         let grouped = poll.format_grouped();
@@ -738,7 +749,16 @@ mod tests {
         assert_eq!(grouped[1].0, "protocol");
         assert!(grouped[1].1.contains("pkts_parsed=500/500"));
         assert_eq!(grouped[2].0, "storage");
-        assert!(grouped[2].1.contains("buf_calls=100/100"));
+        assert!(
+            grouped[2].1.contains("buf_calls=3"),
+            "got: {}",
+            grouped[2].1
+        );
+        assert!(
+            !grouped[2].1.contains("buf_calls=3/"),
+            "gauge must not include /delta, got: {}",
+            grouped[2].1
+        );
         assert!(grouped[2].1.contains("q_calls=5"));
     }
 

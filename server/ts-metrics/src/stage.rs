@@ -6,6 +6,9 @@
 //! each event). Per-source watermarks ensure window close is independent
 //! across sources.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -26,8 +29,36 @@ pub fn spawn_metrics_stage(
         !shard_rxs.is_empty(),
         "spawn_metrics_stage: shard_rxs must be non-empty"
     );
+
+    // Per-shard gauges for aggregator internal state. Probe sums across shards.
+    // - open_buckets: in-window slots awaiting drain (sawtooth)
+    // - concurrency_table: per-dim active-call counter map size; only grows,
+    //   so it doubles as a cardinality-leak canary.
+    let bucket_gauges: Vec<Arc<AtomicU64>> = (0..shard_rxs.len())
+        .map(|_| Arc::new(AtomicU64::new(0)))
+        .collect();
+    let conc_gauges: Vec<Arc<AtomicU64>> = (0..shard_rxs.len())
+        .map(|_| Arc::new(AtomicU64::new(0)))
+        .collect();
+    let bucket_probe = bucket_gauges.clone();
+    metrics_sys.register_queue_probe(Metric::MetricsAggregatorOpenBuckets, move || {
+        bucket_probe
+            .iter()
+            .map(|g| g.load(Ordering::Relaxed))
+            .sum()
+    });
+    let conc_probe = conc_gauges.clone();
+    metrics_sys.register_queue_probe(Metric::MetricsAggregatorConcurrencyTable, move || {
+        conc_probe.iter().map(|g| g.load(Ordering::Relaxed)).sum()
+    });
+
     let mut handles = Vec::with_capacity(shard_rxs.len());
-    for (i, mut rx) in shard_rxs.into_iter().enumerate() {
+    for (i, ((mut rx, bucket_gauge), conc_gauge)) in shard_rxs
+        .into_iter()
+        .zip(bucket_gauges.into_iter())
+        .zip(conc_gauges.into_iter())
+        .enumerate()
+    {
         let metrics_tx = metrics_tx.clone();
         let worker_metrics = metrics_sys.register_worker(
             &format!("metrics.{i}"),
@@ -51,6 +82,8 @@ pub fn spawn_metrics_stage(
                         break 'main "downstream_closed";
                     }
                 }
+                bucket_gauge.store(agg.open_bucket_count() as u64, Ordering::Relaxed);
+                conc_gauge.store(agg.concurrency_table_size() as u64, Ordering::Relaxed);
             };
             match reason {
                 "upstream_eof" => {
@@ -58,6 +91,8 @@ pub fn spawn_metrics_stage(
                     for m in agg.flush_all() {
                         let _ = metrics_tx.send(m).await;
                     }
+                    bucket_gauge.store(agg.open_bucket_count() as u64, Ordering::Relaxed);
+                    conc_gauge.store(agg.concurrency_table_size() as u64, Ordering::Relaxed);
                     tracing::debug!(shard, "metrics worker stopping: upstream EOF");
                 }
                 r => {

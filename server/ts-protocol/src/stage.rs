@@ -195,8 +195,28 @@ pub fn spawn_http_joiner_stage(
         "worker_rxs.len() must equal joiner_event_txs.len() (composition-root wiring bug)"
     );
 
+    // Per-shard gauges for HttpJoiner.pending HashMap size. Same pattern as
+    // FlowsActive above: probe sums across shards. The pending HashMap is
+    // unbounded in pathological flows (requests without matching responses),
+    // so this is a leading OOM signal.
+    let pending_gauges: Vec<Arc<AtomicU64>> = (0..worker_rxs.len())
+        .map(|_| Arc::new(AtomicU64::new(0)))
+        .collect();
+    let gauges_for_probe = pending_gauges.clone();
+    metrics_sys.register_queue_probe(Metric::HttpJoinerPending, move || {
+        gauges_for_probe
+            .iter()
+            .map(|g| g.load(Ordering::Relaxed))
+            .sum()
+    });
+
     let mut handles = Vec::with_capacity(worker_rxs.len());
-    for (i, (mut wrx, ev_tx)) in worker_rxs.into_iter().zip(joiner_event_txs).enumerate() {
+    for (i, ((mut wrx, ev_tx), pending_gauge)) in worker_rxs
+        .into_iter()
+        .zip(joiner_event_txs)
+        .zip(pending_gauges.into_iter())
+        .enumerate()
+    {
         let worker_metrics = metrics_sys.register_worker(
             &format!("joiner.{i}"),
             &[
@@ -246,6 +266,7 @@ pub fn spawn_http_joiner_stage(
                         break 'main "downstream_closed_joiner";
                     }
                 }
+                pending_gauge.store(joiner.pending_count() as u64, Ordering::Relaxed);
             };
             match reason {
                 "upstream_eof" => {

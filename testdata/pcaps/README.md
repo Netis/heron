@@ -15,7 +15,7 @@ TokenScope's post-TLS server-side deployment model.
 | `claude-cli-messages.pcap` | Anthropic `/v1/messages?beta=true` | claude-cli | 3.8 MB | **1** (1/0) | Single connection, single tool-calling turn |
 | `claude-cli-messages-multi.pcap` | Anthropic `/v1/messages?beta=true` | claude-cli | 5.4 MB | **3** (≥1 Complete) | Long multi-turn session, single `session_id`; auto title-gen (empty `tools`) filtered as auxiliary, Task sub-agent calls attach to parent turn |
 | `codex-cli-messages-multi.pcap` | OpenAI `/v1/responses` | codex-cli | 18 MB | **2** (1/1) | Multi-turn session, single `session_id` (see note); 2nd turn cut off mid-roundtrip by EOF |
-| `openclaw-multi-sessions.pcap` | OpenAI `/v1/chat/completions` | OpenClaw (OpenAI/JS SDK + GLM) | 1.4 MB | **4** (4/0) | Two distinct user sessions on `generic-openai-chat`; client echoes `assistant.tool_calls[].id` without the underscore (`calld9c1...`) — exercises `canonicalize_tool_id`. Without it the 4 turns would shatter into many single-call turns |
+| `openclaw-openai.pcap` | OpenAI `/v1/chat/completions` | OpenClaw (OpenAI/JS SDK + GLM) | 1.4 MB | **4** (4/0) | Two distinct user sessions on `generic-openai-chat`; client echoes `assistant.tool_calls[].id` without the underscore (`calld9c1...`) — exercises `canonicalize_tool_id`. Without it the 4 turns would shatter into many single-call turns |
 
 Turn counts are ground truth verified against the current implementation and
 are intended as assertions for turn-grouping tests

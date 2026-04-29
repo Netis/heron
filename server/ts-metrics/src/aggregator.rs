@@ -89,6 +89,22 @@ impl MetricsAggregator {
         }
     }
 
+    /// Number of in-window aggregation slots awaiting drain. Sawtooth: rises
+    /// as events land in fresh windows, drops as `maybe_drain` removes the
+    /// keys whose window boundary has been crossed.
+    pub fn open_bucket_count(&self) -> usize {
+        self.buckets.len()
+    }
+
+    /// Size of the per-dimension active-call counter map. Entries are never
+    /// removed (only clamped to 0 on Complete), so this gauge monotonically
+    /// reflects the cumulative cardinality of distinct
+    /// `(source_id, wire_api, model, server_ip)` combinations seen — a leak
+    /// canary for runaway dimension cardinality.
+    pub fn concurrency_table_size(&self) -> usize {
+        self.active_calls.len()
+    }
+
     /// Process an LlmEvent. Returns any metric batches emitted by cadence
     /// drain. Each batch carries one wide `LlmMetric` row plus zero or more
     /// long-format `LlmFinishMetric` rows for the same bucket.
