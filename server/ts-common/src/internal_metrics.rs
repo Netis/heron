@@ -140,9 +140,14 @@ define_metrics! {
     CaptureDumpErrors            => { kind: Counter, group: Capture,  short: "dump_errors"          },
 
     // -- Protocol (dispatcher + flow workers) --
-    DispatcherPacketsRouted      => { kind: Counter, group: Protocol, short: "pkts_routed"            },
-    DispatcherHeartbeatsDropped  => { kind: Counter, group: Protocol, short: "heartbeats_dropped"     },
-    NetPacketsParsed             => { kind: Counter, group: Protocol, short: "pkts_parsed"            },
+    // Heartbeat received/dropped are both attributed to the destination
+    // (flow worker), even though `_dropped` is bumped at the dispatcher's
+    // try_send site — co-grouping the pair keeps "received N / dropped M"
+    // visually adjacent in logs and the All-Metrics table.
+    DispatcherPacketsRouted      => { kind: Counter, group: Protocol, short: "pkts_routed"               },
+    FlowHeartbeatsReceived       => { kind: Counter, group: Protocol, short: "flow_heartbeats_received"  },
+    FlowHeartbeatsDropped        => { kind: Counter, group: Protocol, short: "flow_heartbeats_dropped"   },
+    NetPacketsParsed             => { kind: Counter, group: Protocol, short: "pkts_parsed"               },
     NetParseDroppedNotIp         => { kind: Counter, group: Protocol, short: "pkts_dropped_not_ip"    },
     NetParseDroppedNotTcp        => { kind: Counter, group: Protocol, short: "pkts_dropped_not_tcp"   },
     NetParseDroppedMalformed     => { kind: Counter, group: Protocol, short: "pkts_dropped_malformed" },
@@ -157,20 +162,25 @@ define_metrics! {
     FlowsActive                  => { kind: Gauge,   group: Protocol, short: "flows_active"           },
 
     // -- HTTP exchange pairing (HttpJoiner) --
-    HttpJoinerDone     => { kind: Counter, group: Protocol, short: "http_exchanges_joined"   },
-    HttpJoinerUnpaired => { kind: Counter, group: Protocol, short: "http_exchanges_unpaired" },
-    HttpJoinerExpired  => { kind: Counter, group: Protocol, short: "http_exchanges_expired"  },
-    HttpJoinerPending  => { kind: Gauge,   group: Protocol, short: "http_exchanges_pending"  },
+    HttpJoinerDone             => { kind: Counter, group: Protocol, short: "http_exchanges_joined"    },
+    HttpJoinerUnpaired         => { kind: Counter, group: Protocol, short: "http_exchanges_unpaired"  },
+    HttpJoinerExpired          => { kind: Counter, group: Protocol, short: "http_exchanges_expired"   },
+    HttpJoinerPending          => { kind: Gauge,   group: Protocol, short: "http_exchanges_pending"   },
+    JoinerHeartbeatsReceived   => { kind: Counter, group: Protocol, short: "joiner_heartbeats_received" },
 
     // -- LLM extraction --
-    WireDetected            => { kind: Counter, group: Llm, short: "wires_detected"      },
-    WireIgnored             => { kind: Counter, group: Llm, short: "wires_ignored"       },
-    LlmCallsWithAgent              => { kind: Counter, group: Llm, short: "calls_with_agent"                },
-    LlmCallsWithoutAgent           => { kind: Counter, group: Llm, short: "calls_without_agent"             },
+    WireDetected                   => { kind: Counter, group: Llm, short: "wires_detected"               },
+    WireIgnored                    => { kind: Counter, group: Llm, short: "wires_ignored"                },
+    LlmCallsWithAgent              => { kind: Counter, group: Llm, short: "calls_with_agent"             },
+    LlmCallsWithoutAgent           => { kind: Counter, group: Llm, short: "calls_without_agent"          },
     LlmGenericToolIdCanonicalized  => { kind: Counter, group: Llm, short: "generic_tool_id_canonicalized"   },
     LlmGenericSessionIdSynthFailed => { kind: Counter, group: Llm, short: "generic_session_id_synth_failed" },
+    LlmHeartbeatsReceived          => { kind: Counter, group: Llm, short: "llm_heartbeats_received"      },
 
     // -- Turn tracking --
+    // `turn_heartbeats_dropped` is bumped at the LLM stage's try_send site
+    // when the turn shard input channel is full; attributed to Turn so the
+    // (received, dropped) pair shows together.
     TurnCallsIngested        => { kind: Counter, group: Turn, short: "calls_ingested"                },
     TurnCallsAuxiliary       => { kind: Counter, group: Turn, short: "calls_auxiliary"               },
     TurnCallsDroppedLate     => { kind: Counter, group: Turn, short: "calls_dropped_late"            },
@@ -178,15 +188,23 @@ define_metrics! {
     TurnClosedByGrace        => { kind: Counter, group: Turn, short: "turns_closed_grace"            },
     TurnClosedByIdle         => { kind: Counter, group: Turn, short: "turns_closed_idle"             },
     TurnDiscardedNoUserStart => { kind: Counter, group: Turn, short: "turns_discarded_no_user_start" },
+    TurnHeartbeatsReceived   => { kind: Counter, group: Turn, short: "turn_heartbeats_received"      },
+    TurnHeartbeatsDropped    => { kind: Counter, group: Turn, short: "turn_heartbeats_dropped"       },
     TurnActive               => { kind: Gauge,   group: Turn, short: "turns_active"                  },
 
     // -- Metrics aggregation --
-    // LlmEvent variants are split so heartbeat fan-out (= flow_shards × metrics_shards)
-    // doesn't drown out the real call signal.
-    MetricsLlmEventsStart     => { kind: Counter, group: Metrics, short: "llm_events_start"     },
-    MetricsLlmEventsComplete  => { kind: Counter, group: Metrics, short: "llm_events_complete"  },
-    MetricsLlmEventsHeartbeat => { kind: Counter, group: Metrics, short: "llm_events_heartbeat" },
-    MetricsWindowsEmitted     => { kind: Counter, group: Metrics, short: "windows_emitted"      },
+    // Start/Complete are kept under the `llm_events_*` family because the
+    // LlmEvent variant split (start vs complete) is the meaningful axis.
+    // Heartbeat is renamed to `metrics_heartbeats_received` so it pairs
+    // with `metrics_heartbeats_dropped` (bumped at LLM stage's try_send to
+    // metrics shards). Splitting heartbeat from start/complete remains
+    // important: heartbeat fan-out (= flow_shards × metrics_shards) would
+    // otherwise drown out the real call signal in any combined counter.
+    MetricsLlmEventsStart       => { kind: Counter, group: Metrics, short: "llm_events_start"            },
+    MetricsLlmEventsComplete    => { kind: Counter, group: Metrics, short: "llm_events_complete"         },
+    MetricsHeartbeatsReceived   => { kind: Counter, group: Metrics, short: "metrics_heartbeats_received" },
+    MetricsHeartbeatsDropped    => { kind: Counter, group: Metrics, short: "metrics_heartbeats_dropped"  },
+    MetricsWindowsEmitted       => { kind: Counter, group: Metrics, short: "windows_emitted"             },
     // open_buckets: in-window aggregation slots awaiting drain (sawtooth).
     // concurrency_table: size of the per-dim active-call counter map; entries
     // are never removed (aggregator.rs clamps to 0, doesn't .remove()), so

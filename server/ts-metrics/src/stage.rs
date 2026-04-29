@@ -65,7 +65,7 @@ pub fn spawn_metrics_stage(
             &[
                 Metric::MetricsLlmEventsStart,
                 Metric::MetricsLlmEventsComplete,
-                Metric::MetricsLlmEventsHeartbeat,
+                Metric::MetricsHeartbeatsReceived,
                 Metric::MetricsWindowsEmitted,
             ],
         );

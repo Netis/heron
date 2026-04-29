@@ -26,7 +26,9 @@ export const WARNING_DELTA_COUNTERS = new Set([
   "http_resyncs",
   "turns_discarded_no_user_start",
   "calls_dropped_late",
-  "heartbeats_dropped",
+  "flow_heartbeats_dropped",
+  "metrics_heartbeats_dropped",
+  "turn_heartbeats_dropped",
 ])
 
 export const WARNING_THRESHOLD = 0.9

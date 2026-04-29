@@ -42,6 +42,9 @@ impl LlmProcessor {
                 sse_events,
             } => self.on_exchange(request, response, sse_events),
             HttpJoinerEvent::Heartbeat { ts, source_id } => {
+                self.metrics
+                    .counter(Metric::LlmHeartbeatsReceived)
+                    .inc();
                 vec![LlmEvent::Heartbeat { ts, source_id }]
             }
         }
@@ -221,6 +224,7 @@ mod tests {
                 Metric::WireIgnored,
                 Metric::LlmGenericToolIdCanonicalized,
                 Metric::LlmGenericSessionIdSynthFailed,
+                Metric::LlmHeartbeatsReceived,
             ],
         );
         let _svc = sys.start();

@@ -630,6 +630,7 @@ impl FlowWorker {
         source_id: String,
         out: &mut Vec<HttpParseEvent>,
     ) {
+        self.metrics.counter(Metric::FlowHeartbeatsReceived).inc();
         self.maybe_cleanup_stale_flows(&source_id, wall_ts_us, out);
         out.push(HttpParseEvent::Heartbeat {
             ts: wall_ts_us,
@@ -1077,6 +1078,7 @@ mod tests {
                 Metric::TcpOutOfOrderBuffered,
                 Metric::TcpRetransmissionsIgnored,
                 Metric::FlowsExpired,
+                Metric::FlowHeartbeatsReceived,
             ],
         );
         // start() just finalizes the registry; handles already hold their own Arcs.

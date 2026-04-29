@@ -60,6 +60,7 @@ pub fn spawn_turn_stage(
                 Metric::TurnClosedByGrace,
                 Metric::TurnClosedByIdle,
                 Metric::TurnDiscardedNoUserStart,
+                Metric::TurnHeartbeatsReceived,
             ],
         );
         handles.push(tokio::spawn(async move {

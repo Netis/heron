@@ -72,6 +72,9 @@ pub fn spawn_llm_stage(
                 Metric::LlmCallsWithoutAgent,
                 Metric::LlmGenericToolIdCanonicalized,
                 Metric::LlmGenericSessionIdSynthFailed,
+                Metric::LlmHeartbeatsReceived,
+                Metric::MetricsHeartbeatsDropped,
+                Metric::TurnHeartbeatsDropped,
             ],
         );
         handles.push(tokio::spawn(async move {
@@ -86,16 +89,30 @@ pub fn spawn_llm_stage(
                     match llm_event {
                         LlmEvent::Heartbeat { ts, ref source_id } => {
                             for tx in metrics_txs.iter() {
-                                let _ = tx.try_send(LlmEvent::Heartbeat {
-                                    ts,
-                                    source_id: source_id.clone(),
-                                });
+                                if tx
+                                    .try_send(LlmEvent::Heartbeat {
+                                        ts,
+                                        source_id: source_id.clone(),
+                                    })
+                                    .is_err()
+                                {
+                                    worker_metrics
+                                        .counter(Metric::MetricsHeartbeatsDropped)
+                                        .inc();
+                                }
                             }
                             for tx in turn_txs.iter() {
-                                let _ = tx.try_send(TurnShardInput::Heartbeat {
-                                    ts,
-                                    source_id: source_id.clone(),
-                                });
+                                if tx
+                                    .try_send(TurnShardInput::Heartbeat {
+                                        ts,
+                                        source_id: source_id.clone(),
+                                    })
+                                    .is_err()
+                                {
+                                    worker_metrics
+                                        .counter(Metric::TurnHeartbeatsDropped)
+                                        .inc();
+                                }
                             }
                         }
                         other => {

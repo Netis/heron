@@ -274,6 +274,9 @@ impl TurnTracker {
         source_id: &str,
         now_wall: Instant,
     ) -> Vec<TurnEvent> {
+        self.metrics
+            .counter(Metric::TurnHeartbeatsReceived)
+            .inc();
         self.bump_event_time(source_id, ts);
         let mut events = self.flush_ready_buffers(now_wall);
         // Sweep is pure event-time logic — no wall-clock variant needed.
@@ -720,6 +723,7 @@ mod tests {
                 Metric::TurnClosedByGrace,
                 Metric::TurnClosedByIdle,
                 Metric::TurnDiscardedNoUserStart,
+                Metric::TurnHeartbeatsReceived,
             ],
         );
         let _svc = sys.start();

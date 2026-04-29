@@ -87,7 +87,7 @@ impl FlowDispatcher {
                 .is_err()
             {
                 self.metrics
-                    .counter(Metric::DispatcherHeartbeatsDropped)
+                    .counter(Metric::FlowHeartbeatsDropped)
                     .inc();
             }
         }

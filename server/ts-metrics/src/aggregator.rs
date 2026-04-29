@@ -122,7 +122,7 @@ impl MetricsAggregator {
             }
             LlmEvent::Heartbeat { .. } => {
                 self.metrics
-                    .counter(Metric::MetricsLlmEventsHeartbeat)
+                    .counter(Metric::MetricsHeartbeatsReceived)
                     .inc();
             }
         }
@@ -358,7 +358,7 @@ mod tests {
             &[
                 Metric::MetricsLlmEventsStart,
                 Metric::MetricsLlmEventsComplete,
-                Metric::MetricsLlmEventsHeartbeat,
+                Metric::MetricsHeartbeatsReceived,
                 Metric::MetricsWindowsEmitted,
             ],
         );

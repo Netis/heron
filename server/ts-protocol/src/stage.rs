@@ -47,7 +47,7 @@ pub fn spawn_flow_dispatcher(
         worker_name,
         &[
             Metric::DispatcherPacketsRouted,
-            Metric::DispatcherHeartbeatsDropped,
+            Metric::FlowHeartbeatsDropped,
             Metric::NetParseDroppedNotIp,
             Metric::NetParseDroppedNotTcp,
             Metric::NetParseDroppedMalformed,
@@ -130,6 +130,7 @@ pub fn spawn_protocol_stage(
                 Metric::TcpOutOfOrderBuffered,
                 Metric::TcpRetransmissionsIgnored,
                 Metric::FlowsExpired,
+                Metric::FlowHeartbeatsReceived,
             ],
         );
 
@@ -223,6 +224,7 @@ pub fn spawn_http_joiner_stage(
                 Metric::HttpJoinerDone,
                 Metric::HttpJoinerUnpaired,
                 Metric::HttpJoinerExpired,
+                Metric::JoinerHeartbeatsReceived,
             ],
         );
         let exch_tx = http_exchanges_tx.clone();
