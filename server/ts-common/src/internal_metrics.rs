@@ -663,14 +663,8 @@ mod tests {
     fn test_worker_registration_and_aggregation() {
         let mut sys = MetricsSystem::new();
 
-        let w1 = sys.register_worker(
-            "worker",
-            &[Metric::NetPacketsParsed, Metric::HttpParseReq],
-        );
-        let w2 = sys.register_worker(
-            "worker",
-            &[Metric::NetPacketsParsed, Metric::HttpParseReq],
-        );
+        let w1 = sys.register_worker("worker", &[Metric::NetPacketsParsed, Metric::HttpParseReq]);
+        let w2 = sys.register_worker("worker", &[Metric::NetPacketsParsed, Metric::HttpParseReq]);
 
         w1.counter(Metric::NetPacketsParsed).add(100);
         w2.counter(Metric::NetPacketsParsed).add(200);
@@ -810,8 +804,16 @@ mod tests {
         let poll = mon.poll();
         let grouped = poll.format_grouped();
         // Capacity 0 means no division — fall back to plain `name=value`.
-        assert!(grouped[0].1.contains("q_raw_pkts=5"), "got: {}", grouped[0].1);
-        assert!(!grouped[0].1.contains("q_raw_pkts=5/"), "got: {}", grouped[0].1);
+        assert!(
+            grouped[0].1.contains("q_raw_pkts=5"),
+            "got: {}",
+            grouped[0].1
+        );
+        assert!(
+            !grouped[0].1.contains("q_raw_pkts=5/"),
+            "got: {}",
+            grouped[0].1
+        );
     }
 
     #[test]

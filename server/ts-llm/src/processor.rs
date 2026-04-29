@@ -533,7 +533,10 @@ mod tests {
         assert_eq!(id.is_user_turn_start, Some(true));
         assert!(!id.is_turn_terminal, "tool_use is not terminal");
         assert!(!id.is_auxiliary);
-        assert!(id.user_input.is_some(), "user_input populated for fresh prompt");
+        assert!(
+            id.user_input.is_some(),
+            "user_input populated for fresh prompt"
+        );
     }
 
     #[test]

@@ -951,13 +951,8 @@ mod tests {
         // advance by 80 instead of 100 and the next packet's seq would diff
         // by +20 → buffered as OOO and the parser starves.
         let captured = vec![b'X'; 80];
-        let trunc_pkt = make_truncated_pkt(
-            &fk,
-            Direction::AtoB,
-            &captured,
-            100,
-            1 + head.len() as u32,
-        );
+        let trunc_pkt =
+            make_truncated_pkt(&fk, Direction::AtoB, &captured, 100, 1 + head.len() as u32);
         let resync = flow.push(&trunc_pkt, &mut output);
         assert!(
             resync,
@@ -968,13 +963,7 @@ mod tests {
         // seq (continuing from the truncated segment's tail).
         let req2 = b"GET /v1/models HTTP/1.1\r\nHost: h\r\n\r\n";
         flow.push(
-            &make_pkt(
-                &fk,
-                Direction::AtoB,
-                req2,
-                1 + head.len() as u32 + 100,
-                0,
-            ),
+            &make_pkt(&fk, Direction::AtoB, req2, 1 + head.len() as u32 + 100, 0),
             &mut output,
         );
 

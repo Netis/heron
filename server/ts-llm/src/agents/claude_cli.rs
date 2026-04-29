@@ -161,17 +161,21 @@ impl AgentProfile for ClaudeCliProfile {
         }
         match last.get("content")? {
             Value::String(s) => Some(!strip_system_reminders(s).trim().is_empty()),
-            Value::Array(blocks) => Some(blocks.iter().any(|b| {
-                match b.get("type").and_then(|t| t.as_str()) {
-                    Some("tool_result") => false,
-                    Some("text") => {
-                        let t = b.get("text").and_then(|x| x.as_str()).unwrap_or("");
-                        !strip_system_reminders(t).trim().is_empty()
-                    }
-                    Some(_) => true,
-                    None => false,
-                }
-            })),
+            Value::Array(blocks) => {
+                Some(
+                    blocks
+                        .iter()
+                        .any(|b| match b.get("type").and_then(|t| t.as_str()) {
+                            Some("tool_result") => false,
+                            Some("text") => {
+                                let t = b.get("text").and_then(|x| x.as_str()).unwrap_or("");
+                                !strip_system_reminders(t).trim().is_empty()
+                            }
+                            Some(_) => true,
+                            None => false,
+                        }),
+                )
+            }
             _ => None,
         }
     }

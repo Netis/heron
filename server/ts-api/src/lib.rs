@@ -8,7 +8,6 @@
 //!
 //! * [`bind`] — bind the TCP listener (fail-fast before pipeline spawn)
 //! * [`router`] — build the Axum `Router` (useful for composition / tests)
-//! * [`serve`] — run the server on an already-bound listener
 
 pub mod extractors;
 pub mod params;
@@ -23,7 +22,17 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use ts_common::config::ApiConfig;
 use ts_common::error::{AppError, Result};
+use ts_common::internal_metrics::MetricsSvc;
 use ts_storage::StorageBackend;
+
+/// Carriers for `/api/internal-metrics` — every per-pipeline `MetricsSvc`
+/// plus the cross-pipeline (storage) one. Build this in `main.rs` after
+/// `MetricsSystem::start()`.
+#[derive(Clone)]
+pub struct ApiMetricsContext {
+    pub pipelines: Vec<(String, Arc<MetricsSvc>)>,
+    pub global: Arc<MetricsSvc>,
+}
 
 /// Bind the API server listener. Call this before spawning so bind errors
 /// propagate to the caller (and can abort startup).
@@ -37,7 +46,14 @@ pub async fn bind(config: &ApiConfig) -> Result<TcpListener> {
 }
 
 /// Build the API router (without serving). Useful for composing with other layers.
-pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
+pub fn router(storage: Arc<dyn StorageBackend>, metrics: ApiMetricsContext) -> Router {
+    let internal_metrics_routes = Router::new()
+        .route(
+            "/api/internal-metrics",
+            get(routes::internal_metrics::internal_metrics),
+        )
+        .with_state(metrics);
+
     Router::new()
         .route("/api/filters/wire-apis", get(routes::filters::wire_apis))
         .route("/api/filters/models", get(routes::filters::models))
@@ -75,13 +91,7 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
             "/api/agent-sessions/{source_id}/{session_id}/turns",
             get(routes::agent_sessions::turns),
         )
-        .layer(CorsLayer::permissive())
         .with_state(storage)
-}
-
-/// Serve the API on an already-bound listener (runs until shutdown).
-pub async fn serve(listener: TcpListener, storage: Arc<dyn StorageBackend>) -> Result<()> {
-    let app = router(storage);
-    axum::serve(listener, app).await.map_err(AppError::Io)?;
-    Ok(())
+        .merge(internal_metrics_routes)
+        .layer(CorsLayer::permissive())
 }

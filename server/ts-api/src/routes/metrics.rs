@@ -198,7 +198,15 @@ mod tests {
     use ts_metrics::model::LlmFinishMetric;
     use ts_storage::duckdb::DuckDbBackend;
 
-    use crate::router;
+    use crate::{router, ApiMetricsContext};
+
+    fn test_metrics_context() -> ApiMetricsContext {
+        let sys = ts_common::internal_metrics::MetricsSystem::new();
+        ApiMetricsContext {
+            pipelines: vec![],
+            global: sys.start(),
+        }
+    }
 
     #[tokio::test]
     async fn finish_reasons_endpoint_returns_one_series_per_raw_value() {
@@ -236,14 +244,12 @@ mod tests {
         .unwrap();
 
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage);
+        let app = router(storage, test_metrics_context());
 
         // start/end are seconds (matches existing /api/metrics/* convention).
         let start_s = (ts_a / 1_000_000) - 1;
         let end_s = (ts_b / 1_000_000) + 60;
-        let uri = format!(
-            "/api/metrics/finish-reasons?start={start_s}&end={end_s}&granularity=1m"
-        );
+        let uri = format!("/api/metrics/finish-reasons?start={start_s}&end={end_s}&granularity=1m");
         let resp = app
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
             .await
@@ -258,7 +264,10 @@ mod tests {
             .map(|s| s["finish_reason"].as_str().unwrap())
             .collect();
         // ORDER BY finish_reason ASC.
-        assert_eq!(names, vec!["end_turn", "max_tokens", "pause_turn", "tool_use"]);
+        assert_eq!(
+            names,
+            vec!["end_turn", "max_tokens", "pause_turn", "tool_use"]
+        );
 
         let end_turn = &series[0];
         let points = end_turn["points"].as_array().unwrap();
@@ -305,7 +314,7 @@ mod tests {
         .unwrap();
 
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage);
+        let app = router(storage, test_metrics_context());
 
         let start_s = (ts / 1_000_000) - 1;
         let end_s = (ts / 1_000_000) + 60;
@@ -330,7 +339,10 @@ mod tests {
         // Both wire_apis contributed; gemini excluded.
         assert_eq!(names, vec!["end_turn", "stop"]);
 
-        let stop = series.iter().find(|s| s["finish_reason"] == "stop").unwrap();
+        let stop = series
+            .iter()
+            .find(|s| s["finish_reason"] == "stop")
+            .unwrap();
         let stop_points = stop["points"].as_array().unwrap();
         assert_eq!(stop_points.len(), 1);
         // openai-chat: 5 + 2 = 7. gemini's 100 must NOT be summed in.
@@ -379,7 +391,7 @@ mod tests {
         .unwrap();
 
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage);
+        let app = router(storage, test_metrics_context());
 
         let start_s = (ts / 1_000_000) - 1;
         let end_s = (ts / 1_000_000) + 60;
@@ -419,7 +431,7 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage);
+        let app = router(storage, test_metrics_context());
         let resp = app
             .oneshot(
                 Request::builder()

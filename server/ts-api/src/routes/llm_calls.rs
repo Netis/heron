@@ -101,7 +101,15 @@ mod tests {
     use tower::ServiceExt;
     use ts_storage::duckdb::DuckDbBackend;
 
-    use crate::router;
+    use crate::{router, ApiMetricsContext};
+
+    fn test_metrics_context() -> ApiMetricsContext {
+        let sys = ts_common::internal_metrics::MetricsSystem::new();
+        ApiMetricsContext {
+            pipelines: vec![],
+            global: sys.start(),
+        }
+    }
 
     #[tokio::test]
     async fn invalid_status_code_returns_json_envelope() {
@@ -110,7 +118,7 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage);
+        let app = router(storage, test_metrics_context());
 
         let resp = app
             .oneshot(
@@ -147,7 +155,7 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage);
+        let app = router(storage, test_metrics_context());
 
         let resp = app
             .oneshot(

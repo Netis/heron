@@ -618,9 +618,7 @@ fn build_turn(calls: &[&AgentCall]) -> AgentTurn {
     // Fall back to any main-agent call whose body yielded user_input upstream.
     let user_pick = calls
         .iter()
-        .find(|ic| {
-            ic.agent.subagent_name.is_none() && ic.agent.is_user_turn_start == Some(true)
-        })
+        .find(|ic| ic.agent.subagent_name.is_none() && ic.agent.is_user_turn_start == Some(true))
         .or_else(|| {
             calls
                 .iter()
@@ -825,12 +823,7 @@ mod tests {
         }
     }
 
-    fn codex_call(
-        session: &str,
-        turn: &str,
-        body_input_type: &str,
-        finish: &str,
-    ) -> LlmCall {
+    fn codex_call(session: &str, turn: &str, body_input_type: &str, finish: &str) -> LlmCall {
         let meta = format!(r#"{{"session_id":"{session}","turn_id":"{turn}"}}"#);
         let body = match body_input_type {
             "message" => {

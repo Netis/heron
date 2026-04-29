@@ -1427,21 +1427,14 @@ impl StorageBackend for DuckDbBackend {
             // pattern as `prepare_metric`.
             let prepared: Vec<(Value, LlmFinishMetric)> = metrics
                 .into_iter()
-                .map(|m| {
-                    (
-                        Value::Timestamp(TimeUnit::Microsecond, m.timestamp_us),
-                        m,
-                    )
-                })
+                .map(|m| (Value::Timestamp(TimeUnit::Microsecond, m.timestamp_us), m))
                 .collect();
 
             let conn = conn
                 .lock()
                 .map_err(|e| AppError::Storage(format!("failed to lock writer: {e}")))?;
             let mut appender = conn.appender("llm_finish_metrics").map_err(|e| {
-                AppError::Storage(format!(
-                    "failed to create llm_finish_metrics appender: {e}"
-                ))
+                AppError::Storage(format!("failed to create llm_finish_metrics appender: {e}"))
             })?;
             for (ts, m) in &prepared {
                 appender
@@ -3315,7 +3308,9 @@ impl StorageBackend for DuckDbBackend {
                     ))
                 })?;
             let mut rows = stmt.query([]).map_err(|e| {
-                AppError::Storage(format!("failed to execute distinct_finish_reasons query: {e}"))
+                AppError::Storage(format!(
+                    "failed to execute distinct_finish_reasons query: {e}"
+                ))
             })?;
             let mut result = Vec::new();
             while let Some(row) = rows
@@ -3413,9 +3408,7 @@ impl StorageBackend for DuckDbBackend {
                     duckdb::params![label, ts],
                 )
                 .map_err(|e| {
-                    AppError::Storage(format!(
-                        "failed to delete llm_finish_metrics[{label}]: {e}"
-                    ))
+                    AppError::Storage(format!("failed to delete llm_finish_metrics[{label}]: {e}"))
                 })?;
                 report.metrics_deleted.insert(label.clone(), n as u64);
             }
@@ -3946,7 +3939,10 @@ mod tests {
 
         // One series per distinct raw value; alphabetical by finish_reason.
         let names: Vec<&str> = series.iter().map(|s| s.finish_reason.as_str()).collect();
-        assert_eq!(names, vec!["end_turn", "max_tokens", "pause_turn", "tool_use"]);
+        assert_eq!(
+            names,
+            vec!["end_turn", "max_tokens", "pause_turn", "tool_use"]
+        );
 
         let end_turn = series
             .iter()

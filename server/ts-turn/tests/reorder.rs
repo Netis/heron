@@ -166,14 +166,7 @@ fn bug_a_late_user_start_splits_turn() {
     // After fix: one turn covering both calls, status Complete.
     // On `main`: split into two turns (one bare-c2 Complete, one bare-c1 Incomplete).
     let mut t = mk_tracker();
-    let c1 = anthropic_call(
-        "S",
-        1_000_000,
-        "text",
-        "tool_use",
-        &["Agent", "Bash"],
-        None,
-    );
+    let c1 = anthropic_call("S", 1_000_000, "text", "tool_use", &["Agent", "Bash"], None);
     let c2 = anthropic_call(
         "S",
         2_000_000,
@@ -205,14 +198,7 @@ fn bug_b_state_corruption_when_terminal_arrives_before_predecessors() {
     // After fix: one turn [c1,c2,c3], Complete, 3 calls.
     // On `main`: c3 starts its own turn; c1/c2 land in a separate orphan turn.
     let mut t = mk_tracker();
-    let c1 = anthropic_call(
-        "S",
-        1_000_000,
-        "text",
-        "tool_use",
-        &["Agent", "Bash"],
-        None,
-    );
+    let c1 = anthropic_call("S", 1_000_000, "text", "tool_use", &["Agent", "Bash"], None);
     let c2 = anthropic_call(
         "S",
         2_000_000,
@@ -313,14 +299,7 @@ fn bug_d_late_call_after_finalize_is_orphan_not_phantom() {
     // On `main`: c0 opens a brand-new ActiveTurn that idles out as Incomplete,
     // producing a second phantom turn.
     let mut t = mk_tracker();
-    let c1 = anthropic_call(
-        "S",
-        2_000_000,
-        "text",
-        "tool_use",
-        &["Agent", "Bash"],
-        None,
-    );
+    let c1 = anthropic_call("S", 2_000_000, "text", "tool_use", &["Agent", "Bash"], None);
     let c2 = anthropic_call(
         "S",
         3_000_000,
@@ -404,14 +383,7 @@ fn bug_f_heartbeat_advance_does_not_open_phantom_for_late_call() {
     // create a new turn — the orphan guard on last_finalized_request_time
     // catches it.
     let mut t = mk_tracker();
-    let c1 = anthropic_call(
-        "S",
-        2_000_000,
-        "text",
-        "tool_use",
-        &["Agent", "Bash"],
-        None,
-    );
+    let c1 = anthropic_call("S", 2_000_000, "text", "tool_use", &["Agent", "Bash"], None);
     let c2 = anthropic_call(
         "S",
         3_000_000,
@@ -430,14 +402,7 @@ fn bug_f_heartbeat_advance_does_not_open_phantom_for_late_call() {
     events.extend(t.advance_time_at(60_000_000, &c2.source_id, past_grace));
 
     // Now the straggler shows up.
-    let c0 = anthropic_call(
-        "S",
-        1_000_000,
-        "text",
-        "tool_use",
-        &["Agent", "Bash"],
-        None,
-    );
+    let c0 = anthropic_call("S", 1_000_000, "text", "tool_use", &["Agent", "Bash"], None);
     events.extend(t.ingest_at(agent_call(c0), past_grace));
     events.extend(t.flush_all_at(past_grace));
 

@@ -87,8 +87,7 @@ async fn run_pcap_full_sharded(
 
     let (calls_tx, mut calls_rx) = mpsc::channel::<Arc<ts_llm::model::LlmCall>>(queue_size);
     let (turns_tx, mut turns_rx) = mpsc::channel::<ts_turn::AgentTurn>(queue_size);
-    let (m_out_tx, mut m_out_rx) =
-        mpsc::channel::<ts_metrics::model::LlmMetricsBatch>(queue_size);
+    let (m_out_tx, mut m_out_rx) = mpsc::channel::<ts_metrics::model::LlmMetricsBatch>(queue_size);
 
     spawn_flow_dispatcher(raw_rx, parsed_txs, "dispatcher", &mut metrics_sys);
     spawn_protocol_stage(parsed_rxs, protocol_event_txs, &mut metrics_sys);

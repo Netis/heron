@@ -151,12 +151,7 @@ mod tests {
     }
 
     /// `is_user_start`: true ⇒ text body (new-turn marker); false ⇒ tool_result body (continuation).
-    fn anthropic_call(
-        session: &str,
-        ts_us: i64,
-        finish: &str,
-        is_user_start: bool,
-    ) -> LlmCall {
+    fn anthropic_call(session: &str, ts_us: i64, finish: &str, is_user_start: bool) -> LlmCall {
         let body = if is_user_start {
             r#"{"messages":[{"role":"user","content":[{"type":"text","text":"go"}]}]}"#
         } else {

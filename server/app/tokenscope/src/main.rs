@@ -234,30 +234,18 @@ async fn main() {
         cancel.clone(),
     );
 
-    // Bind API server (warn and continue if port is occupied)
-    let api_handle = match ts_api::bind(&config.api).await {
-        Ok(listener) => {
-            let api_storage = storage.clone();
-            let api_cancel = cancel.clone();
-            Some(tokio::spawn(async move {
-                let router = ts_api::router(api_storage);
-                #[cfg(feature = "console")]
-                let router = router.fallback(console::static_handler);
-                let server = axum::serve(listener, router).with_graceful_shutdown(async move {
-                    api_cancel.cancelled().await;
-                });
-                if let Err(e) = server.await {
-                    tracing::error!("API server error: {e}");
-                } else {
-                    tracing::info!("API server stopped");
-                }
-            }))
-        }
+    // Bind API server early so port-bind errors abort startup fast (warn and
+    // continue if port is occupied). The actual `axum::serve` spawn happens
+    // after the per-pipeline + global `MetricsSystem::start()` calls below so
+    // the API's `ApiMetricsContext` carries fully populated `Arc<MetricsSvc>`s.
+    let mut api_listener: Option<tokio::net::TcpListener> = match ts_api::bind(&config.api).await {
+        Ok(l) => Some(l),
         Err(e) => {
             tracing::warn!("API server disabled: {e}");
             None
         }
     };
+    let mut api_handle: Option<tokio::task::JoinHandle<()>> = None;
 
     if !effective_pipelines.is_empty() && effective_pipelines.iter().any(|d| !d.sources.is_empty())
     {
@@ -339,11 +327,16 @@ async fn main() {
         // storage summary the last block of metrics output.
         let reporter_enabled =
             config.internal_metrics.enabled && config.internal_metrics.interval_secs > 0;
+        let mut api_pipeline_metrics: Vec<(
+            String,
+            std::sync::Arc<ts_common::internal_metrics::MetricsSvc>,
+        )> = Vec::new();
         let pipeline_reporter_handles: Vec<_> = per_pipeline_metrics
             .into_iter()
             .zip(effective_pipelines.iter())
             .filter_map(|(sys, def)| {
                 let svc = sys.start();
+                api_pipeline_metrics.push((def.name.clone(), svc.clone()));
                 reporter_enabled.then(|| {
                     let label = format!("pipeline.{}", def.name);
                     let handle = MetricsReporter::start(
@@ -363,8 +356,9 @@ async fn main() {
         // Cross-pipeline reporter — the storage sink + its queue probes are
         // the only workers registered here, so the log line is honest about
         // representing every pipeline's traffic into a single shared sink.
+        let api_global_metrics = shared_metrics.start();
         let global_reporter_handle = {
-            let svc = shared_metrics.start();
+            let svc = api_global_metrics.clone();
             reporter_enabled.then(|| {
                 let handle = MetricsReporter::start(
                     svc,
@@ -377,6 +371,37 @@ async fn main() {
                 );
                 handle
             })
+        };
+
+        // Now that every per-pipeline + global `MetricsSvc` exists, spawn the
+        // API server with a fully populated `ApiMetricsContext`. We assign to
+        // the previously-declared `mut api_handle` (no `let`) so the shutdown
+        // logic below sees the JoinHandle. Use `.take()` so the listener stays
+        // None after this arm — the outer `if api_handle.is_none()` fallback
+        // (further below) sees the listener is consumed and is a no-op.
+        api_handle = match api_listener.take() {
+            Some(listener) => {
+                let api_storage = storage.clone();
+                let api_cancel = cancel.clone();
+                let api_metrics = ts_api::ApiMetricsContext {
+                    pipelines: api_pipeline_metrics,
+                    global: api_global_metrics.clone(),
+                };
+                Some(tokio::spawn(async move {
+                    let router = ts_api::router(api_storage, api_metrics);
+                    #[cfg(feature = "console")]
+                    let router = router.fallback(console::static_handler);
+                    let server = axum::serve(listener, router).with_graceful_shutdown(async move {
+                        api_cancel.cancelled().await;
+                    });
+                    if let Err(e) = server.await {
+                        tracing::error!("API server error: {e}");
+                    } else {
+                        tracing::info!("API server stopped");
+                    }
+                }))
+            }
+            None => None,
         };
 
         // Spawn capture sources — each pipeline may have N sources that
@@ -518,7 +543,41 @@ async fn main() {
         }
     } else {
         // No pipelines with sources → no pipeline, no MetricsSystem, no
-        // reporter. Just park on ctrl-c so the API server stays up.
+        // reporter. Spawn the API server (with empty metrics contexts) so
+        // /api/server-info and storage-backed routes still serve, then park
+        // on ctrl-c so the API stays up. /api/internal-metrics returns
+        // empty arrays. Guarded by `is_none()` so we never double-spawn —
+        // when the pipeline arm ran it already consumed the listener via
+        // `.take()` and set `api_handle = Some(_)`.
+        if api_handle.is_none() {
+            api_handle = match api_listener.take() {
+                Some(listener) => {
+                    let api_storage = storage.clone();
+                    let api_cancel = cancel.clone();
+                    let empty_global = MetricsSystem::new().start();
+                    let api_metrics = ts_api::ApiMetricsContext {
+                        pipelines: Vec::new(),
+                        global: empty_global,
+                    };
+                    Some(tokio::spawn(async move {
+                        let router = ts_api::router(api_storage, api_metrics);
+                        #[cfg(feature = "console")]
+                        let router = router.fallback(console::static_handler);
+                        let server =
+                            axum::serve(listener, router).with_graceful_shutdown(async move {
+                                api_cancel.cancelled().await;
+                            });
+                        if let Err(e) = server.await {
+                            tracing::error!("API server error: {e}");
+                        } else {
+                            tracing::info!("API server stopped");
+                        }
+                    }))
+                }
+                None => None,
+            };
+        }
+
         tracing::info!(
             "no pipelines with sources configured (use --pcap-file, -i, or [[pipeline]] in config)"
         );

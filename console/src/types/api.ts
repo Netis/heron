@@ -299,3 +299,36 @@ export interface SessionTurnsPage {
   items: SessionTurnItem[]
   next_cursor: string | null
 }
+
+// ============================================================================
+// /api/internal-metrics
+// ============================================================================
+
+export type MetricGroup =
+  | "capture"
+  | "protocol"
+  | "llm"
+  | "turn"
+  | "metrics"
+  | "storage"
+
+export type MetricKind = "counter" | "gauge"
+
+export interface MetricRecord {
+  name: string
+  group: MetricGroup
+  kind: MetricKind
+  value: number
+  capacity?: number
+}
+
+export interface PipelineMetricsSnapshot {
+  name: string
+  metrics: MetricRecord[]
+}
+
+export interface InternalMetricsResponse {
+  ts: number
+  pipelines: PipelineMetricsSnapshot[]
+  global: { metrics: MetricRecord[] }
+}

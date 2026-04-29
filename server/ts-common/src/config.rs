@@ -808,4 +808,5 @@ mod phase2_tests {
         assert_eq!(d.dir, "/tmp/dumps");
         assert_eq!(d.filename_template, "{source_id}_x.pcap");
     }
+
 }

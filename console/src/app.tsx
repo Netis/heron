@@ -11,6 +11,8 @@ import { AgentSessionsPage } from "@/pages/agent-sessions"
 import { AgentSessionDetailPage } from "@/pages/agent-session-detail"
 import { AgentTurnsPage } from "@/pages/agent-turns"
 import { HttpExchangesPage } from "@/pages/http-exchanges"
+import { PipelineHealthPage } from "@/pages/debug-pipeline-health"
+import { DebugIndexPage } from "@/pages/debug-index"
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,6 +40,8 @@ export default function App() {
             <Route path="/llm-calls" element={<LlmCallsPage />} />
             <Route path="/http-exchanges" element={<HttpExchangesPage />} />
           </Route>
+          <Route path="/debug" element={<DebugIndexPage />} />
+          <Route path="/debug/pipeline-health" element={<PipelineHealthPage />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>
