@@ -1,7 +1,7 @@
 use crate::model::LlmCall;
 use crate::wire_api_registry::WireApiRegistry;
 
-/// Per-agent knowledge about how to extract session/turn IDs and identify
+/// Per-agent knowledge about how to extract a session id and identify
 /// whether a call is user-initiated. Each concrete impl represents one
 /// agent client (e.g. `claude-cli`, `codex-cli`).
 pub trait AgentProfile: Send + Sync {
@@ -13,10 +13,11 @@ pub trait AgentProfile: Send + Sync {
     /// Implementations typically check `wire_api` + User-Agent / Originator header.
     fn matches(&self, call: &LlmCall) -> bool;
 
-    /// Extract the (session_id, optional turn_id) pair.
-    /// Returning `None` means matching failed at a deeper level (e.g., header missing);
-    /// the call will be flagged as unassociated and skipped by the tracker.
-    fn extract_ids(&self, call: &LlmCall) -> Option<ExtractedIds>;
+    /// Extract the session id this call belongs to, plus any derivation
+    /// metadata (see `SessionIdExtraction`). Returning `None` means matching
+    /// failed at a deeper level (e.g., header missing); the call will be
+    /// flagged as unassociated and skipped by the tracker.
+    fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction>;
 
     /// Decide whether this call's *body* represents a fresh user-initiated
     /// message. `Some(true)` = body is a fresh user prompt; `Some(false)` =
@@ -87,9 +88,9 @@ pub trait AgentProfile: Send + Sync {
     }
 }
 
-/// Output of `AgentProfile::extract_ids`.
+/// Output of `AgentProfile::extract_session_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtractedIds {
+pub struct SessionIdExtraction {
     pub session_id: String,
     /// True if the tool id used to derive `session_id` was modified by
     /// `canonicalize_tool_id`. Used by the llm stage to bump
@@ -188,8 +189,8 @@ mod tests {
                 .iter()
                 .any(|(k, v)| k.eq_ignore_ascii_case("user-agent") && v.starts_with(self.ua_prefix))
         }
-        fn extract_ids(&self, _: &LlmCall) -> Option<ExtractedIds> {
-            Some(ExtractedIds {
+        fn extract_session_id(&self, _: &LlmCall) -> Option<SessionIdExtraction> {
+            Some(SessionIdExtraction {
                 session_id: "s".into(),
                 tool_id_canonicalized: false,
             })

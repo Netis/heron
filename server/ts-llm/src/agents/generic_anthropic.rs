@@ -5,7 +5,7 @@
 //! claude-cli-specific.
 
 use crate::model::LlmCall;
-use crate::profile::{AgentProfile, ExtractedIds};
+use crate::profile::{AgentProfile, SessionIdExtraction};
 use crate::wire_apis as wa;
 use serde_json::Value;
 
@@ -94,7 +94,7 @@ impl AgentProfile for GenericAnthropicProfile {
         call.wire_api == wa::ANTHROPIC
     }
 
-    fn extract_ids(&self, call: &LlmCall) -> Option<ExtractedIds> {
+    fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction> {
         let body = call.request_body.as_deref()?;
         let v: Value = serde_json::from_str(body).ok()?;
         let msgs = v.get("messages")?.as_array()?;
@@ -102,7 +102,7 @@ impl AgentProfile for GenericAnthropicProfile {
         let sig = first_assistant_sig_from_request(msgs)
             .or_else(|| call.response_body.as_deref().and_then(first_assistant_sig_from_response))?;
         let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
-        Some(ExtractedIds { session_id, tool_id_canonicalized })
+        Some(SessionIdExtraction { session_id, tool_id_canonicalized })
     }
 
     fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
@@ -227,50 +227,50 @@ mod tests {
     }
 
     #[test]
-    fn extract_ids_call_n_with_tool_history() {
+    fn extract_session_id_call_n_with_tool_history() {
         let req = r#"{"messages":[
             {"role":"user","content":[{"type":"text","text":"hi"}]},
             {"role":"assistant","content":[{"type":"tool_use","id":"toolu_abc","name":"Read","input":{}}]},
             {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"ok"}]}
         ]}"#;
         let c = call_with(vec![], Some(req), None);
-        let ids = GenericAnthropicProfile.extract_ids(&c).unwrap();
+        let ids = GenericAnthropicProfile.extract_session_id(&c).unwrap();
         assert_eq!(ids.session_id, "toolu_abc");
     }
 
     #[test]
-    fn extract_ids_call_n_with_text_only_history() {
+    fn extract_session_id_call_n_with_text_only_history() {
         let req = r#"{"messages":[
             {"role":"user","content":[{"type":"text","text":"hi"}]},
             {"role":"assistant","content":[{"type":"text","text":"hello there"}]},
             {"role":"user","content":[{"type":"text","text":"more"}]}
         ]}"#;
         let c = call_with(vec![], Some(req), None);
-        let ids = GenericAnthropicProfile.extract_ids(&c).unwrap();
+        let ids = GenericAnthropicProfile.extract_session_id(&c).unwrap();
         assert!(ids.session_id.starts_with("gen-"));
         assert_eq!(ids.session_id.len(), "gen-".len() + 16);
     }
 
     #[test]
-    fn extract_ids_call_1_tool_in_response() {
+    fn extract_session_id_call_1_tool_in_response() {
         let req = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#;
         let resp = r#"{"content":[{"type":"tool_use","id":"toolu_xyz","name":"Read","input":{}}]}"#;
         let c = call_with(vec![], Some(req), Some(resp));
-        let ids = GenericAnthropicProfile.extract_ids(&c).unwrap();
+        let ids = GenericAnthropicProfile.extract_session_id(&c).unwrap();
         assert_eq!(ids.session_id, "toolu_xyz");
     }
 
     #[test]
-    fn extract_ids_call_1_text_in_response() {
+    fn extract_session_id_call_1_text_in_response() {
         let req = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#;
         let resp = r#"{"content":[{"type":"text","text":"hello there"}]}"#;
         let c = call_with(vec![], Some(req), Some(resp));
-        let ids = GenericAnthropicProfile.extract_ids(&c).unwrap();
+        let ids = GenericAnthropicProfile.extract_session_id(&c).unwrap();
         assert!(ids.session_id.starts_with("gen-"));
     }
 
     #[test]
-    fn extract_ids_call_1_and_n_match() {
+    fn extract_session_id_call_1_and_n_match() {
         // Call #1 sees response_body; call #2 sees the same content echoed in messages[1].
         let resp = r#"{"content":[{"type":"tool_use","id":"toolu_same","name":"R","input":{}}]}"#;
         let req1 = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"prompt"}]}]}"#;
@@ -281,13 +281,13 @@ mod tests {
         ]}"#;
         let c1 = call_with(vec![], Some(req1), Some(resp));
         let c2 = call_with(vec![], Some(req2), None);
-        let id1 = GenericAnthropicProfile.extract_ids(&c1).unwrap().session_id;
-        let id2 = GenericAnthropicProfile.extract_ids(&c2).unwrap().session_id;
+        let id1 = GenericAnthropicProfile.extract_session_id(&c1).unwrap().session_id;
+        let id2 = GenericAnthropicProfile.extract_session_id(&c2).unwrap().session_id;
         assert_eq!(id1, id2, "call #1 and call #2 must synthesize same session_id");
     }
 
     #[test]
-    fn extract_ids_call_1_with_normalized_tool_id() {
+    fn extract_session_id_call_1_with_normalized_tool_id() {
         // Response stream emits canonical form; some hypothetical client strips the underscore in echo.
         let resp = r#"{"content":[{"type":"tool_use","id":"toolu_abc","name":"R","input":{}}]}"#;
         let req2 = r#"{"messages":[
@@ -298,22 +298,22 @@ mod tests {
         let c1 = call_with(vec![], Some(r#"{"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}"#), Some(resp));
         let c2 = call_with(vec![], Some(req2), None);
         assert_eq!(
-            GenericAnthropicProfile.extract_ids(&c1).unwrap().session_id,
-            GenericAnthropicProfile.extract_ids(&c2).unwrap().session_id,
+            GenericAnthropicProfile.extract_session_id(&c1).unwrap().session_id,
+            GenericAnthropicProfile.extract_session_id(&c2).unwrap().session_id,
         );
     }
 
     #[test]
-    fn extract_ids_none_when_first_call_no_response() {
+    fn extract_session_id_none_when_first_call_no_response() {
         let req = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#;
         let c = call_with(vec![], Some(req), None);
-        assert!(GenericAnthropicProfile.extract_ids(&c).is_none());
+        assert!(GenericAnthropicProfile.extract_session_id(&c).is_none());
     }
 
     #[test]
-    fn extract_ids_none_when_malformed_json() {
+    fn extract_session_id_none_when_malformed_json() {
         let c = call_with(vec![], Some("garbage"), None);
-        assert!(GenericAnthropicProfile.extract_ids(&c).is_none());
+        assert!(GenericAnthropicProfile.extract_session_id(&c).is_none());
     }
 
     #[test]

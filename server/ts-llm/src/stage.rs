@@ -71,7 +71,7 @@ pub fn spawn_llm_stage(
                 Metric::LlmCallsWithAgent,
                 Metric::LlmCallsWithoutAgent,
                 Metric::LlmGenericToolIdCanonicalized,
-                Metric::LlmGenericSessionIdUnsynth,
+                Metric::LlmGenericSessionIdSynthFailed,
             ],
         );
         handles.push(tokio::spawn(async move {
@@ -228,7 +228,7 @@ mod tests {
 
     fn openai_response(fk: FlowKey, ts_us: i64) -> HttpResponseData {
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
-        // content: null and no tool_calls so GenericOpenAiChatProfile.extract_ids
+        // content: null and no tool_calls so GenericOpenAiChatProfile.extract_session_id
         // returns None — the call reaches calls_tx but not the turn shard.
         let body = serde_json::json!({
             "model": "gpt-4",

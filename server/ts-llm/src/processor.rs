@@ -159,8 +159,8 @@ impl LlmProcessor {
 /// Compute the full per-call classification and return it as an `AgentCallInfo`.
 ///
 /// Returns `None` when no profile matches the call or the profile cannot
-/// extract a `(session_id, turn_id?)` pair — those calls are non-agent traffic
-/// and never enter turn assembly.
+/// extract a session id — those calls are non-agent traffic and never enter
+/// turn assembly.
 ///
 /// Public so tests in downstream crates (ts-turn) can construct call-info
 /// records the same way the production pipeline does.
@@ -172,9 +172,9 @@ pub fn build_agent_call_info(
 ) -> Option<AgentCallInfo> {
     let profile = registry.find(call)?;
     let is_generic = profile.name().starts_with("generic-");
-    let Some(ids) = profile.extract_ids(call) else {
+    let Some(ids) = profile.extract_session_id(call) else {
         if is_generic {
-            metrics.counter(ts_common::internal_metrics::Metric::LlmGenericSessionIdUnsynth).inc();
+            metrics.counter(ts_common::internal_metrics::Metric::LlmGenericSessionIdSynthFailed).inc();
         }
         return None;
     };
@@ -220,7 +220,7 @@ mod tests {
                 Metric::WireDetected,
                 Metric::WireIgnored,
                 Metric::LlmGenericToolIdCanonicalized,
-                Metric::LlmGenericSessionIdUnsynth,
+                Metric::LlmGenericSessionIdSynthFailed,
             ],
         );
         let _svc = sys.start();

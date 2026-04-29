@@ -1,5 +1,5 @@
 use crate::model::LlmCall;
-use crate::profile::{AgentProfile, ExtractedIds};
+use crate::profile::{AgentProfile, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
 use serde_json::Value;
@@ -50,7 +50,7 @@ impl AgentProfile for CodexCliProfile {
         false
     }
 
-    fn extract_ids(&self, call: &LlmCall) -> Option<ExtractedIds> {
+    fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction> {
         // session_id comes ONLY from X-Codex-Turn-Metadata. We deliberately
         // do NOT fall back to X-Client-Request-Id: by HTTP convention that
         // header is per-request, and feeding a per-request UUID into the
@@ -61,7 +61,7 @@ impl AgentProfile for CodexCliProfile {
         let raw = header(call, TURN_META_HEADER)?;
         let v = parse_turn_metadata(raw)?;
         let session_id = v.get("session_id")?.as_str()?.to_string();
-        Some(ExtractedIds { session_id, tool_id_canonicalized: false })
+        Some(SessionIdExtraction { session_id, tool_id_canonicalized: false })
     }
 
     fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_ids_from_turn_metadata_header() {
+    fn extract_session_id_from_turn_metadata_header() {
         let meta = r#"{"session_id":"019d7170-77f6-7eb3-9c93-2e19cbdf9a86","turn_id":"019d7170-7806-7ff0-9d84-8c917b132acd","workspaces":{}}"#;
         let c = call_with(
             wa::OPENAI_RESPONSES,
@@ -286,12 +286,12 @@ mod tests {
             ],
             None,
         );
-        let ids = CodexCliProfile.extract_ids(&c).unwrap();
+        let ids = CodexCliProfile.extract_session_id(&c).unwrap();
         assert_eq!(ids.session_id, "019d7170-77f6-7eb3-9c93-2e19cbdf9a86");
     }
 
     #[test]
-    fn extract_ids_none_when_metadata_missing() {
+    fn extract_session_id_none_when_metadata_missing() {
         // X-Client-Request-Id alone is NOT a session source — by HTTP
         // convention it's per-request. Without X-Codex-Turn-Metadata we
         // return None so the call is treated as unassociated rather than
@@ -304,11 +304,11 @@ mod tests {
             ],
             None,
         );
-        assert!(CodexCliProfile.extract_ids(&c).is_none());
+        assert!(CodexCliProfile.extract_session_id(&c).is_none());
     }
 
     #[test]
-    fn extract_ids_none_when_metadata_unparseable() {
+    fn extract_session_id_none_when_metadata_unparseable() {
         // Defensive: malformed metadata header (e.g. future base64 form we
         // don't yet support) must not silently fall through to a phantom
         // session — it must return None.
@@ -321,7 +321,7 @@ mod tests {
             ],
             None,
         );
-        assert!(CodexCliProfile.extract_ids(&c).is_none());
+        assert!(CodexCliProfile.extract_session_id(&c).is_none());
     }
 
     #[test]

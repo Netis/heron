@@ -396,6 +396,70 @@ async fn claude_cli_messages_multi_shard_parity() {
     );
 }
 
+/// OpenClaw (OpenAI/JS SDK + GLM model) capture spanning two distinct user
+/// sessions. The client reflects `assistant.tool_calls[].id` back into
+/// subsequent `messages` history *without* the underscore (`calld9c1...`
+/// instead of `call_d9c1...`). Without `canonicalize_tool_id`, every call #2+
+/// would synth a fresh session_id and fragment each conversation into
+/// single-call turns. The fact that we observe exactly 2 stable session_ids
+/// each spanning multiple turns is end-to-end proof the canonicalization rule
+/// is firing on this fixture.
+#[tokio::test]
+async fn openclaw_multi_sessions_expects_two_sessions_four_turns() {
+    let Some(turns) = run_pcap("openclaw-multi-sessions.pcap").await else {
+        eprintln!("skip: fixture not present");
+        return;
+    };
+    let chat: Vec<_> = turns
+        .iter()
+        .filter(|t| t.wire_api == wa::OPENAI_CHAT)
+        .collect();
+    eprintln!("openclaw-multi-sessions: {} openai-chat turns", chat.len());
+    for t in &chat {
+        eprintln!(
+            "  session={} status={:?} calls={}",
+            t.session_id, t.status, t.call_count
+        );
+    }
+    assert_eq!(chat.len(), 4, "expected 4 turns; got {}", chat.len());
+    assert!(chat.iter().all(|t| t.agent_kind == "generic-openai-chat"));
+    assert!(
+        chat.iter().all(|t| t.status == TurnStatus::Complete),
+        "all turns expected Complete"
+    );
+    let sessions: std::collections::BTreeSet<_> =
+        chat.iter().map(|t| t.session_id.as_str()).collect();
+    assert_eq!(sessions.len(), 2, "expected 2 distinct sessions; got {sessions:?}");
+    assert!(
+        sessions.iter().all(|s| s.starts_with("call_")),
+        "session_ids must be canonicalized (call_<hex>); got {sessions:?}"
+    );
+}
+
+#[tokio::test]
+async fn openclaw_multi_sessions_pcap_shard_parity() {
+    let Some(single) = run_pcap_sharded("openclaw-multi-sessions.pcap", 1, 1).await else {
+        eprintln!("skip: fixture not present");
+        return;
+    };
+    let multi = run_pcap_sharded("openclaw-multi-sessions.pcap", 4, 4)
+        .await
+        .unwrap();
+
+    let single_keys: std::collections::BTreeSet<_> = single
+        .iter()
+        .map(|t| (t.session_id.clone(), t.call_count, t.status.to_string()))
+        .collect();
+    let multi_keys: std::collections::BTreeSet<_> = multi
+        .iter()
+        .map(|t| (t.session_id.clone(), t.call_count, t.status.to_string()))
+        .collect();
+    assert_eq!(
+        single_keys, multi_keys,
+        "turn sets must match across shard counts"
+    );
+}
+
 /// End-to-end unit test: two `LlmCall` records (no claude-cli UA) run through
 /// `build_agent_call_info` + `TurnTracker` produce a single `AgentTurn` with
 /// `agent_kind == "generic-anthropic"` and `session_id == "toolu_pcap"`.
@@ -455,7 +519,7 @@ async fn generic_anthropic_two_call_session() {
             Metric::WireDetected,
             Metric::WireIgnored,
             Metric::LlmGenericToolIdCanonicalized,
-            Metric::LlmGenericSessionIdUnsynth,
+            Metric::LlmGenericSessionIdSynthFailed,
         ],
     );
     let _llm_svc = llm_sys.start();

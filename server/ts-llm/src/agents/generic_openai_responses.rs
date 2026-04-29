@@ -6,7 +6,7 @@
 //! unreliable for this protocol regardless of which client emitted the call.
 
 use crate::model::LlmCall;
-use crate::profile::{AgentProfile, ExtractedIds};
+use crate::profile::{AgentProfile, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
 use serde_json::Value;
@@ -96,7 +96,7 @@ impl AgentProfile for GenericOpenAiResponsesProfile {
         call.wire_api == wa::OPENAI_RESPONSES
     }
 
-    fn extract_ids(&self, call: &LlmCall) -> Option<ExtractedIds> {
+    fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction> {
         let body = call.request_body.as_deref()?;
         let v: Value = serde_json::from_str(body).ok()?;
         // input may be array (full mode) or string (simplified mode).
@@ -109,7 +109,7 @@ impl AgentProfile for GenericOpenAiResponsesProfile {
         let sig = sig_from_input
             .or_else(|| call.response_body.as_deref().and_then(first_assistant_sig_from_response))?;
         let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
-        Some(ExtractedIds { session_id, tool_id_canonicalized })
+        Some(SessionIdExtraction { session_id, tool_id_canonicalized })
     }
 
     fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_ids_call_n_with_function_call() {
+    fn extract_session_id_call_n_with_function_call() {
         // Codex-shape input: developer + user + reasoning + assistant + function_call.
         let req = r#"{"input":[
             {"type":"message","role":"developer","content":[{"type":"input_text","text":"sys"}]},
@@ -235,21 +235,21 @@ mod tests {
             {"type":"function_call","name":"f","arguments":"{}","call_id":"fc_xyz"}
         ]}"#;
         let c = call_with(Some(req), None);
-        let ids = GenericOpenAiResponsesProfile.extract_ids(&c).unwrap();
+        let ids = GenericOpenAiResponsesProfile.extract_session_id(&c).unwrap();
         assert_eq!(ids.session_id, "fc_xyz", "function_call.call_id wins over assistant text");
     }
 
     #[test]
-    fn extract_ids_call_1_function_call_in_response() {
+    fn extract_session_id_call_1_function_call_in_response() {
         let req = r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#;
         let resp = r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_abc"}]}"#;
         let c = call_with(Some(req), Some(resp));
-        let ids = GenericOpenAiResponsesProfile.extract_ids(&c).unwrap();
+        let ids = GenericOpenAiResponsesProfile.extract_session_id(&c).unwrap();
         assert_eq!(ids.session_id, "fc_abc");
     }
 
     #[test]
-    fn extract_ids_call_1_and_n_match() {
+    fn extract_session_id_call_1_and_n_match() {
         let req1 = r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"prompt"}]}]}"#;
         let resp = r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_same"}]}"#;
         let req2 = r#"{"input":[
@@ -260,52 +260,52 @@ mod tests {
         let c1 = call_with(Some(req1), Some(resp));
         let c2 = call_with(Some(req2), None);
         assert_eq!(
-            GenericOpenAiResponsesProfile.extract_ids(&c1).unwrap().session_id,
-            GenericOpenAiResponsesProfile.extract_ids(&c2).unwrap().session_id,
+            GenericOpenAiResponsesProfile.extract_session_id(&c1).unwrap().session_id,
+            GenericOpenAiResponsesProfile.extract_session_id(&c2).unwrap().session_id,
         );
     }
 
     #[test]
-    fn extract_ids_call_n_with_text_only_assistant() {
+    fn extract_session_id_call_n_with_text_only_assistant() {
         let req = r#"{"input":[
             {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
             {"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}
         ]}"#;
         let c = call_with(Some(req), None);
-        let ids = GenericOpenAiResponsesProfile.extract_ids(&c).unwrap();
+        let ids = GenericOpenAiResponsesProfile.extract_session_id(&c).unwrap();
         assert!(ids.session_id.starts_with("gen-"));
     }
 
     #[test]
-    fn extract_ids_input_string_mode_treats_as_call_1() {
+    fn extract_session_id_input_string_mode_treats_as_call_1() {
         // Simplified mode: input is a string. No assistant in input → falls through to response.
         let req = r#"{"input":"just a prompt"}"#;
         let resp = r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_simple"}]}"#;
         let c = call_with(Some(req), Some(resp));
-        assert_eq!(GenericOpenAiResponsesProfile.extract_ids(&c).unwrap().session_id, "fc_simple");
+        assert_eq!(GenericOpenAiResponsesProfile.extract_session_id(&c).unwrap().session_id, "fc_simple");
     }
 
     #[test]
-    fn extract_ids_none_when_string_input_and_no_response() {
-        // Symmetric to extract_ids_none_when_first_call_no_response but for the
+    fn extract_session_id_none_when_string_input_and_no_response() {
+        // Symmetric to extract_session_id_none_when_first_call_no_response but for the
         // string-mode input path: no assistant in input (string mode never has
         // any), no response_body to fall back to → None.
         let req = r#"{"input":"just a prompt"}"#;
         let c = call_with(Some(req), None);
-        assert!(GenericOpenAiResponsesProfile.extract_ids(&c).is_none());
+        assert!(GenericOpenAiResponsesProfile.extract_session_id(&c).is_none());
     }
 
     #[test]
-    fn extract_ids_none_when_first_call_no_response() {
+    fn extract_session_id_none_when_first_call_no_response() {
         let req = r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#;
         let c = call_with(Some(req), None);
-        assert!(GenericOpenAiResponsesProfile.extract_ids(&c).is_none());
+        assert!(GenericOpenAiResponsesProfile.extract_session_id(&c).is_none());
     }
 
     #[test]
-    fn extract_ids_none_when_malformed_json() {
+    fn extract_session_id_none_when_malformed_json() {
         let c = call_with(Some("garbage"), None);
-        assert!(GenericOpenAiResponsesProfile.extract_ids(&c).is_none());
+        assert!(GenericOpenAiResponsesProfile.extract_session_id(&c).is_none());
     }
 
     #[test]

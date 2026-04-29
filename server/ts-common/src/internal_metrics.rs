@@ -164,10 +164,10 @@ define_metrics! {
     // -- LLM extraction --
     WireDetected            => { kind: Counter, group: Llm, short: "wires_detected"      },
     WireIgnored             => { kind: Counter, group: Llm, short: "wires_ignored"       },
-    LlmCallsWithAgent             => { kind: Counter, group: Llm, short: "calls_with_agent"        },
-    LlmCallsWithoutAgent          => { kind: Counter, group: Llm, short: "calls_without_agent"     },
-    LlmGenericToolIdCanonicalized => { kind: Counter, group: Llm, short: "generic_tool_id_canonicalized" },
-    LlmGenericSessionIdUnsynth    => { kind: Counter, group: Llm, short: "generic_session_id_unsynth"    },
+    LlmCallsWithAgent              => { kind: Counter, group: Llm, short: "calls_with_agent"                },
+    LlmCallsWithoutAgent           => { kind: Counter, group: Llm, short: "calls_without_agent"             },
+    LlmGenericToolIdCanonicalized  => { kind: Counter, group: Llm, short: "generic_tool_id_canonicalized"   },
+    LlmGenericSessionIdSynthFailed => { kind: Counter, group: Llm, short: "generic_session_id_synth_failed" },
 
     // -- Turn tracking --
     TurnCallsIngested        => { kind: Counter, group: Turn, short: "calls_ingested"                },

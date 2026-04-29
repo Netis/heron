@@ -134,7 +134,7 @@ mod tests {
                 Metric::WireDetected,
                 Metric::WireIgnored,
                 Metric::LlmGenericToolIdCanonicalized,
-                Metric::LlmGenericSessionIdUnsynth,
+                Metric::LlmGenericSessionIdSynthFailed,
             ],
         );
         let _svc = sys.start();

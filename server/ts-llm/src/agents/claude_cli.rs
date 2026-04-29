@@ -1,5 +1,5 @@
 use crate::model::LlmCall;
-use crate::profile::{AgentProfile, ExtractedIds};
+use crate::profile::{AgentProfile, SessionIdExtraction};
 use crate::wire_apis as wa;
 use serde_json::Value;
 
@@ -73,9 +73,9 @@ impl AgentProfile for ClaudeCliProfile {
             .unwrap_or(false)
     }
 
-    fn extract_ids(&self, call: &LlmCall) -> Option<ExtractedIds> {
+    fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction> {
         let session_id = header(call, SESSION_HEADER)?.to_string();
-        Some(ExtractedIds { session_id, tool_id_canonicalized: false })
+        Some(SessionIdExtraction { session_id, tool_id_canonicalized: false })
     }
 
     fn extract_user_input(&self, call: &LlmCall) -> Option<String> {
@@ -264,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_ids_returns_session_from_header() {
+    fn extract_session_id_returns_session_from_header() {
         let c = call_with(
             wa::ANTHROPIC,
             vec![
@@ -276,18 +276,18 @@ mod tests {
             ],
             None,
         );
-        let ids = ClaudeCliProfile.extract_ids(&c).unwrap();
+        let ids = ClaudeCliProfile.extract_session_id(&c).unwrap();
         assert_eq!(ids.session_id, "7dd4ea24-82c9-4035-afa1-89f6b2c742b9");
     }
 
     #[test]
-    fn extract_ids_none_when_session_header_missing() {
+    fn extract_session_id_none_when_session_header_missing() {
         let c = call_with(
             wa::ANTHROPIC,
             vec![("User-Agent", "claude-cli/2.1.98")],
             None,
         );
-        assert!(ClaudeCliProfile.extract_ids(&c).is_none());
+        assert!(ClaudeCliProfile.extract_session_id(&c).is_none());
     }
 
     #[test]
