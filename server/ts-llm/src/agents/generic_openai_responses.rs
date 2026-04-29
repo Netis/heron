@@ -340,4 +340,22 @@ mod tests {
         ]}"#;
         assert_eq!(GenericOpenAiResponsesProfile.is_user_turn_start(&call_with(Some(req), None)), Some(false));
     }
+
+    #[test]
+    fn extract_assistant_text_returns_first_message_text() {
+        let resp = r#"{"output":[
+            {"type":"reasoning","summary":[],"content":[]},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"the answer"}]},
+            {"type":"function_call","name":"f","arguments":"{}","call_id":"fc_a"}
+        ]}"#;
+        let c = call_with(None, Some(resp));
+        assert_eq!(GenericOpenAiResponsesProfile.extract_assistant_text(&c).as_deref(), Some("the answer"));
+    }
+
+    #[test]
+    fn extract_assistant_text_none_when_no_message_item() {
+        let resp = r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_a"}]}"#;
+        let c = call_with(None, Some(resp));
+        assert_eq!(GenericOpenAiResponsesProfile.extract_assistant_text(&c), None);
+    }
 }
