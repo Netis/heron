@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { buildToolIndex, classifyToolUseState, classifyToolResultState, type ToolUseState } from "./turn-index"
+import { buildToolIndex, classifyToolUseState, classifyToolResultState, getToolEntry, type ToolUseState } from "./turn-index"
 import type { AgentTurnCallItem } from "@/types/api"
 
 describe("buildToolIndex", () => {
@@ -195,6 +195,57 @@ describe("buildToolIndex — capture loss", () => {
     ]
     const index = buildToolIndex(calls)
     expect(index.get("tu_first")?.resolution?.call_sequence).toBe(2)
+  })
+})
+
+describe("buildToolIndex — client tool_id normalization (OpenClaw)", () => {
+  it("links tool_use (canonical) and tool_result (stripped) via canonicalize", () => {
+    // Reproduces OpenClaw's client behavior: response stream emits the
+    // canonical `call_<hex>` tool_call_id, but echoes it as `call<hex>` (no
+    // underscore) into subsequent messages history. ToolIndex must canonicalize
+    // both sides so they collide on the same key.
+    const c1 = {
+      id: "c1", sequence: 1, wire_api: "openai-chat", model: "glm",
+      request_time: 0, response_time: null, complete_time: null,
+      status_code: 200, is_stream: false, finish_reason: null,
+      ttft_ms: null, e2e_latency_ms: null, input_tokens: null, output_tokens: null,
+      request_path: "/v1/chat/completions", client_ip: "", client_port: 0, server_ip: "", server_port: 0,
+      request_body: JSON.stringify({ model: "glm", messages: [{ role: "user", content: "hi" }] }),
+      response_body: JSON.stringify({
+        choices: [{
+          index: 0, finish_reason: "tool_calls",
+          message: {
+            role: "assistant", content: null,
+            tool_calls: [{ id: "call_abcdef", type: "function", function: { name: "Exec", arguments: "{}" } }],
+          },
+        }],
+      }),
+      request_headers: null, response_headers: null,
+    }
+    const c2 = {
+      ...c1, id: "c2", sequence: 2,
+      request_body: JSON.stringify({
+        model: "glm",
+        messages: [
+          { role: "user", content: "hi" },
+          // Client stripped the underscore in echo:
+          { role: "assistant", content: null, tool_calls: [{ id: "callabcdef", type: "function", function: { name: "Exec", arguments: "{}" } }] },
+          { role: "tool", tool_call_id: "callabcdef", content: "ok" },
+        ],
+      }),
+      response_body: null,
+    }
+    const index = buildToolIndex([c1, c2] as AgentTurnCallItem[])
+
+    // Index is keyed canonically.
+    const entry = index.get("call_abcdef")
+    expect(entry?.origin?.call_sequence).toBe(1)
+    expect(entry?.resolution?.call_sequence).toBe(2)
+    expect(entry?.resolution?.content).toBe("ok")
+
+    // Lookups via getToolEntry work with either form.
+    expect(getToolEntry(index, "call_abcdef").origin?.call_sequence).toBe(1)
+    expect(getToolEntry(index, "callabcdef").origin?.call_sequence).toBe(1)
   })
 })
 

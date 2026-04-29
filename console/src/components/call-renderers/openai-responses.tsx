@@ -14,7 +14,7 @@ import type {
 } from "@/lib/wire-apis/openai-responses/types"
 import type { CallOverlay } from "./overlays/types"
 import { ToolUsePointer, ToolResultBackLink } from "@/components/turn-detail/tool-pointer"
-import { classifyToolUseState, classifyToolResultState, type ToolIndex } from "@/lib/turn-index"
+import { classifyToolUseState, classifyToolResultState, getToolEntry, type ToolIndex } from "@/lib/turn-index"
 
 interface OutputCtx {
   toolIndex: ToolIndex
@@ -305,7 +305,7 @@ function FunctionCallItemView({
   ctx?: OutputCtx
 }) {
   const parsed = safeParseJson(item.arguments)
-  const entry = ctx?.toolIndex.get(item.call_id) ?? { origin: null, resolution: null }
+  const entry = ctx ? getToolEntry(ctx.toolIndex, item.call_id) : { origin: null, resolution: null }
   const state = ctx ? classifyToolUseState(entry) : "healthy"
   const argsSnippet = formatJson(parsed ?? item.arguments).replace(/\s+/g, " ").slice(0, 60)
   const preview = `🔧 ${item.name}(${argsSnippet})`
@@ -1089,7 +1089,7 @@ export function OpenAiResponsesInputBlocks({
   return (
     <div className="space-y-2">
       {parsed.toolResults.map((tr) => {
-        const entry = ctx.toolIndex.get(tr.call_id) ?? { origin: null, resolution: null }
+        const entry = getToolEntry(ctx.toolIndex, tr.call_id)
         const state = classifyToolResultState(entry)
         return (
           <div

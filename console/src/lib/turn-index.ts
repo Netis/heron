@@ -1,4 +1,5 @@
 import type { AgentTurnCallItem } from "@/types/api"
+import { canonicalizeToolId } from "./tool-id"
 import { parseAnthropicCall } from "./wire-apis/anthropic"
 import { parseOpenAiChatCall } from "./wire-apis/openai-chat"
 import { parseOpenAiResponsesCall } from "./wire-apis/openai-responses"
@@ -130,10 +131,15 @@ export function buildToolIndex(calls: AgentTurnCallItem[]): ToolIndex {
   // Pass 1: tool_use origins (response side). First-wins — turn history is
   // carried forward in subsequent request bodies, but tool_use only appears
   // in the assistant response where it was first emitted.
+  //
+  // Keys are canonicalized (`canonicalizeToolId`) so that ids stripped by
+  // misbehaving clients (OpenClaw drops `_` from `call_xxx` when echoing
+  // into messages history) still match the canonical form on Pass 2.
   for (const call of calls) {
     for (const tu of iterToolUses(call)) {
-      if (index.has(tu.id)) continue
-      index.set(tu.id, {
+      const key = canonicalizeToolId(tu.id)
+      if (index.has(key)) continue
+      index.set(key, {
         origin: { call_sequence: call.sequence, call_id: call.id, tool_name: tu.name, args_json: tu.args_json },
         resolution: null,
       })
@@ -145,7 +151,8 @@ export function buildToolIndex(calls: AgentTurnCallItem[]): ToolIndex {
   // Record the earliest call that carried each result.
   for (const call of calls) {
     for (const tr of iterToolResults(call)) {
-      const existing = index.get(tr.tool_use_id)
+      const key = canonicalizeToolId(tr.tool_use_id)
+      const existing = index.get(key)
       if (existing?.resolution) continue
       const entry = existing ?? { origin: null, resolution: null }
       entry.resolution = {
@@ -155,11 +162,22 @@ export function buildToolIndex(calls: AgentTurnCallItem[]): ToolIndex {
         size_bytes: byteLength(tr.content),
         content: tr.content,
       }
-      index.set(tr.tool_use_id, entry)
+      index.set(key, entry)
     }
   }
 
   return index
+}
+
+/**
+ * Canonical-form lookup. Always use this instead of `index.get(rawId)` —
+ * raw lookups miss when the caller has a client-stripped id (e.g.,
+ * `calld9c1...`) but the index is keyed canonically (`call_d9c1...`).
+ * Returns an empty entry rather than `undefined` so call sites can render
+ * "not captured" placeholders without null-juggling.
+ */
+export function getToolEntry(index: ToolIndex, id: string): ToolIndexEntry {
+  return index.get(canonicalizeToolId(id)) ?? { origin: null, resolution: null }
 }
 
 export type ToolUseState = "healthy" | "capture_gap"

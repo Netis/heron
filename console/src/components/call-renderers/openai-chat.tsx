@@ -15,7 +15,7 @@ import type {
 } from "@/lib/wire-apis/openai-chat/types"
 import type { CallOverlay } from "./overlays/types"
 import { ToolUsePointer, ToolResultBackLink } from "@/components/turn-detail/tool-pointer"
-import { classifyToolUseState, classifyToolResultState, type ToolIndex } from "@/lib/turn-index"
+import { classifyToolUseState, classifyToolResultState, getToolEntry, type ToolIndex } from "@/lib/turn-index"
 
 interface OutputCtx {
   toolIndex: ToolIndex
@@ -118,7 +118,7 @@ function MessageContent({
 
 function ToolCallView({ tc, ctx }: { tc: OpenAiChatToolCall; ctx?: OutputCtx }) {
   const [open, setOpen] = useState(true)
-  const entry = ctx?.toolIndex.get(tc.id) ?? { origin: null, resolution: null }
+  const entry = ctx ? getToolEntry(ctx.toolIndex, tc.id) : { origin: null, resolution: null }
   const state = ctx ? classifyToolUseState(entry) : "healthy"
   return (
     <div className="rounded bg-amber-50/60 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/40 p-2 text-[11px]">
@@ -708,7 +708,7 @@ export function OpenAiChatInputBlocks({
   return (
     <div className="space-y-2">
       {parsed.toolResults.map((tr) => {
-        const entry = ctx.toolIndex.get(tr.tool_call_id) ?? { origin: null, resolution: null }
+        const entry = getToolEntry(ctx.toolIndex, tr.tool_call_id)
         const state = classifyToolResultState(entry)
         return (
           <div
