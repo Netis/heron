@@ -296,6 +296,53 @@ pub fn body_has_terminal_message_only(response_body: Option<&str>) -> bool {
 
 use crate::wire_apis::AssistantSig;
 
+/// Extract `tools[].name`. Responses tools are FLAT — each entry is
+/// `{type:"function", name, parameters, ...}` (no inner `function`
+/// wrapper like OpenAI Chat uses). Same `Some(empty) | None` semantics as
+/// the Anthropic / OpenAI-Chat counterparts: absent → empty list,
+/// wrong shape → `None`.
+pub fn tool_names(v: &Value) -> Option<Vec<String>> {
+    match v.get("tools") {
+        None => Some(Vec::new()),
+        Some(Value::Array(arr)) => Some(
+            arr.iter()
+                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(str::to_string))
+                .collect(),
+        ),
+        Some(_) => None,
+    }
+}
+
+/// First system-prompt text in a Responses request. Two placements are
+/// possible and must both be checked:
+///   1. Top-level `instructions` field (codex-style, mostly a Codex path).
+///   2. A `{type:"message", role:"system"|"developer"}` item in `input[]`
+///      (the standard non-codex Responses path used by SDKs that fold the
+///      system prompt into the conversation).
+/// `instructions` wins if present (it's the explicit channel); otherwise
+/// fall back to the `input[]` walk.
+pub fn first_system_text(v: &Value) -> Option<String> {
+    if let Some(s) = v.get("instructions").and_then(|x| x.as_str()) {
+        if !s.trim().is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    let items = v.get("input")?.as_array()?;
+    for it in items {
+        if it.get("type").and_then(|v| v.as_str()) != Some("message") {
+            continue;
+        }
+        let role = it.get("role").and_then(|v| v.as_str());
+        if role != Some("system") && role != Some("developer") {
+            continue;
+        }
+        if let Some(t) = message_text(it) {
+            return Some(t);
+        }
+    }
+    None
+}
+
 /// Concatenate visible text from a single Responses `message` item's
 /// content. Accepts the legacy string shorthand and the canonical
 /// `[{"type":"output_text","text":...}]` (or `"input_text"`/`"text"`)

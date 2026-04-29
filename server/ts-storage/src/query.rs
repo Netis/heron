@@ -137,6 +137,8 @@ pub struct CallListItem {
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
     pub client_ip: String,
+    pub server_ip: String,
+    pub server_port: u16,
     pub request_path: String,
 }
 

@@ -3,7 +3,7 @@ import { ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Loader2, Fi
 import { cn } from "@/lib/utils"
 import { useAgentTurns } from "@/hooks/use-agent-turns"
 import { useSearchParamState } from "@/hooks/use-search-param-state"
-import { formatTime, formatNumber, formatDuration } from "@/lib/format"
+import { formatDateTimeMs, formatNumber, formatDuration } from "@/lib/format"
 import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
@@ -15,7 +15,7 @@ const AGENT_KIND_OPTIONS = ["claude-cli", "codex-cli", "generic"]
 const PAGE_SIZES = [20, 50, 100] as const
 
 const columns = [
-  { key: "start_time", label: "Time", width: "w-[140px]", sortable: true, align: "left" as const },
+  { key: "start_time", label: "Time", width: "w-[210px]", sortable: true, align: "left" as const },
   { key: "wire_api", label: "Wire API", width: "w-[120px]", sortable: false, align: "left" as const },
   { key: "primary_model", label: "Model", width: "w-[180px]", sortable: false, align: "left" as const },
   { key: "agent_kind", label: "Agent", width: "w-[100px]", sortable: false, align: "left" as const },
@@ -35,7 +35,7 @@ function SortIcon({ column, sortBy, sortOrder }: { column: string; sortBy: strin
 function CellValue({ item, column }: { item: AgentTurnListItem; column: (typeof columns)[number]["key"] }) {
   switch (column) {
     case "start_time":
-      return <span className="tabular-nums">{formatTime(item.start_time)}</span>
+      return <span className="tabular-nums">{formatDateTimeMs(item.start_time)}</span>
     case "wire_api":
       return (
         <span className="truncate" title={item.wire_api}>

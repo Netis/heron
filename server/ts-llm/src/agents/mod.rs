@@ -21,7 +21,7 @@ pub fn build_default_registry() -> AgentProfileRegistry {
     AgentProfileRegistry::new()
         .with(Box::new(claude_cli::ClaudeCliProfile))
         .with(Box::new(codex_cli::CodexCliProfile))
-        // .with(Box::new(openclaw::OpenClawProfile))
+        .with(Box::new(openclaw::OpenClawProfile))
         .with(Box::new(generic::GenericProfile))
 }
 
@@ -105,6 +105,18 @@ mod priority_tests {
       ]
     }"#;
 
+    /// OpenAI Responses main-path body (flat tools, ≥2 OpenClaw markers).
+    const OPENCLAW_RESPONSES_MAIN: &str = r#"{
+      "input":[
+        {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}
+      ],
+      "tools":[
+        {"type":"function","name":"read"},
+        {"type":"function","name":"sessions_spawn"},
+        {"type":"function","name":"subagents"}
+      ]
+    }"#;
+
     #[test]
     fn claude_cli_wins_over_generic_for_anthropic() {
         let reg = build_default_registry();
@@ -171,6 +183,27 @@ mod priority_tests {
         let reg = build_default_registry();
         let c = call_with_body(wa::OPENAI_CHAT, vec![], Some(OPENCLAW_OAI_MAIN));
         assert_eq!(reg.find(&c).map(|p| p.name()), Some("openclaw"));
+    }
+
+    #[test]
+    fn openclaw_wins_over_generic_when_openai_responses_marker_tools() {
+        let reg = build_default_registry();
+        let c = call_with_body(wa::OPENAI_RESPONSES, vec![], Some(OPENCLAW_RESPONSES_MAIN));
+        assert_eq!(reg.find(&c).map(|p| p.name()), Some("openclaw"));
+    }
+
+    #[test]
+    fn codex_cli_still_wins_over_openclaw_on_responses_when_codex_header_present() {
+        // codex-cli is registered before openclaw — even if a body somehow
+        // carried OpenClaw marker tools, the codex-tui UA wins. Verifies
+        // registry-order invariant when extending openclaw to Responses.
+        let reg = build_default_registry();
+        let c = call_with_body(
+            wa::OPENAI_RESPONSES,
+            vec![("User-Agent", "codex-tui/0.118.0")],
+            Some(OPENCLAW_RESPONSES_MAIN),
+        );
+        assert_eq!(reg.find(&c).map(|p| p.name()), Some("codex-cli"));
     }
 
     #[test]

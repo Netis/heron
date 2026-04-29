@@ -22,6 +22,8 @@ export interface LlmCallListItem {
   input_tokens: number | null
   output_tokens: number | null
   client_ip: string
+  server_ip: string
+  server_port: number
   request_path: string
 }
 

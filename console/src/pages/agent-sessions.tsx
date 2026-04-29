@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router"
 import { Loader2, Filter } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAgentSessions } from "@/hooks/use-agent-sessions"
-import { formatNumber, formatRelativeTime, formatDuration } from "@/lib/format"
+import { formatNumber, formatDateTime, formatDuration } from "@/lib/format"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import { AgentBadge } from "@/components/ui/agent-badge"
 import type { SessionListItem } from "@/types/api"
@@ -40,7 +40,7 @@ function SessionRow({ item }: { item: SessionListItem }) {
           </div>
         </div>
         <div className="shrink-0 text-right text-xs text-muted-foreground">
-          <div>{formatRelativeTime(item.last_turn_at_in_window)}</div>
+          <div className="tabular-nums">{formatDateTime(item.last_turn_at)}</div>
           <div className="text-[11px] opacity-70">{formatDuration(durationMs)}</div>
         </div>
       </div>

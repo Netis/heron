@@ -11,7 +11,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useHttpExchanges } from "@/hooks/use-http-exchanges"
 import { useSearchParamState } from "@/hooks/use-search-param-state"
-import { formatTime, formatMs } from "@/lib/format"
+import { formatDateTimeMs, formatMs } from "@/lib/format"
 import { StatusBadge } from "@/components/ui/status-badge"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import { HttpExchangeDetailPanel } from "./http-exchange-detail-panel"
@@ -36,7 +36,7 @@ const SORTABLE: Record<string, true> = {
 }
 
 const columns = [
-  { key: "request_time", label: "Time", width: "w-[160px]" },
+  { key: "request_time", label: "Time", width: "w-[210px]" },
   { key: "method", label: "Method", width: "w-[80px]" },
   { key: "uri", label: "URI", width: "" },
   { key: "client_ip", label: "Client", width: "w-[140px]" },
@@ -84,7 +84,7 @@ function MethodBadge({ method }: { method: string }) {
 function CellValue({ item, column }: { item: HttpExchangeListItem; column: SortKey }) {
   switch (column) {
     case "request_time":
-      return <span className="tabular-nums">{formatTime(item.request_time)}</span>
+      return <span className="tabular-nums">{formatDateTimeMs(item.request_time)}</span>
     case "method":
       return <MethodBadge method={item.method} />
     case "uri":

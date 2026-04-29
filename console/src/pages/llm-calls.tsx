@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils"
 import { useLlmCalls } from "@/hooks/use-llm-calls"
 import { useFinishReasons } from "@/hooks/use-filter-values"
 import { useSearchParamState } from "@/hooks/use-search-param-state"
-import { formatTime, formatMs, formatNumber } from "@/lib/format"
+import { formatDateTimeMs, formatMs, formatNumber } from "@/lib/format"
 import { StatusBadge } from "@/components/ui/status-badge"
 import { FinishBadge } from "@/components/ui/finish-badge"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
@@ -17,10 +17,11 @@ const KNOWN_STATUS_OPTIONS = new Set(STATUS_OPTIONS)
 const PAGE_SIZES = [20, 50, 100] as const
 
 const columns = [
-  { key: "request_time", label: "Time", width: "w-[160px]", sortable: true },
+  { key: "request_time", label: "Time", width: "w-[210px]", sortable: true },
   { key: "wire_api", label: "Wire API", width: "w-[110px]", sortable: false },
   { key: "model", label: "Model", width: "w-[140px]", sortable: false },
   { key: "client_ip", label: "Client", width: "w-[130px]", sortable: false },
+  { key: "server", label: "Server", width: "w-[180px]", sortable: false },
   { key: "request_path", label: "Path", width: "", sortable: false },
   { key: "status_code", label: "Status", width: "w-[52px]", sortable: true },
   { key: "is_stream", label: "S", width: "w-[32px]", sortable: false },
@@ -45,7 +46,7 @@ function SortIcon({ column, sortBy, sortOrder }: { column: string; sortBy: strin
 function CellValue({ item, column }: { item: LlmCallListItem; column: SortKey }) {
   switch (column) {
     case "request_time":
-      return <span className="tabular-nums">{formatTime(item.request_time)}</span>
+      return <span className="tabular-nums">{formatDateTimeMs(item.request_time)}</span>
     case "wire_api":
       return <span className="truncate">{item.wire_api}</span>
     case "model":
@@ -56,6 +57,12 @@ function CellValue({ item, column }: { item: LlmCallListItem; column: SortKey })
       )
     case "client_ip":
       return <span className="truncate font-mono text-xs">{item.client_ip}</span>
+    case "server":
+      return (
+        <span className="truncate font-mono text-xs">
+          {item.server_ip}:{item.server_port}
+        </span>
+      )
     case "request_path":
       return (
         <span className="block truncate font-mono text-xs" title={item.request_path}>

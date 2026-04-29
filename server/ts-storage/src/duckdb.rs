@@ -2056,7 +2056,7 @@ impl StorageBackend for DuckDbBackend {
             let items_sql = format!(
                 "SELECT id, source_id, epoch_ms(request_time), wire_api, model, status_code, is_stream, \
                  finish_reason, ttft_ms, e2e_latency_ms, input_tokens, output_tokens, \
-                 client_ip, request_path \
+                 client_ip, server_ip, server_port, request_path \
                  FROM llm_calls WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
@@ -2115,8 +2115,14 @@ impl StorageBackend for DuckDbBackend {
                     client_ip: row
                         .get(12)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    request_path: row
+                    server_ip: row
                         .get(13)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    server_port: row
+                        .get(14)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    request_path: row
+                        .get(15)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                 });
             }
