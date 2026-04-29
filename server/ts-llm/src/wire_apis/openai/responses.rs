@@ -254,9 +254,9 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
 /// `message` items count as the final answer; `reasoning` is ignored.
 /// Return true iff at least one `message` is present and no `*_call` is.
 ///
-/// Used by both `CodexCliProfile` and `GenericOpenAiResponsesProfile` —
-/// the OpenAI Responses protocol always sets `status: "completed"` on
-/// successful API calls regardless of whether the agent continues, so the
+/// Used by both `CodexCliProfile` and `GenericProfile` (openai-responses
+/// branch) — the OpenAI Responses protocol always sets `status: "completed"`
+/// on successful API calls regardless of whether the agent continues, so the
 /// wire-api `finish_reason` is unreliable for turn-boundary purposes. This
 /// helper is the authoritative override.
 ///

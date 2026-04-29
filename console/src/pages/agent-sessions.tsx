@@ -8,13 +8,7 @@ import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import { AgentBadge } from "@/components/ui/agent-badge"
 import type { SessionListItem } from "@/types/api"
 
-const AGENT_KIND_OPTIONS = [
-  "claude-cli",
-  "codex-cli",
-  "generic-anthropic",
-  "generic-openai-chat",
-  "generic-openai-responses",
-]
+const AGENT_KIND_OPTIONS = ["claude-cli", "codex-cli", "generic"]
 
 function SessionRow({ item }: { item: SessionListItem }) {
   const [searchParams] = useSearchParams()

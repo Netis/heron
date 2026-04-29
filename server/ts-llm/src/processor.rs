@@ -174,7 +174,7 @@ pub fn build_agent_call_info(
     metrics: &ts_common::internal_metrics::MetricsWorker,
 ) -> Option<AgentCallInfo> {
     let profile = registry.find(call)?;
-    let is_generic = profile.name().starts_with("generic-");
+    let is_generic = profile.name() == "generic";
     let Some(ids) = profile.extract_session_id(call) else {
         if is_generic {
             metrics.counter(ts_common::internal_metrics::Metric::LlmGenericSessionIdSynthFailed).inc();

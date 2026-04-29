@@ -546,7 +546,7 @@ async fn openclaw_multi_sessions_expects_two_sessions_four_turns() {
         );
     }
     assert_eq!(chat.len(), 4, "expected 4 turns; got {}", chat.len());
-    assert!(chat.iter().all(|t| t.agent_kind == "generic-openai-chat"));
+    assert!(chat.iter().all(|t| t.agent_kind == "openclaw"));
     assert!(
         chat.iter().all(|t| t.status == TurnStatus::Complete),
         "all turns expected Complete"
@@ -585,13 +585,17 @@ async fn openclaw_multi_sessions_pcap_shard_parity() {
 }
 
 /// OpenClaw (Anthropic/JS SDK + GLM-5) capture covering one user conversation
-/// plus two compaction runs. GLM-5 emits parallel `tool_use` blocks where
-/// every `content_block_start` arrives before any `input_json_delta`, and
-/// per-index deltas/stops are interleaved in arbitrary order.
+/// plus compaction runs. GLM-5 emits parallel `tool_use` blocks where every
+/// `content_block_start` arrives before any `input_json_delta`, and per-index
+/// deltas/stops are interleaved in arbitrary order.
 ///
 /// Asserts:
-///   1. Pipeline produces the expected turn / session shape on the new
-///      fixture (3 sessions, 8 turns, all `generic-anthropic` Complete).
+///   1. Pipeline produces the expected turn / session shape under the
+///      `openclaw` profile: 1 session, 4 turns, all `agent_kind == "openclaw"`
+///      Complete. (Compaction-summarizer calls are dropped via
+///      `is_auxiliary` and never reach turn assembly — pre-profile they
+///      collapsed into two `gen-*` synth-id sessions because their
+///      first-user/first-assistant text was byte-identical boilerplate.)
 ///   2. Bug-fix-specific: every reconstructed `tool_use` block has a
 ///      non-empty parsed `input` object. Pre-fix, one or more `tool_use`
 ///      blocks per parallel-tool response ended up with `input: ""` because
@@ -620,8 +624,8 @@ async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
         );
     }
 
-    assert_eq!(anthropic.len(), 8, "expected 8 turns; got {}", anthropic.len());
-    assert!(anthropic.iter().all(|t| t.agent_kind == "generic-anthropic"));
+    assert_eq!(anthropic.len(), 4, "expected 4 turns; got {}", anthropic.len());
+    assert!(anthropic.iter().all(|t| t.agent_kind == "openclaw"));
     assert!(
         anthropic.iter().all(|t| t.status == TurnStatus::Complete),
         "all turns expected Complete"
@@ -630,15 +634,15 @@ async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
         anthropic.iter().map(|t| t.session_id.as_str()).collect();
     assert_eq!(
         sessions.len(),
-        3,
-        "expected 3 distinct sessions; got {sessions:?}",
+        1,
+        "expected 1 distinct session (compaction aux dropped); got {sessions:?}",
     );
-    // One session anchors on the first tool_use id of the user-facing
-    // conversation; the remaining two are compaction passes whose responses
-    // carry only text → fall through to `gen-<hash>` synthesis.
+    // Sole remaining session anchors on the first tool_use id of the
+    // user-facing conversation. Compaction-summarizer calls were filtered
+    // out by `OpenClawProfile::is_auxiliary` before turn assembly.
     assert!(
-        sessions.iter().filter(|s| s.starts_with("gen-")).count() == 2,
-        "expected 2 gen-* sessions; got {sessions:?}",
+        sessions.iter().all(|s| s.starts_with("toolu_") || s.starts_with("call_")),
+        "main session_id must be a canonical tool id; got {sessions:?}",
     );
 
     // Bug-fix assertion: every tool_use block in every reconstructed response
@@ -690,10 +694,11 @@ async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
 
 /// End-to-end unit test: two `LlmCall` records (no claude-cli UA) run through
 /// `build_agent_call_info` + `TurnTracker` produce a single `AgentTurn` with
-/// `agent_kind == "generic-anthropic"` and `session_id == "toolu_pcap"`.
+/// `agent_kind == "generic"` and `session_id == "toolu_pcap"`. The Anthropic
+/// wire-api shape exercises the generic profile's `wa::ANTHROPIC` branch.
 /// No pcap fixture — calls are constructed directly for speed and determinism.
 #[tokio::test]
-async fn generic_anthropic_two_call_session() {
+async fn generic_profile_anthropic_two_call_session() {
     use std::net::IpAddr;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -733,7 +738,7 @@ async fn generic_anthropic_two_call_session() {
             server_ip: "10.0.0.2".parse::<IpAddr>().unwrap(),
             server_port: 443,
             response_id: None,
-            // No claude-cli UA — falls to generic-anthropic.
+            // No claude-cli UA — falls to generic (anthropic wire-api branch).
             request_headers: vec![("User-Agent".into(), "anthropic/0.40 python/3.12".into())],
             response_headers: vec![],
         }
@@ -777,7 +782,7 @@ async fn generic_anthropic_two_call_session() {
     let call1 = make_call(req1, resp1, 1_000_000, Some("tool_use"));
     let info1 =
         build_agent_call_info(&call1, &registry, &wire_apis, &llm_metrics).expect("info1");
-    assert_eq!(info1.agent_kind, "generic-anthropic");
+    assert_eq!(info1.agent_kind, "generic");
     assert_eq!(info1.session_id, "toolu_pcap");
     assert_eq!(info1.is_user_turn_start, Some(true));
     assert!(!info1.is_turn_terminal, "tool_use is not terminal");
@@ -838,7 +843,7 @@ async fn generic_anthropic_two_call_session() {
     assert_eq!(turns.len(), 1, "exactly one turn");
     let t = &turns[0];
     assert_eq!(t.session_id, "toolu_pcap");
-    assert_eq!(t.agent_kind, "generic-anthropic");
+    assert_eq!(t.agent_kind, "generic");
     assert_eq!(t.call_count, 2);
     assert_eq!(
         t.user_input_preview.as_deref(),
