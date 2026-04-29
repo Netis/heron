@@ -728,6 +728,21 @@ mod tests {
         w
     }
 
+    fn llm_test_metrics() -> MetricsWorker {
+        let mut sys = MetricsSystem::new();
+        let w = sys.register_worker(
+            "test-llm",
+            &[
+                Metric::WireDetected,
+                Metric::WireIgnored,
+                Metric::LlmGenericToolIdCanonicalized,
+                Metric::LlmGenericSessionIdUnsynth,
+            ],
+        );
+        let _svc = sys.start();
+        w
+    }
+
     /// Build a tracker with zero grace so calls finalize on arrival — keeps
     /// unit assertions tight.
     fn mk_tracker_no_grace() -> TurnTracker {
@@ -750,13 +765,15 @@ mod tests {
     fn call_info_for_anthropic(call: &LlmCall) -> AgentCallInfo {
         let reg = agents::build_default_registry();
         let wa_reg = ts_llm::wire_apis::build_default_wire_api_registry();
-        ts_llm::build_agent_call_info(call, &reg, &wa_reg).expect("claude-cli call info")
+        let metrics = llm_test_metrics();
+        ts_llm::build_agent_call_info(call, &reg, &wa_reg, &metrics).expect("claude-cli call info")
     }
 
     fn call_info_for_codex(call: &LlmCall) -> AgentCallInfo {
         let reg = agents::build_default_registry();
         let wa_reg = ts_llm::wire_apis::build_default_wire_api_registry();
-        ts_llm::build_agent_call_info(call, &reg, &wa_reg).expect("codex-cli call info")
+        let metrics = llm_test_metrics();
+        ts_llm::build_agent_call_info(call, &reg, &wa_reg, &metrics).expect("codex-cli call info")
     }
 
     fn anthropic_call(

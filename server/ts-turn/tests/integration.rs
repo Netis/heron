@@ -395,3 +395,172 @@ async fn claude_cli_messages_multi_shard_parity() {
         "turn sets must match across shard counts"
     );
 }
+
+/// End-to-end unit test: two `LlmCall` records (no claude-cli UA) run through
+/// `build_agent_call_info` + `TurnTracker` produce a single `AgentTurn` with
+/// `agent_kind == "generic-anthropic"` and `session_id == "toolu_pcap"`.
+/// No pcap fixture — calls are constructed directly for speed and determinism.
+#[tokio::test]
+async fn generic_anthropic_two_call_session() {
+    use std::net::IpAddr;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use ts_common::internal_metrics::{Metric, MetricsSystem};
+    use ts_llm::agents::build_default_registry;
+    use ts_llm::build_agent_call_info;
+    use ts_llm::model::{AgentCall, ApiType, LlmCall};
+    use ts_turn::tracker::{TrackerConfig, TurnTracker};
+    use ts_turn::{TurnEvent, TurnStatus};
+
+    fn make_call(req: &str, resp: &str, ts_us: i64, finish: Option<&str>) -> LlmCall {
+        LlmCall {
+            source_id: "test".into(),
+            id: format!("c-{ts_us}"),
+            wire_api: ts_llm::wire_apis::ANTHROPIC,
+            model: "claude-3-5-sonnet".into(),
+            api_type: ApiType::Chat,
+            request_time: ts_us,
+            response_time: Some(ts_us + 10_000),
+            complete_time: Some(ts_us + 50_000),
+            request_path: "/v1/messages".into(),
+            is_stream: true,
+            request_body: Some(req.into()),
+            status_code: Some(200),
+            finish_reason: finish.map(str::to_string),
+            response_body: Some(resp.into()),
+            input_tokens: Some(10),
+            output_tokens: Some(20),
+            total_tokens: Some(30),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            ttft_ms: Some(50.0),
+            e2e_latency_ms: Some(100.0),
+            client_ip: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            client_port: 4444,
+            server_ip: "10.0.0.2".parse::<IpAddr>().unwrap(),
+            server_port: 443,
+            response_id: None,
+            // No claude-cli UA — falls to generic-anthropic.
+            request_headers: vec![("User-Agent".into(), "anthropic/0.40 python/3.12".into())],
+            response_headers: vec![],
+        }
+    }
+
+    // Separate MetricsWorker for build_agent_call_info (wire-detection metrics).
+    let mut llm_sys = MetricsSystem::new();
+    let llm_metrics = llm_sys.register_worker(
+        "test-llm",
+        &[
+            Metric::WireDetected,
+            Metric::WireIgnored,
+            Metric::LlmGenericToolIdCanonicalized,
+            Metric::LlmGenericSessionIdUnsynth,
+        ],
+    );
+    let _llm_svc = llm_sys.start();
+
+    // Separate MetricsWorker for TurnTracker (turn-assembly metrics).
+    let mut turn_sys = MetricsSystem::new();
+    let turn_metrics = turn_sys.register_worker(
+        "test-turn",
+        &[
+            Metric::TurnCallsIngested,
+            Metric::TurnCallsAuxiliary,
+            Metric::TurnsCompleted,
+            Metric::TurnCallsDroppedLate,
+            Metric::TurnClosedByGrace,
+            Metric::TurnClosedByIdle,
+            Metric::TurnDiscardedNoUserStart,
+        ],
+    );
+    let _turn_svc = turn_sys.start();
+
+    let registry = Arc::new(build_default_registry());
+    let wire_apis = Arc::new(ts_llm::wire_apis::build_default_wire_api_registry());
+
+    // Call #1: user prompt → assistant tool_use (not terminal).
+    let req1 = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"fix the bug"}]}]}"#;
+    let resp1 = r#"{"content":[{"type":"tool_use","id":"toolu_pcap","name":"Read","input":{"path":"/x"}}],"stop_reason":"tool_use"}"#;
+    let call1 = make_call(req1, resp1, 1_000_000, Some("tool_use"));
+    let info1 =
+        build_agent_call_info(&call1, &registry, &wire_apis, &llm_metrics).expect("info1");
+    assert_eq!(info1.agent_kind, "generic-anthropic");
+    assert_eq!(info1.session_id, "toolu_pcap");
+    assert_eq!(info1.is_user_turn_start, Some(true));
+    assert!(!info1.is_turn_terminal, "tool_use is not terminal");
+
+    // Call #2: tool_result → assistant text (terminal end_turn).
+    let req2 = r#"{"messages":[
+        {"role":"user","content":[{"type":"text","text":"fix the bug"}]},
+        {"role":"assistant","content":[{"type":"tool_use","id":"toolu_pcap","name":"Read","input":{"path":"/x"}}]},
+        {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_pcap","content":"file ok"}]}
+    ]}"#;
+    let resp2 = r#"{"content":[{"type":"text","text":"the bug is at line 42"}],"stop_reason":"end_turn"}"#;
+    let call2 = make_call(req2, resp2, 2_000_000, Some("end_turn"));
+    let info2 =
+        build_agent_call_info(&call2, &registry, &wire_apis, &llm_metrics).expect("info2");
+    assert_eq!(
+        info2.session_id, "toolu_pcap",
+        "call #2 must hit same session as call #1"
+    );
+    assert!(info2.is_turn_terminal, "end_turn is terminal");
+
+    // Feed both into the tracker with a fixed wall-clock instant.
+    // grace=1s (default). Use ingest_at with the same `now` so neither call
+    // triggers grace on its own. Then force-flush via flush_all_at with a
+    // wall-clock 2 s later (past the 1 s grace window).
+    let mut tracker = TurnTracker::new(
+        TrackerConfig {
+            grace: Duration::from_secs(1),
+            ..TrackerConfig::default()
+        },
+        turn_metrics,
+    );
+    let now = Instant::now();
+    let mut events = Vec::new();
+    events.extend(tracker.ingest_at(
+        AgentCall {
+            call: Arc::new(call1),
+            agent: info1,
+        },
+        now,
+    ));
+    events.extend(tracker.ingest_at(
+        AgentCall {
+            call: Arc::new(call2),
+            agent: info2,
+        },
+        now,
+    ));
+    // Force grace expiry by advancing wall clock past the grace window.
+    let later = now + Duration::from_secs(2);
+    events.extend(tracker.flush_all_at(later));
+
+    let turns: Vec<_> = events
+        .into_iter()
+        .filter_map(|e| match e {
+            TurnEvent::Completed(t) => Some(t),
+        })
+        .collect();
+    assert_eq!(turns.len(), 1, "exactly one turn");
+    let t = &turns[0];
+    assert_eq!(t.session_id, "toolu_pcap");
+    assert_eq!(t.agent_kind, "generic-anthropic");
+    assert_eq!(t.call_count, 2);
+    assert_eq!(
+        t.user_input_preview.as_deref(),
+        Some("fix the bug"),
+        "user_input_preview"
+    );
+    assert_eq!(
+        t.final_answer_preview.as_deref(),
+        Some("the bug is at line 42"),
+        "final_answer_preview"
+    );
+    assert!(
+        matches!(t.status, TurnStatus::Complete),
+        "status must be Complete, got {:?}",
+        t.status
+    );
+}
