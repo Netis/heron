@@ -10,7 +10,13 @@ import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
 import type { AgentTurnListItem } from "@/types/api"
 
 const STATUS_OPTIONS = ["complete", "incomplete"]
-const AGENT_KIND_OPTIONS = ["claude-cli", "codex-cli"]
+const AGENT_KIND_OPTIONS = [
+  "claude-cli",
+  "codex-cli",
+  "generic-anthropic",
+  "generic-openai-chat",
+  "generic-openai-responses",
+]
 
 const PAGE_SIZES = [20, 50, 100] as const
 
