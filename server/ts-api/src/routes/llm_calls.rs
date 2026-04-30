@@ -130,6 +130,7 @@ mod tests {
             started_at_ms: 0,
             version: "test",
             pipelines: vec![],
+            drained: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 

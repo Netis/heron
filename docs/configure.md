@@ -38,6 +38,7 @@ CLI flags **override the config file** entirely for the source pipeline:
 | `--pcap-file <path>` | Same, but reading from a file instead of an interface |
 | `--bpf-filter "<expr>"` | Adds a BPF filter to the CLI pipeline (requires `-i`) |
 | `--snaplen <n>` | Snapshot length for the CLI pipeline (default `262144`) |
+| `--exit-after-drain` | Exit when capture sources finish and the pipeline drains. Default keeps the API/console available so you can browse results after a `--pcap-file` replay; press Ctrl+C to exit. Use this flag for batch/CI runs. |
 
 Storage, API, and retention settings are always read from the config
 file — CLI does not override these.

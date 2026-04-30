@@ -42,6 +42,12 @@ fn help_lists_subcommands() {
         stdout.contains("--pcap-file") && stdout.contains("--interface"),
         "expected --pcap-file and --interface in help output, got: {stdout}"
     );
+    // Batch-mode opt-out for pcap replay must stay surfaced in help so users
+    // can find it after EOF when the process parks instead of exiting.
+    assert!(
+        stdout.contains("--exit-after-drain"),
+        "expected --exit-after-drain in help output, got: {stdout}"
+    );
 }
 
 #[test]

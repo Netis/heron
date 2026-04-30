@@ -14,6 +14,7 @@ pub mod params;
 pub mod response;
 pub mod routes;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use axum::routing::get;
@@ -49,11 +50,17 @@ pub struct ApiRuntimeConfigContext {
 /// pipelines were registered at startup). Built from `loaded_at_ms` and
 /// the names of `ApiMetricsContext.pipelines` to avoid taking another
 /// reference to those `Arc<MetricsSvc>`s.
+///
+/// `drained` is flipped by `main.rs` once every capture source has finished
+/// and the pipeline has drained, so `/api/health` can honestly report
+/// `running: false` while the process parks waiting for a shutdown signal
+/// (the new keep-the-API-up default for `--pcap-file` replay).
 #[derive(Clone)]
 pub struct ApiHealthContext {
     pub started_at_ms: i64,
     pub version: &'static str,
     pub pipelines: Vec<String>,
+    pub drained: Arc<AtomicBool>,
 }
 
 /// Bind the API server listener. Call this before spawning so bind errors

@@ -1,5 +1,6 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -105,6 +106,11 @@ struct RunArgs {
     /// Snapshot length for live capture (only used with -i)
     #[arg(long, default_value = "262144")]
     snaplen: u32,
+
+    /// Exit when capture sources finish and the pipeline drains (batch mode).
+    /// Default: keep the API/console available; press Ctrl+C to exit.
+    #[arg(long)]
+    exit_after_drain: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -317,6 +323,12 @@ async fn run_pipeline(cli: Cli) {
     // both drop out when this fires (Ctrl+C, pipeline failure, etc.).
     let cancel = CancellationToken::new();
 
+    // Pipeline-drained signal exposed to `/api/health`. Stays `false` while
+    // sources are feeding the pipeline; flipped to `true` after the pipeline
+    // has drained and the process is parked waiting for a shutdown signal
+    // (the keep-the-API-up default for `--pcap-file` replay).
+    let drained = Arc::new(AtomicBool::new(false));
+
     // Initialize storage backend
     let storage = match create_backend(&config.storage) {
         Ok(backend) => backend,
@@ -500,6 +512,7 @@ async fn run_pipeline(cli: Cli) {
                     started_at_ms: loaded_at_ms,
                     version: env!("CARGO_PKG_VERSION"),
                     pipelines: pipeline_names,
+                    drained: drained.clone(),
                 };
                 Some(tokio::spawn(async move {
                     let router =
@@ -555,9 +568,11 @@ async fn run_pipeline(cli: Cli) {
         }
 
         // Wait for: ctrl-c, all capture sources finishing, or any pipeline
-        // stage task panicking. Any of the three triggers shutdown. The
-        // storage sink is part of `stage_handles`, so `supervisor` also
-        // observes its final drain.
+        // stage task panicking. Only the signal arm cancels eagerly — the
+        // other two arms let the pipeline drain naturally (`Pipeline::supervise`
+        // returns when every stage's upstream sender drops) and fall through
+        // to the post-drain park below, so the API/console stays available
+        // for inspection. `--exit-after-drain` short-circuits the park.
         let mut supervisor = tokio::spawn(Pipeline::supervise(stage_handles));
         tokio::select! {
             sig = wait_shutdown_signal() => {
@@ -568,17 +583,15 @@ async fn run_pipeline(cli: Cli) {
                 while capture_tasks.join_next().await.is_some() {}
             } => {
                 tracing::info!("all capture sources finished");
-                cancel.cancel();
             }
             res = &mut supervisor => {
                 match res {
                     Ok(Some((label, err))) => tracing::error!(
-                        "pipeline stage '{label}' exited abnormally: {err}; cancelling capture"
+                        "pipeline stage '{label}' exited abnormally: {err}"
                     ),
                     Ok(None) => tracing::info!("all pipeline stages exited cleanly"),
                     Err(e) => tracing::error!("supervisor join error: {e}"),
                 }
-                cancel.cancel();
             }
         }
 
@@ -652,6 +665,26 @@ async fn run_pipeline(cli: Cli) {
             let _ = handle.join.await;
         }
 
+        // Park on a shutdown signal so the API/console stays available for
+        // post-drain inspection — unless the user opted into batch mode with
+        // `--exit-after-drain`, or a real signal already fired `cancel` (in
+        // which case the API is already on its way down).
+        if !cancel.is_cancelled() {
+            drained.store(true, Ordering::Release);
+            if cli.run.exit_after_drain {
+                tracing::info!("pipeline drained; --exit-after-drain set, exiting");
+                cancel.cancel();
+            } else {
+                tracing::info!(
+                    "pipeline drained; API/console remains available — press Ctrl+C to exit \
+                     (use --exit-after-drain for batch mode)"
+                );
+                let sig = wait_shutdown_signal().await;
+                tracing::info!("received {sig}, shutting down...");
+                cancel.cancel();
+            }
+        }
+
         if force_exit {
             tracing::error!("graceful shutdown stalled; exiting forcefully");
             std::process::exit(1);
@@ -679,6 +712,7 @@ async fn run_pipeline(cli: Cli) {
                         started_at_ms: loaded_at_ms,
                         version: env!("CARGO_PKG_VERSION"),
                         pipelines: Vec::new(),
+                        drained: drained.clone(),
                     };
                     Some(tokio::spawn(async move {
                         let router = ts_api::router(

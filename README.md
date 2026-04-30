@@ -106,6 +106,8 @@ tokenscope --pcap-file capture.pcap
 
 Then open <http://localhost:3000>.
 
+After a pcap finishes replaying, the process keeps the API/console available so you can browse the results — press Ctrl+C to exit, or pass `--exit-after-drain` for batch/CI use that exits as soon as the pipeline drains.
+
 > TokenScope sees **plaintext** HTTP. The BPF filter targets the *internal* port your inference server listens on (vLLM 8000, Ollama 11434, your TLS-terminator's backend pool, …) — never `:443`.
 
 For systemd deployment, capability options, macOS BPF setup, and uninstall, see [docs/install.md](docs/install.md).

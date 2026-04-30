@@ -177,8 +177,11 @@ without touching a live interface:
 ./tokenscope --pcap-file capture.pcap
 ```
 
-The pipeline runs at file-read speed (much faster than realtime) and
-exits when the file is fully consumed.
+The pipeline runs at file-read speed (much faster than realtime). Once
+the file is fully consumed the process **keeps the API/console up** so
+you can inspect results in the UI — press Ctrl+C to exit. Pass
+`--exit-after-drain` to restore the old "exit immediately when done"
+behavior for batch/CI use.
 
 ## Verify the install
 
