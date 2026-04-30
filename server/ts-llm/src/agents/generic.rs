@@ -59,9 +59,7 @@ impl AgentProfile for GenericProfile {
                         wa::openai::responses::first_user_text(items),
                         wa::openai::responses::first_assistant_sig_from_input(items),
                     ),
-                    serde_json::Value::String(s) if !s.trim().is_empty() => {
-                        (Some(s.clone()), None)
-                    }
+                    serde_json::Value::String(s) if !s.trim().is_empty() => (Some(s.clone()), None),
                     _ => (None, None),
                 };
                 let user_text = user_text?;
@@ -234,7 +232,8 @@ mod tests {
         #[test]
         fn extract_session_id_call_1_tool_in_response() {
             let req = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#;
-            let resp = r#"{"content":[{"type":"tool_use","id":"toolu_xyz","name":"Read","input":{}}]}"#;
+            let resp =
+                r#"{"content":[{"type":"tool_use","id":"toolu_xyz","name":"Read","input":{}}]}"#;
             let c = ant(vec![], Some(req), Some(resp));
             let ids = GenericProfile.extract_session_id(&c).unwrap();
             assert_eq!(ids.session_id, "toolu_xyz");
@@ -253,7 +252,8 @@ mod tests {
         fn extract_session_id_call_1_and_n_match() {
             let resp =
                 r#"{"content":[{"type":"tool_use","id":"toolu_same","name":"R","input":{}}]}"#;
-            let req1 = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"prompt"}]}]}"#;
+            let req1 =
+                r#"{"messages":[{"role":"user","content":[{"type":"text","text":"prompt"}]}]}"#;
             let req2 = r#"{"messages":[
                 {"role":"user","content":[{"type":"text","text":"prompt"}]},
                 {"role":"assistant","content":[{"type":"tool_use","id":"toolu_same","name":"R","input":{}}]},
@@ -263,12 +263,16 @@ mod tests {
             let c2 = ant(vec![], Some(req2), None);
             let id1 = GenericProfile.extract_session_id(&c1).unwrap().session_id;
             let id2 = GenericProfile.extract_session_id(&c2).unwrap().session_id;
-            assert_eq!(id1, id2, "call #1 and call #2 must synthesize same session_id");
+            assert_eq!(
+                id1, id2,
+                "call #1 and call #2 must synthesize same session_id"
+            );
         }
 
         #[test]
         fn extract_session_id_call_1_with_normalized_tool_id() {
-            let resp = r#"{"content":[{"type":"tool_use","id":"toolu_abc","name":"R","input":{}}]}"#;
+            let resp =
+                r#"{"content":[{"type":"tool_use","id":"toolu_abc","name":"R","input":{}}]}"#;
             let req2 = r#"{"messages":[
                 {"role":"user","content":[{"type":"text","text":"x"}]},
                 {"role":"assistant","content":[{"type":"tool_use","id":"tooluabc","name":"R","input":{}}]},
@@ -301,7 +305,8 @@ mod tests {
 
         #[test]
         fn is_user_turn_start_text() {
-            let req = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}"#;
+            let req =
+                r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}"#;
             let c = ant(vec![], Some(req), None);
             assert_eq!(GenericProfile.is_user_turn_start(&c), Some(true));
         }
@@ -440,10 +445,8 @@ mod tests {
 
         #[test]
         fn extract_session_id_call_1_function_call_in_response() {
-            let req =
-                r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#;
-            let r =
-                r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_abc"}]}"#;
+            let req = r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#;
+            let r = r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_abc"}]}"#;
             let c = resp(Some(req), Some(r));
             let ids = GenericProfile.extract_session_id(&c).unwrap();
             assert_eq!(ids.session_id, "fc_abc");
@@ -452,8 +455,7 @@ mod tests {
         #[test]
         fn extract_session_id_call_1_and_n_match() {
             let req1 = r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"prompt"}]}]}"#;
-            let r =
-                r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_same"}]}"#;
+            let r = r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_same"}]}"#;
             let req2 = r#"{"input":[
                 {"type":"message","role":"user","content":[{"type":"input_text","text":"prompt"}]},
                 {"type":"function_call","name":"f","arguments":"{}","call_id":"fc_same"},
@@ -481,8 +483,7 @@ mod tests {
         #[test]
         fn extract_session_id_input_string_mode_treats_as_call_1() {
             let req = r#"{"input":"just a prompt"}"#;
-            let r =
-                r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_simple"}]}"#;
+            let r = r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_simple"}]}"#;
             let c = resp(Some(req), Some(r));
             assert_eq!(
                 GenericProfile.extract_session_id(&c).unwrap().session_id,

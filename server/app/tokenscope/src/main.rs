@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::fmt::time::UtcTime;
 use tracing_subscriber::FmtSubscriber;
@@ -17,13 +17,15 @@ use ts_common::config::{
 use ts_common::internal_metrics::{Metric, MetricsReporter, MetricsSystem};
 use ts_storage::create_backend;
 
+mod cmd;
+
 const CAPTURE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const PIPELINE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const API_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const RETENTION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[cfg(feature = "console")]
-mod console {
+pub(crate) mod console {
     use axum::http::{header, StatusCode};
     use axum::response::{IntoResponse, Response};
     use rust_embed::Embed;
@@ -50,21 +52,44 @@ mod console {
 }
 
 #[derive(Debug, Clone, ValueEnum)]
-enum Color {
+pub(crate) enum Color {
     Auto,
     Always,
     Never,
 }
 
+/// Top-level CLI. When invoked without a subcommand, runs the capture
+/// pipeline (existing behavior). Subcommands `config validate` and `doctor`
+/// reserve those names — the flag-only API has no positional collision.
 #[derive(Debug, Parser)]
 #[command(name = "tokenscope", version, about = "LLM API performance monitoring")]
-struct Args {
+struct Cli {
+    #[command(subcommand)]
+    cmd: Option<Command>,
+
+    #[command(flatten)]
+    run: RunArgs,
+
     /// Path to configuration file. When omitted, TokenScope searches
     /// (in order): ./config/default.toml, $XDG_CONFIG_HOME/tokenscope/config.toml,
     /// ~/.config/tokenscope/config.toml, /etc/tokenscope/config.toml.
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 
+    /// Increase verbosity level (-v, -vv, -vvv)
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+
+    /// Set colored output
+    #[arg(long, value_enum, default_value_t = Color::Auto, global = true)]
+    color: Color,
+}
+
+/// Capture-pipeline args. Lives on the root `Cli` (via `flatten`) so the
+/// existing `tokenscope -i eth0` / `tokenscope --pcap-file foo.pcap`
+/// invocations keep working unchanged when no subcommand is given.
+#[derive(Debug, Args)]
+struct RunArgs {
     /// Read packets from a pcap file (overrides config pipelines)
     #[arg(long, conflicts_with = "interface")]
     pcap_file: Option<PathBuf>,
@@ -80,14 +105,23 @@ struct Args {
     /// Snapshot length for live capture (only used with -i)
     #[arg(long, default_value = "262144")]
     snaplen: u32,
+}
 
-    /// Increase verbosity level (-v, -vv, -vvv)
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    verbose: u8,
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Inspect or validate the configuration file.
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCmd,
+    },
+    /// Run pre-flight diagnostics (config, capture privileges, storage, API port, console).
+    Doctor(cmd::doctor::DoctorArgs),
+}
 
-    /// Set colored output
-    #[arg(long, value_enum, default_value_t = Color::Auto)]
-    color: Color,
+#[derive(Debug, Subcommand)]
+enum ConfigCmd {
+    /// Validate the configuration file without starting any pipelines.
+    Validate(cmd::validate::ValidateArgs),
 }
 
 fn init_logger(color: &Color, verbose: u8) {
@@ -137,10 +171,29 @@ async fn join_capture_tasks(capture_tasks: &mut JoinSet<()>) {
 
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
-    init_logger(&args.color, args.verbose);
+    let cli = Cli::parse();
 
-    let config_path: PathBuf = match args.config {
+    match cli.cmd {
+        Some(Command::Config {
+            cmd: ConfigCmd::Validate(args),
+        }) => {
+            let code = cmd::validate::run(cli.config.as_deref(), &args);
+            std::process::exit(code);
+        }
+        Some(Command::Doctor(args)) => {
+            let code = cmd::doctor::run(cli.config.as_deref(), &args).await;
+            std::process::exit(code);
+        }
+        None => {
+            run_pipeline(cli).await;
+        }
+    }
+}
+
+async fn run_pipeline(cli: Cli) {
+    init_logger(&cli.color, cli.verbose);
+
+    let config_path: PathBuf = match cli.config {
         Some(p) => {
             if !p.is_file() {
                 tracing::error!("config file not found: '{}'", p.display());
@@ -185,7 +238,7 @@ async fn main() {
 
     // Effective pipelines: CLI flags override config pipelines entirely.
     // clap's `conflicts_with` ensures --pcap-file and -i are mutually exclusive.
-    let effective_pipelines: Vec<PipelineDef> = if let Some(pcap_file) = &args.pcap_file {
+    let effective_pipelines: Vec<PipelineDef> = if let Some(pcap_file) = &cli.run.pcap_file {
         vec![PipelineDef {
             name: "cli".to_string(),
             sources: vec![CaptureSourceConfig::PcapFile {
@@ -195,13 +248,13 @@ async fn main() {
             }],
             ..PipelineDef::default()
         }]
-    } else if let Some(interface) = &args.interface {
+    } else if let Some(interface) = &cli.run.interface {
         vec![PipelineDef {
             name: "cli".to_string(),
             sources: vec![CaptureSourceConfig::Pcap {
                 interface: interface.clone(),
-                bpf_filter: args.bpf_filter.clone(),
-                snaplen: args.snaplen,
+                bpf_filter: cli.run.bpf_filter.clone(),
+                snaplen: cli.run.snaplen,
                 source_id: None,
             }],
             ..PipelineDef::default()
@@ -434,13 +487,23 @@ async fn main() {
             Some(listener) => {
                 let api_storage = storage.clone();
                 let api_cancel = cancel.clone();
+                let pipeline_names: Vec<String> = api_pipeline_metrics
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect();
                 let api_metrics = ts_api::ApiMetricsContext {
                     pipelines: api_pipeline_metrics,
                     global: api_global_metrics.clone(),
                 };
                 let api_runtime_config = runtime_config_ctx.clone();
+                let api_health = ts_api::ApiHealthContext {
+                    started_at_ms: loaded_at_ms,
+                    version: env!("CARGO_PKG_VERSION"),
+                    pipelines: pipeline_names,
+                };
                 Some(tokio::spawn(async move {
-                    let router = ts_api::router(api_storage, api_metrics, api_runtime_config);
+                    let router =
+                        ts_api::router(api_storage, api_metrics, api_runtime_config, api_health);
                     #[cfg(feature = "console")]
                     let router = router.fallback(console::static_handler);
                     let server = axum::serve(listener, router).with_graceful_shutdown(async move {
@@ -612,9 +675,18 @@ async fn main() {
                         global: empty_global,
                     };
                     let api_runtime_config = runtime_config_ctx.clone();
+                    let api_health = ts_api::ApiHealthContext {
+                        started_at_ms: loaded_at_ms,
+                        version: env!("CARGO_PKG_VERSION"),
+                        pipelines: Vec::new(),
+                    };
                     Some(tokio::spawn(async move {
-                        let router =
-                            ts_api::router(api_storage, api_metrics, api_runtime_config);
+                        let router = ts_api::router(
+                            api_storage,
+                            api_metrics,
+                            api_runtime_config,
+                            api_health,
+                        );
                         #[cfg(feature = "console")]
                         let router = router.fallback(console::static_handler);
                         let server =

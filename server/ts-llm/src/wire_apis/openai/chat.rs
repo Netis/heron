@@ -414,7 +414,11 @@ pub fn first_assistant_sig_from_request(v: &Value) -> Option<AssistantSig> {
             continue;
         }
         if let Some(arr) = m.get("tool_calls").and_then(|v| v.as_array()) {
-            if let Some(id) = arr.first().and_then(|tc| tc.get("id")).and_then(|v| v.as_str()) {
+            if let Some(id) = arr
+                .first()
+                .and_then(|tc| tc.get("id"))
+                .and_then(|v| v.as_str())
+            {
                 return Some(AssistantSig::ToolId(id.to_string()));
             }
         }
@@ -431,7 +435,11 @@ pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
     let v: Value = serde_json::from_str(body).ok()?;
     let msg = v.get("choices")?.get(0)?.get("message")?;
     if let Some(arr) = msg.get("tool_calls").and_then(|v| v.as_array()) {
-        if let Some(id) = arr.first().and_then(|tc| tc.get("id")).and_then(|v| v.as_str()) {
+        if let Some(id) = arr
+            .first()
+            .and_then(|tc| tc.get("id"))
+            .and_then(|v| v.as_str())
+        {
             return Some(AssistantSig::ToolId(id.to_string()));
         }
     }

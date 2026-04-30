@@ -45,6 +45,17 @@ pub struct ApiRuntimeConfigContext {
     pub version: &'static str,
 }
 
+/// Carrier for `/api/health` — minimal liveness data (uptime + which
+/// pipelines were registered at startup). Built from `loaded_at_ms` and
+/// the names of `ApiMetricsContext.pipelines` to avoid taking another
+/// reference to those `Arc<MetricsSvc>`s.
+#[derive(Clone)]
+pub struct ApiHealthContext {
+    pub started_at_ms: i64,
+    pub version: &'static str,
+    pub pipelines: Vec<String>,
+}
+
 /// Bind the API server listener. Call this before spawning so bind errors
 /// propagate to the caller (and can abort startup).
 pub async fn bind(config: &ApiConfig) -> Result<TcpListener> {
@@ -61,6 +72,7 @@ pub fn router(
     storage: Arc<dyn StorageBackend>,
     metrics: ApiMetricsContext,
     runtime_config: ApiRuntimeConfigContext,
+    health: ApiHealthContext,
 ) -> Router {
     let internal_metrics_routes = Router::new()
         .route(
@@ -75,6 +87,10 @@ pub fn router(
             get(routes::runtime_config::runtime_config),
         )
         .with_state(runtime_config);
+
+    let health_routes = Router::new()
+        .route("/api/health", get(routes::health::health))
+        .with_state(health);
 
     Router::new()
         .route("/api/filters/wire-apis", get(routes::filters::wire_apis))
@@ -116,5 +132,6 @@ pub fn router(
         .with_state(storage)
         .merge(internal_metrics_routes)
         .merge(runtime_config_routes)
+        .merge(health_routes)
         .layer(CorsLayer::permissive())
 }

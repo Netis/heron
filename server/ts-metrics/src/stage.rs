@@ -42,10 +42,7 @@ pub fn spawn_metrics_stage(
         .collect();
     let bucket_probe = bucket_gauges.clone();
     metrics_sys.register_queue_probe(Metric::MetricsAggregatorOpenBuckets, move || {
-        bucket_probe
-            .iter()
-            .map(|g| g.load(Ordering::Relaxed))
-            .sum()
+        bucket_probe.iter().map(|g| g.load(Ordering::Relaxed)).sum()
     });
     let conc_probe = conc_gauges.clone();
     metrics_sys.register_queue_probe(Metric::MetricsAggregatorConcurrencyTable, move || {

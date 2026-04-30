@@ -159,13 +159,12 @@ impl AgentProfile for OpenClawProfile {
             wa::OPENAI_RESPONSES => {
                 let items = v.get("input")?.as_array()?;
                 let user_text = wa::openai::responses::first_user_text(items)?;
-                let sig = wa::openai::responses::first_assistant_sig_from_input(items).or_else(
-                    || {
+                let sig =
+                    wa::openai::responses::first_assistant_sig_from_input(items).or_else(|| {
                         call.response_body
                             .as_deref()
                             .and_then(wa::openai::responses::first_assistant_sig_from_response)
-                    },
-                )?;
+                    })?;
                 (user_text, sig)
             }
             _ => return None,
@@ -583,8 +582,7 @@ mod tests {
     #[test]
     fn extract_session_id_openai_responses_main_uses_first_function_call_id_from_response() {
         let req = responses_main_body("hi");
-        let resp =
-            r#"{"output":[{"type":"function_call","name":"exec","arguments":"{}","call_id":"fc_abc"}]}"#;
+        let resp = r#"{"output":[{"type":"function_call","name":"exec","arguments":"{}","call_id":"fc_abc"}]}"#;
         let c = call(wa::OPENAI_RESPONSES, Some(&req), Some(resp));
         let ids = OpenClawProfile.extract_session_id(&c).unwrap();
         assert_eq!(ids.session_id, "fc_abc");

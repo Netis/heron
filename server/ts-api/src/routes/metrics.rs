@@ -223,7 +223,7 @@ mod tests {
     use ts_metrics::model::LlmFinishMetric;
     use ts_storage::duckdb::DuckDbBackend;
 
-    use crate::{router, ApiMetricsContext, ApiRuntimeConfigContext};
+    use crate::{router, ApiHealthContext, ApiMetricsContext, ApiRuntimeConfigContext};
 
     fn test_metrics_context() -> ApiMetricsContext {
         let sys = ts_common::internal_metrics::MetricsSystem::new();
@@ -244,6 +244,14 @@ mod tests {
             config_path: "test".to_string(),
             loaded_at_ms: 0,
             version: "test",
+        }
+    }
+
+    fn test_health_context() -> ApiHealthContext {
+        ApiHealthContext {
+            started_at_ms: 0,
+            version: "test",
+            pipelines: vec![],
         }
     }
 
@@ -283,7 +291,12 @@ mod tests {
         .unwrap();
 
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context(), test_runtime_config_context());
+        let app = router(
+            storage,
+            test_metrics_context(),
+            test_runtime_config_context(),
+            test_health_context(),
+        );
 
         // start/end are seconds (matches existing /api/metrics/* convention).
         let start_s = (ts_a / 1_000_000) - 1;
@@ -353,7 +366,12 @@ mod tests {
         .unwrap();
 
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context(), test_runtime_config_context());
+        let app = router(
+            storage,
+            test_metrics_context(),
+            test_runtime_config_context(),
+            test_health_context(),
+        );
 
         let start_s = (ts / 1_000_000) - 1;
         let end_s = (ts / 1_000_000) + 60;
@@ -430,7 +448,12 @@ mod tests {
         .unwrap();
 
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context(), test_runtime_config_context());
+        let app = router(
+            storage,
+            test_metrics_context(),
+            test_runtime_config_context(),
+            test_health_context(),
+        );
 
         let start_s = (ts / 1_000_000) - 1;
         let end_s = (ts / 1_000_000) + 60;
@@ -526,7 +549,12 @@ mod tests {
             .unwrap();
 
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context(), test_runtime_config_context());
+        let app = router(
+            storage,
+            test_metrics_context(),
+            test_runtime_config_context(),
+            test_health_context(),
+        );
 
         let start_s = ts / 1_000_000;
         let end_s = start_s + 300; // 5 minutes
@@ -545,7 +573,13 @@ mod tests {
         let ts_secs: Vec<i64> = timestamps.iter().map(|t| t.as_i64().unwrap()).collect();
         assert_eq!(
             ts_secs,
-            vec![start_s, start_s + 60, start_s + 120, start_s + 180, start_s + 240],
+            vec![
+                start_s,
+                start_s + 60,
+                start_s + 120,
+                start_s + 180,
+                start_s + 240
+            ],
             "X-axis must cover the full 5-bucket grid even when only one bucket has data"
         );
 
@@ -569,7 +603,12 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context(), test_runtime_config_context());
+        let app = router(
+            storage,
+            test_metrics_context(),
+            test_runtime_config_context(),
+            test_health_context(),
+        );
 
         let start_s = 1_700_000_040i64;
         let end_s = start_s + 180; // 3 minutes
@@ -601,7 +640,12 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context(), test_runtime_config_context());
+        let app = router(
+            storage,
+            test_metrics_context(),
+            test_runtime_config_context(),
+            test_health_context(),
+        );
         let resp = app
             .oneshot(
                 Request::builder()

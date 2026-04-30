@@ -101,7 +101,7 @@ mod tests {
     use tower::ServiceExt;
     use ts_storage::duckdb::DuckDbBackend;
 
-    use crate::{router, ApiMetricsContext, ApiRuntimeConfigContext};
+    use crate::{router, ApiHealthContext, ApiMetricsContext, ApiRuntimeConfigContext};
 
     fn test_metrics_context() -> ApiMetricsContext {
         let sys = ts_common::internal_metrics::MetricsSystem::new();
@@ -125,6 +125,14 @@ mod tests {
         }
     }
 
+    fn test_health_context() -> ApiHealthContext {
+        ApiHealthContext {
+            started_at_ms: 0,
+            version: "test",
+            pipelines: vec![],
+        }
+    }
+
     #[tokio::test]
     async fn invalid_status_code_returns_json_envelope() {
         let backend = DuckDbBackend::open(":memory:").unwrap();
@@ -132,7 +140,12 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context(), test_runtime_config_context());
+        let app = router(
+            storage,
+            test_metrics_context(),
+            test_runtime_config_context(),
+            test_health_context(),
+        );
 
         let resp = app
             .oneshot(
@@ -169,7 +182,12 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context(), test_runtime_config_context());
+        let app = router(
+            storage,
+            test_metrics_context(),
+            test_runtime_config_context(),
+            test_health_context(),
+        );
 
         let resp = app
             .oneshot(

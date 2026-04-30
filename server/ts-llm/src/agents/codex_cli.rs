@@ -61,7 +61,10 @@ impl AgentProfile for CodexCliProfile {
         let raw = header(call, TURN_META_HEADER)?;
         let v = parse_turn_metadata(raw)?;
         let session_id = v.get("session_id")?.as_str()?.to_string();
-        Some(SessionIdExtraction { session_id, tool_id_canonicalized: false })
+        Some(SessionIdExtraction {
+            session_id,
+            tool_id_canonicalized: false,
+        })
     }
 
     fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
@@ -130,9 +133,7 @@ impl AgentProfile for CodexCliProfile {
         // Path note: re-exported from wire_apis::openai (the `responses`
         // submodule itself is private). Future generic profiles should use
         // the same path.
-        crate::wire_apis::openai::body_has_terminal_message_only(
-            call.response_body.as_deref(),
-        )
+        crate::wire_apis::openai::body_has_terminal_message_only(call.response_body.as_deref())
     }
 
     fn extract_assistant_text(&self, call: &LlmCall) -> Option<String> {

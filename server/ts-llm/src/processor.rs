@@ -42,9 +42,7 @@ impl LlmProcessor {
                 sse_events,
             } => self.on_exchange(request, response, sse_events),
             HttpJoinerEvent::Heartbeat { ts, source_id } => {
-                self.metrics
-                    .counter(Metric::LlmHeartbeatsReceived)
-                    .inc();
+                self.metrics.counter(Metric::LlmHeartbeatsReceived).inc();
                 vec![LlmEvent::Heartbeat { ts, source_id }]
             }
         }
@@ -177,12 +175,16 @@ pub fn build_agent_call_info(
     let is_generic = profile.name() == "generic";
     let Some(ids) = profile.extract_session_id(call) else {
         if is_generic {
-            metrics.counter(ts_common::internal_metrics::Metric::LlmGenericSessionIdSynthFailed).inc();
+            metrics
+                .counter(ts_common::internal_metrics::Metric::LlmGenericSessionIdSynthFailed)
+                .inc();
         }
         return None;
     };
     if is_generic && ids.tool_id_canonicalized {
-        metrics.counter(ts_common::internal_metrics::Metric::LlmGenericToolIdCanonicalized).inc();
+        metrics
+            .counter(ts_common::internal_metrics::Metric::LlmGenericToolIdCanonicalized)
+            .inc();
     }
     Some(AgentCallInfo {
         agent_kind: profile.name(),

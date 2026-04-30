@@ -162,7 +162,9 @@ impl RawAppConfig {
         // (`/api/runtime-config`, retention sweep, logs) read a fully-merged
         // map, not a sparse user-overrides map. See [`resolve_metrics_retention`]
         // for the merge rule and unknown-label handling.
-        storage.retention.metrics = resolve_metrics_retention(storage.retention.metrics);
+        let (resolved_metrics, unknowns) = resolve_metrics_retention(storage.retention.metrics);
+        storage.retention.metrics = resolved_metrics;
+        storage.retention.unknown_granularities = unknowns;
         AppConfig {
             pipelines,
             storage,
@@ -372,19 +374,22 @@ impl Default for StorageConfig {
 /// at config-load time to populate any granularity the user did not override
 /// and to drop typos like `"10sec"` with a warning. Adding a new granularity
 /// requires updating ts-metrics + this single constant.
-pub const DEFAULT_METRICS_RETENTION_DAYS: &[(&str, u32)] = &[
-    ("10s", 1),
-    ("1m", 7),
-    ("5m", 30),
-    ("1h", 365),
-];
+pub const DEFAULT_METRICS_RETENTION_DAYS: &[(&str, u32)] =
+    &[("10s", 1), ("1m", 7), ("5m", 30), ("1h", 365)];
 
 /// Merge user-supplied per-granularity retention overrides on top of
 /// [`DEFAULT_METRICS_RETENTION_DAYS`]. Unknown labels (typos like `"10sec"`)
 /// are dropped with a warn log so we don't silently keep junk in the loaded
 /// config — by the time anything reads `RetentionConfig::metrics`, every key
 /// is a known granularity and every known granularity has a value.
-pub fn resolve_metrics_retention(user: HashMap<String, u32>) -> HashMap<String, u32> {
+///
+/// Returns the resolved map and the list of dropped unknown labels — the
+/// latter is stashed on `RetentionConfig::unknown_granularities` so
+/// `AppConfig::validate()` can surface them as `ConfigIssue`s.
+pub fn resolve_metrics_retention(
+    user: HashMap<String, u32>,
+) -> (HashMap<String, u32>, Vec<String>) {
+    let mut unknowns = Vec::new();
     for label in user.keys() {
         if !DEFAULT_METRICS_RETENTION_DAYS
             .iter()
@@ -394,15 +399,17 @@ pub fn resolve_metrics_retention(user: HashMap<String, u32>) -> HashMap<String, 
                 granularity = label.as_str(),
                 "retention: unknown metrics granularity in config; ignoring"
             );
+            unknowns.push(label.clone());
         }
     }
-    DEFAULT_METRICS_RETENTION_DAYS
+    let resolved = DEFAULT_METRICS_RETENTION_DAYS
         .iter()
         .map(|(label, default_days)| {
             let days = user.get(*label).copied().unwrap_or(*default_days);
             ((*label).to_string(), days)
         })
-        .collect()
+        .collect();
+    (resolved, unknowns)
 }
 
 /// Data retention policy for stored telemetry. Enabled by default with sane
@@ -430,6 +437,14 @@ pub struct RetentionConfig {
     /// to disable retention for that granularity.
     #[serde(default)]
     pub metrics: HashMap<String, u32>,
+    /// Granularity labels in `metrics` that didn't match any known label
+    /// (typo guard). Populated by [`resolve_metrics_retention`] at load time
+    /// from the user's raw input — by the time you read this, the unknowns
+    /// have already been dropped from `metrics`. Surfaced by
+    /// `AppConfig::validate()` so `tokenscope config validate` can fail
+    /// loudly on typos that the load-time warn easily missed.
+    #[serde(skip)]
+    pub unknown_granularities: Vec<String>,
 }
 
 impl Default for RetentionConfig {
@@ -441,6 +456,7 @@ impl Default for RetentionConfig {
             turns: default_turns_retention_days(),
             http_exchanges: default_http_exchanges_retention_days(),
             metrics: HashMap::new(),
+            unknown_granularities: Vec::new(),
         }
     }
 }
@@ -655,6 +671,166 @@ fn default_sink_flush_interval_ms() -> u64 {
     1000
 }
 
+/// Severity of a [`ConfigIssue`]. `Error` blocks `tokenscope config validate`
+/// (exit 1); `Warn` shows up in output but does not fail the command —
+/// reserved for legal-but-suboptimal configurations (e.g. no pipelines,
+/// which the runtime tolerates by serving the API in idle mode).
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IssueSeverity {
+    Warn,
+    Error,
+}
+
+/// A semantic issue surfaced by [`AppConfig::validate`] beyond what TOML
+/// parse and serde already catch. Stable JSON serialization (snake_case
+/// `code`) so `tokenscope config validate` and `tokenscope doctor` produce
+/// machine-readable output suitable for CI gates and AI agents.
+///
+/// Each variant has a fixed severity ([`ConfigIssue::severity`]) — variants
+/// the runtime is documented to tolerate (no pipelines, no sources in a
+/// pipeline) are `Warn`; everything else is `Error`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "code", content = "detail", rename_all = "snake_case")]
+pub enum ConfigIssue {
+    /// No `[[pipeline]]` blocks (and no migrated single-pipeline) configured.
+    /// Legal: the runtime serves the API in idle mode — useful when the
+    /// user plans to attach via CLI flags (`-i`, `--pcap-file`) instead.
+    NoPipelines,
+    /// A pipeline was declared with zero `[[pipeline.sources]]`. Legal: the
+    /// runtime tolerates it (same idle-API behavior as `NoPipelines`).
+    NoSourcesInPipeline { pipeline: String },
+    /// Two `[[pipeline]]` blocks share the same `name`.
+    DuplicatePipelineName(String),
+    /// Two static sources (pcap / pcap-file) resolved to the same `source_id`.
+    /// `source_id` clashes break per-source dimensioning in metrics + storage.
+    DuplicateSourceId { pipeline: String, source_id: String },
+    /// Configured DuckDB path's parent directory is not writable by the
+    /// current process. Only emitted when `storage.backend == "duckdb"`.
+    StoragePathParentUnwritable { path: PathBuf },
+    /// User supplied a granularity label under `[storage.retention.metrics]`
+    /// that doesn't match any known granularity. Already dropped from the
+    /// effective retention map at load time; reported here so typos fail
+    /// validation rather than only producing a startup warn.
+    UnknownRetentionGranularity(String),
+}
+
+impl ConfigIssue {
+    /// Severity of this issue — drives validate's exit code and doctor's
+    /// `config.validate` status. The two `No*` variants are `Warn` because
+    /// the runtime serves the API in idle mode when they apply; everything
+    /// else is `Error`.
+    pub fn severity(&self) -> IssueSeverity {
+        match self {
+            Self::NoPipelines | Self::NoSourcesInPipeline { .. } => IssueSeverity::Warn,
+            Self::DuplicatePipelineName(_)
+            | Self::DuplicateSourceId { .. }
+            | Self::StoragePathParentUnwritable { .. }
+            | Self::UnknownRetentionGranularity(_) => IssueSeverity::Error,
+        }
+    }
+}
+
+/// Wrapper that pairs a [`ConfigIssue`] with its [`IssueSeverity`] for JSON
+/// output. Flattens the issue's adjacently-tagged `code`/`detail` fields so
+/// the rendered shape is `{"severity": "warn", "code": "...", "detail": ...}`.
+#[derive(Debug, Serialize)]
+pub struct AnnotatedConfigIssue<'a> {
+    pub severity: IssueSeverity,
+    #[serde(flatten)]
+    pub issue: &'a ConfigIssue,
+}
+
+impl<'a> From<&'a ConfigIssue> for AnnotatedConfigIssue<'a> {
+    fn from(issue: &'a ConfigIssue) -> Self {
+        Self {
+            severity: issue.severity(),
+            issue,
+        }
+    }
+}
+
+impl std::fmt::Display for ConfigIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoPipelines => write!(f, "no pipelines configured"),
+            Self::NoSourcesInPipeline { pipeline } => {
+                write!(f, "pipeline '{pipeline}' has no sources")
+            }
+            Self::DuplicatePipelineName(name) => {
+                write!(f, "duplicate pipeline name: '{name}'")
+            }
+            Self::DuplicateSourceId {
+                pipeline,
+                source_id,
+            } => write!(
+                f,
+                "duplicate source_id '{source_id}' in pipeline '{pipeline}'"
+            ),
+            Self::StoragePathParentUnwritable { path } => {
+                write!(f, "storage path parent is not writable: {}", path.display())
+            }
+            Self::UnknownRetentionGranularity(label) => {
+                let known: Vec<&str> = DEFAULT_METRICS_RETENTION_DAYS
+                    .iter()
+                    .map(|(k, _)| *k)
+                    .collect();
+                write!(
+                    f,
+                    "unknown retention granularity '{label}' (expected one of: {})",
+                    known.join(", ")
+                )
+            }
+        }
+    }
+}
+
+/// Best-effort writability probe for a directory. Walks up to the first
+/// existing ancestor (so probing a path under a not-yet-created `data/`
+/// directory still gives a meaningful answer about the cwd's writability),
+/// then attempts to atomically create a uniquely-named probe file and
+/// immediately remove it. The probe is the only reliable way to answer
+/// "writable for this uid" across UNIX permission models — checking mode
+/// bits via `metadata` misses ACLs, ownership, and effective uid.
+///
+/// Empty paths and parent-of-relative-paths that bottom out to "" are
+/// normalized to `.` so a relative `data/foo.duckdb` whose `data/` doesn't
+/// yet exist still probes the cwd (which is what `mkdir -p data` would do).
+fn is_writable_dir(dir: &Path) -> bool {
+    let mut probe_root = if dir.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        dir.to_path_buf()
+    };
+    while !probe_root.exists() {
+        match probe_root.parent() {
+            Some(p) => {
+                if p.as_os_str().is_empty() {
+                    probe_root = PathBuf::from(".");
+                    break;
+                }
+                probe_root = p.to_path_buf();
+            }
+            None => return false,
+        }
+    }
+    if !probe_root.is_dir() {
+        return false;
+    }
+    let probe = probe_root.join(format!(".tokenscope_validate_probe.{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 impl AppConfig {
     /// Load configuration from a TOML file, with environment variable overrides.
     ///
@@ -673,6 +849,63 @@ impl AppConfig {
 
         let raw: RawAppConfig = config.try_deserialize().map_err(AppError::from)?;
         Ok(raw.resolve())
+    }
+
+    /// Run cross-field validation beyond what TOML parse + serde catches.
+    /// Never panics; returns every issue found so callers can present a
+    /// complete picture instead of failing on the first one.
+    ///
+    /// Callable safely after [`AppConfig::load`] succeeds. Used by
+    /// `tokenscope config validate` and `tokenscope doctor`.
+    pub fn validate(&self) -> Vec<ConfigIssue> {
+        let mut issues = Vec::new();
+
+        if self.pipelines.is_empty() {
+            issues.push(ConfigIssue::NoPipelines);
+        }
+
+        let mut pipeline_names = std::collections::HashSet::new();
+        let mut source_ids: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for def in &self.pipelines {
+            if !pipeline_names.insert(def.name.clone()) {
+                issues.push(ConfigIssue::DuplicatePipelineName(def.name.clone()));
+            }
+            if def.sources.is_empty() {
+                issues.push(ConfigIssue::NoSourcesInPipeline {
+                    pipeline: def.name.clone(),
+                });
+            }
+            for source in &def.sources {
+                if let Some(sid) = source.resolved_source_id() {
+                    if source_ids.insert(sid.clone(), def.name.clone()).is_some() {
+                        issues.push(ConfigIssue::DuplicateSourceId {
+                            pipeline: def.name.clone(),
+                            source_id: sid,
+                        });
+                    }
+                }
+            }
+        }
+
+        for unknown in &self.storage.retention.unknown_granularities {
+            issues.push(ConfigIssue::UnknownRetentionGranularity(unknown.clone()));
+        }
+
+        if self.storage.backend == "duckdb" {
+            let path = Path::new(&self.storage.duckdb.path);
+            let probe_dir = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            if !is_writable_dir(probe_dir) {
+                issues.push(ConfigIssue::StoragePathParentUnwritable {
+                    path: path.to_path_buf(),
+                });
+            }
+        }
+
+        issues
     }
 
     /// Parse a TOML string into an `AppConfig`. Useful for tests.
@@ -945,6 +1178,223 @@ mod phase2_tests {
     }
 
     #[test]
+    fn validate_empty_config_reports_no_pipelines() {
+        let cfg = AppConfig::from_toml("");
+        let issues = cfg.validate();
+        assert!(
+            issues.iter().any(|i| matches!(i, ConfigIssue::NoPipelines)),
+            "expected NoPipelines, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_pipeline_without_sources_is_an_issue() {
+        let toml = r#"
+            [[pipeline]]
+            name = "empty"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::NoSourcesInPipeline { pipeline } if pipeline == "empty")),
+            "expected NoSourcesInPipeline('empty'), got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_duplicate_pipeline_names() {
+        let toml = r#"
+            [[pipeline]]
+            name = "dup"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+
+            [[pipeline]]
+            name = "dup"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth1"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::DuplicatePipelineName(n) if n == "dup")),
+            "expected DuplicatePipelineName('dup'), got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_duplicate_source_ids_across_pipelines() {
+        // Two pipelines, both with a pcap source on the same interface →
+        // resolved_source_id collides.
+        let toml = r#"
+            [[pipeline]]
+            name = "a"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+
+            [[pipeline]]
+            name = "b"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::DuplicateSourceId { source_id, .. } if source_id == "eth0")),
+            "expected DuplicateSourceId('eth0'), got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_unknown_retention_granularity_surfaces_after_load() {
+        // Typos are dropped from the effective config but stashed on
+        // `unknown_granularities` so `validate()` can still flag them.
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+
+            [storage.retention.metrics]
+            "10sec" = 1
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::UnknownRetentionGranularity(g) if g == "10sec")),
+            "expected UnknownRetentionGranularity('10sec'), got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_storage_path_parent_unwritable() {
+        // A path under a definitely-not-writable root surfaces the issue.
+        // `/proc/tokenscope-validate-test` exists on Linux but is not writable;
+        // on macOS we use `/dev/null/` which is unwritable as a directory.
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+
+            [storage.duckdb]
+            path = "/dev/null/cant-write/here.duckdb"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::StoragePathParentUnwritable { .. })),
+            "expected StoragePathParentUnwritable, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_clean_config_has_no_issues() {
+        let tmp = std::env::temp_dir();
+        let toml = format!(
+            r#"
+            [[pipeline]]
+            name = "p"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+
+            [storage.duckdb]
+            path = "{}/tokenscope-validate-clean.duckdb"
+            "#,
+            tmp.display()
+        );
+        let cfg = AppConfig::from_toml(&toml);
+        let issues = cfg.validate();
+        assert!(issues.is_empty(), "expected no issues, got {issues:?}");
+    }
+
+    #[test]
+    fn config_issue_serializes_with_snake_case_code() {
+        let issue = ConfigIssue::DuplicatePipelineName("foo".to_string());
+        let v = serde_json::to_value(&issue).unwrap();
+        assert_eq!(v["code"], "duplicate_pipeline_name");
+        assert_eq!(v["detail"], "foo");
+
+        let unit = ConfigIssue::NoPipelines;
+        let v = serde_json::to_value(&unit).unwrap();
+        assert_eq!(v["code"], "no_pipelines");
+    }
+
+    #[test]
+    fn no_pipelines_and_no_sources_are_warnings() {
+        // The runtime serves the API in idle mode for both — keep them
+        // visible (so AI agents see the intent gap) but don't fail validate.
+        assert_eq!(ConfigIssue::NoPipelines.severity(), IssueSeverity::Warn);
+        assert_eq!(
+            ConfigIssue::NoSourcesInPipeline {
+                pipeline: "p".to_string()
+            }
+            .severity(),
+            IssueSeverity::Warn
+        );
+    }
+
+    #[test]
+    fn breaking_misconfigurations_are_errors() {
+        assert_eq!(
+            ConfigIssue::DuplicatePipelineName("d".to_string()).severity(),
+            IssueSeverity::Error
+        );
+        assert_eq!(
+            ConfigIssue::DuplicateSourceId {
+                pipeline: "p".to_string(),
+                source_id: "s".to_string()
+            }
+            .severity(),
+            IssueSeverity::Error
+        );
+        assert_eq!(
+            ConfigIssue::StoragePathParentUnwritable {
+                path: PathBuf::from("/no")
+            }
+            .severity(),
+            IssueSeverity::Error
+        );
+        assert_eq!(
+            ConfigIssue::UnknownRetentionGranularity("10sec".to_string()).severity(),
+            IssueSeverity::Error
+        );
+    }
+
+    #[test]
+    fn annotated_issue_includes_severity_in_json() {
+        let issue = ConfigIssue::NoPipelines;
+        let annotated = AnnotatedConfigIssue::from(&issue);
+        let v = serde_json::to_value(&annotated).unwrap();
+        assert_eq!(v["severity"], "warn");
+        assert_eq!(v["code"], "no_pipelines");
+
+        let issue = ConfigIssue::DuplicatePipelineName("d".to_string());
+        let annotated = AnnotatedConfigIssue::from(&issue);
+        let v = serde_json::to_value(&annotated).unwrap();
+        assert_eq!(v["severity"], "error");
+        assert_eq!(v["code"], "duplicate_pipeline_name");
+        assert_eq!(v["detail"], "d");
+    }
+
+    #[test]
     fn pcap_dump_parses_full_block() {
         let toml = r#"
             [[pipeline]]
@@ -965,5 +1415,4 @@ mod phase2_tests {
         assert_eq!(d.dir, "/tmp/dumps");
         assert_eq!(d.filename_template, "{source_id}_x.pcap");
     }
-
 }

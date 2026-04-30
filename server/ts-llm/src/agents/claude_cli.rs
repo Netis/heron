@@ -75,7 +75,10 @@ impl AgentProfile for ClaudeCliProfile {
 
     fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction> {
         let session_id = header(call, SESSION_HEADER)?.to_string();
-        Some(SessionIdExtraction { session_id, tool_id_canonicalized: false })
+        Some(SessionIdExtraction {
+            session_id,
+            tool_id_canonicalized: false,
+        })
     }
 
     fn extract_user_input(&self, call: &LlmCall) -> Option<String> {

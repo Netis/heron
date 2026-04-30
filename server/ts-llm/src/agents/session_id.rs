@@ -29,7 +29,9 @@ use crate::wire_apis::AssistantSig;
 pub fn canonicalize_tool_id(id: &str) -> String {
     const PREFIXES: &[&str] = &["call", "toolu", "fc", "chatcmpl"];
     for p in PREFIXES {
-        let Some(after) = id.strip_prefix(p) else { continue };
+        let Some(after) = id.strip_prefix(p) else {
+            continue;
+        };
         if !after.is_empty() && !after.starts_with('_') {
             return format!("{p}_{after}");
         }
@@ -43,7 +45,11 @@ pub fn canonicalize_tool_id(id: &str) -> String {
 /// speed.
 pub fn synth_text_hash(user_text: &str, assistant_text: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
-    for byte in user_text.bytes().chain(b"\n".iter().copied()).chain(assistant_text.bytes()) {
+    for byte in user_text
+        .bytes()
+        .chain(b"\n".iter().copied())
+        .chain(assistant_text.bytes())
+    {
         h ^= byte as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
@@ -90,7 +96,10 @@ mod tests {
 
     #[test]
     fn inserts_for_call_prefix() {
-        assert_eq!(canonicalize_tool_id("calld9c1e9e6617a41ca860562a1"), "call_d9c1e9e6617a41ca860562a1");
+        assert_eq!(
+            canonicalize_tool_id("calld9c1e9e6617a41ca860562a1"),
+            "call_d9c1e9e6617a41ca860562a1"
+        );
     }
 
     #[test]
@@ -144,7 +153,8 @@ mod tests {
 
     #[test]
     fn compose_tracks_canonicalization() {
-        let (id, changed) = compose_session_id_tracked("u", AssistantSig::ToolId("call_abc".into()));
+        let (id, changed) =
+            compose_session_id_tracked("u", AssistantSig::ToolId("call_abc".into()));
         assert_eq!(id, "call_abc");
         assert!(!changed);
 

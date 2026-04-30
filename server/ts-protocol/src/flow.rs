@@ -86,9 +86,7 @@ impl FlowDispatcher {
                 })
                 .is_err()
             {
-                self.metrics
-                    .counter(Metric::FlowHeartbeatsDropped)
-                    .inc();
+                self.metrics.counter(Metric::FlowHeartbeatsDropped).inc();
             }
         }
     }

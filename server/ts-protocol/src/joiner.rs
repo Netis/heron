@@ -185,9 +185,7 @@ impl HttpJoiner {
             }
             HttpParseEvent::HttpResponse(resp) => self.on_response(resp),
             HttpParseEvent::Heartbeat { ts, source_id } => {
-                self.metrics
-                    .counter(Metric::JoinerHeartbeatsReceived)
-                    .inc();
+                self.metrics.counter(Metric::JoinerHeartbeatsReceived).inc();
                 self.cleanup_stale(&source_id, ts, PENDING_STALE_TIMEOUT_US);
                 vec![HttpJoinerEvent::Heartbeat { ts, source_id }]
             }

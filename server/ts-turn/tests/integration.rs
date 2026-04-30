@@ -163,10 +163,7 @@ async fn run_pcap(name: &str) -> Option<Vec<ts_turn::AgentTurn>> {
 /// accumulation).
 async fn run_pcap_collecting_calls(
     name: &str,
-) -> Option<(
-    Vec<ts_turn::AgentTurn>,
-    Vec<Arc<ts_llm::model::LlmCall>>,
-)> {
+) -> Option<(Vec<ts_turn::AgentTurn>, Vec<Arc<ts_llm::model::LlmCall>>)> {
     let path = fixture(name)?;
     let mut metrics_sys = MetricsSystem::new();
 
@@ -553,7 +550,11 @@ async fn openclaw_multi_sessions_expects_two_sessions_four_turns() {
     );
     let sessions: std::collections::BTreeSet<_> =
         chat.iter().map(|t| t.session_id.as_str()).collect();
-    assert_eq!(sessions.len(), 2, "expected 2 distinct sessions; got {sessions:?}");
+    assert_eq!(
+        sessions.len(),
+        2,
+        "expected 2 distinct sessions; got {sessions:?}"
+    );
     assert!(
         sessions.iter().all(|s| s.starts_with("call_")),
         "session_ids must be canonicalized (call_<hex>); got {sessions:?}"
@@ -624,7 +625,12 @@ async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
         );
     }
 
-    assert_eq!(anthropic.len(), 4, "expected 4 turns; got {}", anthropic.len());
+    assert_eq!(
+        anthropic.len(),
+        4,
+        "expected 4 turns; got {}",
+        anthropic.len()
+    );
     assert!(anthropic.iter().all(|t| t.agent_kind == "openclaw"));
     assert!(
         anthropic.iter().all(|t| t.status == TurnStatus::Complete),
@@ -641,7 +647,9 @@ async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
     // user-facing conversation. Compaction-summarizer calls were filtered
     // out by `OpenClawProfile::is_auxiliary` before turn assembly.
     assert!(
-        sessions.iter().all(|s| s.starts_with("toolu_") || s.starts_with("call_")),
+        sessions
+            .iter()
+            .all(|s| s.starts_with("toolu_") || s.starts_with("call_")),
         "main session_id must be a canonical tool id; got {sessions:?}",
     );
 
@@ -780,8 +788,7 @@ async fn generic_profile_anthropic_two_call_session() {
     let req1 = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"fix the bug"}]}]}"#;
     let resp1 = r#"{"content":[{"type":"tool_use","id":"toolu_pcap","name":"Read","input":{"path":"/x"}}],"stop_reason":"tool_use"}"#;
     let call1 = make_call(req1, resp1, 1_000_000, Some("tool_use"));
-    let info1 =
-        build_agent_call_info(&call1, &registry, &wire_apis, &llm_metrics).expect("info1");
+    let info1 = build_agent_call_info(&call1, &registry, &wire_apis, &llm_metrics).expect("info1");
     assert_eq!(info1.agent_kind, "generic");
     assert_eq!(info1.session_id, "toolu_pcap");
     assert_eq!(info1.is_user_turn_start, Some(true));
@@ -793,10 +800,10 @@ async fn generic_profile_anthropic_two_call_session() {
         {"role":"assistant","content":[{"type":"tool_use","id":"toolu_pcap","name":"Read","input":{"path":"/x"}}]},
         {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_pcap","content":"file ok"}]}
     ]}"#;
-    let resp2 = r#"{"content":[{"type":"text","text":"the bug is at line 42"}],"stop_reason":"end_turn"}"#;
+    let resp2 =
+        r#"{"content":[{"type":"text","text":"the bug is at line 42"}],"stop_reason":"end_turn"}"#;
     let call2 = make_call(req2, resp2, 2_000_000, Some("end_turn"));
-    let info2 =
-        build_agent_call_info(&call2, &registry, &wire_apis, &llm_metrics).expect("info2");
+    let info2 = build_agent_call_info(&call2, &registry, &wire_apis, &llm_metrics).expect("info2");
     assert_eq!(
         info2.session_id, "toolu_pcap",
         "call #2 must hit same session as call #1"

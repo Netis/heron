@@ -109,9 +109,7 @@ pub fn spawn_llm_stage(
                                     })
                                     .is_err()
                                 {
-                                    worker_metrics
-                                        .counter(Metric::TurnHeartbeatsDropped)
-                                        .inc();
+                                    worker_metrics.counter(Metric::TurnHeartbeatsDropped).inc();
                                 }
                             }
                         }
