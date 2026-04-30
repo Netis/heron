@@ -410,7 +410,7 @@ EOF
      ${DIM}  unprivileged access (see docs/install.md, "macOS notes").${RESET}
 
   ${DIM}# 2. Or replay a pcap file (no privileges needed)${RESET}
-  ${CYAN}tokenscope --pcap-file capture.pcap${RESET}
+  ${CYAN}tokenscope --pcap-file capture.pcap --no-retention${RESET}
 EOF
             ;;
         *)
