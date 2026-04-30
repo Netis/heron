@@ -195,10 +195,26 @@ curl http://localhost:3000/api/health
 
 ## Uninstall
 
-There are no system files to clean — TokenScope only writes to its
-configured data directory (default `data/` next to the binary, or
-`/var/lib/tokenscope` in the systemd example). Remove the binary, the
-data directory, the config directory, and (if used) the systemd unit:
+TokenScope writes to three places: the binary, a config directory, and
+a data directory (DuckDB file plus optional pcap dumps). The installer
+never touches anything else, so removing those three paths is a clean
+uninstall.
+
+### One-line installer — system mode (`sudo`)
+
+```bash
+sudo rm /usr/local/bin/tokenscope
+sudo rm -rf /etc/tokenscope /var/lib/tokenscope
+```
+
+### One-line installer — user mode (`INSTALL_DIR=$HOME/.local`)
+
+```bash
+rm ~/.local/bin/tokenscope
+rm -rf ~/.config/tokenscope ~/.local/share/tokenscope
+```
+
+### systemd deployment (from the example unit above)
 
 ```bash
 sudo systemctl disable --now tokenscope
@@ -206,6 +222,9 @@ sudo rm /etc/systemd/system/tokenscope.service
 sudo rm -rf /opt/tokenscope /etc/tokenscope /var/lib/tokenscope
 sudo userdel tokenscope
 ```
+
+> The DuckDB file holds all captured telemetry. Back it up first if you
+> want to keep historical metrics across reinstalls.
 
 ## Next steps
 

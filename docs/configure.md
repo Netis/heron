@@ -168,25 +168,41 @@ flush_interval_ms = 1000       # flush after this many ms even if batch < size
 Larger batches are more efficient but increase write latency; defaults
 are tuned for ~1k req/s sustained ingestion.
 
-### Retention (disabled by default)
+### Retention (enabled by default)
+
+Retention runs by default with conservative TTLs so the DuckDB file
+stays bounded out of the box. The block below shows the **active
+defaults** — you only need to add it to override:
 
 ```toml
 [storage.retention]
-enabled = false
+enabled = true                 # set to false to opt out entirely
 check_interval_secs = 3600     # how often to run the cleanup sweep
 calls = 7                      # keep llm_calls for N days
 turns = 30                     # keep agent_turns for N days
-http_exchanges = 7             # keep raw HTTP exchanges (bulky) for N days
+http_exchanges = 7             # keep http_exchanges (bulkiest table) for N days
 
+# Per-granularity retention for llm_metrics. Missing keys fall back to
+# the defaults below — overriding "10s" does NOT drop the others.
 [storage.retention.metrics]
 "10s" = 1                      # keep 10-second buckets for N days
-"1m" = 7                       # keep 1-minute buckets for N days
-"5m" = 30
-"1h" = 365
+"1m"  = 7                      # keep 1-minute buckets for N days
+"5m"  = 30
+"1h"  = 365
 ```
 
-Without retention, the DuckDB file grows unboundedly. Enable in
-production.
+Behavior:
+
+- `enabled = false` skips the retention loop entirely.
+- Any per-table field (or any `metrics` granularity) set to `0` means
+  **never expire that table**. Combine with `enabled = true` to keep
+  some tables forever and let others rotate.
+- Unknown granularity labels under `[storage.retention.metrics]`
+  (anything not in `10s` / `1m` / `5m` / `1h`) are logged at warn and
+  ignored — useful to catch typos like `"10sec"`.
+- `http_exchanges` stores raw HTTP transport records (headers + bodies)
+  per request/response and is by far the bulkiest table; keep its TTL
+  short unless you specifically need a longer forensics window.
 
 ## `[api]` — REST + WebSocket server
 
