@@ -206,7 +206,7 @@ Behavior:
   per request/response and is by far the bulkiest table; keep its TTL
   short unless you specifically need a longer forensics window.
 
-## `[api]` — REST + WebSocket server
+## `[api]` — REST server
 
 ```toml
 [api]

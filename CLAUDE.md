@@ -62,7 +62,7 @@ TokenScope/
 │   ├── ts-turn/                 # Agent profiles + state machine → AgentTurn
 │   ├── ts-metrics/              # Sliding-window aggregation → LlmMetric
 │   ├── ts-storage/              # StorageBackend trait + DuckDB/PG/ClickHouse + write buffer
-│   ├── ts-api/                  # Axum REST API + WebSocket
+│   ├── ts-api/                  # Axum REST API
 │   ├── app/
 │   │   └── tokenscope/          # Binary entry crate
 │   └── config/

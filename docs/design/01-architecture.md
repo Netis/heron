@@ -42,7 +42,7 @@ TokenScope/
 │   │   │   ├── ui/                  # shadcn/ui components
 │   │   │   └── charts/             # ECharts/Recharts wrappers
 │   │   ├── pages/                   # Route-level page components
-│   │   ├── hooks/                   # Data fetching & WebSocket hooks
+│   │   ├── hooks/                   # Data fetching hooks
 │   │   ├── lib/                     # API client, utilities
 │   │   └── types/                   # TypeScript types (mirrors backend models)
 │   └── components.json              # shadcn/ui config
@@ -160,7 +160,7 @@ Stages are connected by `tokio::sync::mpsc` channels with bounded capacity, prov
 | `ts-llm` | Wire-API auto-detection, registry + extractor pattern | `WireApiRegistry`, `WireApi` trait, `LlmCall` |
 | `ts-metrics` | Sliding-window aggregation of LlmCall into LlmMetric (P50/P95/P99 via t-digest) | `MetricsAggregator`, `WindowBucket`, `LlmMetric` |
 | `ts-storage` | StorageBackend trait + DuckDB/PostgreSQL/ClickHouse implementations, write buffer with batch flush | `StorageBackend` trait, `WriteBuffer` |
-| `ts-api` | Axum HTTP routes + WebSocket realtime push, serves frontend static files in production | REST endpoints, WS handlers |
+| `ts-api` | Axum HTTP routes, serves frontend static files in production | REST endpoints |
 
 ## Crate Dependency Graph
 
