@@ -54,7 +54,7 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 rust-embed = "8"
 mime_guess = "2"
-duckdb = { version = "1", features = ["bundled"] }
+duckdb = { version = "1", features = ["bundled", "json"] }
 chrono = "0.4"
 tdigest = "0.2"
 ts-api = { path = "ts-api" }
