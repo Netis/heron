@@ -6,7 +6,6 @@
 /console/node_modules/
 /console/dist/
 /console/.vite/
-/console/bun.lock
 
 # Environment & secrets
 .env

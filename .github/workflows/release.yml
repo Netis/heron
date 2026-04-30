@@ -1,0 +1,263 @@
+name: release
+
+# Builds the single `tokenscope` binary (with embedded console) for:
+#   - x86_64-unknown-linux-musl  (static, runs on glibc + musl distros alike)
+#   - aarch64-unknown-linux-musl (static, AWS Graviton / Ampere etc.)
+#   - x86_64-apple-darwin
+#   - aarch64-apple-darwin
+#
+# Triggered on `v*` tag push (creates a GitHub Release) or workflow_dispatch
+# (artifacts only — useful for verifying the matrix before tagging).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Pin libpcap source for reproducible Linux static builds.
+  PCAP_VERSION: "1.10.5"
+
+jobs:
+  console:
+    name: Build console
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install + build
+        working-directory: console
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: console-dist
+          path: console/dist
+          retention-days: 1
+          if-no-files-found: error
+
+  linux:
+    name: Linux ${{ matrix.target }}
+    needs: console
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            zig_target: x86_64-linux-musl
+          - target: aarch64-unknown-linux-musl
+            zig_target: aarch64-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: console-dist
+          path: console/dist
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server -> target
+          key: ${{ matrix.target }}
+
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild
+        run: |
+          pip install cargo-zigbuild==0.19.6
+
+      # libpcap is C, not pure Rust. Build it from source against the same
+      # zig/musl target so cargo-zigbuild produces a fully static binary.
+      - name: Build libpcap (static)
+        id: libpcap
+        run: |
+          set -euo pipefail
+          PREFIX="$RUNNER_TEMP/libpcap-prefix"
+          mkdir -p "$PREFIX"
+          curl -fL "https://www.tcpdump.org/release/libpcap-${PCAP_VERSION}.tar.xz" -o pcap.tar.xz
+          tar xf pcap.tar.xz
+          cd "libpcap-${PCAP_VERSION}"
+          export CC="zig cc -target ${{ matrix.zig_target }}"
+          export AR="zig ar"
+          export RANLIB="zig ranlib"
+          # cross-compile mode: --host disables runtime tests in autoconf
+          ./configure \
+            --host="${{ matrix.zig_target }}" \
+            --prefix="$PREFIX" \
+            --disable-shared --enable-static \
+            --without-libnl \
+            --disable-dbus \
+            --disable-rdma \
+            --disable-bluetooth \
+            --disable-usb \
+            --disable-netmap \
+            --disable-dpdk
+          make -j"$(nproc)"
+          make install
+          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+          ls -la "$PREFIX/lib"
+
+      - name: Build TokenScope
+        env:
+          PCAP_PREFIX: ${{ steps.libpcap.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          export PKG_CONFIG_PATH="$PCAP_PREFIX/lib/pkgconfig"
+          export PKG_CONFIG_ALL_STATIC=1
+          export LIBPCAP_LIBDIR="$PCAP_PREFIX/lib"
+          export LIBPCAP_VER="${PCAP_VERSION}"
+          # The pcap crate emits `cargo:rustc-link-lib=pcap`. With only libpcap.a
+          # available in the search path, the linker resolves to the static archive.
+          export RUSTFLAGS="-L native=$PCAP_PREFIX/lib"
+          cd server
+          cargo zigbuild \
+            --release \
+            --target ${{ matrix.target }} \
+            --features console \
+            -p tokenscope
+
+      - name: Verify static linkage
+        run: |
+          BIN="server/target/${{ matrix.target }}/release/tokenscope"
+          file "$BIN"
+          # Should report "statically linked" — fail loud if it pulled in a dynamic loader.
+          if file "$BIN" | grep -q "dynamically linked"; then
+            echo "::error::Binary is dynamically linked — static build failed"
+            exit 1
+          fi
+          "$BIN" --help || true
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          NAME="tokenscope-${VERSION}-${{ matrix.target }}"
+          STAGE="dist/$NAME"
+          mkdir -p "$STAGE"
+          cp "server/target/${{ matrix.target }}/release/tokenscope" "$STAGE/"
+          cp README.md LICENSE CHANGELOG.md "$STAGE/"
+          cp -r server/config "$STAGE/config"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          (cd dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.target }}
+    needs: console
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            target: x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: console-dist
+          path: console/dist
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server -> target
+          key: ${{ matrix.target }}
+
+      - name: Build TokenScope
+        # macOS ships libpcap in the base system; native build links against it.
+        # The resulting binary depends only on system libraries — portable across
+        # macOS versions that match the SDK target.
+        run: |
+          cd server
+          cargo build \
+            --release \
+            --target ${{ matrix.target }} \
+            --features console \
+            -p tokenscope
+
+      - name: Verify binary
+        run: |
+          BIN="server/target/${{ matrix.target }}/release/tokenscope"
+          file "$BIN"
+          otool -L "$BIN"
+          "$BIN" --help || true
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          NAME="tokenscope-${VERSION}-${{ matrix.target }}"
+          STAGE="dist/$NAME"
+          mkdir -p "$STAGE"
+          cp "server/target/${{ matrix.target }}/release/tokenscope" "$STAGE/"
+          cp README.md LICENSE CHANGELOG.md "$STAGE/"
+          cp -r server/config "$STAGE/config"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          (cd dist && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [linux, macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Combined SHA256SUMS
+        run: |
+          cd dist
+          cat *.tar.gz.sha256 > SHA256SUMS
+          rm -f *.tar.gz.sha256
+          ls -la
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "TokenScope $GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*.tar.gz dist/SHA256SUMS
