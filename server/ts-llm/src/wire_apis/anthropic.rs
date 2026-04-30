@@ -476,8 +476,8 @@ use super::AssistantSig;
 /// wrong shape (e.g., scalar) — i.e. the body is genuinely unparseable.
 /// Treating absent as empty matches profiles whose marker-detection paths
 /// expect "no tools" to mean an empty list, not a parse failure.
-pub fn tool_names(v: &Value) -> Option<Vec<String>> {
-    match v.get("tools") {
+pub fn tool_names(req: &Value) -> Option<Vec<String>> {
+    match req.get("tools") {
         None => Some(Vec::new()),
         Some(Value::Array(arr)) => Some(
             arr.iter()
@@ -490,8 +490,8 @@ pub fn tool_names(v: &Value) -> Option<Vec<String>> {
 
 /// Anthropic uses a top-level `system` field. Accepts both the string
 /// shorthand and the `[{"type":"text", "text":"..."}]` array form.
-pub fn first_system_text(v: &Value) -> Option<String> {
-    match v.get("system")? {
+pub fn first_system_text(req: &Value) -> Option<String> {
+    match req.get("system")? {
         Value::String(s) => Some(s.clone()),
         Value::Array(blocks) => blocks
             .iter()
@@ -502,8 +502,8 @@ pub fn first_system_text(v: &Value) -> Option<String> {
     }
 }
 
-pub fn first_user_text(v: &Value) -> Option<String> {
-    let msgs = v.get("messages")?.as_array()?;
+pub fn first_user_text(req: &Value) -> Option<String> {
+    let msgs = req.get("messages")?.as_array()?;
     for m in msgs {
         if m.get("role").and_then(|r| r.as_str()) != Some("user") {
             continue;
@@ -526,8 +526,8 @@ pub fn first_user_text(v: &Value) -> Option<String> {
     None
 }
 
-pub fn first_assistant_sig_from_request(v: &Value) -> Option<AssistantSig> {
-    let msgs = v.get("messages")?.as_array()?;
+pub fn first_assistant_sig_from_request(req: &Value) -> Option<AssistantSig> {
+    let msgs = req.get("messages")?.as_array()?;
     for m in msgs {
         if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
             continue;
@@ -553,8 +553,14 @@ pub fn first_assistant_sig_from_request(v: &Value) -> Option<AssistantSig> {
 }
 
 pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
-    let v: Value = serde_json::from_str(body).ok()?;
-    let blocks = v.get("content")?.as_array()?;
+    let resp: Value = serde_json::from_str(body).ok()?;
+    first_assistant_sig_from_response_value(&resp)
+}
+
+/// `Value`-input sibling of `first_assistant_sig_from_response`. Used by
+/// agent-profile session-id extractors on the parse-once hot path.
+pub fn first_assistant_sig_from_response_value(resp: &Value) -> Option<AssistantSig> {
+    let blocks = resp.get("content")?.as_array()?;
     for b in blocks {
         if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
             if let Some(id) = b.get("id").and_then(|x| x.as_str()) {
@@ -578,8 +584,8 @@ pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
 /// last message isn't role=user, content has no text, or text is
 /// whitespace-only. Equivalent to `AgentProfile::extract_user_input` for
 /// Anthropic-shape bodies.
-pub fn extract_user_input(v: &Value) -> Option<String> {
-    let last = v.get("messages")?.as_array()?.last()?;
+pub fn extract_user_input(req: &Value) -> Option<String> {
+    let last = req.get("messages")?.as_array()?.last()?;
     if last.get("role").and_then(|r| r.as_str()) != Some("user") {
         return None;
     }
@@ -607,8 +613,8 @@ pub fn extract_user_input(v: &Value) -> Option<String> {
 /// non-`tool_result` block with non-empty content (i.e. a fresh user-side
 /// turn rather than a tool roundtrip continuation). Equivalent to
 /// `AgentProfile::is_user_turn_start` for Anthropic-shape bodies.
-pub fn is_user_turn_start(v: &Value) -> Option<bool> {
-    let last = v.get("messages")?.as_array()?.last()?;
+pub fn is_user_turn_start(req: &Value) -> Option<bool> {
+    let last = req.get("messages")?.as_array()?.last()?;
     if last.get("role").and_then(|r| r.as_str()) != Some("user") {
         return Some(false);
     }
@@ -635,8 +641,14 @@ pub fn is_user_turn_start(v: &Value) -> Option<bool> {
 /// blocks are empty/whitespace. Equivalent to
 /// `AgentProfile::extract_assistant_text` for Anthropic-shape responses.
 pub fn extract_assistant_text(body: &str) -> Option<String> {
-    let v: Value = serde_json::from_str(body).ok()?;
-    let blocks = v.get("content")?.as_array()?;
+    let resp: Value = serde_json::from_str(body).ok()?;
+    extract_assistant_text_value(&resp)
+}
+
+/// `Value`-input sibling of `extract_assistant_text`. Used by agent-profile
+/// extractors on the parse-once hot path.
+pub fn extract_assistant_text_value(resp: &Value) -> Option<String> {
+    let blocks = resp.get("content")?.as_array()?;
     let parts: Vec<String> = blocks
         .iter()
         .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))

@@ -8,8 +8,7 @@
 //! openai::chat, openai::responses}` and is shared with `openclaw`; the
 //! profile is a thin dispatcher on `call.wire_api`.
 
-use crate::model::LlmCall;
-use crate::profile::{AgentProfile, SessionIdExtraction};
+use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
 
@@ -22,39 +21,36 @@ impl AgentProfile for GenericProfile {
         "generic"
     }
 
-    fn matches(&self, call: &LlmCall) -> bool {
+    fn matches(&self, ctx: &CallCtx<'_>) -> bool {
         matches!(
-            call.wire_api,
+            ctx.call.wire_api,
             wa::ANTHROPIC | wa::OPENAI_CHAT | wa::OPENAI_RESPONSES
         )
     }
 
-    fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction> {
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        let (user_text, sig) = match call.wire_api {
+    fn extract_session_id(&self, ctx: &CallCtx<'_>) -> Option<SessionIdExtraction> {
+        let req = ctx.req?;
+        let (user_text, sig) = match ctx.call.wire_api {
             wa::ANTHROPIC => {
-                let user_text = wa::anthropic::first_user_text(&v)?;
-                let sig = wa::anthropic::first_assistant_sig_from_request(&v).or_else(|| {
-                    call.response_body
-                        .as_deref()
-                        .and_then(wa::anthropic::first_assistant_sig_from_response)
+                let user_text = wa::anthropic::first_user_text(req)?;
+                let sig = wa::anthropic::first_assistant_sig_from_request(req).or_else(|| {
+                    ctx.resp
+                        .and_then(wa::anthropic::first_assistant_sig_from_response_value)
                 })?;
                 (user_text, sig)
             }
             wa::OPENAI_CHAT => {
-                let user_text = wa::openai::chat::first_user_text(&v)?;
-                let sig = wa::openai::chat::first_assistant_sig_from_request(&v).or_else(|| {
-                    call.response_body
-                        .as_deref()
-                        .and_then(wa::openai::chat::first_assistant_sig_from_response)
+                let user_text = wa::openai::chat::first_user_text(req)?;
+                let sig = wa::openai::chat::first_assistant_sig_from_request(req).or_else(|| {
+                    ctx.resp
+                        .and_then(wa::openai::chat::first_assistant_sig_from_response_value)
                 })?;
                 (user_text, sig)
             }
             wa::OPENAI_RESPONSES => {
                 // Responses works on the `input` array (or string-shorthand)
                 // rather than `messages`, so it has its own walker layer.
-                let (user_text, sig_from_input) = match v.get("input")? {
+                let (user_text, sig_from_input) = match req.get("input")? {
                     serde_json::Value::Array(items) => (
                         wa::openai::responses::first_user_text(items),
                         wa::openai::responses::first_assistant_sig_from_input(items),
@@ -64,9 +60,8 @@ impl AgentProfile for GenericProfile {
                 };
                 let user_text = user_text?;
                 let sig = sig_from_input.or_else(|| {
-                    call.response_body
-                        .as_deref()
-                        .and_then(wa::openai::responses::first_assistant_sig_from_response)
+                    ctx.resp
+                        .and_then(wa::openai::responses::first_assistant_sig_from_response_value)
                 })?;
                 (user_text, sig)
             }
@@ -79,52 +74,53 @@ impl AgentProfile for GenericProfile {
         })
     }
 
-    fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        match call.wire_api {
-            wa::ANTHROPIC => wa::anthropic::is_user_turn_start(&v),
-            wa::OPENAI_CHAT => wa::openai::chat::is_user_turn_start(&v),
-            wa::OPENAI_RESPONSES => wa::openai::responses::is_user_turn_start(&v),
+    fn is_user_turn_start(&self, ctx: &CallCtx<'_>) -> Option<bool> {
+        let req = ctx.req?;
+        match ctx.call.wire_api {
+            wa::ANTHROPIC => wa::anthropic::is_user_turn_start(req),
+            wa::OPENAI_CHAT => wa::openai::chat::is_user_turn_start(req),
+            wa::OPENAI_RESPONSES => wa::openai::responses::is_user_turn_start(req),
             _ => None,
         }
     }
 
-    fn extract_user_input(&self, call: &LlmCall) -> Option<String> {
-        let body = call.request_body.as_deref()?;
-        let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        match call.wire_api {
-            wa::ANTHROPIC => wa::anthropic::extract_user_input(&v),
-            wa::OPENAI_CHAT => wa::openai::chat::extract_user_input(&v),
-            wa::OPENAI_RESPONSES => wa::openai::responses::extract_user_input(&v),
+    fn extract_user_input(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        let req = ctx.req?;
+        match ctx.call.wire_api {
+            wa::ANTHROPIC => wa::anthropic::extract_user_input(req),
+            wa::OPENAI_CHAT => wa::openai::chat::extract_user_input(req),
+            wa::OPENAI_RESPONSES => wa::openai::responses::extract_user_input(req),
             _ => None,
         }
     }
 
-    fn extract_assistant_text(&self, call: &LlmCall) -> Option<String> {
-        let body = call.response_body.as_deref()?;
-        match call.wire_api {
-            wa::ANTHROPIC => wa::anthropic::extract_assistant_text(body),
-            wa::OPENAI_CHAT => wa::openai::chat::extract_assistant_text(body),
-            wa::OPENAI_RESPONSES => wa::openai::responses::extract_assistant_text(body),
+    fn extract_assistant_text(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        let resp = ctx.resp?;
+        match ctx.call.wire_api {
+            wa::ANTHROPIC => wa::anthropic::extract_assistant_text_value(resp),
+            wa::OPENAI_CHAT => wa::openai::chat::extract_assistant_text_value(resp),
+            wa::OPENAI_RESPONSES => wa::openai::responses::extract_assistant_text_value(resp),
             _ => None,
         }
     }
 
-    fn is_turn_terminal(&self, call: &LlmCall, wire_apis: &WireApiRegistry) -> bool {
+    fn is_turn_terminal(&self, ctx: &CallCtx<'_>, wire_apis: &WireApiRegistry) -> bool {
         // OpenAI Responses' wire-api `status: "completed"` is unreliable
         // (always present even on tool-roundtrip pending), so inspect the
         // response body directly — same reasoning as `CodexCliProfile`.
         // Anthropic and OpenAI Chat fall through to the trait-default
         // implicit-path dispatch (duplicated here because traits have no
         // `super` to call).
-        if call.wire_api == wa::OPENAI_RESPONSES {
-            crate::wire_apis::openai::body_has_terminal_message_only(call.response_body.as_deref())
+        if ctx.call.wire_api == wa::OPENAI_RESPONSES {
+            match ctx.resp {
+                Some(resp) => crate::wire_apis::openai::body_has_terminal_message_only_value(resp),
+                None => false,
+            }
         } else {
-            let Some(reason) = call.finish_reason.as_deref() else {
+            let Some(reason) = ctx.call.finish_reason.as_deref() else {
                 return false;
             };
-            let Some(api) = wire_apis.find_by_name(call.wire_api) else {
+            let Some(api) = wire_apis.find_by_name(ctx.call.wire_api) else {
                 return false;
             };
             api.is_terminal(reason) && !api.is_tool_use(reason)
@@ -137,6 +133,7 @@ impl AgentProfile for GenericProfile {
 mod tests {
     use super::*;
     use crate::model::{ApiType, LlmCall};
+    use crate::profile::TestCall;
     use std::net::IpAddr;
 
     fn call_with(
@@ -144,14 +141,14 @@ mod tests {
         headers: Vec<(&str, &str)>,
         req: Option<&str>,
         resp: Option<&str>,
-    ) -> LlmCall {
+    ) -> TestCall {
         let path = match wire_api {
             wa::ANTHROPIC => "/v1/messages",
             wa::OPENAI_CHAT => "/v1/chat/completions",
             wa::OPENAI_RESPONSES => "/v1/responses",
             _ => "/",
         };
-        LlmCall {
+        TestCall::new(LlmCall {
             source_id: String::new(),
             id: "c".into(),
             wire_api,
@@ -183,7 +180,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             response_headers: vec![],
-        }
+        })
     }
 
     // ── Cross-wire-api: matches() ───────────────────────────────────────────
@@ -192,7 +189,7 @@ mod tests {
     fn matches_all_three_wire_apis() {
         for &wire in &[wa::ANTHROPIC, wa::OPENAI_CHAT, wa::OPENAI_RESPONSES] {
             let c = call_with(wire, vec![], None, None);
-            assert!(GenericProfile.matches(&c), "should match {wire}");
+            assert!(GenericProfile.matches(&c.ctx()), "should match {wire}");
         }
     }
 
@@ -200,7 +197,7 @@ mod tests {
     mod anthropic_wire {
         use super::*;
 
-        fn ant(headers: Vec<(&str, &str)>, req: Option<&str>, resp: Option<&str>) -> LlmCall {
+        fn ant(headers: Vec<(&str, &str)>, req: Option<&str>, resp: Option<&str>) -> TestCall {
             call_with(wa::ANTHROPIC, headers, req, resp)
         }
 
@@ -212,7 +209,7 @@ mod tests {
                 {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"ok"}]}
             ]}"#;
             let c = ant(vec![], Some(req), None);
-            let ids = GenericProfile.extract_session_id(&c).unwrap();
+            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
             assert_eq!(ids.session_id, "toolu_abc");
         }
 
@@ -224,7 +221,7 @@ mod tests {
                 {"role":"user","content":[{"type":"text","text":"more"}]}
             ]}"#;
             let c = ant(vec![], Some(req), None);
-            let ids = GenericProfile.extract_session_id(&c).unwrap();
+            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
             assert!(ids.session_id.starts_with("gen-"));
             assert_eq!(ids.session_id.len(), "gen-".len() + 16);
         }
@@ -235,7 +232,7 @@ mod tests {
             let resp =
                 r#"{"content":[{"type":"tool_use","id":"toolu_xyz","name":"Read","input":{}}]}"#;
             let c = ant(vec![], Some(req), Some(resp));
-            let ids = GenericProfile.extract_session_id(&c).unwrap();
+            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
             assert_eq!(ids.session_id, "toolu_xyz");
         }
 
@@ -244,7 +241,7 @@ mod tests {
             let req = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#;
             let resp = r#"{"content":[{"type":"text","text":"hello there"}]}"#;
             let c = ant(vec![], Some(req), Some(resp));
-            let ids = GenericProfile.extract_session_id(&c).unwrap();
+            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
             assert!(ids.session_id.starts_with("gen-"));
         }
 
@@ -261,8 +258,8 @@ mod tests {
             ]}"#;
             let c1 = ant(vec![], Some(req1), Some(resp));
             let c2 = ant(vec![], Some(req2), None);
-            let id1 = GenericProfile.extract_session_id(&c1).unwrap().session_id;
-            let id2 = GenericProfile.extract_session_id(&c2).unwrap().session_id;
+            let id1 = GenericProfile.extract_session_id(&c1.ctx()).unwrap().session_id;
+            let id2 = GenericProfile.extract_session_id(&c2.ctx()).unwrap().session_id;
             assert_eq!(
                 id1, id2,
                 "call #1 and call #2 must synthesize same session_id"
@@ -285,8 +282,8 @@ mod tests {
             );
             let c2 = ant(vec![], Some(req2), None);
             assert_eq!(
-                GenericProfile.extract_session_id(&c1).unwrap().session_id,
-                GenericProfile.extract_session_id(&c2).unwrap().session_id,
+                GenericProfile.extract_session_id(&c1.ctx()).unwrap().session_id,
+                GenericProfile.extract_session_id(&c2.ctx()).unwrap().session_id,
             );
         }
 
@@ -294,13 +291,13 @@ mod tests {
         fn extract_session_id_none_when_first_call_no_response() {
             let req = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#;
             let c = ant(vec![], Some(req), None);
-            assert!(GenericProfile.extract_session_id(&c).is_none());
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
         fn extract_session_id_none_when_malformed_json() {
             let c = ant(vec![], Some("garbage"), None);
-            assert!(GenericProfile.extract_session_id(&c).is_none());
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
@@ -308,14 +305,14 @@ mod tests {
             let req =
                 r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}"#;
             let c = ant(vec![], Some(req), None);
-            assert_eq!(GenericProfile.is_user_turn_start(&c), Some(true));
+            assert_eq!(GenericProfile.is_user_turn_start(&c.ctx()), Some(true));
         }
 
         #[test]
         fn is_user_turn_start_tool_result_only() {
             let req = r#"{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}]}"#;
             let c = ant(vec![], Some(req), None);
-            assert_eq!(GenericProfile.is_user_turn_start(&c), Some(false));
+            assert_eq!(GenericProfile.is_user_turn_start(&c.ctx()), Some(false));
         }
     }
 
@@ -323,7 +320,7 @@ mod tests {
     mod openai_chat_wire {
         use super::*;
 
-        fn oai(req: Option<&str>, resp: Option<&str>) -> LlmCall {
+        fn oai(req: Option<&str>, resp: Option<&str>) -> TestCall {
             call_with(wa::OPENAI_CHAT, vec![], req, resp)
         }
 
@@ -336,7 +333,7 @@ mod tests {
                 {"role":"tool","tool_call_id":"call_abc","content":"ok"}
             ]}"#;
             let c = oai(Some(req), None);
-            let ids = GenericProfile.extract_session_id(&c).unwrap();
+            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
             assert_eq!(ids.session_id, "call_abc");
         }
 
@@ -352,8 +349,8 @@ mod tests {
             ]}"#;
             let c1 = oai(Some(req1), Some(resp));
             let c2 = oai(Some(req2), None);
-            let id1 = GenericProfile.extract_session_id(&c1).unwrap().session_id;
-            let id2 = GenericProfile.extract_session_id(&c2).unwrap().session_id;
+            let id1 = GenericProfile.extract_session_id(&c1.ctx()).unwrap().session_id;
+            let id2 = GenericProfile.extract_session_id(&c2.ctx()).unwrap().session_id;
             assert_eq!(id1, "call_abc");
             assert_eq!(id1, id2, "canonicalized form must match across calls");
         }
@@ -366,7 +363,7 @@ mod tests {
                 {"role":"user","content":"more"}
             ]}"#;
             let c = oai(Some(req), None);
-            let ids = GenericProfile.extract_session_id(&c).unwrap();
+            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
             assert!(ids.session_id.starts_with("gen-"));
         }
 
@@ -376,7 +373,7 @@ mod tests {
             let resp = r#"{"choices":[{"message":{"role":"assistant","content":"hello"}}]}"#;
             let c = oai(Some(req), Some(resp));
             assert!(GenericProfile
-                .extract_session_id(&c)
+                .extract_session_id(&c.ctx())
                 .unwrap()
                 .session_id
                 .starts_with("gen-"));
@@ -386,20 +383,20 @@ mod tests {
         fn extract_session_id_none_when_first_call_no_response() {
             let req = r#"{"messages":[{"role":"user","content":"hi"}]}"#;
             let c = oai(Some(req), None);
-            assert!(GenericProfile.extract_session_id(&c).is_none());
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
         fn extract_session_id_none_when_malformed_json() {
             let c = oai(Some("garbage"), None);
-            assert!(GenericProfile.extract_session_id(&c).is_none());
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
         fn is_user_turn_start_text() {
             let req = r#"{"messages":[{"role":"user","content":"hello"}]}"#;
             assert_eq!(
-                GenericProfile.is_user_turn_start(&oai(Some(req), None)),
+                GenericProfile.is_user_turn_start(&oai(Some(req), None).ctx()),
                 Some(true),
             );
         }
@@ -412,7 +409,7 @@ mod tests {
                 {"role":"tool","tool_call_id":"call_a","content":"ok"}
             ]}"#;
             assert_eq!(
-                GenericProfile.is_user_turn_start(&oai(Some(req), None)),
+                GenericProfile.is_user_turn_start(&oai(Some(req), None).ctx()),
                 Some(false),
             );
         }
@@ -422,7 +419,7 @@ mod tests {
     mod openai_responses_wire {
         use super::*;
 
-        fn resp(req: Option<&str>, resp: Option<&str>) -> LlmCall {
+        fn resp(req: Option<&str>, resp: Option<&str>) -> TestCall {
             call_with(wa::OPENAI_RESPONSES, vec![], req, resp)
         }
 
@@ -436,7 +433,7 @@ mod tests {
                 {"type":"function_call","name":"f","arguments":"{}","call_id":"fc_xyz"}
             ]}"#;
             let c = resp(Some(req), None);
-            let ids = GenericProfile.extract_session_id(&c).unwrap();
+            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
             assert_eq!(
                 ids.session_id, "fc_xyz",
                 "function_call.call_id wins over assistant text"
@@ -448,7 +445,7 @@ mod tests {
             let req = r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#;
             let r = r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_abc"}]}"#;
             let c = resp(Some(req), Some(r));
-            let ids = GenericProfile.extract_session_id(&c).unwrap();
+            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
             assert_eq!(ids.session_id, "fc_abc");
         }
 
@@ -464,8 +461,8 @@ mod tests {
             let c1 = resp(Some(req1), Some(r));
             let c2 = resp(Some(req2), None);
             assert_eq!(
-                GenericProfile.extract_session_id(&c1).unwrap().session_id,
-                GenericProfile.extract_session_id(&c2).unwrap().session_id,
+                GenericProfile.extract_session_id(&c1.ctx()).unwrap().session_id,
+                GenericProfile.extract_session_id(&c2.ctx()).unwrap().session_id,
             );
         }
 
@@ -476,7 +473,7 @@ mod tests {
                 {"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}
             ]}"#;
             let c = resp(Some(req), None);
-            let ids = GenericProfile.extract_session_id(&c).unwrap();
+            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
             assert!(ids.session_id.starts_with("gen-"));
         }
 
@@ -486,7 +483,7 @@ mod tests {
             let r = r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_simple"}]}"#;
             let c = resp(Some(req), Some(r));
             assert_eq!(
-                GenericProfile.extract_session_id(&c).unwrap().session_id,
+                GenericProfile.extract_session_id(&c.ctx()).unwrap().session_id,
                 "fc_simple",
             );
         }
@@ -495,20 +492,20 @@ mod tests {
         fn extract_session_id_none_when_string_input_and_no_response() {
             let req = r#"{"input":"just a prompt"}"#;
             let c = resp(Some(req), None);
-            assert!(GenericProfile.extract_session_id(&c).is_none());
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
         fn extract_session_id_none_when_first_call_no_response() {
             let req = r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#;
             let c = resp(Some(req), None);
-            assert!(GenericProfile.extract_session_id(&c).is_none());
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
         fn extract_session_id_none_when_malformed_json() {
             let c = resp(Some("garbage"), None);
-            assert!(GenericProfile.extract_session_id(&c).is_none());
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
@@ -516,12 +513,11 @@ mod tests {
             let r = r#"{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}"#;
             let mut c = resp(None, Some(r));
             let wires = crate::wire_apis::build_default_wire_api_registry();
-            assert!(GenericProfile.is_turn_terminal(&c, &wires));
-            c.response_body = Some(
-                r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_a"}]}"#
-                    .to_string(),
+            assert!(GenericProfile.is_turn_terminal(&c.ctx(), &wires));
+            c.set_response_body(
+                r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_a"}]}"#,
             );
-            assert!(!GenericProfile.is_turn_terminal(&c, &wires));
+            assert!(!GenericProfile.is_turn_terminal(&c.ctx(), &wires));
         }
 
         #[test]
@@ -533,7 +529,7 @@ mod tests {
                 {"type":"message","role":"user","content":[{"type":"input_text","text":"more"}]}
             ]}"#;
             assert_eq!(
-                GenericProfile.is_user_turn_start(&resp(Some(req), None)),
+                GenericProfile.is_user_turn_start(&resp(Some(req), None).ctx()),
                 Some(true),
             );
         }
@@ -546,7 +542,7 @@ mod tests {
                 {"type":"function_call_output","call_id":"fc_a","output":"ok"}
             ]}"#;
             assert_eq!(
-                GenericProfile.is_user_turn_start(&resp(Some(req), None)),
+                GenericProfile.is_user_turn_start(&resp(Some(req), None).ctx()),
                 Some(false),
             );
         }
@@ -560,7 +556,7 @@ mod tests {
             ]}"#;
             let c = resp(None, Some(r));
             assert_eq!(
-                GenericProfile.extract_assistant_text(&c).as_deref(),
+                GenericProfile.extract_assistant_text(&c.ctx()).as_deref(),
                 Some("the answer"),
             );
         }
@@ -569,7 +565,7 @@ mod tests {
         fn extract_assistant_text_none_when_no_message_item() {
             let r = r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_a"}]}"#;
             let c = resp(None, Some(r));
-            assert_eq!(GenericProfile.extract_assistant_text(&c), None);
+            assert_eq!(GenericProfile.extract_assistant_text(&c.ctx()), None);
         }
     }
 }

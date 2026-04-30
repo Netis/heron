@@ -1,5 +1,68 @@
 use crate::model::LlmCall;
 use crate::wire_api_registry::WireApiRegistry;
+use serde_json::Value;
+
+/// Per-call context handed to every `AgentProfile` method. Bodies are
+/// pre-parsed once at the boundary (`build_agent_call_info` and the
+/// off-hot-path extractors in `ts-storage` / `app/dbview`); methods read
+/// `ctx.req` / `ctx.resp` directly instead of running `serde_json::from_str`
+/// internally. `None` means the body was absent or non-JSON — handled the
+/// same way the per-method `serde_json::from_str(body).ok()?` pattern did
+/// before this refactor.
+pub struct CallCtx<'a> {
+    pub call: &'a LlmCall,
+    pub req: Option<&'a Value>,
+    pub resp: Option<&'a Value>,
+}
+
+impl<'a> CallCtx<'a> {
+    pub fn new(call: &'a LlmCall, req: Option<&'a Value>, resp: Option<&'a Value>) -> Self {
+        Self { call, req, resp }
+    }
+}
+
+/// Parse both bodies of an `LlmCall` once. Caller holds the resulting
+/// `Option<Value>`s on the stack and borrows them into a `CallCtx`. Used at
+/// every boundary into `AgentProfile`.
+pub fn parse_bodies(call: &LlmCall) -> (Option<Value>, Option<Value>) {
+    let req = call
+        .request_body
+        .as_deref()
+        .and_then(|b| serde_json::from_str(b).ok());
+    let resp = call
+        .response_body
+        .as_deref()
+        .and_then(|b| serde_json::from_str(b).ok());
+    (req, resp)
+}
+
+/// Test-only wrapper that owns an `LlmCall` and its pre-parsed bodies, so
+/// tests can construct one and call `tc.ctx()` to get a borrowed `CallCtx`.
+/// Used by every agent test module to avoid scattering 3-line parse
+/// boilerplate across ~130 tests.
+#[cfg(test)]
+pub(crate) struct TestCall {
+    pub call: LlmCall,
+    pub req: Option<Value>,
+    pub resp: Option<Value>,
+}
+
+#[cfg(test)]
+impl TestCall {
+    pub fn new(call: LlmCall) -> Self {
+        let (req, resp) = parse_bodies(&call);
+        Self { call, req, resp }
+    }
+    pub fn ctx(&self) -> CallCtx<'_> {
+        CallCtx::new(&self.call, self.req.as_ref(), self.resp.as_ref())
+    }
+    pub fn set_response_body(&mut self, body: impl Into<String>) {
+        self.call.response_body = Some(body.into());
+        let (req, resp) = parse_bodies(&self.call);
+        self.req = req;
+        self.resp = resp;
+    }
+}
 
 /// Per-agent knowledge about how to extract a session id and identify
 /// whether a call is user-initiated. Each concrete impl represents one
@@ -11,13 +74,13 @@ pub trait AgentProfile: Send + Sync {
 
     /// Return true iff this profile handles the given call.
     /// Implementations typically check `wire_api` + User-Agent / Originator header.
-    fn matches(&self, call: &LlmCall) -> bool;
+    fn matches(&self, ctx: &CallCtx<'_>) -> bool;
 
     /// Extract the session id this call belongs to, plus any derivation
     /// metadata (see `SessionIdExtraction`). Returning `None` means matching
     /// failed at a deeper level (e.g., header missing); the call will be
     /// flagged as unassociated and skipped by the tracker.
-    fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction>;
+    fn extract_session_id(&self, ctx: &CallCtx<'_>) -> Option<SessionIdExtraction>;
 
     /// Decide whether this call's *body* represents a fresh user-initiated
     /// message. `Some(true)` = body is a fresh user prompt; `Some(false)` =
@@ -29,19 +92,19 @@ pub trait AgentProfile: Send + Sync {
     /// profile — a sub-agent dispatch with fresh user text correctly returns
     /// `Some(true)` here, and the consumer combines it with `subagent_name`
     /// to decide whether a *main-agent* turn starts.
-    fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool>;
+    fn is_user_turn_start(&self, ctx: &CallCtx<'_>) -> Option<bool>;
 
     /// Extract the sub-agent tag (e.g., Codex "review"). `None` = main agent.
-    fn subagent(&self, call: &LlmCall) -> Option<String> {
-        let _ = call;
+    fn subagent(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        let _ = ctx;
         None
     }
 
     /// Return true if this call is an auxiliary one-shot request that should
     /// not participate in turn tracking at all (e.g., claude-cli's session
     /// title generation). Tracker drops such calls entirely.
-    fn is_auxiliary(&self, call: &LlmCall) -> bool {
-        let _ = call;
+    fn is_auxiliary(&self, ctx: &CallCtx<'_>) -> bool {
+        let _ = ctx;
         false
     }
 
@@ -49,16 +112,16 @@ pub trait AgentProfile: Send + Sync {
     /// creation. Returns the concatenated user text with internal scaffolding
     /// (e.g., Claude Code `<system-reminder>` blocks) stripped. `None` when
     /// body is absent or unparseable.
-    fn extract_user_input(&self, call: &LlmCall) -> Option<String> {
-        let _ = call;
+    fn extract_user_input(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        let _ = ctx;
         None
     }
 
     /// Extract the final assistant text from a call's response body. Called
     /// when the tracker closes a turn on a terminal finish_reason, using that
     /// last call's response. `None` when body is absent or empty.
-    fn extract_assistant_text(&self, call: &LlmCall) -> Option<String> {
-        let _ = call;
+    fn extract_assistant_text(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        let _ = ctx;
         None
     }
 
@@ -77,11 +140,11 @@ pub trait AgentProfile: Send + Sync {
     /// `response.completed`). Overrides own the full decision and do NOT
     /// fall through to the default — if a profile inspects the response
     /// body explicitly, the wire-api signal is presumed unreliable.
-    fn is_turn_terminal(&self, call: &LlmCall, wire_apis: &WireApiRegistry) -> bool {
-        let Some(reason) = call.finish_reason.as_deref() else {
+    fn is_turn_terminal(&self, ctx: &CallCtx<'_>, wire_apis: &WireApiRegistry) -> bool {
+        let Some(reason) = ctx.call.finish_reason.as_deref() else {
             return false;
         };
-        let Some(api) = wire_apis.find_by_name(call.wire_api) else {
+        let Some(api) = wire_apis.find_by_name(ctx.call.wire_api) else {
             return false;
         };
         api.is_terminal(reason) && !api.is_tool_use(reason)
@@ -115,11 +178,11 @@ impl AgentProfileRegistry {
         self
     }
 
-    pub fn find(&self, call: &LlmCall) -> Option<&dyn AgentProfile> {
+    pub fn find(&self, ctx: &CallCtx<'_>) -> Option<&dyn AgentProfile> {
         self.profiles
             .iter()
             .map(|p| p.as_ref())
-            .find(|p| p.matches(call))
+            .find(|p| p.matches(ctx))
     }
 
     pub fn find_by_name(&self, name: &str) -> Option<&dyn AgentProfile> {
@@ -184,18 +247,19 @@ mod tests {
         fn name(&self) -> &'static str {
             self.name
         }
-        fn matches(&self, call: &LlmCall) -> bool {
-            call.request_headers
+        fn matches(&self, ctx: &CallCtx<'_>) -> bool {
+            ctx.call
+                .request_headers
                 .iter()
                 .any(|(k, v)| k.eq_ignore_ascii_case("user-agent") && v.starts_with(self.ua_prefix))
         }
-        fn extract_session_id(&self, _: &LlmCall) -> Option<SessionIdExtraction> {
+        fn extract_session_id(&self, _: &CallCtx<'_>) -> Option<SessionIdExtraction> {
             Some(SessionIdExtraction {
                 session_id: "s".into(),
                 tool_id_canonicalized: false,
             })
         }
-        fn is_user_turn_start(&self, _: &LlmCall) -> Option<bool> {
+        fn is_user_turn_start(&self, _: &CallCtx<'_>) -> Option<bool> {
             None
         }
     }
@@ -211,9 +275,18 @@ mod tests {
                 ua_prefix: "beta/",
                 name: "beta",
             }));
-        assert_eq!(reg.find(&stub_call("alpha/1.0")).unwrap().name(), "alpha");
-        assert_eq!(reg.find(&stub_call("beta/2.0")).unwrap().name(), "beta");
-        assert!(reg.find(&stub_call("gamma/3.0")).is_none());
+        let alpha = stub_call("alpha/1.0");
+        let beta = stub_call("beta/2.0");
+        let gamma = stub_call("gamma/3.0");
+        assert_eq!(
+            reg.find(&CallCtx::new(&alpha, None, None)).unwrap().name(),
+            "alpha"
+        );
+        assert_eq!(
+            reg.find(&CallCtx::new(&beta, None, None)).unwrap().name(),
+            "beta"
+        );
+        assert!(reg.find(&CallCtx::new(&gamma, None, None)).is_none());
     }
 
     #[test]

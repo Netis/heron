@@ -364,8 +364,8 @@ pub fn user_content_to_text(content: &Value) -> Option<String> {
 /// Extract `tools[].function.name`. Same `Some(empty) | None` semantics as
 /// `wire_apis::anthropic::tool_names`: absent → empty list (parseable, no
 /// tools), wrong shape → `None` (not parseable).
-pub fn tool_names(v: &Value) -> Option<Vec<String>> {
-    match v.get("tools") {
+pub fn tool_names(req: &Value) -> Option<Vec<String>> {
+    match req.get("tools") {
         None => Some(Vec::new()),
         Some(Value::Array(arr)) => Some(
             arr.iter()
@@ -383,8 +383,8 @@ pub fn tool_names(v: &Value) -> Option<Vec<String>> {
 
 /// OpenAI Chat puts the system prompt as a `role:"system"` message at the
 /// head of `messages[]` — there's no top-level `system` field.
-pub fn first_system_text(v: &Value) -> Option<String> {
-    let msgs = v.get("messages")?.as_array()?;
+pub fn first_system_text(req: &Value) -> Option<String> {
+    let msgs = req.get("messages")?.as_array()?;
     for m in msgs {
         if m.get("role").and_then(|r| r.as_str()) != Some("system") {
             continue;
@@ -394,8 +394,8 @@ pub fn first_system_text(v: &Value) -> Option<String> {
     None
 }
 
-pub fn first_user_text(v: &Value) -> Option<String> {
-    let msgs = v.get("messages")?.as_array()?;
+pub fn first_user_text(req: &Value) -> Option<String> {
+    let msgs = req.get("messages")?.as_array()?;
     for m in msgs {
         if m.get("role").and_then(|r| r.as_str()) != Some("user") {
             continue;
@@ -407,8 +407,8 @@ pub fn first_user_text(v: &Value) -> Option<String> {
     None
 }
 
-pub fn first_assistant_sig_from_request(v: &Value) -> Option<AssistantSig> {
-    let msgs = v.get("messages")?.as_array()?;
+pub fn first_assistant_sig_from_request(req: &Value) -> Option<AssistantSig> {
+    let msgs = req.get("messages")?.as_array()?;
     for m in msgs {
         if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
             continue;
@@ -432,8 +432,14 @@ pub fn first_assistant_sig_from_request(v: &Value) -> Option<AssistantSig> {
 }
 
 pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
-    let v: Value = serde_json::from_str(body).ok()?;
-    let msg = v.get("choices")?.get(0)?.get("message")?;
+    let resp: Value = serde_json::from_str(body).ok()?;
+    first_assistant_sig_from_response_value(&resp)
+}
+
+/// `Value`-input sibling of `first_assistant_sig_from_response`. Used by
+/// agent-profile session-id extractors on the parse-once hot path.
+pub fn first_assistant_sig_from_response_value(resp: &Value) -> Option<AssistantSig> {
+    let msg = resp.get("choices")?.get(0)?.get("message")?;
     if let Some(arr) = msg.get("tool_calls").and_then(|v| v.as_array()) {
         if let Some(id) = arr
             .first()
@@ -455,8 +461,8 @@ pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
 /// has no visible text. Equivalent to `AgentProfile::extract_user_input`
 /// for OpenAI-Chat-shape bodies. Tool results in Chat Completions are
 /// `role:"tool"` messages, so the role check naturally excludes them.
-pub fn extract_user_input(v: &Value) -> Option<String> {
-    let last = v.get("messages")?.as_array()?.last()?;
+pub fn extract_user_input(req: &Value) -> Option<String> {
+    let last = req.get("messages")?.as_array()?.last()?;
     if last.get("role").and_then(|r| r.as_str()) != Some("user") {
         return None;
     }
@@ -467,8 +473,8 @@ pub fn extract_user_input(v: &Value) -> Option<String> {
 /// Equivalent to `AgentProfile::is_user_turn_start` for OpenAI-Chat
 /// bodies. (Tool results are role=tool, so the role check alone suffices —
 /// no per-block filtering needed.)
-pub fn is_user_turn_start(v: &Value) -> Option<bool> {
-    let last = v.get("messages")?.as_array()?.last()?;
+pub fn is_user_turn_start(req: &Value) -> Option<bool> {
+    let last = req.get("messages")?.as_array()?.last()?;
     if last.get("role").and_then(|r| r.as_str()) != Some("user") {
         return Some(false);
     }
@@ -476,8 +482,14 @@ pub fn is_user_turn_start(v: &Value) -> Option<bool> {
 }
 
 pub fn extract_assistant_text(body: &str) -> Option<String> {
-    let v: Value = serde_json::from_str(body).ok()?;
-    let c = v
+    let resp: Value = serde_json::from_str(body).ok()?;
+    extract_assistant_text_value(&resp)
+}
+
+/// `Value`-input sibling of `extract_assistant_text`. Used by
+/// agent-profile extractors on the parse-once hot path.
+pub fn extract_assistant_text_value(resp: &Value) -> Option<String> {
+    let c = resp
         .get("choices")?
         .get(0)?
         .get("message")?

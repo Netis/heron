@@ -36,8 +36,7 @@
 //! of OpenClaw's protocol surface and stripping it would couple this
 //! profile to a specific wrapper format.
 
-use crate::model::LlmCall;
-use crate::profile::{AgentProfile, SessionIdExtraction};
+use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
 use serde_json::Value;
@@ -65,27 +64,20 @@ const SUMMARIZER_PREFIX: &str = "You are a context summarization assistant.";
 // shared between every profile that classifies these wire APIs (currently
 // `openclaw` here and `agents::generic`).
 
-/// Parse the request body once for the per-method dispatchers. Returns
-/// `None` for non-JSON bodies (caller treats as not-OpenClaw / no input).
-fn parse_body(call: &LlmCall) -> Option<Value> {
-    let body = call.request_body.as_deref()?;
-    serde_json::from_str(body).ok()
-}
-
-fn parse_tool_names(call: &LlmCall, v: &Value) -> Option<Vec<String>> {
-    match call.wire_api {
-        wa::ANTHROPIC => wa::anthropic::tool_names(v),
-        wa::OPENAI_CHAT => wa::openai::chat::tool_names(v),
-        wa::OPENAI_RESPONSES => wa::openai::responses::tool_names(v),
+fn parse_tool_names(wire_api: &str, req: &Value) -> Option<Vec<String>> {
+    match wire_api {
+        wa::ANTHROPIC => wa::anthropic::tool_names(req),
+        wa::OPENAI_CHAT => wa::openai::chat::tool_names(req),
+        wa::OPENAI_RESPONSES => wa::openai::responses::tool_names(req),
         _ => None,
     }
 }
 
-fn parse_first_system_text(call: &LlmCall, v: &Value) -> Option<String> {
-    match call.wire_api {
-        wa::ANTHROPIC => wa::anthropic::first_system_text(v),
-        wa::OPENAI_CHAT => wa::openai::chat::first_system_text(v),
-        wa::OPENAI_RESPONSES => wa::openai::responses::first_system_text(v),
+fn parse_first_system_text(wire_api: &str, req: &Value) -> Option<String> {
+    match wire_api {
+        wa::ANTHROPIC => wa::anthropic::first_system_text(req),
+        wa::OPENAI_CHAT => wa::openai::chat::first_system_text(req),
+        wa::OPENAI_RESPONSES => wa::openai::responses::first_system_text(req),
         _ => None,
     }
 }
@@ -95,19 +87,19 @@ impl AgentProfile for OpenClawProfile {
         AGENT_NAME
     }
 
-    fn matches(&self, call: &LlmCall) -> bool {
+    fn matches(&self, ctx: &CallCtx<'_>) -> bool {
         if !matches!(
-            call.wire_api,
+            ctx.call.wire_api,
             wa::ANTHROPIC | wa::OPENAI_CHAT | wa::OPENAI_RESPONSES
         ) {
             return false;
         }
-        let Some(v) = parse_body(call) else {
+        let Some(req) = ctx.req else {
             return false;
         };
 
         // Path A: tools array carries ≥2 OpenClaw RPC marker names.
-        if let Some(names) = parse_tool_names(call, &v) {
+        if let Some(names) = parse_tool_names(ctx.call.wire_api, req) {
             let hits = MARKER_TOOLS
                 .iter()
                 .filter(|m| names.iter().any(|n| n == *m))
@@ -123,47 +115,45 @@ impl AgentProfile for OpenClawProfile {
         // absent" and "field present but []", which is what we want
         // here: real OpenClaw summarizer calls omit the `tools` field
         // entirely.
-        let tools_empty = parse_tool_names(call, &v)
+        let tools_empty = parse_tool_names(ctx.call.wire_api, req)
             .map(|t| t.is_empty())
             .unwrap_or(false);
         if !tools_empty {
             return false;
         }
-        let Some(sys) = parse_first_system_text(call, &v) else {
+        let Some(sys) = parse_first_system_text(ctx.call.wire_api, req) else {
             return false;
         };
         sys.starts_with(SUMMARIZER_PREFIX)
     }
 
-    fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction> {
-        let v = parse_body(call)?;
-        let (user_text, sig) = match call.wire_api {
+    fn extract_session_id(&self, ctx: &CallCtx<'_>) -> Option<SessionIdExtraction> {
+        let req = ctx.req?;
+        let (user_text, sig) = match ctx.call.wire_api {
             wa::ANTHROPIC => {
-                let user_text = wa::anthropic::first_user_text(&v)?;
-                let sig = wa::anthropic::first_assistant_sig_from_request(&v).or_else(|| {
-                    call.response_body
-                        .as_deref()
-                        .and_then(wa::anthropic::first_assistant_sig_from_response)
+                let user_text = wa::anthropic::first_user_text(req)?;
+                let sig = wa::anthropic::first_assistant_sig_from_request(req).or_else(|| {
+                    ctx.resp
+                        .and_then(wa::anthropic::first_assistant_sig_from_response_value)
                 })?;
                 (user_text, sig)
             }
             wa::OPENAI_CHAT => {
-                let user_text = wa::openai::chat::first_user_text(&v)?;
-                let sig = wa::openai::chat::first_assistant_sig_from_request(&v).or_else(|| {
-                    call.response_body
-                        .as_deref()
-                        .and_then(wa::openai::chat::first_assistant_sig_from_response)
+                let user_text = wa::openai::chat::first_user_text(req)?;
+                let sig = wa::openai::chat::first_assistant_sig_from_request(req).or_else(|| {
+                    ctx.resp
+                        .and_then(wa::openai::chat::first_assistant_sig_from_response_value)
                 })?;
                 (user_text, sig)
             }
             wa::OPENAI_RESPONSES => {
-                let items = v.get("input")?.as_array()?;
+                let items = req.get("input")?.as_array()?;
                 let user_text = wa::openai::responses::first_user_text(items)?;
                 let sig =
                     wa::openai::responses::first_assistant_sig_from_input(items).or_else(|| {
-                        call.response_body
-                            .as_deref()
-                            .and_then(wa::openai::responses::first_assistant_sig_from_response)
+                        ctx.resp.and_then(
+                            wa::openai::responses::first_assistant_sig_from_response_value,
+                        )
                     })?;
                 (user_text, sig)
             }
@@ -176,65 +166,68 @@ impl AgentProfile for OpenClawProfile {
         })
     }
 
-    fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
-        let v = parse_body(call)?;
-        match call.wire_api {
-            wa::ANTHROPIC => wa::anthropic::is_user_turn_start(&v),
-            wa::OPENAI_CHAT => wa::openai::chat::is_user_turn_start(&v),
-            wa::OPENAI_RESPONSES => wa::openai::responses::is_user_turn_start(&v),
+    fn is_user_turn_start(&self, ctx: &CallCtx<'_>) -> Option<bool> {
+        let req = ctx.req?;
+        match ctx.call.wire_api {
+            wa::ANTHROPIC => wa::anthropic::is_user_turn_start(req),
+            wa::OPENAI_CHAT => wa::openai::chat::is_user_turn_start(req),
+            wa::OPENAI_RESPONSES => wa::openai::responses::is_user_turn_start(req),
             _ => None,
         }
     }
 
-    fn is_auxiliary(&self, call: &LlmCall) -> bool {
+    fn is_auxiliary(&self, ctx: &CallCtx<'_>) -> bool {
         // Under matches(): main path → ≥2 marker tools (so non-empty),
         // aux path → tools absent or []. So `tools.is_empty()` (which
         // also covers the absent case via `parse_tool_names`) uniquely
         // identifies the aux path here. `None` means the body had a
         // weird `tools` shape — be conservative and treat as non-aux.
-        let Some(v) = parse_body(call) else {
+        let Some(req) = ctx.req else {
             return false;
         };
-        match parse_tool_names(call, &v) {
+        match parse_tool_names(ctx.call.wire_api, req) {
             Some(t) => t.is_empty(),
             None => false,
         }
     }
 
-    fn extract_user_input(&self, call: &LlmCall) -> Option<String> {
-        let v = parse_body(call)?;
-        match call.wire_api {
-            wa::ANTHROPIC => wa::anthropic::extract_user_input(&v),
-            wa::OPENAI_CHAT => wa::openai::chat::extract_user_input(&v),
-            wa::OPENAI_RESPONSES => wa::openai::responses::extract_user_input(&v),
+    fn extract_user_input(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        let req = ctx.req?;
+        match ctx.call.wire_api {
+            wa::ANTHROPIC => wa::anthropic::extract_user_input(req),
+            wa::OPENAI_CHAT => wa::openai::chat::extract_user_input(req),
+            wa::OPENAI_RESPONSES => wa::openai::responses::extract_user_input(req),
             _ => None,
         }
     }
 
-    fn extract_assistant_text(&self, call: &LlmCall) -> Option<String> {
-        let body = call.response_body.as_deref()?;
-        match call.wire_api {
-            wa::ANTHROPIC => wa::anthropic::extract_assistant_text(body),
-            wa::OPENAI_CHAT => wa::openai::chat::extract_assistant_text(body),
-            wa::OPENAI_RESPONSES => wa::openai::responses::extract_assistant_text(body),
+    fn extract_assistant_text(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        let resp = ctx.resp?;
+        match ctx.call.wire_api {
+            wa::ANTHROPIC => wa::anthropic::extract_assistant_text_value(resp),
+            wa::OPENAI_CHAT => wa::openai::chat::extract_assistant_text_value(resp),
+            wa::OPENAI_RESPONSES => wa::openai::responses::extract_assistant_text_value(resp),
             _ => None,
         }
     }
 
-    fn is_turn_terminal(&self, call: &LlmCall, wire_apis: &WireApiRegistry) -> bool {
+    fn is_turn_terminal(&self, ctx: &CallCtx<'_>, wire_apis: &WireApiRegistry) -> bool {
         // OpenAI Responses' wire-api `status: "completed"` is unreliable
         // (always present even on tool-roundtrip pending), so inspect the
         // response body directly — same reasoning as `CodexCliProfile` and
         // `GenericProfile`. Anthropic and OpenAI Chat fall through to the
         // trait-default implicit-path dispatch (duplicated here because
         // traits have no `super` to call).
-        if call.wire_api == wa::OPENAI_RESPONSES {
-            wa::openai::body_has_terminal_message_only(call.response_body.as_deref())
+        if ctx.call.wire_api == wa::OPENAI_RESPONSES {
+            match ctx.resp {
+                Some(resp) => wa::openai::body_has_terminal_message_only_value(resp),
+                None => false,
+            }
         } else {
-            let Some(reason) = call.finish_reason.as_deref() else {
+            let Some(reason) = ctx.call.finish_reason.as_deref() else {
                 return false;
             };
-            let Some(api) = wire_apis.find_by_name(call.wire_api) else {
+            let Some(api) = wire_apis.find_by_name(ctx.call.wire_api) else {
                 return false;
             };
             api.is_terminal(reason) && !api.is_tool_use(reason)
@@ -254,8 +247,8 @@ mod tests {
     use crate::model::{ApiType, LlmCall};
     use std::net::IpAddr;
 
-    fn call(wire_api: &'static str, req: Option<&str>, resp: Option<&str>) -> LlmCall {
-        LlmCall {
+    fn call(wire_api: &'static str, req: Option<&str>, resp: Option<&str>) -> crate::profile::TestCall {
+        crate::profile::TestCall::new(LlmCall {
             source_id: String::new(),
             id: "c".into(),
             wire_api,
@@ -284,7 +277,7 @@ mod tests {
             response_id: None,
             request_headers: vec![],
             response_headers: vec![],
-        }
+        })
     }
 
     /// Anthropic main-path body: marker-tool-rich, Sender-prefixed user text.
@@ -380,19 +373,19 @@ mod tests {
     #[test]
     fn matches_main_anthropic_with_marker_tools() {
         let c = call(wa::ANTHROPIC, Some(&ant_main_body("hi")), None);
-        assert!(OpenClawProfile.matches(&c));
+        assert!(OpenClawProfile.matches(&c.ctx()));
     }
 
     #[test]
     fn matches_main_openai_chat_with_marker_tools() {
         let c = call(wa::OPENAI_CHAT, Some(&oai_main_body("hi")), None);
-        assert!(OpenClawProfile.matches(&c));
+        assert!(OpenClawProfile.matches(&c.ctx()));
     }
 
     #[test]
     fn matches_main_openai_responses_with_marker_tools() {
         let c = call(wa::OPENAI_RESPONSES, Some(&responses_main_body("hi")), None);
-        assert!(OpenClawProfile.matches(&c));
+        assert!(OpenClawProfile.matches(&c.ctx()));
     }
 
     #[test]
@@ -403,7 +396,7 @@ mod tests {
           "tools":[{"name":"read"},{"name":"sessions_spawn"},{"name":"write"}]
         }"#;
         let c = call(wa::ANTHROPIC, Some(body), None);
-        assert!(!OpenClawProfile.matches(&c));
+        assert!(!OpenClawProfile.matches(&c.ctx()));
     }
 
     // ── matches(): aux path ─────────────────────────────────────────────
@@ -411,19 +404,19 @@ mod tests {
     #[test]
     fn matches_aux_anthropic_summarizer_empty_tools() {
         let c = call(wa::ANTHROPIC, Some(ant_aux_body()), None);
-        assert!(OpenClawProfile.matches(&c));
+        assert!(OpenClawProfile.matches(&c.ctx()));
     }
 
     #[test]
     fn matches_aux_openai_chat_summarizer_empty_tools() {
         let c = call(wa::OPENAI_CHAT, Some(oai_aux_body()), None);
-        assert!(OpenClawProfile.matches(&c));
+        assert!(OpenClawProfile.matches(&c.ctx()));
     }
 
     #[test]
     fn matches_aux_openai_responses_summarizer_empty_tools() {
         let c = call(wa::OPENAI_RESPONSES, Some(responses_aux_body()), None);
-        assert!(OpenClawProfile.matches(&c));
+        assert!(OpenClawProfile.matches(&c.ctx()));
     }
 
     #[test]
@@ -436,7 +429,7 @@ mod tests {
           "tools":[{"name":"read"}]
         }"#;
         let c = call(wa::ANTHROPIC, Some(body), None);
-        assert!(!OpenClawProfile.matches(&c));
+        assert!(!OpenClawProfile.matches(&c.ctx()));
     }
 
     #[test]
@@ -449,8 +442,8 @@ mod tests {
           "messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]
         }"#;
         let c = call(wa::ANTHROPIC, Some(body), None);
-        assert!(OpenClawProfile.matches(&c));
-        assert!(OpenClawProfile.is_auxiliary(&c));
+        assert!(OpenClawProfile.matches(&c.ctx()));
+        assert!(OpenClawProfile.is_auxiliary(&c.ctx()));
     }
 
     #[test]
@@ -462,7 +455,7 @@ mod tests {
           "tools": 5
         }"#;
         let c = call(wa::ANTHROPIC, Some(body), None);
-        assert!(!OpenClawProfile.matches(&c));
+        assert!(!OpenClawProfile.matches(&c.ctx()));
     }
 
     // ── matches(): negative ──────────────────────────────────────────────
@@ -473,8 +466,8 @@ mod tests {
         // been taught to recognize, matches() must short-circuit before
         // trying to parse the body shape.
         let mut c = call(wa::ANTHROPIC, Some(&ant_main_body("hi")), None);
-        c.wire_api = "future-wire-api";
-        assert!(!OpenClawProfile.matches(&c));
+        c.call.wire_api = "future-wire-api";
+        assert!(!OpenClawProfile.matches(&c.ctx()));
     }
 
     #[test]
@@ -484,13 +477,13 @@ mod tests {
           "tools":[{"name":"Read"},{"name":"Edit"}]
         }"#;
         let c = call(wa::ANTHROPIC, Some(body), None);
-        assert!(!OpenClawProfile.matches(&c));
+        assert!(!OpenClawProfile.matches(&c.ctx()));
     }
 
     #[test]
     fn does_not_match_garbage_body() {
         let c = call(wa::ANTHROPIC, Some("not json"), None);
-        assert!(!OpenClawProfile.matches(&c));
+        assert!(!OpenClawProfile.matches(&c.ctx()));
     }
 
     // ── is_auxiliary ────────────────────────────────────────────────────
@@ -498,19 +491,19 @@ mod tests {
     #[test]
     fn is_auxiliary_true_aux_path_anthropic() {
         let c = call(wa::ANTHROPIC, Some(ant_aux_body()), None);
-        assert!(OpenClawProfile.is_auxiliary(&c));
+        assert!(OpenClawProfile.is_auxiliary(&c.ctx()));
     }
 
     #[test]
     fn is_auxiliary_true_aux_path_openai_chat() {
         let c = call(wa::OPENAI_CHAT, Some(oai_aux_body()), None);
-        assert!(OpenClawProfile.is_auxiliary(&c));
+        assert!(OpenClawProfile.is_auxiliary(&c.ctx()));
     }
 
     #[test]
     fn is_auxiliary_false_main_path() {
         let c = call(wa::ANTHROPIC, Some(&ant_main_body("hi")), None);
-        assert!(!OpenClawProfile.is_auxiliary(&c));
+        assert!(!OpenClawProfile.is_auxiliary(&c.ctx()));
     }
 
     #[test]
@@ -525,7 +518,7 @@ mod tests {
           "messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]
         }"#;
         let c = call(wa::ANTHROPIC, Some(body), None);
-        assert!(OpenClawProfile.is_auxiliary(&c));
+        assert!(OpenClawProfile.is_auxiliary(&c.ctx()));
     }
 
     #[test]
@@ -536,7 +529,7 @@ mod tests {
           "tools": "not-an-array"
         }"#;
         let c = call(wa::ANTHROPIC, Some(body), None);
-        assert!(!OpenClawProfile.is_auxiliary(&c));
+        assert!(!OpenClawProfile.is_auxiliary(&c.ctx()));
     }
 
     // ── extract_user_input ──────────────────────────────────────────────
@@ -545,7 +538,7 @@ mod tests {
     fn extract_user_input_returns_last_user_text_anthropic() {
         let c = call(wa::ANTHROPIC, Some(&ant_main_body("plain question")), None);
         assert_eq!(
-            OpenClawProfile.extract_user_input(&c).as_deref(),
+            OpenClawProfile.extract_user_input(&c.ctx()).as_deref(),
             Some("plain question"),
         );
     }
@@ -554,7 +547,7 @@ mod tests {
     fn extract_user_input_returns_last_user_text_openai_chat() {
         let c = call(wa::OPENAI_CHAT, Some(&oai_main_body("check status")), None);
         assert_eq!(
-            OpenClawProfile.extract_user_input(&c).as_deref(),
+            OpenClawProfile.extract_user_input(&c.ctx()).as_deref(),
             Some("check status"),
         );
     }
@@ -566,7 +559,7 @@ mod tests {
         let req = ant_main_body("hi");
         let resp = r#"{"content":[{"type":"tool_use","id":"toolu_abc","name":"exec","input":{}}]}"#;
         let c = call(wa::ANTHROPIC, Some(&req), Some(resp));
-        let ids = OpenClawProfile.extract_session_id(&c).unwrap();
+        let ids = OpenClawProfile.extract_session_id(&c.ctx()).unwrap();
         assert_eq!(ids.session_id, "toolu_abc");
     }
 
@@ -575,7 +568,7 @@ mod tests {
         let req = oai_main_body("hi");
         let resp = r#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"exec","arguments":"{}"}}]}}]}"#;
         let c = call(wa::OPENAI_CHAT, Some(&req), Some(resp));
-        let ids = OpenClawProfile.extract_session_id(&c).unwrap();
+        let ids = OpenClawProfile.extract_session_id(&c.ctx()).unwrap();
         assert_eq!(ids.session_id, "call_abc");
     }
 
@@ -584,7 +577,7 @@ mod tests {
         let req = responses_main_body("hi");
         let resp = r#"{"output":[{"type":"function_call","name":"exec","arguments":"{}","call_id":"fc_abc"}]}"#;
         let c = call(wa::OPENAI_RESPONSES, Some(&req), Some(resp));
-        let ids = OpenClawProfile.extract_session_id(&c).unwrap();
+        let ids = OpenClawProfile.extract_session_id(&c.ctx()).unwrap();
         assert_eq!(ids.session_id, "fc_abc");
     }
 
@@ -604,7 +597,7 @@ mod tests {
           ]
         }"#;
         let c = call(wa::OPENAI_CHAT, Some(req), None);
-        let ids = OpenClawProfile.extract_session_id(&c).unwrap();
+        let ids = OpenClawProfile.extract_session_id(&c.ctx()).unwrap();
         assert_eq!(ids.session_id, "call_abc");
         assert!(ids.tool_id_canonicalized);
     }
@@ -614,7 +607,7 @@ mod tests {
     #[test]
     fn is_user_turn_start_text_user_anthropic() {
         let c = call(wa::ANTHROPIC, Some(&ant_main_body("hi")), None);
-        assert_eq!(OpenClawProfile.is_user_turn_start(&c), Some(true));
+        assert_eq!(OpenClawProfile.is_user_turn_start(&c.ctx()), Some(true));
     }
 
     #[test]
@@ -628,7 +621,7 @@ mod tests {
           "tools":[{"name":"sessions_spawn"},{"name":"subagents"}]
         }"#;
         let c = call(wa::ANTHROPIC, Some(body), None);
-        assert_eq!(OpenClawProfile.is_user_turn_start(&c), Some(false));
+        assert_eq!(OpenClawProfile.is_user_turn_start(&c.ctx()), Some(false));
     }
 
     #[test]
@@ -642,7 +635,7 @@ mod tests {
           "tools":[{"type":"function","function":{"name":"sessions_spawn"}},{"type":"function","function":{"name":"subagents"}}]
         }"#;
         let c = call(wa::OPENAI_CHAT, Some(body), None);
-        assert_eq!(OpenClawProfile.is_user_turn_start(&c), Some(false));
+        assert_eq!(OpenClawProfile.is_user_turn_start(&c.ctx()), Some(false));
     }
 
     #[test]
@@ -658,7 +651,7 @@ mod tests {
           "tools":[{"type":"function","name":"sessions_spawn"},{"type":"function","name":"subagents"}]
         }"#;
         let c = call(wa::OPENAI_RESPONSES, Some(body), None);
-        assert_eq!(OpenClawProfile.is_user_turn_start(&c), Some(false));
+        assert_eq!(OpenClawProfile.is_user_turn_start(&c.ctx()), Some(false));
     }
 
     #[test]
@@ -669,12 +662,11 @@ mod tests {
         let wires = crate::wire_apis::build_default_wire_api_registry();
         let resp_terminal = r#"{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}"#;
         let mut c = call(wa::OPENAI_RESPONSES, None, Some(resp_terminal));
-        assert!(OpenClawProfile.is_turn_terminal(&c, &wires));
-        c.response_body = Some(
-            r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_a"}]}"#
-                .to_string(),
+        assert!(OpenClawProfile.is_turn_terminal(&c.ctx(), &wires));
+        c.set_response_body(
+            r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_a"}]}"#,
         );
-        assert!(!OpenClawProfile.is_turn_terminal(&c, &wires));
+        assert!(!OpenClawProfile.is_turn_terminal(&c.ctx(), &wires));
     }
 
     // ── extract_assistant_text ──────────────────────────────────────────
@@ -689,7 +681,7 @@ mod tests {
         ]}"#;
         let c = call(wa::ANTHROPIC, None, Some(resp));
         assert_eq!(
-            OpenClawProfile.extract_assistant_text(&c).as_deref(),
+            OpenClawProfile.extract_assistant_text(&c.ctx()).as_deref(),
             Some("part one\npart two"),
         );
     }
@@ -699,7 +691,7 @@ mod tests {
         let resp = r#"{"choices":[{"message":{"role":"assistant","content":"hello world"}}]}"#;
         let c = call(wa::OPENAI_CHAT, None, Some(resp));
         assert_eq!(
-            OpenClawProfile.extract_assistant_text(&c).as_deref(),
+            OpenClawProfile.extract_assistant_text(&c.ctx()).as_deref(),
             Some("hello world"),
         );
     }
@@ -708,6 +700,6 @@ mod tests {
     fn extract_assistant_text_none_when_only_tool_calls() {
         let resp = r#"{"content":[{"type":"tool_use","id":"t","name":"exec","input":{}}]}"#;
         let c = call(wa::ANTHROPIC, None, Some(resp));
-        assert!(OpenClawProfile.extract_assistant_text(&c).is_none());
+        assert!(OpenClawProfile.extract_assistant_text(&c.ctx()).is_none());
     }
 }

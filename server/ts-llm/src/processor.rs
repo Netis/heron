@@ -6,7 +6,7 @@ use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 use uuid::Uuid;
 
 use crate::model::{AgentCallInfo, ApiType, LlmCall, LlmCallStart, LlmEvent};
-use crate::profile::AgentProfileRegistry;
+use crate::profile::{parse_bodies, AgentProfileRegistry, CallCtx};
 use crate::wire_api_registry::WireApiRegistry;
 
 /// Processes `HttpJoinerEvent`s and extracts `LlmCall` records. Stateless —
@@ -171,9 +171,14 @@ pub fn build_agent_call_info(
     wire_apis: &WireApiRegistry,
     metrics: &ts_common::internal_metrics::MetricsWorker,
 ) -> Option<AgentCallInfo> {
-    let profile = registry.find(call)?;
+    // Parse req/resp bodies once at the boundary; every profile method
+    // reads `ctx.req` / `ctx.resp` directly instead of re-parsing.
+    let (req, resp) = parse_bodies(call);
+    let ctx = CallCtx::new(call, req.as_ref(), resp.as_ref());
+
+    let profile = registry.find(&ctx)?;
     let is_generic = profile.name() == "generic";
-    let Some(ids) = profile.extract_session_id(call) else {
+    let Some(ids) = profile.extract_session_id(&ctx) else {
         if is_generic {
             metrics
                 .counter(ts_common::internal_metrics::Metric::LlmGenericSessionIdSynthFailed)
@@ -189,12 +194,12 @@ pub fn build_agent_call_info(
     Some(AgentCallInfo {
         agent_kind: profile.name(),
         session_id: ids.session_id,
-        subagent_name: profile.subagent(call),
-        is_user_turn_start: profile.is_user_turn_start(call),
-        is_turn_terminal: profile.is_turn_terminal(call, wire_apis),
-        is_auxiliary: profile.is_auxiliary(call),
-        user_input: profile.extract_user_input(call),
-        assistant_text: profile.extract_assistant_text(call),
+        subagent_name: profile.subagent(&ctx),
+        is_user_turn_start: profile.is_user_turn_start(&ctx),
+        is_turn_terminal: profile.is_turn_terminal(&ctx, wire_apis),
+        is_auxiliary: profile.is_auxiliary(&ctx),
+        user_input: profile.extract_user_input(&ctx),
+        assistant_text: profile.extract_assistant_text(&ctx),
     })
 }
 

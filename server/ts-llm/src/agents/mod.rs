@@ -29,8 +29,15 @@ pub fn build_default_registry() -> AgentProfileRegistry {
 mod priority_tests {
     use super::*;
     use crate::model::{ApiType, LlmCall};
+    use crate::profile::{parse_bodies, CallCtx};
     use crate::wire_apis as wa;
     use std::net::IpAddr;
+
+    fn find_kind(reg: &AgentProfileRegistry, c: &LlmCall) -> Option<&'static str> {
+        let (req, resp) = parse_bodies(c);
+        let ctx = CallCtx::new(c, req.as_ref(), resp.as_ref());
+        reg.find(&ctx).map(|p| p.name())
+    }
 
     fn call_with(wire_api: &'static str, headers: Vec<(&str, &str)>) -> LlmCall {
         call_with_body(wire_api, headers, None)
@@ -124,7 +131,7 @@ mod priority_tests {
             wa::ANTHROPIC,
             vec![("User-Agent", "claude-cli/2.1.98 (cli)")],
         );
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("claude-cli"));
+        assert_eq!(find_kind(&reg, &c), Some("claude-cli"));
     }
 
     #[test]
@@ -134,14 +141,14 @@ mod priority_tests {
             wa::ANTHROPIC,
             vec![("User-Agent", "python/3.12 anthropic/0.40")],
         );
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("generic"));
+        assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
 
     #[test]
     fn codex_cli_wins_over_generic_by_originator() {
         let reg = build_default_registry();
         let c = call_with(wa::OPENAI_RESPONSES, vec![("Originator", "codex_cli_rs")]);
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("codex-cli"));
+        assert_eq!(find_kind(&reg, &c), Some("codex-cli"));
     }
 
     #[test]
@@ -151,7 +158,7 @@ mod priority_tests {
             wa::OPENAI_RESPONSES,
             vec![("User-Agent", "codex-tui/0.118.0")],
         );
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("codex-cli"));
+        assert_eq!(find_kind(&reg, &c), Some("codex-cli"));
     }
 
     #[test]
@@ -161,35 +168,35 @@ mod priority_tests {
             wa::OPENAI_RESPONSES,
             vec![("User-Agent", "OpenAI/Python 1.50")],
         );
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("generic"));
+        assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
 
     #[test]
     fn generic_catches_openai_chat() {
         let reg = build_default_registry();
         let c = call_with(wa::OPENAI_CHAT, vec![("User-Agent", "OpenAI/JS 6.26.0")]);
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("generic"));
+        assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
 
     #[test]
     fn openclaw_wins_over_generic_when_anthropic_marker_tools() {
         let reg = build_default_registry();
         let c = call_with_body(wa::ANTHROPIC, vec![], Some(OPENCLAW_ANT_MAIN));
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("openclaw"));
+        assert_eq!(find_kind(&reg, &c), Some("openclaw"));
     }
 
     #[test]
     fn openclaw_wins_over_generic_when_openai_chat_marker_tools() {
         let reg = build_default_registry();
         let c = call_with_body(wa::OPENAI_CHAT, vec![], Some(OPENCLAW_OAI_MAIN));
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("openclaw"));
+        assert_eq!(find_kind(&reg, &c), Some("openclaw"));
     }
 
     #[test]
     fn openclaw_wins_over_generic_when_openai_responses_marker_tools() {
         let reg = build_default_registry();
         let c = call_with_body(wa::OPENAI_RESPONSES, vec![], Some(OPENCLAW_RESPONSES_MAIN));
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("openclaw"));
+        assert_eq!(find_kind(&reg, &c), Some("openclaw"));
     }
 
     #[test]
@@ -203,14 +210,14 @@ mod priority_tests {
             vec![("User-Agent", "codex-tui/0.118.0")],
             Some(OPENCLAW_RESPONSES_MAIN),
         );
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("codex-cli"));
+        assert_eq!(find_kind(&reg, &c), Some("codex-cli"));
     }
 
     #[test]
     fn openclaw_wins_for_summarizer_aux_anthropic() {
         let reg = build_default_registry();
         let c = call_with_body(wa::ANTHROPIC, vec![], Some(OPENCLAW_ANT_AUX));
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("openclaw"));
+        assert_eq!(find_kind(&reg, &c), Some("openclaw"));
     }
 
     #[test]
@@ -226,7 +233,7 @@ mod priority_tests {
             vec![("User-Agent", "python/3.12 anthropic/0.40")],
             Some(body),
         );
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("generic"));
+        assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
 
     #[test]
@@ -241,7 +248,7 @@ mod priority_tests {
             vec![("User-Agent", "OpenAI/JS 6.26.0")],
             Some(body),
         );
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("generic"));
+        assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
 
     #[test]
@@ -255,6 +262,6 @@ mod priority_tests {
             vec![("User-Agent", "claude-cli/2.1.98")],
             Some(OPENCLAW_ANT_MAIN),
         );
-        assert_eq!(reg.find(&c).map(|p| p.name()), Some("claude-cli"));
+        assert_eq!(find_kind(&reg, &c), Some("claude-cli"));
     }
 }

@@ -3,6 +3,7 @@
 use duckdb::Connection;
 use ts_llm::agents::build_default_registry;
 use ts_llm::model::{ApiType, LlmCall};
+use ts_llm::profile::{parse_bodies, CallCtx};
 use ts_llm::wire_apis as wa;
 
 use crate::ui::{
@@ -270,9 +271,11 @@ fn extract_with_profile(
         request_headers: Vec::new(),
         response_headers: Vec::new(),
     };
+    let (req, resp) = parse_bodies(&call);
+    let ctx = CallCtx::new(&call, req.as_ref(), resp.as_ref());
     match kind {
-        ExtractKind::User => profile.extract_user_input(&call),
-        ExtractKind::Assistant => profile.extract_assistant_text(&call),
+        ExtractKind::User => profile.extract_user_input(&ctx),
+        ExtractKind::Assistant => profile.extract_assistant_text(&ctx),
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::model::LlmCall;
-use crate::profile::{AgentProfile, SessionIdExtraction};
+use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
 use serde_json::Value;
@@ -34,23 +34,23 @@ impl AgentProfile for CodexCliProfile {
         "codex-cli"
     }
 
-    fn matches(&self, call: &LlmCall) -> bool {
-        if call.wire_api != wa::OPENAI_RESPONSES {
+    fn matches(&self, ctx: &CallCtx<'_>) -> bool {
+        if ctx.call.wire_api != wa::OPENAI_RESPONSES {
             return false;
         }
         // Prefer Originator (stable short identifier); fall back to UA prefix.
-        if let Some(orig) = header(call, ORIGINATOR_HEADER) {
+        if let Some(orig) = header(ctx.call, ORIGINATOR_HEADER) {
             if ORIGINATOR_VALUES.contains(&orig) {
                 return true;
             }
         }
-        if let Some(ua) = header(call, "user-agent") {
+        if let Some(ua) = header(ctx.call, "user-agent") {
             return UA_PREFIXES.iter().any(|p| ua.starts_with(p));
         }
         false
     }
 
-    fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction> {
+    fn extract_session_id(&self, ctx: &CallCtx<'_>) -> Option<SessionIdExtraction> {
         // session_id comes ONLY from X-Codex-Turn-Metadata. We deliberately
         // do NOT fall back to X-Client-Request-Id: by HTTP convention that
         // header is per-request, and feeding a per-request UUID into the
@@ -58,7 +58,7 @@ impl AgentProfile for CodexCliProfile {
         // many phantom sessions. If metadata is missing or unparseable,
         // return None — the call becomes unassociated and turn assembly
         // skips it cleanly, which is the correct conservative failure mode.
-        let raw = header(call, TURN_META_HEADER)?;
+        let raw = header(ctx.call, TURN_META_HEADER)?;
         let v = parse_turn_metadata(raw)?;
         let session_id = v.get("session_id")?.as_str()?.to_string();
         Some(SessionIdExtraction {
@@ -67,12 +67,11 @@ impl AgentProfile for CodexCliProfile {
         })
     }
 
-    fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
+    fn is_user_turn_start(&self, ctx: &CallCtx<'_>) -> Option<bool> {
         // Inspect input[-1]: message(role=user) ⇒ new turn;
         // function_call_output / reasoning / function_call ⇒ continuation.
-        let body = call.request_body.as_deref()?;
-        let v: Value = serde_json::from_str(body).ok()?;
-        let inp = v.get("input")?.as_array()?;
+        let req = ctx.req?;
+        let inp = req.get("input")?.as_array()?;
         let last = inp.last()?;
         match last.get("type").and_then(|t| t.as_str())? {
             "message" => match last.get("role").and_then(|r| r.as_str()) {
@@ -84,14 +83,13 @@ impl AgentProfile for CodexCliProfile {
         }
     }
 
-    fn subagent(&self, call: &LlmCall) -> Option<String> {
-        header(call, SUBAGENT_HEADER).map(str::to_string)
+    fn subagent(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        header(ctx.call, SUBAGENT_HEADER).map(str::to_string)
     }
 
-    fn extract_user_input(&self, call: &LlmCall) -> Option<String> {
-        let body = call.request_body.as_deref()?;
-        let v: Value = serde_json::from_str(body).ok()?;
-        let inp = v.get("input")?.as_array()?;
+    fn extract_user_input(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        let req = ctx.req?;
+        let inp = req.get("input")?.as_array()?;
         let last = inp.last()?;
         if last.get("type").and_then(|t| t.as_str()) != Some("message") {
             return None;
@@ -124,7 +122,7 @@ impl AgentProfile for CodexCliProfile {
         }
     }
 
-    fn is_turn_terminal(&self, call: &LlmCall, _wire_apis: &WireApiRegistry) -> bool {
+    fn is_turn_terminal(&self, ctx: &CallCtx<'_>, _wire_apis: &WireApiRegistry) -> bool {
         // OpenAI Responses' `status: "completed"` cannot distinguish "agent
         // done" from "tool roundtrip pending" — delegate to the wire-api
         // helper that inspects `response.output[]` directly. Override does
@@ -133,15 +131,17 @@ impl AgentProfile for CodexCliProfile {
         // Path note: re-exported from wire_apis::openai (the `responses`
         // submodule itself is private). Future generic profiles should use
         // the same path.
-        crate::wire_apis::openai::body_has_terminal_message_only(call.response_body.as_deref())
+        match ctx.resp {
+            Some(resp) => crate::wire_apis::openai::body_has_terminal_message_only_value(resp),
+            None => false,
+        }
     }
 
-    fn extract_assistant_text(&self, call: &LlmCall) -> Option<String> {
-        let body = call.response_body.as_deref()?;
-        let v: Value = serde_json::from_str(body).ok()?;
+    fn extract_assistant_text(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        let resp = ctx.resp?;
         // Responses API: { output: [ { type: "message", content: [ { type: "output_text", text } ] } ] }
         let mut parts: Vec<String> = Vec::new();
-        if let Some(output) = v.get("output").and_then(|o| o.as_array()) {
+        if let Some(output) = resp.get("output").and_then(|o| o.as_array()) {
             for item in output {
                 if item.get("type").and_then(|t| t.as_str()) != Some("message") {
                     continue;
@@ -162,7 +162,7 @@ impl AgentProfile for CodexCliProfile {
         }
         // Chat Completions fallback: { choices: [ { message: { content } } ] }
         if parts.is_empty() {
-            if let Some(content) = v
+            if let Some(content) = resp
                 .get("choices")
                 .and_then(|c| c.get(0))
                 .and_then(|c| c.get("message"))
@@ -188,14 +188,15 @@ impl AgentProfile for CodexCliProfile {
 mod tests {
     use super::*;
     use crate::model::{ApiType, LlmCall};
+    use crate::profile::TestCall;
     use std::net::IpAddr;
 
     fn call_with(
         wire_api: &'static str,
         headers: Vec<(&str, &str)>,
         body: Option<&str>,
-    ) -> LlmCall {
-        LlmCall {
+    ) -> TestCall {
+        TestCall::new(LlmCall {
             source_id: String::new(),
             id: "c".into(),
             wire_api,
@@ -227,7 +228,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             response_headers: vec![],
-        }
+        })
     }
 
     #[test]
@@ -237,7 +238,7 @@ mod tests {
             vec![("Originator", "codex_cli_rs")],
             None,
         );
-        assert!(CodexCliProfile.matches(&c));
+        assert!(CodexCliProfile.matches(&c.ctx()));
     }
 
     #[test]
@@ -247,7 +248,7 @@ mod tests {
             vec![("User-Agent", "codex-tui/0.118.0 (Mac OS)")],
             None,
         );
-        assert!(CodexCliProfile.matches(&c));
+        assert!(CodexCliProfile.matches(&c.ctx()));
     }
 
     #[test]
@@ -257,7 +258,7 @@ mod tests {
             vec![("Originator", "codex_exec")],
             None,
         );
-        assert!(CodexCliProfile.matches(&c));
+        assert!(CodexCliProfile.matches(&c.ctx()));
     }
 
     #[test]
@@ -267,13 +268,13 @@ mod tests {
             vec![("User-Agent", "codex_exec/0.120.0 (Ubuntu 24.4.0; x86_64)")],
             None,
         );
-        assert!(CodexCliProfile.matches(&c));
+        assert!(CodexCliProfile.matches(&c.ctx()));
     }
 
     #[test]
     fn does_not_match_chat_api() {
         let c = call_with(wa::OPENAI_CHAT, vec![("Originator", "codex_cli_rs")], None);
-        assert!(!CodexCliProfile.matches(&c));
+        assert!(!CodexCliProfile.matches(&c.ctx()));
     }
 
     #[test]
@@ -287,7 +288,7 @@ mod tests {
             ],
             None,
         );
-        let ids = CodexCliProfile.extract_session_id(&c).unwrap();
+        let ids = CodexCliProfile.extract_session_id(&c.ctx()).unwrap();
         assert_eq!(ids.session_id, "019d7170-77f6-7eb3-9c93-2e19cbdf9a86");
     }
 
@@ -305,7 +306,7 @@ mod tests {
             ],
             None,
         );
-        assert!(CodexCliProfile.extract_session_id(&c).is_none());
+        assert!(CodexCliProfile.extract_session_id(&c.ctx()).is_none());
     }
 
     #[test]
@@ -322,28 +323,28 @@ mod tests {
             ],
             None,
         );
-        assert!(CodexCliProfile.extract_session_id(&c).is_none());
+        assert!(CodexCliProfile.extract_session_id(&c.ctx()).is_none());
     }
 
     #[test]
     fn is_user_turn_start_message_role_user() {
         let body = r#"{"input":[{"type":"message","role":"user","content":"hi"}]}"#;
         let c = call_with(wa::OPENAI_RESPONSES, vec![], Some(body));
-        assert_eq!(CodexCliProfile.is_user_turn_start(&c), Some(true));
+        assert_eq!(CodexCliProfile.is_user_turn_start(&c.ctx()), Some(true));
     }
 
     #[test]
     fn is_user_turn_start_function_call_output() {
         let body = r#"{"input":[{"type":"function_call_output","call_id":"c1","output":"{}"}]}"#;
         let c = call_with(wa::OPENAI_RESPONSES, vec![], Some(body));
-        assert_eq!(CodexCliProfile.is_user_turn_start(&c), Some(false));
+        assert_eq!(CodexCliProfile.is_user_turn_start(&c.ctx()), Some(false));
     }
 
     #[test]
     fn is_user_turn_start_reasoning_is_continuation() {
         let body = r#"{"input":[{"type":"reasoning","content":"..."}]}"#;
         let c = call_with(wa::OPENAI_RESPONSES, vec![], Some(body));
-        assert_eq!(CodexCliProfile.is_user_turn_start(&c), Some(false));
+        assert_eq!(CodexCliProfile.is_user_turn_start(&c.ctx()), Some(false));
     }
 
     #[test]
@@ -356,7 +357,7 @@ mod tests {
         ]}"#;
         let c = call_with(wa::OPENAI_RESPONSES, vec![], Some(body));
         assert_eq!(
-            CodexCliProfile.extract_user_input(&c).as_deref(),
+            CodexCliProfile.extract_user_input(&c.ctx()).as_deref(),
             Some("please refactor X")
         );
     }
@@ -366,7 +367,7 @@ mod tests {
         let body = r#"{"input":[{"type":"message","role":"user","content":"hi"}]}"#;
         let c = call_with(wa::OPENAI_RESPONSES, vec![], Some(body));
         assert_eq!(
-            CodexCliProfile.extract_user_input(&c).as_deref(),
+            CodexCliProfile.extract_user_input(&c.ctx()).as_deref(),
             Some("hi")
         );
     }
@@ -375,7 +376,7 @@ mod tests {
     fn extract_user_input_none_when_last_is_tool_output() {
         let body = r#"{"input":[{"type":"function_call_output","call_id":"c1","output":"{}"}]}"#;
         let c = call_with(wa::OPENAI_RESPONSES, vec![], Some(body));
-        assert_eq!(CodexCliProfile.extract_user_input(&c), None);
+        assert_eq!(CodexCliProfile.extract_user_input(&c.ctx()), None);
     }
 
     #[test]
@@ -387,9 +388,9 @@ mod tests {
             ]}
         ]}"#;
         let mut c = call_with(wa::OPENAI_RESPONSES, vec![], None);
-        c.response_body = Some(body.to_string());
+        c.set_response_body(body);
         assert_eq!(
-            CodexCliProfile.extract_assistant_text(&c).as_deref(),
+            CodexCliProfile.extract_assistant_text(&c.ctx()).as_deref(),
             Some("done.")
         );
     }
@@ -398,9 +399,9 @@ mod tests {
     fn extract_assistant_text_chat_completions_fallback() {
         let body = r#"{"choices":[{"message":{"role":"assistant","content":"hello from chat"}}]}"#;
         let mut c = call_with(wa::OPENAI_RESPONSES, vec![], None);
-        c.response_body = Some(body.to_string());
+        c.set_response_body(body);
         assert_eq!(
-            CodexCliProfile.extract_assistant_text(&c).as_deref(),
+            CodexCliProfile.extract_assistant_text(&c.ctx()).as_deref(),
             Some("hello from chat")
         );
     }
@@ -411,9 +412,9 @@ mod tests {
         // This test only confirms the profile actually delegates to that helper.
         let body = r#"{"output":[{"type":"message","role":"assistant","content":[]}]}"#;
         let mut c = call_with(wa::OPENAI_RESPONSES, vec![], None);
-        c.response_body = Some(body.to_string());
+        c.set_response_body(body);
         let wa_reg = crate::wire_apis::build_default_wire_api_registry();
-        assert!(CodexCliProfile.is_turn_terminal(&c, &wa_reg));
+        assert!(CodexCliProfile.is_turn_terminal(&c.ctx(), &wa_reg));
     }
 
     #[test]
@@ -426,6 +427,6 @@ mod tests {
             ],
             None,
         );
-        assert_eq!(CodexCliProfile.subagent(&c).as_deref(), Some("review"));
+        assert_eq!(CodexCliProfile.subagent(&c.ctx()).as_deref(), Some("review"));
     }
 }

@@ -267,10 +267,16 @@ pub fn body_has_terminal_message_only(response_body: Option<&str>) -> bool {
     let Some(body) = response_body else {
         return false;
     };
-    let Ok(v) = serde_json::from_str::<Value>(body) else {
+    let Ok(resp) = serde_json::from_str::<Value>(body) else {
         return false;
     };
-    let Some(output) = v.get("output").and_then(|o| o.as_array()) else {
+    body_has_terminal_message_only_value(&resp)
+}
+
+/// `Value`-input sibling of `body_has_terminal_message_only`. Used by
+/// `AgentProfile::is_turn_terminal` overrides on the parse-once hot path.
+pub fn body_has_terminal_message_only_value(resp: &Value) -> bool {
+    let Some(output) = resp.get("output").and_then(|o| o.as_array()) else {
         return false;
     };
     let mut has_message = false;
@@ -301,8 +307,8 @@ use crate::wire_apis::AssistantSig;
 /// wrapper like OpenAI Chat uses). Same `Some(empty) | None` semantics as
 /// the Anthropic / OpenAI-Chat counterparts: absent → empty list,
 /// wrong shape → `None`.
-pub fn tool_names(v: &Value) -> Option<Vec<String>> {
-    match v.get("tools") {
+pub fn tool_names(req: &Value) -> Option<Vec<String>> {
+    match req.get("tools") {
         None => Some(Vec::new()),
         Some(Value::Array(arr)) => Some(
             arr.iter()
@@ -321,13 +327,13 @@ pub fn tool_names(v: &Value) -> Option<Vec<String>> {
 ///      system prompt into the conversation).
 /// `instructions` wins if present (it's the explicit channel); otherwise
 /// fall back to the `input[]` walk.
-pub fn first_system_text(v: &Value) -> Option<String> {
-    if let Some(s) = v.get("instructions").and_then(|x| x.as_str()) {
+pub fn first_system_text(req: &Value) -> Option<String> {
+    if let Some(s) = req.get("instructions").and_then(|x| x.as_str()) {
         if !s.trim().is_empty() {
             return Some(s.to_string());
         }
     }
-    let items = v.get("input")?.as_array()?;
+    let items = req.get("input")?.as_array()?;
     for it in items {
         if it.get("type").and_then(|v| v.as_str()) != Some("message") {
             continue;
@@ -422,8 +428,14 @@ pub fn first_assistant_sig_from_input(items: &[Value]) -> Option<AssistantSig> {
 }
 
 pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
-    let v: Value = serde_json::from_str(body).ok()?;
-    let output = v.get("output")?.as_array()?;
+    let resp: Value = serde_json::from_str(body).ok()?;
+    first_assistant_sig_from_response_value(&resp)
+}
+
+/// `Value`-input sibling of `first_assistant_sig_from_response`. Used by
+/// agent-profile session-id extractors on the parse-once hot path.
+pub fn first_assistant_sig_from_response_value(resp: &Value) -> Option<AssistantSig> {
+    let output = resp.get("output")?.as_array()?;
     first_assistant_sig_from_input(output)
 }
 
@@ -431,8 +443,8 @@ pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
 /// multi-turn inputs return the most recent prompt. `input` may be a
 /// string (simplified single-prompt mode) or an array (canonical mode);
 /// both are handled here so callers don't have to peek at the shape.
-pub fn extract_user_input(v: &Value) -> Option<String> {
-    match v.get("input")? {
+pub fn extract_user_input(req: &Value) -> Option<String> {
+    match req.get("input")? {
         Value::Array(items) => {
             for it in items.iter().rev() {
                 if it.get("type").and_then(|v| v.as_str()) != Some("message") {
@@ -455,8 +467,8 @@ pub fn extract_user_input(v: &Value) -> Option<String> {
 /// True iff the last item in `input[]` is a non-empty `role=user` message
 /// (i.e. user turn, not a tool roundtrip continuation).
 /// `function_call_output` items at the tail break user-turn-start.
-pub fn is_user_turn_start(v: &Value) -> Option<bool> {
-    let items = match v.get("input")? {
+pub fn is_user_turn_start(req: &Value) -> Option<bool> {
+    let items = match req.get("input")? {
         Value::Array(items) => items,
         Value::String(s) => return Some(!s.trim().is_empty()),
         _ => return None,
@@ -472,8 +484,14 @@ pub fn is_user_turn_start(v: &Value) -> Option<bool> {
 /// First `message` item's text from `output[]`. `None` if the response
 /// only contains tool/function calls or `reasoning` items.
 pub fn extract_assistant_text(body: &str) -> Option<String> {
-    let v: Value = serde_json::from_str(body).ok()?;
-    let output = v.get("output")?.as_array()?;
+    let resp: Value = serde_json::from_str(body).ok()?;
+    extract_assistant_text_value(&resp)
+}
+
+/// `Value`-input sibling of `extract_assistant_text`. Used by agent-profile
+/// extractors on the parse-once hot path.
+pub fn extract_assistant_text_value(resp: &Value) -> Option<String> {
+    let output = resp.get("output")?.as_array()?;
     for it in output {
         if it.get("type").and_then(|v| v.as_str()) != Some("message") {
             continue;

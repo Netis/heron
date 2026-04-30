@@ -10,4 +10,5 @@ mod shared;
 
 pub use chat::OpenAiChatWireApi;
 pub use responses::body_has_terminal_message_only;
+pub use responses::body_has_terminal_message_only_value;
 pub use responses::OpenAiResponsesWireApi;

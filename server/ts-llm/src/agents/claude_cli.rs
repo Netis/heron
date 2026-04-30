@@ -1,5 +1,5 @@
 use crate::model::LlmCall;
-use crate::profile::{AgentProfile, SessionIdExtraction};
+use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
 use crate::wire_apis as wa;
 use serde_json::Value;
 
@@ -16,11 +16,9 @@ fn header<'a>(call: &'a LlmCall, key: &str) -> Option<&'a str> {
 }
 
 /// Parse the `tools` array from the request body. `None` when the field is
-/// absent or the body is not valid JSON; `Some(vec)` when the field is
-/// present (possibly empty).
-fn parse_tools(body: &str) -> Option<Vec<String>> {
-    let v: Value = serde_json::from_str(body).ok()?;
-    let arr = v.get("tools")?.as_array()?;
+/// absent; `Some(vec)` when the field is present (possibly empty).
+fn parse_tools(req: &Value) -> Option<Vec<String>> {
+    let arr = req.get("tools")?.as_array()?;
     Some(
         arr.iter()
             .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(str::to_string))
@@ -32,8 +30,8 @@ fn parse_tools(body: &str) -> Option<Vec<String>> {
 /// not include the `"Agent"` tool. claude-cli forbids sub-agents from
 /// spawning further sub-agents, so `Agent` presence is the hard structural
 /// marker for a main-agent request.
-fn looks_like_subagent(body: &str) -> bool {
-    match parse_tools(body) {
+fn looks_like_subagent(req: &Value) -> bool {
+    match parse_tools(req) {
         Some(tools) => !tools.is_empty() && !tools.iter().any(|n| n == "Agent"),
         None => false,
     }
@@ -64,27 +62,26 @@ impl AgentProfile for ClaudeCliProfile {
         "claude-cli"
     }
 
-    fn matches(&self, call: &LlmCall) -> bool {
-        if call.wire_api != wa::ANTHROPIC {
+    fn matches(&self, ctx: &CallCtx<'_>) -> bool {
+        if ctx.call.wire_api != wa::ANTHROPIC {
             return false;
         }
-        header(call, "user-agent")
+        header(ctx.call, "user-agent")
             .map(|ua| ua.starts_with(UA_PREFIX))
             .unwrap_or(false)
     }
 
-    fn extract_session_id(&self, call: &LlmCall) -> Option<SessionIdExtraction> {
-        let session_id = header(call, SESSION_HEADER)?.to_string();
+    fn extract_session_id(&self, ctx: &CallCtx<'_>) -> Option<SessionIdExtraction> {
+        let session_id = header(ctx.call, SESSION_HEADER)?.to_string();
         Some(SessionIdExtraction {
             session_id,
             tool_id_canonicalized: false,
         })
     }
 
-    fn extract_user_input(&self, call: &LlmCall) -> Option<String> {
-        let body = call.request_body.as_deref()?;
-        let v: Value = serde_json::from_str(body).ok()?;
-        let msgs = v.get("messages")?.as_array()?;
+    fn extract_user_input(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        let req = ctx.req?;
+        let msgs = req.get("messages")?.as_array()?;
         let last = msgs.last()?;
         if last.get("role")?.as_str()? != "user" {
             return None;
@@ -110,10 +107,9 @@ impl AgentProfile for ClaudeCliProfile {
         }
     }
 
-    fn extract_assistant_text(&self, call: &LlmCall) -> Option<String> {
-        let body = call.response_body.as_deref()?;
-        let v: Value = serde_json::from_str(body).ok()?;
-        let content = v.get("content")?.as_array()?;
+    fn extract_assistant_text(&self, ctx: &CallCtx<'_>) -> Option<String> {
+        let resp = ctx.resp?;
+        let content = resp.get("content")?.as_array()?;
         let text: String = content
             .iter()
             .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
@@ -127,19 +123,19 @@ impl AgentProfile for ClaudeCliProfile {
         }
     }
 
-    fn subagent(&self, call: &LlmCall) -> Option<String> {
+    fn subagent(&self, ctx: &CallCtx<'_>) -> Option<String> {
         // Structural marker: `tools` is non-empty but doesn't include "Agent".
         // claude-cli doesn't expose a sub-agent name over the wire, so we use
         // a placeholder tag. The tracker only cares whether this is `Some`.
-        let body = call.request_body.as_deref()?;
-        if looks_like_subagent(body) {
+        let req = ctx.req?;
+        if looks_like_subagent(req) {
             Some("task".to_string())
         } else {
             None
         }
     }
 
-    fn is_user_turn_start(&self, call: &LlmCall) -> Option<bool> {
+    fn is_user_turn_start(&self, ctx: &CallCtx<'_>) -> Option<bool> {
         // Structural: last message is `role=user` AND its content contains at
         // least one user-visible block. "User-visible" means:
         //   - tool_result blocks → DON'T count (continuation of a prior
@@ -156,9 +152,8 @@ impl AgentProfile for ClaudeCliProfile {
         // Decoupled from `extract_user_input`: that one is a preview
         // extractor for text only; this one is the structural turn-start
         // predicate. Sub-agent filtering happens at the ts-llm stage.
-        let body = call.request_body.as_deref()?;
-        let v: Value = serde_json::from_str(body).ok()?;
-        let last = v.get("messages")?.as_array()?.last()?;
+        let req = ctx.req?;
+        let last = req.get("messages")?.as_array()?.last()?;
         if last.get("role").and_then(|r| r.as_str()) != Some("user") {
             return Some(false);
         }
@@ -183,15 +178,15 @@ impl AgentProfile for ClaudeCliProfile {
         }
     }
 
-    fn is_auxiliary(&self, call: &LlmCall) -> bool {
-        let Some(body) = call.request_body.as_deref() else {
+    fn is_auxiliary(&self, ctx: &CallCtx<'_>) -> bool {
+        let Some(req) = ctx.req else {
             return false;
         };
         // Auxiliary = non-agentic one-shot (e.g., session-title generation):
         // `tools` field explicitly present and empty. A missing `tools` field
         // is ambiguous (could be a test fixture or a legitimate non-agentic
         // call) and is treated conservatively as non-auxiliary.
-        match parse_tools(body) {
+        match parse_tools(req) {
             Some(tools) => tools.is_empty(),
             None => false,
         }
@@ -208,8 +203,8 @@ mod tests {
         wire_api: &'static str,
         headers: Vec<(&str, &str)>,
         body: Option<&str>,
-    ) -> LlmCall {
-        LlmCall {
+    ) -> crate::profile::TestCall {
+        crate::profile::TestCall::new(LlmCall {
             source_id: String::new(),
             id: "c".into(),
             wire_api,
@@ -241,7 +236,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             response_headers: vec![],
-        }
+        })
     }
 
     #[test]
@@ -251,7 +246,7 @@ mod tests {
             vec![("User-Agent", "claude-cli/2.1.98 (external, cli)")],
             None,
         );
-        assert!(ClaudeCliProfile.matches(&c));
+        assert!(ClaudeCliProfile.matches(&c.ctx()));
     }
 
     #[test]
@@ -261,13 +256,13 @@ mod tests {
             vec![("User-Agent", "claude-cli/2.1.98 (external, cli)")],
             None,
         );
-        assert!(!ClaudeCliProfile.matches(&c));
+        assert!(!ClaudeCliProfile.matches(&c.ctx()));
     }
 
     #[test]
     fn does_not_match_other_user_agent() {
         let c = call_with(wa::ANTHROPIC, vec![("User-Agent", "curl/8.1.2")], None);
-        assert!(!ClaudeCliProfile.matches(&c));
+        assert!(!ClaudeCliProfile.matches(&c.ctx()));
     }
 
     #[test]
@@ -283,7 +278,7 @@ mod tests {
             ],
             None,
         );
-        let ids = ClaudeCliProfile.extract_session_id(&c).unwrap();
+        let ids = ClaudeCliProfile.extract_session_id(&c.ctx()).unwrap();
         assert_eq!(ids.session_id, "7dd4ea24-82c9-4035-afa1-89f6b2c742b9");
     }
 
@@ -294,41 +289,41 @@ mod tests {
             vec![("User-Agent", "claude-cli/2.1.98")],
             None,
         );
-        assert!(ClaudeCliProfile.extract_session_id(&c).is_none());
+        assert!(ClaudeCliProfile.extract_session_id(&c.ctx()).is_none());
     }
 
     #[test]
     fn is_user_turn_start_text_content() {
         let body = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"help me"}]}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(true));
     }
 
     #[test]
     fn is_user_turn_start_tool_result_only() {
         let body = r#"{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(false));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(false));
     }
 
     #[test]
     fn is_user_turn_start_string_content() {
         let body = r#"{"messages":[{"role":"user","content":"hello"}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(true));
     }
 
     #[test]
     fn is_user_turn_start_mixed_text_and_tool_result_counts_as_user() {
         let body = r#"{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"},{"type":"text","text":"also, stop"}]}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(true));
     }
 
     #[test]
     fn is_user_turn_start_none_when_no_body() {
         let c = call_with(wa::ANTHROPIC, vec![], None);
-        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), None);
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), None);
     }
 
     #[test]
@@ -341,9 +336,9 @@ mod tests {
             "tools":[{"name":"Read"},{"name":"Grep"}]
         }"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(true));
         // And the call is correctly tagged as sub-agent.
-        assert_eq!(ClaudeCliProfile.subagent(&c), Some("task".to_string()));
+        assert_eq!(ClaudeCliProfile.subagent(&c.ctx()), Some("task".to_string()));
     }
 
     #[test]
@@ -354,7 +349,7 @@ mod tests {
             "tools":[{"name":"Agent"},{"name":"Bash"}]
         }"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(true));
     }
 
     #[test]
@@ -369,9 +364,9 @@ mod tests {
             "tools":[{"name":"Agent"},{"name":"Bash"}]
         }"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(true));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(true));
         assert!(
-            ClaudeCliProfile.extract_user_input(&c).is_none(),
+            ClaudeCliProfile.extract_user_input(&c.ctx()).is_none(),
             "extract_user_input is text-only by design; image bodies have no text preview"
         );
     }
@@ -386,7 +381,7 @@ mod tests {
             "tools":[{"name":"Agent"},{"name":"Bash"}]
         }"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c), Some(false));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(false));
     }
 
     #[test]
@@ -397,7 +392,7 @@ mod tests {
             "tools":[]
         }"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert!(ClaudeCliProfile.is_auxiliary(&c));
+        assert!(ClaudeCliProfile.is_auxiliary(&c.ctx()));
     }
 
     #[test]
@@ -405,7 +400,7 @@ mod tests {
         // Ambiguous: could be legacy/test fixture. Conservative = not aux.
         let body = r#"{"messages":[{"role":"user","content":"x"}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert!(!ClaudeCliProfile.is_auxiliary(&c));
+        assert!(!ClaudeCliProfile.is_auxiliary(&c.ctx()));
     }
 
     #[test]
@@ -415,7 +410,7 @@ mod tests {
             "tools":[{"name":"Agent"},{"name":"Bash"}]
         }"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert!(!ClaudeCliProfile.is_auxiliary(&c));
+        assert!(!ClaudeCliProfile.is_auxiliary(&c.ctx()));
     }
 
     #[test]
@@ -425,13 +420,13 @@ mod tests {
             "tools":[{"name":"Read"},{"name":"Grep"}]
         }"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert!(!ClaudeCliProfile.is_auxiliary(&c));
+        assert!(!ClaudeCliProfile.is_auxiliary(&c.ctx()));
     }
 
     #[test]
     fn is_auxiliary_false_when_body_missing() {
         let c = call_with(wa::ANTHROPIC, vec![], None);
-        assert!(!ClaudeCliProfile.is_auxiliary(&c));
+        assert!(!ClaudeCliProfile.is_auxiliary(&c.ctx()));
     }
 
     #[test]
@@ -455,7 +450,7 @@ mod tests {
         ]}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(
-            ClaudeCliProfile.extract_user_input(&c).as_deref(),
+            ClaudeCliProfile.extract_user_input(&c.ctx()).as_deref(),
             Some("hello\nworld")
         );
     }
@@ -467,7 +462,7 @@ mod tests {
         ]}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(
-            ClaudeCliProfile.extract_user_input(&c).as_deref(),
+            ClaudeCliProfile.extract_user_input(&c.ctx()).as_deref(),
             Some("actual question")
         );
     }
@@ -477,7 +472,7 @@ mod tests {
         let body = r#"{"messages":[{"role":"user","content":"plain prompt"}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(
-            ClaudeCliProfile.extract_user_input(&c).as_deref(),
+            ClaudeCliProfile.extract_user_input(&c.ctx()).as_deref(),
             Some("plain prompt")
         );
     }
@@ -488,7 +483,7 @@ mod tests {
             {"type":"tool_result","tool_use_id":"t","content":"ok"}
         ]}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
-        assert_eq!(ClaudeCliProfile.extract_user_input(&c), None);
+        assert_eq!(ClaudeCliProfile.extract_user_input(&c.ctx()), None);
     }
 
     #[test]
@@ -500,9 +495,9 @@ mod tests {
             {"type":"text","text":"part two"}
         ]}"#;
         let mut c = call_with(wa::ANTHROPIC, vec![], None);
-        c.response_body = Some(body.to_string());
+        c.set_response_body(body);
         assert_eq!(
-            ClaudeCliProfile.extract_assistant_text(&c).as_deref(),
+            ClaudeCliProfile.extract_assistant_text(&c.ctx()).as_deref(),
             Some("part one\npart two")
         );
     }
@@ -511,7 +506,7 @@ mod tests {
     fn extract_assistant_text_none_when_no_text() {
         let body = r#"{"content":[{"type":"tool_use","id":"t","name":"bash","input":{}}]}"#;
         let mut c = call_with(wa::ANTHROPIC, vec![], None);
-        c.response_body = Some(body.to_string());
-        assert_eq!(ClaudeCliProfile.extract_assistant_text(&c), None);
+        c.set_response_body(body);
+        assert_eq!(ClaudeCliProfile.extract_assistant_text(&c.ctx()), None);
     }
 }
