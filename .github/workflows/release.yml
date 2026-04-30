@@ -20,6 +20,10 @@ permissions:
 env:
   # Pin libpcap source for reproducible Linux static builds.
   PCAP_VERSION: "1.10.5"
+  # Opt into Node.js 24 for all JS-based actions (checkout, upload-artifact,
+  # download-artifact). Silences the "Node.js 20 actions are deprecated"
+  # warning ahead of GitHub's June 2026 enforcement date.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   console:

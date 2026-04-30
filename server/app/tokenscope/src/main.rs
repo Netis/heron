@@ -10,7 +10,9 @@ use tracing_subscriber::FmtSubscriber;
 use tokenscope::Pipeline;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use ts_common::config::{AppConfig, CaptureSourceConfig, PipelineDef};
+use ts_common::config::{
+    config_search_paths, discover_config_path, AppConfig, CaptureSourceConfig, PipelineDef,
+};
 use ts_common::internal_metrics::{Metric, MetricsReporter, MetricsSystem};
 use ts_storage::create_backend;
 
@@ -56,9 +58,11 @@ enum Color {
 #[derive(Debug, Parser)]
 #[command(name = "tokenscope", version, about = "LLM API performance monitoring")]
 struct Args {
-    /// Path to configuration file
-    #[arg(short, long, default_value = "config/default.toml")]
-    config: PathBuf,
+    /// Path to configuration file. When omitted, TokenScope searches
+    /// (in order): ./config/default.toml, $XDG_CONFIG_HOME/tokenscope/config.toml,
+    /// ~/.config/tokenscope/config.toml, /etc/tokenscope/config.toml.
+    #[arg(short, long)]
+    config: Option<PathBuf>,
 
     /// Read packets from a pcap file (overrides config pipelines)
     #[arg(long, conflicts_with = "interface")]
@@ -135,29 +139,39 @@ async fn main() {
     let args = Args::parse();
     init_logger(&args.color, args.verbose);
 
+    let config_path: PathBuf = match args.config {
+        Some(p) => {
+            if !p.is_file() {
+                tracing::error!("config file not found: '{}'", p.display());
+                std::process::exit(1);
+            }
+            p
+        }
+        None => match discover_config_path() {
+            Some(p) => p,
+            None => {
+                tracing::error!("no configuration file found. Searched (in order):");
+                for p in config_search_paths() {
+                    tracing::error!("  - {}", p.display());
+                }
+                tracing::error!(
+                    "Run install.sh to drop a default config, or pass -c <path> explicitly."
+                );
+                std::process::exit(1);
+            }
+        },
+    };
+
     tracing::info!(
         "tokenscope v{} starting, config={}",
         env!("CARGO_PKG_VERSION"),
-        args.config.display()
+        config_path.display()
     );
 
-    // Load configuration
-    if !args.config.exists() {
-        let default_path = std::path::Path::new("config/default.toml");
-        if args.config == default_path {
-            tracing::error!(
-                "config file not found at default path '{}'. Pass -c <path> to specify a config file.",
-                args.config.display(),
-            );
-        } else {
-            tracing::error!("config file not found: '{}'", args.config.display());
-        }
-        std::process::exit(1);
-    }
-    let config = match AppConfig::load(&args.config) {
+    let config = match AppConfig::load(&config_path) {
         Ok(config) => config,
         Err(e) => {
-            tracing::error!("failed to load config '{}': {e}", args.config.display());
+            tracing::error!("failed to load config '{}': {e}", config_path.display());
             std::process::exit(1);
         }
     };

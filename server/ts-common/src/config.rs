@@ -1,10 +1,51 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use config::Config;
 use serde::Deserialize;
 
 use crate::error::AppError;
+
+/// The ordered list of paths searched for a configuration file when the user
+/// does not pass `-c <path>` explicitly.
+///
+/// Order is significant: earlier entries override later ones. The cascade is:
+///
+/// 1. `./config/default.toml` — development mode (`cargo run` from the repo;
+///    or the layout inside an extracted release tarball).
+/// 2. `$XDG_CONFIG_HOME/tokenscope/config.toml` — user override (XDG-aware).
+/// 3. `~/.config/tokenscope/config.toml` — user override (XDG default).
+/// 4. `/etc/tokenscope/config.toml` — system-wide install (dropped by
+///    `install.sh` when invoked with `sudo`).
+///
+/// On macOS we deliberately use the same `~/.config/` location as Linux —
+/// the major modern CLI tools (gh, ripgrep, fd, bat, helix) follow this
+/// convention rather than `~/Library/Application Support/`.
+pub fn config_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::with_capacity(4);
+    paths.push(PathBuf::from("config/default.toml"));
+
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            paths.push(PathBuf::from(xdg).join("tokenscope/config.toml"));
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            paths.push(PathBuf::from(home).join(".config/tokenscope/config.toml"));
+        }
+    }
+    paths.push(PathBuf::from("/etc/tokenscope/config.toml"));
+
+    paths
+}
+
+/// Walk [`config_search_paths`] and return the first path that exists as a
+/// regular file. Returns `None` when no config is found anywhere — callers
+/// should print the searched paths so the user knows what to fix.
+pub fn discover_config_path() -> Option<PathBuf> {
+    config_search_paths().into_iter().find(|p| p.is_file())
+}
 
 /// Top-level application configuration.
 ///
