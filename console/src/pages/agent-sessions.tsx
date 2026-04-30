@@ -24,24 +24,22 @@ function SessionRow({ item }: { item: SessionListItem }) {
       to={href}
       className="block border-b border-border/50 px-4 py-3 transition-colors hover:bg-muted/40"
     >
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <AgentBadge agentKind={item.agent_kind} />
-            <span className="font-mono text-xs text-muted-foreground">
-              {item.session_id}
-            </span>
-          </div>
-          <div className="mt-1 truncate text-sm text-foreground">{preview}</div>
-          <div className="mt-1 text-xs text-muted-foreground">
-            {item.turn_count} turns · {item.call_count} calls ·{" "}
-            {formatNumber(item.total_input_tokens + item.total_output_tokens)} tok
-            {cost ? ` · ${cost}` : ""}
-          </div>
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <AgentBadge agentKind={item.agent_kind} />
+          <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
+            {formatDateTime(item.last_turn_at)}
+          </span>
+          <span className="truncate font-mono text-xs text-muted-foreground">
+            {item.session_id}
+          </span>
         </div>
-        <div className="shrink-0 text-right text-xs text-muted-foreground">
-          <div className="tabular-nums">{formatDateTime(item.last_turn_at)}</div>
-          <div className="text-[11px] opacity-70">{formatDuration(durationMs)}</div>
+        <div className="mt-1 truncate text-sm text-foreground">{preview}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          {item.turn_count} turns · {item.call_count} calls ·{" "}
+          {formatNumber(item.total_input_tokens + item.total_output_tokens)} tok ·{" "}
+          {formatDuration(durationMs)}
+          {cost ? ` · ${cost}` : ""}
         </div>
       </div>
     </Link>

@@ -29,7 +29,7 @@
 # type = "pcap"
 # interface = "eth0"
 # bpf_filter = "tcp port 8080"
-# snaplen = 65535
+# snaplen = 262144
 #
 # [[pipeline.sources]]
 # type = "cloud-probe"

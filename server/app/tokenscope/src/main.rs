@@ -73,7 +73,7 @@ struct Args {
     bpf_filter: Option<String>,
 
     /// Snapshot length for live capture (only used with -i)
-    #[arg(long, default_value = "65535")]
+    #[arg(long, default_value = "262144")]
     snaplen: u32,
 
     /// Increase verbosity level (-v, -vv, -vvv)

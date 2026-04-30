@@ -197,7 +197,11 @@ fn default_interface() -> String {
 }
 
 fn default_snaplen() -> u32 {
-    65535
+    // Match libpcap/tcpdump's MAXIMUM_SNAPLEN. 65535 is not enough on Linux
+    // interfaces with TSO/GSO/GRO/LRO offloads enabled (and especially `lo`),
+    // where the kernel hands libpcap super-frames > 64 KB. Truncating those
+    // strands LLM POST bodies and SSE responses mid-stream and breaks decode.
+    262_144
 }
 
 fn default_cloud_probe_endpoint() -> String {
