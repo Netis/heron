@@ -2,7 +2,7 @@
 
 **LLM API observability from the network wire.** A passive, provider-side analyzer that turns LLM API traffic into structured performance, cost, and behavioral telemetry — without an SDK, sidecar, or proxy in the request path.
 
-<!-- TODO: top-level console screenshot here -->
+![TokenScope console — overview](docs/images/overview.png)
 
 ## What it does
 
@@ -55,11 +55,26 @@ This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Ver
 
 **Agent-turn reconstruction** with named profiles for **Claude CLI** (Claude Code) and **OpenAI Codex CLI**, a generic profile for everything else, plus an experimental OpenClaw profile. Turns stitch multi-call agent interactions (tool calls, follow-ups) into a single addressable unit.
 
+![Agent turn detail — multi-call interactions stitched into one behavior narrative](docs/images/agent-turn-detail.png)
+
 **Metrics** (sliding-window, per LLM Call): TTFT · E2E latency · TPOT · token throughput · call rate · active calls · call error rate · prompt-cache hit ratio. See [glossary](docs/glossary.md) for what each means and why.
+
+![Traffic — call rate and token throughput over time](docs/images/traffic.png)
 
 **Storage** in DuckDB (default, embedded, single-file) with per-table retention enabled out of the box. Pluggable backend trait — PostgreSQL and ClickHouse are designed but not yet wired.
 
 **Console** at `http://localhost:3000`: overview · performance · traffic · models · errors · LLM calls (with full request/response body drill-down) · raw HTTP exchanges · agent turns · agent sessions · pipeline-health debug views.
+
+<details>
+<summary>More console screenshots</summary>
+
+![Agent session — full transcript across turns](docs/images/agent-session-detail.png)
+
+![LLM call detail — structured request/response with raw body drawer](docs/images/llm-call-detail.png)
+
+![Pipeline health — internal queue depth, drop counters, leak canaries](docs/images/pipeline-health.png)
+
+</details>
 
 **Distribution**: prebuilt static binaries for Linux musl (x86_64 + aarch64) and macOS (Intel + Apple Silicon). Web console is **embedded in the binary** — single artifact, no separate frontend deploy.
 
@@ -107,8 +122,6 @@ The v0.1 surface is the foundation layer (Ops use cases). On the way:
 
 - **Storage** — PostgreSQL and ClickHouse backends (schemas already designed)
 - **Wire APIs** — Gemini native API, more provider-specific extensions
-- **Export** — OpenTelemetry, Prometheus remote-write, raw event firehose
-- **Higher layers** — PII / data-boundary signals, business-outcome correlation, vendor SLA reports
 
 See [docs/mission.md](docs/mission.md) for the full ladder.
 
