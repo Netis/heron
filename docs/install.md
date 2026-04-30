@@ -174,8 +174,13 @@ Useful for offline analysis, regression testing, or trying TokenScope
 without touching a live interface:
 
 ```bash
-./tokenscope --pcap-file capture.pcap
+./tokenscope --pcap-file capture.pcap --no-retention
 ```
+
+`--no-retention` disables the retention sweeper for this run. Without
+it, a pcap whose packets carry timestamps older than the retention
+window (default 7 days) is pruned by the next sweep — leaving the UI
+empty shortly after import.
 
 The pipeline runs at file-read speed (much faster than realtime). Once
 the file is fully consumed the process **keeps the API/console up** so

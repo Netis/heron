@@ -101,7 +101,7 @@ sudo setcap cap_net_raw,cap_net_admin=eip ~/.local/bin/tokenscope
 tokenscope -i eth0 --bpf-filter "tcp port 8000"
 
 # ...or replay a pcap (no privileges needed)
-tokenscope --pcap-file capture.pcap
+tokenscope --pcap-file capture.pcap --no-retention
 ```
 
 Then open <http://localhost:3000>.

@@ -91,7 +91,9 @@ struct Cli {
 /// invocations keep working unchanged when no subcommand is given.
 #[derive(Debug, Args)]
 struct RunArgs {
-    /// Read packets from a pcap file (overrides config pipelines)
+    /// Read packets from a pcap file (overrides config pipelines).
+    /// Typically combine with --no-retention so historical timestamps in the
+    /// pcap aren't pruned by the retention sweeper.
     #[arg(long, conflicts_with = "interface")]
     pcap_file: Option<PathBuf>,
 
@@ -111,6 +113,13 @@ struct RunArgs {
     /// Default: keep the API/console available; press Ctrl+C to exit.
     #[arg(long)]
     exit_after_drain: bool,
+
+    /// Disable the retention sweeper for this run (overrides config).
+    /// Useful with --pcap-file when the pcap's event timestamps are older than
+    /// the retention window — without this, freshly imported data is pruned by
+    /// the next sweep.
+    #[arg(long)]
+    no_retention: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -228,7 +237,7 @@ async fn run_pipeline(cli: Cli) {
         config_path.display()
     );
 
-    let config = match AppConfig::load(&config_path) {
+    let mut config = match AppConfig::load(&config_path) {
         Ok(config) => config,
         Err(e) => {
             tracing::error!("failed to load config '{}': {e}", config_path.display());
@@ -241,6 +250,11 @@ async fn run_pipeline(cli: Cli) {
         .unwrap_or(0);
 
     tracing::info!("configuration loaded successfully");
+
+    if cli.run.no_retention && config.storage.retention.enabled {
+        tracing::info!("retention disabled by --no-retention CLI flag");
+        config.storage.retention.enabled = false;
+    }
 
     // Effective pipelines: CLI flags override config pipelines entirely.
     // clap's `conflicts_with` ensures --pcap-file and -i are mutually exclusive.
