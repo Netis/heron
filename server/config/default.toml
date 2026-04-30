@@ -76,14 +76,19 @@ path = "data/tokenscope.duckdb"
 batch_size = 1000
 flush_interval_ms = 1000
 
-# Data retention (disabled by default).
+# Data retention (enabled by default with sane TTLs — values below are the
+# active defaults, shown for reference). Set `enabled = false` to opt out, or
+# set any field to `0` to make that table never expire.
 # [storage.retention]
-# enabled = false
+# enabled = true
 # check_interval_secs = 3600
-# calls = 7
-# turns = 30
-# http_exchanges = 7    # Raw HTTP transport records — bulky (headers + bodies),
-#                       # kept for a short forensics window. Default 7 days.
+# calls = 7              # LLM call detail (request/response bodies) — bulky
+# turns = 30             # Agent turn summaries — lightweight
+# http_exchanges = 7     # Raw HTTP transport records (headers + bodies) — bulkiest table
+#
+# Per-granularity retention for llm_metrics. Missing keys fall back to the
+# defaults below — overriding one label does NOT drop the others. Set a key
+# to 0 to disable retention for that granularity.
 # [storage.retention.metrics]
 # "10s" = 1
 # "1m"  = 7

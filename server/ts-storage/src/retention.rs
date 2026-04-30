@@ -16,11 +16,18 @@ use ts_common::config::RetentionConfig;
 
 use crate::backend::StorageBackend;
 
-/// Granularity labels produced by `ts-metrics`. Mirrors
-/// `server/ts-metrics/src/aggregator.rs` `GRANULARITIES`. Kept local to avoid
-/// a dependency just for a 4-element constant; promote to `ts-common` if it
-/// ever needs to be shared.
-pub const KNOWN_METRICS_GRANULARITIES: &[&str] = &["10s", "1m", "5m", "1h"];
+/// Default per-granularity retention for `llm_metrics`, in days.
+///
+/// Doubles as the source of truth for **known granularity labels** — the keys
+/// must match the labels produced by `ts-metrics::aggregator::GRANULARITIES`.
+/// `policy_from_config` merges user overrides on top of this table, so adding
+/// a new granularity only requires updating ts-metrics + this single constant.
+pub const DEFAULT_METRICS_RETENTION_DAYS: &[(&str, u32)] = &[
+    ("10s", 1),
+    ("1m", 7),
+    ("5m", 30),
+    ("1h", 365),
+];
 
 /// A concrete cutoff decision for each table. `None` means "skip".
 #[derive(Debug, Clone, Default)]
@@ -64,10 +71,14 @@ impl RetentionReport {
 /// Build a `RetentionPolicy` from config + the current wall clock.
 ///
 /// Rules:
-/// - Days value `0` or absent → no cutoff for that table.
-/// - Unknown metrics granularity labels (not in `KNOWN_METRICS_GRANULARITIES`)
-///   are logged at warn and skipped, to catch typos like `"10sec"` before they
-///   silently retain data forever.
+/// - Days value `0` for `calls`/`turns`/`http_exchanges` → no cutoff for that table.
+/// - For each granularity in `DEFAULT_METRICS_RETENTION_DAYS`, the user's
+///   override (if any) wins; otherwise the default applies. `0` disables that
+///   granularity. This means setting only `"1h" = 730` keeps the other three
+///   defaults intact.
+/// - Unknown metrics granularity labels in user config (not in
+///   `DEFAULT_METRICS_RETENTION_DAYS`) are logged at warn and ignored, to catch
+///   typos like `"10sec"` before they silently retain data forever.
 pub fn policy_from_config(cfg: &RetentionConfig, now: SystemTime) -> RetentionPolicy {
     let days_to_cutoff = |days: u32| -> Option<SystemTime> {
         if days == 0 {
@@ -77,20 +88,23 @@ pub fn policy_from_config(cfg: &RetentionConfig, now: SystemTime) -> RetentionPo
         }
     };
 
-    let mut metrics_before = Vec::new();
-    for (label, days) in &cfg.metrics {
-        if *days == 0 {
-            continue;
-        }
-        if !KNOWN_METRICS_GRANULARITIES.contains(&label.as_str()) {
+    for label in cfg.metrics.keys() {
+        if !DEFAULT_METRICS_RETENTION_DAYS
+            .iter()
+            .any(|(known, _)| known == label)
+        {
             warn!(
                 granularity = label.as_str(),
                 "retention: unknown metrics granularity in config; ignoring"
             );
-            continue;
         }
-        if let Some(cutoff) = days_to_cutoff(*days) {
-            metrics_before.push((label.clone(), cutoff));
+    }
+
+    let mut metrics_before = Vec::new();
+    for (label, default_days) in DEFAULT_METRICS_RETENTION_DAYS {
+        let days = cfg.metrics.get(*label).copied().unwrap_or(*default_days);
+        if let Some(cutoff) = days_to_cutoff(days) {
+            metrics_before.push(((*label).to_string(), cutoff));
         }
     }
 
@@ -175,15 +189,19 @@ mod tests {
         cfg.enabled = true;
         cfg.calls = calls;
         cfg.turns = turns;
-        // Tests opt out of http_exchanges by default so existing-shape
-        // assertions (is_empty, policy fields) stay meaningful. The fresh-
-        // install default of 7 days lives on `Default::default()` and is
-        // exercised in dedicated cases below.
+        // Start every test from a clean slate so policy-shape assertions
+        // (is_empty, single-entry checks) stay meaningful: zero out
+        // http_exchanges and every known metrics granularity, then overlay
+        // the test's explicit overrides on top. Defaults are exercised in
+        // dedicated cases below.
         cfg.http_exchanges = 0;
-        cfg.metrics = metrics
+        cfg.metrics = DEFAULT_METRICS_RETENTION_DAYS
             .iter()
-            .map(|(k, v)| ((*k).to_string(), *v))
+            .map(|(label, _)| ((*label).to_string(), 0))
             .collect();
+        for (k, v) in metrics {
+            cfg.metrics.insert((*k).to_string(), *v);
+        }
         cfg
     }
 
@@ -258,10 +276,38 @@ mod tests {
     }
 
     #[test]
-    fn known_granularities_constant_matches_ts_metrics() {
-        // Sanity check that this list stays in sync with the labels produced
-        // by ts-metrics/src/aggregator.rs. If ts-metrics adds a new
-        // granularity, update this constant.
-        assert_eq!(KNOWN_METRICS_GRANULARITIES, &["10s", "1m", "5m", "1h"]);
+    fn default_granularity_table_matches_ts_metrics() {
+        // Sanity check that the default table stays in sync with the labels
+        // produced by ts-metrics/src/aggregator.rs. If ts-metrics adds a new
+        // granularity, update this constant — the default-day value is the
+        // recommended fresh-install retention for that label.
+        assert_eq!(
+            DEFAULT_METRICS_RETENTION_DAYS,
+            &[("10s", 1u32), ("1m", 7), ("5m", 30), ("1h", 365)]
+        );
+    }
+
+    #[test]
+    fn missing_metrics_keys_get_default_retention() {
+        // Empty user override → every known granularity gets its default cutoff.
+        let mut cfg = RetentionConfig::default();
+        cfg.metrics.clear();
+        let policy = policy_from_config(&cfg, SystemTime::now());
+        assert_eq!(policy.metrics_before.len(), DEFAULT_METRICS_RETENTION_DAYS.len());
+    }
+
+    #[test]
+    fn user_override_for_one_granularity_keeps_other_defaults() {
+        // The whole reason for default-merge: overriding "1h" must not silently
+        // drop retention for the other three labels.
+        let mut cfg = RetentionConfig::default();
+        cfg.metrics.clear();
+        cfg.metrics.insert("1h".to_string(), 730);
+        let policy = policy_from_config(&cfg, SystemTime::now());
+        let labels: Vec<&str> = policy.metrics_before.iter().map(|(l, _)| l.as_str()).collect();
+        assert!(labels.contains(&"10s"));
+        assert!(labels.contains(&"1m"));
+        assert!(labels.contains(&"5m"));
+        assert!(labels.contains(&"1h"));
     }
 }

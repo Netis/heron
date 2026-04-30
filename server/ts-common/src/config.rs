@@ -358,27 +358,29 @@ impl Default for StorageConfig {
     }
 }
 
-/// Data retention policy for stored telemetry. Disabled by default; enable and
-/// set per-table TTLs to have old rows periodically deleted.
+/// Data retention policy for stored telemetry. Enabled by default with sane
+/// per-table TTLs; set `enabled = false` or per-field `0` to opt out.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RetentionConfig {
-    #[serde(default)]
+    #[serde(default = "default_retention_enabled")]
     pub enabled: bool,
     #[serde(default = "default_retention_check_interval_secs")]
     pub check_interval_secs: u64,
-    /// Max age in days for `llm_calls`. `0` (or absent) = never expire.
-    #[serde(default)]
+    /// Max age in days for `llm_calls`. `0` = never expire.
+    #[serde(default = "default_calls_retention_days")]
     pub calls: u32,
-    /// Max age in days for `agent_turns`. `0` (or absent) = never expire.
-    #[serde(default)]
+    /// Max age in days for `agent_turns`. `0` = never expire.
+    #[serde(default = "default_turns_retention_days")]
     pub turns: u32,
-    /// Max age in days for `http_exchanges`. `0` (or absent) = never expire.
-    /// Defaults to 7 for fresh installs — raw headers + bodies make this the
-    /// bulkiest table, so a short forensics window keeps storage bounded.
+    /// Max age in days for `http_exchanges`. `0` = never expire. Raw headers +
+    /// bodies make this the bulkiest table, so a short forensics window keeps
+    /// storage bounded.
     #[serde(default = "default_http_exchanges_retention_days")]
     pub http_exchanges: u32,
-    /// Per-granularity retention for `llm_metrics`, in days. Key = granularity
-    /// label (e.g. `"10s"`, `"1m"`, `"5m"`, `"1h"`). Absent or 0 = never expire.
+    /// Per-granularity retention overrides for `llm_metrics`, in days. Key =
+    /// granularity label (`"10s"`, `"1m"`, `"5m"`, `"1h"`). Missing keys fall
+    /// back to defaults defined in `ts-storage::retention`; set a key to `0`
+    /// to disable retention for that granularity.
     #[serde(default)]
     pub metrics: HashMap<String, u32>,
 }
@@ -386,14 +388,26 @@ pub struct RetentionConfig {
 impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_retention_enabled(),
             check_interval_secs: default_retention_check_interval_secs(),
-            calls: 0,
-            turns: 0,
+            calls: default_calls_retention_days(),
+            turns: default_turns_retention_days(),
             http_exchanges: default_http_exchanges_retention_days(),
             metrics: HashMap::new(),
         }
     }
+}
+
+fn default_retention_enabled() -> bool {
+    true
+}
+
+fn default_calls_retention_days() -> u32 {
+    7
+}
+
+fn default_turns_retention_days() -> u32 {
+    30
 }
 
 fn default_http_exchanges_retention_days() -> u32 {
@@ -652,19 +666,25 @@ mod phase2_tests {
     }
 
     #[test]
-    fn retention_config_disabled_by_default() {
+    fn retention_config_enabled_by_default_with_sane_ttls() {
         let cfg = RetentionConfig::default();
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
         assert_eq!(cfg.check_interval_secs, 3600);
-        assert_eq!(cfg.calls, 0);
-        assert_eq!(cfg.turns, 0);
+        assert_eq!(cfg.calls, 7);
+        assert_eq!(cfg.turns, 30);
+        assert_eq!(cfg.http_exchanges, 7);
+        // metrics map stays empty — per-granularity defaults are merged at
+        // policy-build time in ts-storage so users can override one label
+        // without dropping the rest.
         assert!(cfg.metrics.is_empty());
     }
 
     #[test]
     fn storage_config_embeds_retention_defaults() {
         let cfg = StorageConfig::default();
-        assert!(!cfg.retention.enabled);
+        assert!(cfg.retention.enabled);
+        assert_eq!(cfg.retention.calls, 7);
+        assert_eq!(cfg.retention.turns, 30);
     }
 
     #[test]
