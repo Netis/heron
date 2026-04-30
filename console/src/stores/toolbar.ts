@@ -29,7 +29,7 @@ export const TOOLBAR_DEFAULTS = {
   wireApi: "",
   model: "",
   serverIp: "",
-  refreshInterval: 0,
+  refreshInterval: 5000,
 } as const
 
 interface ToolbarState {
@@ -66,7 +66,7 @@ export const useToolbarStore = create<ToolbarState>((set) => {
     start: now - PRESET_SECONDS["1h"],
     end: now,
     filters: { wireApi: "", model: "", serverIp: "" },
-    refreshInterval: 0,
+    refreshInterval: 5000,
     setPreset: (preset) => {
       const now = nowSeconds()
       set({
