@@ -1,4 +1,5 @@
 use std::fmt;
+use std::net::IpAddr;
 
 /// Composite key identifying a single in-flight turn.
 ///
@@ -40,6 +41,12 @@ pub struct AgentTurn {
     pub session_id: String,
     pub wire_api: String,   // copied from LlmCall.wire_api
     pub agent_kind: String, // "claude-cli" / "codex-cli" / ...
+
+    /// Representative IPs captured from the turn's first `LlmCall`. A turn is
+    /// almost always one client→one server within a single connection; if it
+    /// spans more, drill into the per-call list to see them all.
+    pub client_ip: IpAddr,
+    pub server_ip: IpAddr,
 
     pub start_time_us: i64, // first call's request_time
     pub end_time_us: i64,   // last call's complete_time (or request_time if no resp)
@@ -130,6 +137,8 @@ mod tests {
             session_id: "s1".into(),
             wire_api: wa::ANTHROPIC.into(),
             agent_kind: "claude-cli".into(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            server_ip: "127.0.0.1".parse().unwrap(),
             start_time_us: 0,
             end_time_us: 1_500_000,
             duration_ms: 1500,
@@ -165,6 +174,8 @@ mod tests {
             session_id: "s".into(),
             wire_api: wa::ANTHROPIC.into(),
             agent_kind: "claude-cli".into(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            server_ip: "127.0.0.1".parse().unwrap(),
             start_time_us: 0,
             end_time_us: 0,
             duration_ms: 0,

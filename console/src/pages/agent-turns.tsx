@@ -19,6 +19,8 @@ const columns = [
   { key: "wire_api", label: "Wire API", width: "w-[120px]", sortable: false, align: "left" as const },
   { key: "primary_model", label: "Model", width: "w-[180px]", sortable: false, align: "left" as const },
   { key: "agent_kind", label: "Agent", width: "w-[100px]", sortable: false, align: "left" as const },
+  { key: "client_ip", label: "Client", width: "w-[130px]", sortable: false, align: "left" as const },
+  { key: "server_ip", label: "Server", width: "w-[130px]", sortable: false, align: "left" as const },
   { key: "status", label: "Status", width: "w-[100px]", sortable: false, align: "left" as const },
   { key: "call_count", label: "Calls", width: "w-[60px]", sortable: true, align: "right" as const },
   { key: "total_input_tokens", label: "In", width: "w-[70px]", sortable: true, align: "right" as const },
@@ -54,6 +56,10 @@ function CellValue({ item, column }: { item: AgentTurnListItem; column: (typeof 
           {item.agent_kind}
         </span>
       )
+    case "client_ip":
+      return <span className="truncate font-mono text-xs">{item.client_ip}</span>
+    case "server_ip":
+      return <span className="truncate font-mono text-xs">{item.server_ip}</span>
     case "status":
       return <TurnStatusBadge status={item.status} />
     case "call_count":
@@ -80,6 +86,7 @@ export function AgentTurnsPage() {
   const [sortOrder, setSortOrder] = useSearchParamState("order", "desc")
   const [statusStr, setStatusStr] = useSearchParamState("status", "")
   const [agentKindStr, setAgentKindStr] = useSearchParamState("agent_kind", "")
+  const [clientIpStr, setClientIpStr] = useSearchParamState("client_ip", "")
 
   const page = Number(pageStr) || 1
   const pageSize = Number(pageSizeStr) || 50
@@ -95,6 +102,7 @@ export function AgentTurnsPage() {
     sortOrder: sortOrder as "asc" | "desc",
     status: statusStr || undefined,
     agentKind: agentKindStr || undefined,
+    clientIp: clientIpStr || undefined,
   })
 
   const items = data?.items ?? []
@@ -140,6 +148,12 @@ export function AgentTurnsPage() {
             setAgentKindStr(v.join(","))
             setPageStr("1")
           }}
+        />
+        <input
+          value={clientIpStr}
+          onChange={(e) => { setClientIpStr(e.target.value); setPageStr("1") }}
+          placeholder="Client IP (CSV)"
+          className="w-[180px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
         />
       </div>
 

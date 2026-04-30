@@ -201,6 +201,10 @@ pub struct HttpExchangesPage {
 pub struct TurnsQuery {
     pub time_range: TimeRange,
     pub filter: DimensionFilter,
+    /// Per-call client IP filter. `DimensionFilter` only carries `server_ips`
+    /// (the metrics-pre-aggregated dimension); client IP lives outside the
+    /// filter, parallel to `CallsQuery.client_ips`.
+    pub client_ips: Vec<String>,
     pub statuses: Vec<String>,
     pub agent_kinds: Vec<String>,
     pub sort_by: String,
@@ -219,6 +223,8 @@ pub struct TurnListItem {
     pub duration_ms: u64,
     pub wire_api: String,
     pub agent_kind: String,
+    pub client_ip: String,
+    pub server_ip: String,
     pub primary_model: Option<String>,
     pub models_used: Vec<String>,
     pub call_count: u32,
@@ -277,6 +283,8 @@ pub struct TurnDetail {
     pub session_id: String,
     pub wire_api: String,
     pub agent_kind: String,
+    pub client_ip: String,
+    pub server_ip: String,
     pub start_time: i64,
     pub end_time: i64,
     pub duration_ms: u64,

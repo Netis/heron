@@ -13,9 +13,11 @@ interface UseAgentTurnsParams {
   status?: string
   /** CSV of client kinds */
   agentKind?: string
+  /** CSV of client IPs e.g. "10.0.0.1,10.0.0.2" */
+  clientIp?: string
 }
 
-export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agentKind }: UseAgentTurnsParams) {
+export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agentKind, clientIp }: UseAgentTurnsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
   const { params: fp } = useSupportedFilterParams()
@@ -24,7 +26,7 @@ export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agent
     queryKey: ["agent-turns", {
       start, end, page, pageSize, sortBy, sortOrder,
       ...fp,
-      status, agentKind,
+      status, agentKind, clientIp,
     }],
     queryFn: () =>
       apiFetch<AgentTurnsPage>("/api/agent-turns", {
@@ -37,6 +39,7 @@ export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agent
         ...fp,
         status: status || undefined,
         agent_kind: agentKind || undefined,
+        client_ip: clientIp || undefined,
       }),
     placeholderData: (prev) => prev,
   })

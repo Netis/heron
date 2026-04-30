@@ -574,6 +574,8 @@ fn build_turn(calls: &[&AgentCall]) -> AgentTurn {
     let session_id = first.agent.session_id.clone();
     let agent_kind = first.agent.agent_kind.to_string();
     let wire_api = first.call.wire_api.to_string();
+    let client_ip = first.call.client_ip;
+    let server_ip = first.call.server_ip;
     let turn_id = Uuid::now_v7().to_string();
 
     let start_time_us = first.call.request_time;
@@ -679,6 +681,8 @@ fn build_turn(calls: &[&AgentCall]) -> AgentTurn {
         session_id,
         wire_api,
         agent_kind,
+        client_ip,
+        server_ip,
         start_time_us,
         end_time_us,
         duration_ms,

@@ -89,6 +89,8 @@ export interface AgentTurnListItem {
   duration_ms: number
   wire_api: string
   agent_kind: string
+  client_ip: string
+  server_ip: string
   primary_model: string | null
   models_used: string[]
   call_count: number
@@ -106,6 +108,8 @@ export interface AgentTurnDetail {
   session_id: string
   wire_api: string
   agent_kind: string
+  client_ip: string
+  server_ip: string
   start_time: number
   end_time: number
   duration_ms: number

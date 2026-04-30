@@ -432,7 +432,7 @@ fn default_listen() -> String {
 }
 
 fn default_port() -> u16 {
-    8080
+    3000
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -260,6 +260,8 @@ CREATE TABLE IF NOT EXISTS agent_turns (
     session_id                VARCHAR NOT NULL,
     wire_api                  VARCHAR NOT NULL,
     agent_kind               VARCHAR NOT NULL,
+    client_ip                 VARCHAR NOT NULL,
+    server_ip                 VARCHAR NOT NULL,
     start_time                TIMESTAMP NOT NULL,
     end_time                  TIMESTAMP NOT NULL,
     duration_ms               UBIGINT NOT NULL,
@@ -889,6 +891,8 @@ struct PreparedTurn {
     session_id: String,
     wire_api: String,
     agent_kind: String,
+    client_ip: String,
+    server_ip: String,
     start_time: Value,
     end_time: Value,
     duration_ms: u64,
@@ -917,6 +921,8 @@ fn prepare_turn(t: AgentTurn) -> PreparedTurn {
         session_id: t.session_id,
         wire_api: t.wire_api,
         agent_kind: t.agent_kind,
+        client_ip: t.client_ip.to_string(),
+        server_ip: t.server_ip.to_string(),
         start_time: Value::Timestamp(TimeUnit::Microsecond, t.start_time_us),
         end_time: Value::Timestamp(TimeUnit::Microsecond, t.end_time_us),
         duration_ms: t.duration_ms,
@@ -1493,6 +1499,8 @@ impl StorageBackend for DuckDbBackend {
                         p.session_id,
                         p.wire_api,
                         p.agent_kind,
+                        p.client_ip,
+                        p.server_ip,
                         p.start_time,
                         p.end_time,
                         p.duration_ms,
@@ -2285,6 +2293,23 @@ impl StorageBackend for DuckDbBackend {
                     .collect();
                 where_parts.push(format!("agent_kind IN ({})", list.join(", ")));
             }
+            if !query.client_ips.is_empty() {
+                let list: Vec<String> = query
+                    .client_ips
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!("client_ip IN ({})", list.join(", ")));
+            }
+            if !query.filter.server_ips.is_empty() {
+                let list: Vec<String> = query
+                    .filter
+                    .server_ips
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!("server_ip IN ({})", list.join(", ")));
+            }
 
             let where_sql = where_parts.join(" AND ");
             let sort_by = &query.sort_by;
@@ -2304,7 +2329,8 @@ impl StorageBackend for DuckDbBackend {
                  epoch_ms(start_time), epoch_ms(end_time), duration_ms, \
                  wire_api, agent_kind, models_used, call_count, \
                  total_input_tokens, total_output_tokens, status, \
-                 final_finish_reason, user_input_preview, final_answer_preview \
+                 final_finish_reason, user_input_preview, final_answer_preview, \
+                 client_ip, server_ip \
                  FROM agent_turns WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
@@ -2353,6 +2379,12 @@ impl StorageBackend for DuckDbBackend {
                     agent_kind: row
                         .get(7)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    client_ip: row
+                        .get(16)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    server_ip: row
+                        .get(17)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     primary_model,
                     models_used,
                     call_count: row
@@ -2400,7 +2432,8 @@ impl StorageBackend for DuckDbBackend {
                     total_cost_usd, status, final_finish_reason,
                     user_input_preview, user_call_id,
                     final_answer_preview, final_call_id,
-                    call_ids, metadata
+                    call_ids, metadata,
+                    client_ip, server_ip
                 FROM agent_turns
                 WHERE turn_id = ?
             ";
@@ -2436,6 +2469,8 @@ impl StorageBackend for DuckDbBackend {
                     row.get::<_, Option<String>>(21)?, // final_call_id
                     row.get::<_, Option<String>>(22)?, // call_ids (JSON)
                     row.get::<_, Option<String>>(23)?, // metadata
+                    row.get::<_, String>(24)?,         // client_ip
+                    row.get::<_, String>(25)?,         // server_ip
                 ))
             });
 
@@ -2474,6 +2509,8 @@ impl StorageBackend for DuckDbBackend {
                 final_call_id,
                 call_ids_raw,
                 metadata_raw,
+                client_ip,
+                server_ip,
             ) = tuple;
 
             let models_used = parse_json_string_list(models_used_raw.as_deref());
@@ -2513,6 +2550,8 @@ impl StorageBackend for DuckDbBackend {
                 session_id,
                 wire_api,
                 agent_kind,
+                client_ip,
+                server_ip,
                 start_time,
                 end_time,
                 duration_ms,
@@ -5069,6 +5108,8 @@ mod turn_tests {
             session_id: session_id.into(),
             wire_api: wire_api.into(),
             agent_kind: "claude-cli".into(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            server_ip: "127.0.0.1".parse().unwrap(),
             start_time_us: start_us,
             end_time_us: start_us + (duration_ms as i64) * 1000,
             duration_ms,
@@ -5149,6 +5190,7 @@ mod turn_tests {
                 end_us: 1_800_000_000_000_000,
             },
             filter: DimensionFilter::default(),
+            client_ips: vec![],
             statuses: vec![],
             agent_kinds: vec![],
             sort_by: "start_time".into(),
@@ -5811,6 +5853,8 @@ mod concurrent_tests {
             session_id: format!("session-{}", i % 10),
             wire_api: wa::OPENAI_CHAT.into(),
             agent_kind: "test".into(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            server_ip: "127.0.0.1".parse().unwrap(),
             start_time_us: 1_700_000_000_000_000 + i as i64,
             end_time_us: 1_700_000_000_000_000 + i as i64 + 1_000_000,
             duration_ms: 1000,
@@ -5987,6 +6031,8 @@ mod retention_tests {
             session_id: "s".into(),
             wire_api: wa::OPENAI_CHAT.into(),
             agent_kind: "claude-cli".into(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            server_ip: "127.0.0.1".parse().unwrap(),
             start_time_us: start_us,
             end_time_us: start_us + (duration_ms as i64) * 1000,
             duration_ms,

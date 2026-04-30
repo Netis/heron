@@ -519,6 +519,8 @@ mod tests {
             session_id: "s".into(),
             wire_api: ts_llm::wire_apis::OPENAI_CHAT.into(),
             agent_kind: "x".into(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            server_ip: "127.0.0.1".parse().unwrap(),
             start_time_us: 0,
             end_time_us: 0,
             duration_ms: 0,
