@@ -45,6 +45,11 @@
 # # per source_id (interface name for pcap/pcap-file, probe UUID for
 # # cloud-probe). Off by default — enable only when you need offline replay
 # # or traffic capture for support.
+# #
+# # `dir` is resolved relative to the working directory. When TokenScope is
+# # started by systemd or via install.sh layout, the CWD is not the install
+# # tree, so use an absolute path (e.g. /var/lib/tokenscope/dumps/local) to
+# # keep dumps next to the DuckDB file.
 # [pipeline.pcap_dump]
 # enabled = false
 # dir = "data/dumps/local"

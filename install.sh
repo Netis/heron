@@ -26,27 +26,44 @@
 
 set -eu
 
-GITHUB_REPO="${TOKENSCOPE_REPO:-Netis/TokenScope}"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local}"
-BIN_DIR="$INSTALL_DIR/bin"
+usage() {
+    cat <<'EOF'
+TokenScope installer.
 
-# Decide config and data targets from INSTALL_DIR.
-case "$INSTALL_DIR" in
-    /usr/local|/usr|/opt/*)
-        INSTALL_MODE="system"
-        CONFIG_DIR="/etc/tokenscope"
-        DATA_DIR="/var/lib/tokenscope"
-        ;;
-    *)
-        INSTALL_MODE="user"
-        CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tokenscope"
-        DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/tokenscope"
-        ;;
-esac
-CONFIG_PATH="$CONFIG_DIR/config.toml"
+Usage:
+  curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | sudo sh
+  curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | INSTALL_DIR="$HOME/.local" sh
+
+Environment overrides:
+  TOKENSCOPE_VERSION  Pin a specific version (default: latest GitHub release).
+                      A leading "v" is added automatically if missing.
+  TOKENSCOPE_TARGET   Force a target triple (default: auto-detected).
+  TOKENSCOPE_REPO     Override the GitHub repo (default: Netis/TokenScope).
+  INSTALL_DIR         Binary install prefix (default: /usr/local).
+                      Known system prefixes (/usr/local, /usr, /opt/*) also
+                      trigger a system-wide layout: config in /etc/tokenscope,
+                      data in /var/lib/tokenscope.
+                      Any other prefix only redirects the binary location;
+                      config and data still go to XDG paths
+                      ($XDG_CONFIG_HOME / $XDG_DATA_HOME, falling back to
+                      ~/.config and ~/.local/share).
+  NO_COLOR=1          Disable colored output.
+EOF
+}
 
 # ---------------------------------------------------------------------------
-# Output helpers
+# Argument parsing (only -h/--help is recognized; reject anything else loudly
+# rather than silently ignoring a typo'd flag mid-install).
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+    "")        ;;
+    -h|--help) usage; exit 0 ;;
+    *)         usage >&2; printf '\nfail unknown argument: %s\n' "$1" >&2; exit 1 ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Output helpers (defined before any logic so EUID guards / preflight checks
+# can use fail()/warn() consistently).
 # ---------------------------------------------------------------------------
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     BOLD=$(printf '\033[1m')
@@ -66,7 +83,7 @@ warn()  { printf '%swarn%s %s\n'  "$YELLOW" "$RESET" "$*" >&2; }
 fail()  { printf '%sfail%s %s\n'  "$RED"    "$RESET" "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-# Preflight
+# Preflight — every external command we rely on must exist.
 # ---------------------------------------------------------------------------
 need() {
     command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
@@ -75,6 +92,37 @@ need curl
 need tar
 need uname
 need sed
+need id
+
+# ---------------------------------------------------------------------------
+# Resolve install layout from INSTALL_DIR.
+# ---------------------------------------------------------------------------
+GITHUB_REPO="${TOKENSCOPE_REPO:-Netis/TokenScope}"
+INSTALL_DIR="${INSTALL_DIR:-/usr/local}"
+BIN_DIR="$INSTALL_DIR/bin"
+
+case "$INSTALL_DIR" in
+    /usr/local|/usr|/opt/*)
+        INSTALL_MODE="system"
+        CONFIG_DIR="/etc/tokenscope"
+        DATA_DIR="/var/lib/tokenscope"
+        ;;
+    *)
+        INSTALL_MODE="user"
+        CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tokenscope"
+        DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/tokenscope"
+        ;;
+esac
+CONFIG_PATH="$CONFIG_DIR/config.toml"
+
+# Guard against the `sudo` $HOME trap: running as root but with a non-system
+# INSTALL_DIR resolves $HOME to /root, silently landing config/data there.
+# Force the caller to pick an explicit layout.
+if [ "$INSTALL_MODE" = "user" ] && [ "$(id -u)" = "0" ]; then
+    fail "running as root with non-system INSTALL_DIR=$INSTALL_DIR
+  - For a system install, use INSTALL_DIR=/usr/local (default), /usr, or /opt/<name>
+  - For a user install, drop sudo and re-run"
+fi
 
 if command -v sha256sum >/dev/null 2>&1; then
     SHA256_VERIFY="sha256sum --check --ignore-missing"
@@ -116,15 +164,20 @@ detect_target() {
 # ---------------------------------------------------------------------------
 resolve_version() {
     if [ -n "${TOKENSCOPE_VERSION:-}" ]; then
-        printf '%s' "$TOKENSCOPE_VERSION"
-        return
+        _tag="$TOKENSCOPE_VERSION"
+    else
+        _location=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+            "https://github.com/$GITHUB_REPO/releases/latest")
+        _tag=$(printf '%s' "$_location" | sed -n 's|.*/tag/\(v[^/]*\)$|\1|p')
+        [ -n "$_tag" ] || fail "could not determine latest version from $_location"
     fi
 
-    _location=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-        "https://github.com/$GITHUB_REPO/releases/latest")
-    _tag=$(printf '%s' "$_location" | sed -n 's|.*/tag/\(v[^/]*\)$|\1|p')
-
-    [ -n "$_tag" ] || fail "could not determine latest version from $_location"
+    # Release tags are always `vX.Y.Z`. Be forgiving if the user passes the
+    # bare semver — auto-prepend the `v` so the download URL still resolves.
+    case "$_tag" in
+        v*) ;;
+        *)  _tag="v$_tag" ;;
+    esac
     printf '%s' "$_tag"
 }
 
@@ -256,16 +309,39 @@ EOF
 # Final guidance — show only what the user still has to do.
 # ---------------------------------------------------------------------------
 print_next_steps() {
-    cat <<EOF
+    printf '\n%sNext steps%s\n\n' "$BOLD" "$RESET"
 
-${BOLD}Next steps${RESET}
-
-  ${DIM}# 1. Grant capture privileges (Linux). One-time:${RESET}
+    # Branch the privilege step on the target OS so macOS users don't see a
+    # setcap line that doesn't exist on their system.
+    case "$TARGET" in
+        *-linux-*)
+            cat <<EOF
+  ${DIM}# 1. Grant capture privileges (one-time, no sudo at runtime):${RESET}
   ${CYAN}sudo setcap cap_net_raw,cap_net_admin=eip $BIN_DIR/tokenscope${RESET}
      ${DIM}— or run with sudo each time, or use the systemd recipe in docs/install.md${RESET}
 
-  ${DIM}# 2. Run against a live interface (Linux: eth0; macOS: en0)${RESET}
+  ${DIM}# 2. Run against a live interface${RESET}
   ${CYAN}tokenscope -i eth0${RESET}
+EOF
+            ;;
+        *-apple-darwin)
+            cat <<EOF
+  ${DIM}# 1. Grant BPF access. Either run with sudo:${RESET}
+  ${CYAN}sudo tokenscope -i en0${RESET}
+     ${DIM}— or install the ChmodBPF helper bundled with Wireshark for${RESET}
+     ${DIM}  unprivileged access (see docs/install.md, "macOS notes").${RESET}
+
+  ${DIM}# 2. Or replay a pcap file (no privileges needed)${RESET}
+  ${CYAN}tokenscope --pcap-file capture.pcap${RESET}
+EOF
+            ;;
+        *)
+            printf '  %sSee docs/install.md for permission setup on this platform.%s\n' \
+                "$DIM" "$RESET"
+            ;;
+    esac
+
+    cat <<EOF
      ${DIM}— config auto-discovered at $CONFIG_PATH${RESET}
 
   ${DIM}# 3. Open the console${RESET}
