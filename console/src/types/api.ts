@@ -338,3 +338,22 @@ export interface InternalMetricsResponse {
   pipelines: PipelineMetricsSnapshot[]
   global: { metrics: MetricRecord[] }
 }
+
+// ============================================================================
+// /api/runtime-config
+// ============================================================================
+
+export interface RuntimeConfigResponse {
+  /** Unix epoch ms when AppConfig::load returned in the running process. */
+  loaded_at_ms: number
+  /** Absolute path of the config file the running process read at startup. */
+  config_path: string
+  /** Binary version (env!("CARGO_PKG_VERSION") at compile time). */
+  version: string
+  /**
+   * The live in-memory `AppConfig`. Shape mirrors the Rust struct but is kept
+   * opaque on the TS side — the page renders it as JSON and there is no other
+   * consumer that needs typed access.
+   */
+  config: unknown
+}

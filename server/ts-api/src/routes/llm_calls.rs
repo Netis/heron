@@ -101,13 +101,27 @@ mod tests {
     use tower::ServiceExt;
     use ts_storage::duckdb::DuckDbBackend;
 
-    use crate::{router, ApiMetricsContext};
+    use crate::{router, ApiMetricsContext, ApiRuntimeConfigContext};
 
     fn test_metrics_context() -> ApiMetricsContext {
         let sys = ts_common::internal_metrics::MetricsSystem::new();
         ApiMetricsContext {
             pipelines: vec![],
             global: sys.start(),
+        }
+    }
+
+    fn test_runtime_config_context() -> ApiRuntimeConfigContext {
+        ApiRuntimeConfigContext {
+            config: std::sync::Arc::new(ts_common::config::AppConfig {
+                pipelines: vec![],
+                storage: ts_common::config::StorageConfig::default(),
+                internal_metrics: ts_common::config::InternalMetricsConfig::default(),
+                api: ts_common::config::ApiConfig::default(),
+            }),
+            config_path: "test".to_string(),
+            loaded_at_ms: 0,
+            version: "test",
         }
     }
 
@@ -118,7 +132,7 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context());
+        let app = router(storage, test_metrics_context(), test_runtime_config_context());
 
         let resp = app
             .oneshot(
@@ -155,7 +169,7 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context());
+        let app = router(storage, test_metrics_context(), test_runtime_config_context());
 
         let resp = app
             .oneshot(

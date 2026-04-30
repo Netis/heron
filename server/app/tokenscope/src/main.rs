@@ -1,6 +1,7 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, ValueEnum};
 use tracing::level_filters::LevelFilter;
@@ -175,6 +176,10 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    let loaded_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
 
     tracing::info!("configuration loaded successfully");
 
@@ -219,6 +224,26 @@ async fn main() {
             }
         }
     }
+
+    // Snapshot of the configuration the process is *actually* running with —
+    // pipelines reflect CLI overrides (`--pcap-file`, `-i`), everything else
+    // mirrors `AppConfig::load` (which already absorbed `TS_*` env overrides).
+    // Exposed read-only via `GET /api/runtime-config`.
+    let runtime_config_ctx = ts_api::ApiRuntimeConfigContext {
+        config: Arc::new(AppConfig {
+            pipelines: effective_pipelines.clone(),
+            storage: config.storage.clone(),
+            internal_metrics: config.internal_metrics.clone(),
+            api: config.api.clone(),
+        }),
+        config_path: config_path
+            .canonicalize()
+            .unwrap_or_else(|_| config_path.clone())
+            .to_string_lossy()
+            .into_owned(),
+        loaded_at_ms,
+        version: env!("CARGO_PKG_VERSION"),
+    };
 
     tracing::info!("  pipelines: {} configured", effective_pipelines.len());
     for (i, def) in effective_pipelines.iter().enumerate() {
@@ -413,8 +438,9 @@ async fn main() {
                     pipelines: api_pipeline_metrics,
                     global: api_global_metrics.clone(),
                 };
+                let api_runtime_config = runtime_config_ctx.clone();
                 Some(tokio::spawn(async move {
-                    let router = ts_api::router(api_storage, api_metrics);
+                    let router = ts_api::router(api_storage, api_metrics, api_runtime_config);
                     #[cfg(feature = "console")]
                     let router = router.fallback(console::static_handler);
                     let server = axum::serve(listener, router).with_graceful_shutdown(async move {
@@ -585,8 +611,10 @@ async fn main() {
                         pipelines: Vec::new(),
                         global: empty_global,
                     };
+                    let api_runtime_config = runtime_config_ctx.clone();
                     Some(tokio::spawn(async move {
-                        let router = ts_api::router(api_storage, api_metrics);
+                        let router =
+                            ts_api::router(api_storage, api_metrics, api_runtime_config);
                         #[cfg(feature = "console")]
                         let router = router.fallback(console::static_handler);
                         let server =

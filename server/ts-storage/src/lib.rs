@@ -16,7 +16,6 @@ pub use buffer::WriteBuffer;
 pub use query::*;
 pub use retention::{
     policy_from_config, spawn_retention_task, RetentionPolicy, RetentionReport,
-    DEFAULT_METRICS_RETENTION_DAYS,
 };
 pub use sink::{spawn_storage_sink_stage, StorageSinkConfig};
 

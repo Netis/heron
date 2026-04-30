@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use config::Config;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
@@ -51,7 +51,7 @@ pub fn discover_config_path() -> Option<PathBuf> {
 ///
 /// Not directly deserializable — use [`AppConfig::load`] or [`AppConfig::from_toml`]
 /// which go through [`RawAppConfig`] two-phase parsing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AppConfig {
     pub pipelines: Vec<PipelineDef>,
     pub storage: StorageConfig,
@@ -60,7 +60,7 @@ pub struct AppConfig {
 }
 
 /// A single pipeline definition bundling sources and pipeline parameters.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PipelineDef {
     #[serde(default = "default_pipeline_name")]
     pub name: String,
@@ -156,16 +156,23 @@ impl RawAppConfig {
                 }
             }
         };
+        let mut storage = self.storage;
+        // Populate every known metrics granularity at load time so the loaded
+        // `AppConfig` is the *effective* config: downstream consumers
+        // (`/api/runtime-config`, retention sweep, logs) read a fully-merged
+        // map, not a sparse user-overrides map. See [`resolve_metrics_retention`]
+        // for the merge rule and unknown-label handling.
+        storage.retention.metrics = resolve_metrics_retention(storage.retention.metrics);
         AppConfig {
             pipelines,
-            storage: self.storage,
+            storage,
             internal_metrics: self.internal_metrics,
             api: self.api,
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CaptureConfig {
     #[serde(default)]
     pub sources: Vec<CaptureSourceConfig>,
@@ -179,7 +186,7 @@ impl Default for CaptureConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum CaptureSourceConfig {
     Pcap {
@@ -253,7 +260,7 @@ fn default_cloud_probe_hwm() -> i32 {
     1000
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PipelineConfig {
     #[serde(default = "default_dispatcher_count")]
     pub dispatcher_count: usize,
@@ -288,7 +295,7 @@ fn default_flow_shard_count() -> usize {
 
 /// Capacities of every bounded `mpsc` channel sitting between pipeline stages.
 /// All default to 4096 — override individually under `[pipeline.queues]`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct QueueConfig {
     /// capture → flow dispatcher
     #[serde(default = "default_queue_capacity")]
@@ -335,7 +342,7 @@ fn default_queue_capacity() -> usize {
     4096
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
     #[serde(default = "default_backend")]
     pub backend: String,
@@ -358,9 +365,49 @@ impl Default for StorageConfig {
     }
 }
 
+/// Default per-granularity retention for `llm_metrics`, in days.
+///
+/// The single source of truth for **known granularity labels** — the keys must
+/// match the labels produced by `ts-metrics::aggregator::GRANULARITIES`. Used
+/// at config-load time to populate any granularity the user did not override
+/// and to drop typos like `"10sec"` with a warning. Adding a new granularity
+/// requires updating ts-metrics + this single constant.
+pub const DEFAULT_METRICS_RETENTION_DAYS: &[(&str, u32)] = &[
+    ("10s", 1),
+    ("1m", 7),
+    ("5m", 30),
+    ("1h", 365),
+];
+
+/// Merge user-supplied per-granularity retention overrides on top of
+/// [`DEFAULT_METRICS_RETENTION_DAYS`]. Unknown labels (typos like `"10sec"`)
+/// are dropped with a warn log so we don't silently keep junk in the loaded
+/// config — by the time anything reads `RetentionConfig::metrics`, every key
+/// is a known granularity and every known granularity has a value.
+pub fn resolve_metrics_retention(user: HashMap<String, u32>) -> HashMap<String, u32> {
+    for label in user.keys() {
+        if !DEFAULT_METRICS_RETENTION_DAYS
+            .iter()
+            .any(|(known, _)| known == label)
+        {
+            tracing::warn!(
+                granularity = label.as_str(),
+                "retention: unknown metrics granularity in config; ignoring"
+            );
+        }
+    }
+    DEFAULT_METRICS_RETENTION_DAYS
+        .iter()
+        .map(|(label, default_days)| {
+            let days = user.get(*label).copied().unwrap_or(*default_days);
+            ((*label).to_string(), days)
+        })
+        .collect()
+}
+
 /// Data retention policy for stored telemetry. Enabled by default with sane
 /// per-table TTLs; set `enabled = false` or per-field `0` to opt out.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RetentionConfig {
     #[serde(default = "default_retention_enabled")]
     pub enabled: bool,
@@ -422,7 +469,7 @@ fn default_backend() -> String {
     "duckdb".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DuckDbConfig {
     #[serde(default = "default_duckdb_path")]
     pub path: String,
@@ -440,7 +487,7 @@ fn default_duckdb_path() -> String {
     "data/tokenscope.duckdb".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InternalMetricsConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -465,7 +512,7 @@ fn default_interval_secs() -> u64 {
     10
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ApiConfig {
     #[serde(default = "default_listen")]
     pub listen: String,
@@ -490,7 +537,7 @@ fn default_port() -> u16 {
     3000
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TurnConfig {
     #[serde(default = "default_idle_timeout_secs")]
     pub idle_timeout_secs: u64,
@@ -532,7 +579,7 @@ fn default_turn_shard_count() -> usize {
     1
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MetricsConfig {
     #[serde(default = "default_metrics_shard_count")]
     pub shard_count: usize,
@@ -555,7 +602,7 @@ fn default_metrics_shard_count() -> usize {
 /// by `source_id` — one file per source, lazily created on first packet.
 /// Files are Wireshark-openable classic pcap with the source's observed
 /// link type. Off by default.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PcapDumpConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -583,7 +630,7 @@ fn default_pcap_dump_template() -> String {
     "{source_id}.pcap".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageSinkConfig {
     #[serde(default = "default_sink_batch_size")]
     pub batch_size: usize,
@@ -850,6 +897,51 @@ mod phase2_tests {
             cfg.pipelines[0].pcap_dump.filename_template,
             "{source_id}.pcap"
         );
+    }
+
+    #[test]
+    fn load_populates_missing_metrics_granularities_with_defaults() {
+        // Empty user override → loaded config carries every known granularity
+        // at its default day-count, so downstream consumers (API surface,
+        // retention sweeper) never have to merge again.
+        let cfg = AppConfig::from_toml("");
+        let m = &cfg.storage.retention.metrics;
+        assert_eq!(m.len(), DEFAULT_METRICS_RETENTION_DAYS.len());
+        for (label, days) in DEFAULT_METRICS_RETENTION_DAYS {
+            assert_eq!(m.get(*label), Some(days), "missing {label}");
+        }
+    }
+
+    #[test]
+    fn load_user_override_for_one_granularity_keeps_other_defaults() {
+        // The whole reason for default-merge: overriding "1h" must not silently
+        // drop retention for the other three labels.
+        let toml = r#"
+            [storage.retention.metrics]
+            "1h" = 730
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let m = &cfg.storage.retention.metrics;
+        assert_eq!(m.get("10s"), Some(&1));
+        assert_eq!(m.get("1m"), Some(&7));
+        assert_eq!(m.get("5m"), Some(&30));
+        assert_eq!(m.get("1h"), Some(&730));
+    }
+
+    #[test]
+    fn load_drops_unknown_metrics_granularity() {
+        // Typos like "10sec" must not survive into the loaded config; they'd
+        // either silently retain forever (not in the iteration) or worse,
+        // ship to the API surface and confuse the operator.
+        let toml = r#"
+            [storage.retention.metrics]
+            "10sec" = 1
+            "1m" = 7
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let m = &cfg.storage.retention.metrics;
+        assert!(m.get("10sec").is_none());
+        assert_eq!(m.get("1m"), Some(&7));
     }
 
     #[test]

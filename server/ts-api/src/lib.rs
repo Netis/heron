@@ -20,7 +20,7 @@ use axum::routing::get;
 use axum::Router;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
-use ts_common::config::ApiConfig;
+use ts_common::config::{ApiConfig, AppConfig};
 use ts_common::error::{AppError, Result};
 use ts_common::internal_metrics::MetricsSvc;
 use ts_storage::StorageBackend;
@@ -32,6 +32,17 @@ use ts_storage::StorageBackend;
 pub struct ApiMetricsContext {
     pub pipelines: Vec<(String, Arc<MetricsSvc>)>,
     pub global: Arc<MetricsSvc>,
+}
+
+/// Carrier for `/api/runtime-config` — the live in-memory `AppConfig`
+/// (with CLI/env overrides already baked in) plus load metadata so the UI
+/// can prove "this is what the running process is using right now".
+#[derive(Clone)]
+pub struct ApiRuntimeConfigContext {
+    pub config: Arc<AppConfig>,
+    pub config_path: String,
+    pub loaded_at_ms: i64,
+    pub version: &'static str,
 }
 
 /// Bind the API server listener. Call this before spawning so bind errors
@@ -46,13 +57,24 @@ pub async fn bind(config: &ApiConfig) -> Result<TcpListener> {
 }
 
 /// Build the API router (without serving). Useful for composing with other layers.
-pub fn router(storage: Arc<dyn StorageBackend>, metrics: ApiMetricsContext) -> Router {
+pub fn router(
+    storage: Arc<dyn StorageBackend>,
+    metrics: ApiMetricsContext,
+    runtime_config: ApiRuntimeConfigContext,
+) -> Router {
     let internal_metrics_routes = Router::new()
         .route(
             "/api/internal-metrics",
             get(routes::internal_metrics::internal_metrics),
         )
         .with_state(metrics);
+
+    let runtime_config_routes = Router::new()
+        .route(
+            "/api/runtime-config",
+            get(routes::runtime_config::runtime_config),
+        )
+        .with_state(runtime_config);
 
     Router::new()
         .route("/api/filters/wire-apis", get(routes::filters::wire_apis))
@@ -93,5 +115,6 @@ pub fn router(storage: Arc<dyn StorageBackend>, metrics: ApiMetricsContext) -> R
         )
         .with_state(storage)
         .merge(internal_metrics_routes)
+        .merge(runtime_config_routes)
         .layer(CorsLayer::permissive())
 }

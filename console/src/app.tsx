@@ -12,6 +12,7 @@ import { AgentSessionDetailPage } from "@/pages/agent-session-detail"
 import { AgentTurnsPage } from "@/pages/agent-turns"
 import { HttpExchangesPage } from "@/pages/http-exchanges"
 import { PipelineHealthPage } from "@/pages/debug-pipeline-health"
+import { RuntimeConfigPage } from "@/pages/debug-runtime-config"
 import { DebugIndexPage } from "@/pages/debug-index"
 
 const queryClient = new QueryClient({
@@ -42,6 +43,7 @@ export default function App() {
           </Route>
           <Route path="/debug" element={<DebugIndexPage />} />
           <Route path="/debug/pipeline-health" element={<PipelineHealthPage />} />
+          <Route path="/debug/config" element={<RuntimeConfigPage />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

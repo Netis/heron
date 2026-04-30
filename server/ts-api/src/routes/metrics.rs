@@ -223,13 +223,27 @@ mod tests {
     use ts_metrics::model::LlmFinishMetric;
     use ts_storage::duckdb::DuckDbBackend;
 
-    use crate::{router, ApiMetricsContext};
+    use crate::{router, ApiMetricsContext, ApiRuntimeConfigContext};
 
     fn test_metrics_context() -> ApiMetricsContext {
         let sys = ts_common::internal_metrics::MetricsSystem::new();
         ApiMetricsContext {
             pipelines: vec![],
             global: sys.start(),
+        }
+    }
+
+    fn test_runtime_config_context() -> ApiRuntimeConfigContext {
+        ApiRuntimeConfigContext {
+            config: std::sync::Arc::new(ts_common::config::AppConfig {
+                pipelines: vec![],
+                storage: ts_common::config::StorageConfig::default(),
+                internal_metrics: ts_common::config::InternalMetricsConfig::default(),
+                api: ts_common::config::ApiConfig::default(),
+            }),
+            config_path: "test".to_string(),
+            loaded_at_ms: 0,
+            version: "test",
         }
     }
 
@@ -269,7 +283,7 @@ mod tests {
         .unwrap();
 
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context());
+        let app = router(storage, test_metrics_context(), test_runtime_config_context());
 
         // start/end are seconds (matches existing /api/metrics/* convention).
         let start_s = (ts_a / 1_000_000) - 1;
@@ -339,7 +353,7 @@ mod tests {
         .unwrap();
 
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context());
+        let app = router(storage, test_metrics_context(), test_runtime_config_context());
 
         let start_s = (ts / 1_000_000) - 1;
         let end_s = (ts / 1_000_000) + 60;
@@ -416,7 +430,7 @@ mod tests {
         .unwrap();
 
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context());
+        let app = router(storage, test_metrics_context(), test_runtime_config_context());
 
         let start_s = (ts / 1_000_000) - 1;
         let end_s = (ts / 1_000_000) + 60;
@@ -512,7 +526,7 @@ mod tests {
             .unwrap();
 
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context());
+        let app = router(storage, test_metrics_context(), test_runtime_config_context());
 
         let start_s = ts / 1_000_000;
         let end_s = start_s + 300; // 5 minutes
@@ -555,7 +569,7 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context());
+        let app = router(storage, test_metrics_context(), test_runtime_config_context());
 
         let start_s = 1_700_000_040i64;
         let end_s = start_s + 180; // 3 minutes
@@ -587,7 +601,7 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage, test_metrics_context());
+        let app = router(storage, test_metrics_context(), test_runtime_config_context());
         let resp = app
             .oneshot(
                 Request::builder()

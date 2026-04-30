@@ -6,6 +6,11 @@ const PAGES = [
     title: "Pipeline Health",
     desc: "Internal pipeline metrics, backpressure, funnel, errors.",
   },
+  {
+    to: "/debug/config",
+    title: "Runtime Config",
+    desc: "Live in-memory configuration (post env / CLI overrides).",
+  },
 ]
 
 export function DebugIndexPage() {
