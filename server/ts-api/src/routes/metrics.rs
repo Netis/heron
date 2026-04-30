@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -15,6 +16,19 @@ use crate::params::*;
 use crate::response::{ApiError, ApiResponse};
 
 const VALID_GRANULARITIES: &[&str] = &["10s", "1m", "5m", "1h"];
+
+/// Map a granularity label to its window length in seconds. Mirrors
+/// `ts_metrics::aggregator::GRANULARITIES`. Caller has already validated the
+/// label against `VALID_GRANULARITIES`, so this is infallible at the call site.
+fn granularity_secs(label: &str) -> i64 {
+    match label {
+        "10s" => 10,
+        "1m" => 60,
+        "5m" => 300,
+        "1h" => 3600,
+        _ => 60,
+    }
+}
 
 #[derive(Serialize)]
 struct TimeseriesSeries {
@@ -61,35 +75,46 @@ pub async fn timeseries(
 
     let rows = storage.query_metrics_timeseries(&query).await?;
 
-    // Pivot: rows (each with timestamp + group + values) -> timestamps[] + series[]
-    let mut timestamps: Vec<i64> = Vec::new();
+    // Anchor the X-axis on the full aligned time grid `[ceil(start/gran)*gran,
+    // ..., < end)` so every chart sharing the same `[start, end)` window sees
+    // the same set of timestamps. The aggregator only writes rows for buckets
+    // that observed events; without backfill, recharts collapses the X-axis
+    // to whichever sub-range happened to have data, and different fields
+    // (e.g. `call_count` vs `ttft_avg` while calls are still in flight) end
+    // up on different time grids.
+    let gran_sec = granularity_secs(&query.granularity);
+    let timestamps: Vec<i64> = if params.end > params.start && gran_sec > 0 {
+        let first_ts = (params.start + gran_sec - 1).div_euclid(gran_sec) * gran_sec;
+        let mut out = Vec::new();
+        let mut t = first_ts;
+        while t < params.end {
+            out.push(t);
+            t += gran_sec;
+        }
+        out
+    } else {
+        Vec::new()
+    };
+    let ts_index: HashMap<i64, usize> = timestamps
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| (t, i))
+        .collect();
+
+    // Pivot: rows (each with timestamp + group + values) -> series[]. Rows
+    // whose timestamp doesn't land on the grid (out-of-window or unaligned —
+    // shouldn't happen for production data, defense-in-depth) are dropped.
     let mut series_map: BTreeMap<(String, Option<String>), Vec<Option<f64>>> = BTreeMap::new();
-
     for row in &rows {
-        let ts_idx = if let Some(pos) = timestamps.iter().position(|&t| t == row.timestamp) {
-            pos
-        } else {
-            timestamps.push(row.timestamp);
-            for values in series_map.values_mut() {
-                values.push(None);
-            }
-            timestamps.len() - 1
+        let Some(&ts_idx) = ts_index.get(&row.timestamp) else {
+            continue;
         };
-
         for (i, field) in fields.iter().enumerate() {
             let key = (field.clone(), row.group.clone());
             let values = series_map
                 .entry(key)
                 .or_insert_with(|| vec![None; timestamps.len()]);
-            while values.len() < timestamps.len() {
-                values.push(None);
-            }
             values[ts_idx] = row.values.get(i).copied().flatten();
-        }
-    }
-    for values in series_map.values_mut() {
-        while values.len() < timestamps.len() {
-            values.push(None);
         }
     }
 
@@ -422,6 +447,137 @@ mod tests {
             .find(|s| s["finish_reason"] == "end_turn")
             .unwrap();
         assert_eq!(end_turn["points"][0][1].as_u64().unwrap(), 5);
+    }
+
+    /// `/api/metrics/timeseries` must anchor its X-axis on the full aligned
+    /// `[ceil(start/gran)*gran, ..., < end)` grid, regardless of which buckets
+    /// actually have data. Otherwise charts on the same page (e.g. `call_count`
+    /// vs `ttft_avg` while calls are still in flight and have no Complete yet)
+    /// end up on different time grids — recharts collapses each chart's X-axis
+    /// to whichever sub-range it sees, and the dashboards look inconsistent.
+    #[tokio::test]
+    async fn timeseries_endpoint_backfills_full_grid_for_sparse_data() {
+        use ts_metrics::model::LlmMetric;
+
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        <DuckDbBackend as ts_storage::StorageBackend>::init(&backend)
+            .await
+            .unwrap();
+
+        // Aligned 1m bucket. Only one row in the middle of a 5-bucket window —
+        // the other four minutes must come back as NULL placeholders, not be
+        // dropped from the response.
+        let ts: i64 = 1_700_000_040_000_000; // multiple of 60_000_000 us
+        let row = LlmMetric {
+            timestamp_us: ts + 120_000_000, // bucket 3 of 5
+            source_id: String::new(),
+            granularity: "1m",
+            wire_api: "*".to_string(),
+            model: "*".to_string(),
+            server_ip: "*".to_string(),
+            call_count: 7,
+            stream_count: 0,
+            non_stream_count: 0,
+            active_calls_sum: 0,
+            active_calls_sample_count: 0,
+            active_calls_max: 0,
+            total_input_tokens: 0,
+            input_token_count: 0,
+            total_output_tokens: 0,
+            output_token_count: 0,
+            total_cache_read_input_tokens: 0,
+            total_cache_creation_input_tokens: 0,
+            error_count: 0,
+            error_4xx_count: 0,
+            error_429_count: 0,
+            error_5xx_count: 0,
+            ttft_sum: 0.0,
+            ttft_count: 0,
+            ttft_p50: None,
+            ttft_p95: None,
+            ttft_p99: None,
+            e2e_sum: 0.0,
+            e2e_count: 0,
+            e2e_p50: None,
+            e2e_p95: None,
+            e2e_p99: None,
+            tpot_sum: 0.0,
+            tpot_count: 0,
+            tpot_p50: None,
+            tpot_p95: None,
+            tpot_p99: None,
+        };
+        <DuckDbBackend as ts_storage::StorageBackend>::write_metrics(&backend, vec![row])
+            .await
+            .unwrap();
+
+        let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
+        let app = router(storage, test_metrics_context());
+
+        let start_s = ts / 1_000_000;
+        let end_s = start_s + 300; // 5 minutes
+        let uri = format!(
+            "/api/metrics/timeseries?start={start_s}&end={end_s}&granularity=1m&fields=call_count"
+        );
+        let resp = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        let timestamps = v["data"]["timestamps"].as_array().expect("timestamps");
+        let ts_secs: Vec<i64> = timestamps.iter().map(|t| t.as_i64().unwrap()).collect();
+        assert_eq!(
+            ts_secs,
+            vec![start_s, start_s + 60, start_s + 120, start_s + 180, start_s + 240],
+            "X-axis must cover the full 5-bucket grid even when only one bucket has data"
+        );
+
+        let series = v["data"]["series"].as_array().expect("series");
+        assert_eq!(series.len(), 1, "one field requested");
+        let values = series[0]["values"].as_array().unwrap();
+        assert!(values[0].is_null());
+        assert!(values[1].is_null());
+        assert_eq!(values[2].as_f64().unwrap(), 7.0);
+        assert!(values[3].is_null());
+        assert!(values[4].is_null());
+    }
+
+    /// When the entire window has no data, the response still carries the full
+    /// X-axis grid (with empty series). Charts then render an empty time range
+    /// instead of "No data available", matching siblings on the same page.
+    #[tokio::test]
+    async fn timeseries_endpoint_emits_grid_when_no_rows_exist() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        <DuckDbBackend as ts_storage::StorageBackend>::init(&backend)
+            .await
+            .unwrap();
+        let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
+        let app = router(storage, test_metrics_context());
+
+        let start_s = 1_700_000_040i64;
+        let end_s = start_s + 180; // 3 minutes
+        let uri = format!(
+            "/api/metrics/timeseries?start={start_s}&end={end_s}&granularity=1m&fields=call_count"
+        );
+        let resp = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        let ts_secs: Vec<i64> = v["data"]["timestamps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_i64().unwrap())
+            .collect();
+        assert_eq!(ts_secs, vec![start_s, start_s + 60, start_s + 120]);
+        assert_eq!(v["data"]["series"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]

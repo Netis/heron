@@ -583,6 +583,9 @@ const VALID_METRIC_FIELDS: &[&str] = &[
 /// Build the per-field SQL expressions used by `query_metrics_timeseries`.
 ///
 /// * Additive fields (counts, totals, `*_sum`, `*_count`) → plain `SUM`.
+/// * Peak fields (`*_max`) → `MAX` — taking SUM across multiple rows at the
+///   same timestamp (different sources, or specific dim rows under a grouped
+///   query) inflates a peak by stacking each row's local peak.
 /// * Averages (`*_avg`) → exact ratio `SUM(*_sum) / SUM(*_count)`, derived
 ///   from the additive sum+count pair so multi-row aggregation (slow-response
 ///   windows, cross-source merging) stays correct.
@@ -595,7 +598,9 @@ fn build_field_exprs(fields: &[String]) -> Vec<String> {
     fields
         .iter()
         .map(|f| {
-            if SUM_FIELDS.contains(&f.as_str()) {
+            if MAX_FIELDS.contains(&f.as_str()) {
+                format!("CAST(MAX({f}) AS DOUBLE)")
+            } else if SUM_FIELDS.contains(&f.as_str()) {
                 format!("CAST(SUM({f}) AS DOUBLE)")
             } else if let Some((sum_col, count_col)) = avg_pair(f) {
                 format!(
@@ -649,7 +654,6 @@ const SUM_FIELDS: &[&str] = &[
     "non_stream_count",
     "active_calls_sum",
     "active_calls_sample_count",
-    "active_calls_max",
     "total_input_tokens",
     "input_token_count",
     "total_output_tokens",
@@ -667,6 +671,11 @@ const SUM_FIELDS: &[&str] = &[
     "tpot_sum",
     "tpot_count",
 ];
+
+/// Fields that represent peaks (use MAX, never SUM, when aggregating across
+/// rows at the same timestamp — different sources or different specific-dim
+/// rows under a grouped query).
+const MAX_FIELDS: &[&str] = &["active_calls_max"];
 
 /// Format a list of string values as a SQL IN list with single-quote escaping.
 fn sql_in_list(values: &[String]) -> String {
@@ -4484,6 +4493,56 @@ mod tests {
         let p50 = rows[0].values[1].unwrap();
         assert!((p50 - 175.0).abs() < 0.01, "weighted p50 ≈ 175, got {p50}");
         assert_eq!(rows[0].values[2], Some(4.0), "error_count SUM = 1 + 3");
+    }
+
+    /// Peak fields (`*_max`) must MAX, not SUM, across rows at the same
+    /// timestamp — otherwise per-source local peaks stack into an inflated
+    /// global peak.
+    #[tokio::test]
+    async fn test_active_calls_max_uses_max_across_sources() {
+        let backend = in_memory_backend();
+        backend.init().await.unwrap();
+
+        let ts = 1_700_000_000_000_000i64;
+
+        let mut s0 = sample_metric();
+        s0.timestamp_us = ts;
+        s0.source_id = "s0".into();
+        s0.granularity = "1m";
+        s0.wire_api = "*".into();
+        s0.model = "*".into();
+        s0.server_ip = "*".into();
+        s0.active_calls_max = 5;
+
+        let mut s1 = sample_metric();
+        s1.timestamp_us = ts;
+        s1.source_id = "s1".into();
+        s1.granularity = "1m";
+        s1.wire_api = "*".into();
+        s1.model = "*".into();
+        s1.server_ip = "*".into();
+        s1.active_calls_max = 7;
+
+        backend.write_metrics(vec![s0, s1]).await.unwrap();
+
+        let query = MetricsTimeseriesQuery {
+            time_range: TimeRange {
+                start_us: ts,
+                end_us: ts + 120_000_000,
+            },
+            granularity: "1m".to_string(),
+            filter: DimensionFilter::default(),
+            fields: vec!["active_calls_max".to_string()],
+            group_by: None,
+        };
+
+        let rows = backend.query_metrics_timeseries(&query).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].values[0],
+            Some(7.0),
+            "active_calls_max must MAX(5, 7) = 7, not SUM = 12"
+        );
     }
 
     #[tokio::test]
