@@ -142,10 +142,22 @@ async fn main() {
     );
 
     // Load configuration
+    if !args.config.exists() {
+        let default_path = std::path::Path::new("config/default.toml");
+        if args.config == default_path {
+            tracing::error!(
+                "config file not found at default path '{}'. Pass -c <path> to specify a config file.",
+                args.config.display(),
+            );
+        } else {
+            tracing::error!("config file not found: '{}'", args.config.display());
+        }
+        std::process::exit(1);
+    }
     let config = match AppConfig::load(&args.config) {
         Ok(config) => config,
         Err(e) => {
-            tracing::error!("failed to load config: {e}");
+            tracing::error!("failed to load config '{}': {e}", args.config.display());
             std::process::exit(1);
         }
     };
@@ -234,15 +246,15 @@ async fn main() {
         cancel.clone(),
     );
 
-    // Bind API server early so port-bind errors abort startup fast (warn and
-    // continue if port is occupied). The actual `axum::serve` spawn happens
-    // after the per-pipeline + global `MetricsSystem::start()` calls below so
-    // the API's `ApiMetricsContext` carries fully populated `Arc<MetricsSvc>`s.
+    // Bind API server early so port-bind errors abort startup fast. The actual
+    // `axum::serve` spawn happens after the per-pipeline + global
+    // `MetricsSystem::start()` calls below so the API's `ApiMetricsContext`
+    // carries fully populated `Arc<MetricsSvc>`s.
     let mut api_listener: Option<tokio::net::TcpListener> = match ts_api::bind(&config.api).await {
         Ok(l) => Some(l),
         Err(e) => {
-            tracing::warn!("API server disabled: {e}");
-            None
+            tracing::error!("failed to bind API server: {e}");
+            std::process::exit(1);
         }
     };
     let mut api_handle: Option<tokio::task::JoinHandle<()>> = None;

@@ -47,6 +47,16 @@ impl DuckDbBackend {
     }
 
     pub fn open_with_pool(path: &str, read_pool_size: usize) -> Result<Self> {
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    AppError::Storage(format!(
+                        "failed to create duckdb parent dir {}: {e}",
+                        parent.display()
+                    ))
+                })?;
+            }
+        }
         let calls_writer = Connection::open(path)
             .map_err(|e| AppError::Storage(format!("failed to open duckdb: {e}")))?;
         let turns_writer = calls_writer
