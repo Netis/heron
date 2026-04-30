@@ -2,7 +2,7 @@
 
 **LLM API observability from the network wire.** A passive, provider-side analyzer that turns LLM API traffic into structured performance, cost, and behavioral telemetry — without an SDK, sidecar, or proxy in the request path.
 
-![TokenScope console — overview](docs/images/overview.png)
+![Agent turn detail — multi-call agent interactions stitched into one addressable behavior narrative](docs/images/agent-turn-detail.png)
 
 ## What it does
 
@@ -53,13 +53,13 @@ The trade-off is honest: you give up cross-cluster client tracing, you get a sin
 
 This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Vertex (Anthropic wire), and any OpenAI-compatible local server — vLLM, Ollama, llama.cpp's server, LM Studio, etc. Gemini's native API is not yet decoded.
 
-**Agent-turn reconstruction** with named profiles for **Claude CLI** (Claude Code) and **OpenAI Codex CLI**, a generic profile for everything else, plus an experimental OpenClaw profile. Turns stitch multi-call agent interactions (tool calls, follow-ups) into a single addressable unit.
+**Agent-turn reconstruction** with named profiles for **Claude CLI** (Claude Code) and **OpenAI Codex CLI**, a generic profile for everything else, plus an experimental OpenClaw profile. Turns stitch multi-call agent interactions (tool calls, follow-ups) into a single addressable unit — the screenshot above is one such turn.
 
-![Agent turn detail — multi-call interactions stitched into one behavior narrative](docs/images/agent-turn-detail.png)
+**Per-call drill-down** — every LLM call is captured with structured request/response *and* the raw body. Stalled tool calls, malformed prompts, unexpected token counts: the evidence is on the page, not behind a re-run.
+
+![LLM call detail — structured request/response with full body drawer](docs/images/llm-call-detail.png)
 
 **Metrics** (sliding-window, per LLM Call): TTFT · E2E latency · TPOT · token throughput · call rate · active calls · call error rate · prompt-cache hit ratio. See [glossary](docs/glossary.md) for what each means and why.
-
-![Traffic — call rate and token throughput over time](docs/images/traffic.png)
 
 **Storage** in DuckDB (default, embedded, single-file) with per-table retention enabled out of the box. Pluggable backend trait — PostgreSQL and ClickHouse are designed but not yet wired.
 
@@ -70,7 +70,9 @@ This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Ver
 
 ![Agent session — full transcript across turns](docs/images/agent-session-detail.png)
 
-![LLM call detail — structured request/response with raw body drawer](docs/images/llm-call-detail.png)
+![Overview — fleet-level health at a glance](docs/images/overview.png)
+
+![Traffic — call rate and token throughput over time](docs/images/traffic.png)
 
 ![Pipeline health — internal queue depth, drop counters, leak canaries](docs/images/pipeline-health.png)
 

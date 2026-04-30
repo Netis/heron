@@ -34,6 +34,15 @@ Usage:
   curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | sudo sh
   curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | INSTALL_DIR="$HOME/.local" sh
 
+Flags:
+  -h, --help   Show this help and exit.
+  --dry-run    Resolve target/version/paths and verify writability without
+               downloading or installing. Prints one JSON object to stdout
+               (status lines stay on stderr). Exits 0 when all install paths
+               are writable, 1 otherwise. Intended for scripting/agent use.
+               Note: paths containing control characters (newline, tab, etc.)
+               produce undefined JSON output and are not supported.
+
 Environment overrides:
   TOKENSCOPE_VERSION  Pin a specific version (default: latest GitHub release).
                       A leading "v" is added automatically if missing.
@@ -52,12 +61,19 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Argument parsing (only -h/--help is recognized; reject anything else loudly
-# rather than silently ignoring a typo'd flag mid-install).
+# Argument parsing. Recognized flags only; reject anything else loudly rather
+# than silently ignoring a typo'd flag mid-install.
 # ---------------------------------------------------------------------------
+if [ "$#" -gt 1 ]; then
+    usage >&2
+    printf '\nfail unexpected extra arguments: %s\n' "$*" >&2
+    exit 1
+fi
+DRY_RUN=0
 case "${1:-}" in
     "")        ;;
     -h|--help) usage; exit 0 ;;
+    --dry-run) DRY_RUN=1 ;;
     *)         usage >&2; printf '\nfail unknown argument: %s\n' "$1" >&2; exit 1 ;;
 esac
 
@@ -65,7 +81,7 @@ esac
 # Output helpers (defined before any logic so EUID guards / preflight checks
 # can use fail()/warn() consistently).
 # ---------------------------------------------------------------------------
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     BOLD=$(printf '\033[1m')
     DIM=$(printf '\033[2m')
     RED=$(printf '\033[31m')
@@ -77,8 +93,10 @@ else
     BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; CYAN=""; RESET=""
 fi
 
-info()  { printf '%s==>%s %s\n'   "$CYAN"   "$RESET" "$*"; }
-ok()    { printf '%s ok%s %s\n'   "$GREEN"  "$RESET" "$*"; }
+# All status output goes to stderr so stdout stays reserved for structured
+# data (currently just the --dry-run JSON object).
+info()  { printf '%s==>%s %s\n'   "$CYAN"   "$RESET" "$*" >&2; }
+ok()    { printf '%s ok%s %s\n'   "$GREEN"  "$RESET" "$*" >&2; }
 warn()  { printf '%swarn%s %s\n'  "$YELLOW" "$RESET" "$*" >&2; }
 fail()  { printf '%sfail%s %s\n'  "$RED"    "$RESET" "$*" >&2; exit 1; }
 
@@ -216,7 +234,55 @@ materialize_config() {
     _new_db_path="$DATA_DIR/tokenscope.duckdb"
     sed "s|^path = \"data/tokenscope.duckdb\"|path = \"$_new_db_path\"|" \
         "$_src_default" > "$CONFIG_PATH"
+    # Verify the rewrite landed. If default.toml's storage line ever drifts
+    # (different quoting, comment, key alias), sed silently no-ops and we'd
+    # ship a relative path that breaks at runtime. Fail loud here instead.
+    grep -qF "path = \"$_new_db_path\"" "$CONFIG_PATH" || \
+        fail "could not rewrite duckdb path in default config (pattern drift in default.toml?)"
     ok "Config installed: $CONFIG_PATH (data at $DATA_DIR)"
+}
+
+# ---------------------------------------------------------------------------
+# Minimal JSON-string escape: backslash first (so the backslashes we just
+# inserted don't get re-quoted), then double-quote. Control chars (incl.
+# newlines) in filesystem paths are vanishingly rare and not handled.
+# ---------------------------------------------------------------------------
+json_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# ---------------------------------------------------------------------------
+# Emit one JSON object describing the resolved install plan to stdout.
+# Reads globals set by main(): TARGET, VERSION, INSTALL_MODE, BIN_DIR,
+# CONFIG_PATH, DATA_DIR, UNWRITABLE. All user-controlled string fields are
+# routed through json_escape so the output stays valid even when env-driven
+# paths contain " or \.
+# ---------------------------------------------------------------------------
+emit_dry_run_json() {
+    _writable="true"
+    _unwritable_arr=""
+    if [ -n "$UNWRITABLE" ]; then
+        _writable="false"
+        _first=1
+        for _name in $UNWRITABLE; do
+            if [ "$_first" = "1" ]; then
+                _unwritable_arr="\"$_name\""
+                _first=0
+            else
+                _unwritable_arr="$_unwritable_arr,\"$_name\""
+            fi
+        done
+    fi
+    _target=$(json_escape "$TARGET")
+    _version=$(json_escape "$VERSION")
+    _bin=$(json_escape "$BIN_DIR")
+    _cfg=$(json_escape "$CONFIG_PATH")
+    _data=$(json_escape "$DATA_DIR")
+    # INSTALL_MODE is one of the two literals "system"/"user"; no escape.
+    printf '{"target":"%s","version":"%s","mode":"%s","bin_dir":"%s","config_path":"%s","data_dir":"%s","writable":%s,"unwritable":[%s]}\n' \
+        "$_target" "$_version" "$INSTALL_MODE" \
+        "$_bin" "$_cfg" "$_data" \
+        "$_writable" "$_unwritable_arr"
 }
 
 # ---------------------------------------------------------------------------
@@ -236,7 +302,19 @@ main() {
     info "Config:  $CONFIG_PATH"
     info "Data:    $DATA_DIR"
 
-    if ! check_writable_dir "$BIN_DIR" || ! check_writable_dir "$CONFIG_DIR" || ! check_writable_dir "$DATA_DIR"; then
+    # Per-dir writability check. Tracked individually so --dry-run can report
+    # which dir(s) failed; normal install path just needs the boolean.
+    UNWRITABLE=""
+    check_writable_dir "$BIN_DIR"    || UNWRITABLE="$UNWRITABLE bin_dir"
+    check_writable_dir "$CONFIG_DIR" || UNWRITABLE="$UNWRITABLE config_dir"
+    check_writable_dir "$DATA_DIR"   || UNWRITABLE="$UNWRITABLE data_dir"
+
+    if [ "$DRY_RUN" = "1" ]; then
+        emit_dry_run_json
+        [ -z "$UNWRITABLE" ] && exit 0 || exit 1
+    fi
+
+    if [ -n "$UNWRITABLE" ]; then
         cat >&2 <<EOF
 ${RED}fail${RESET} insufficient permissions for the chosen install paths.
 
