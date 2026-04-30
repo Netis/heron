@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Loader2 } from "lucide-react"
+import { Info, Loader2 } from "lucide-react"
 import { useInternalMetrics } from "@/hooks/use-internal-metrics"
 import { usePipelineHealthStore } from "@/stores/pipeline-health"
 import { classifyHealth } from "@/lib/pipeline-health"
@@ -64,6 +64,7 @@ export function PipelineHealthPage() {
       ? selectedPipeline
       : (pipelineNames[0] ?? null)
   const active = data.pipelines.find((p) => p.name === activeName)
+  const hasPipelines = pipelineNames.length > 0
 
   const allMetrics = [
     ...(active?.metrics ?? []),
@@ -79,7 +80,7 @@ export function PipelineHealthPage() {
       <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-3">
         <span className="text-sm font-semibold">Pipeline Health</span>
 
-        {pipelineNames.length > 1 ? (
+        {hasPipelines && pipelineNames.length > 1 ? (
           <select
             className="h-7 rounded-md border border-input bg-background px-2 text-xs"
             value={activeName ?? ""}
@@ -91,11 +92,11 @@ export function PipelineHealthPage() {
               </option>
             ))}
           </select>
-        ) : (
+        ) : hasPipelines ? (
           <span className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            {activeName ?? "—"}
+            {activeName}
           </span>
-        )}
+        ) : null}
 
         <HealthPill level={health.level} count={health.findings.length} />
 
@@ -117,23 +118,55 @@ export function PipelineHealthPage() {
       </div>
 
       {/* ===== Sections ===== */}
-      <BackpressureSection
-        pipelineMetrics={active?.metrics ?? []}
-        globalMetrics={data.global.metrics}
-      />
-      <FunnelSection
-        pipelineMetrics={active?.metrics ?? []}
-        globalMetrics={data.global.metrics}
-      />
-      <StateGaugesSection
-        pipelineMetrics={active?.metrics ?? []}
-        globalMetrics={data.global.metrics}
-      />
-      <ErrorListSection
-        pipelineMetrics={active?.metrics ?? []}
-        globalMetrics={data.global.metrics}
-        prevByName={prevByName}
-      />
+      {hasPipelines ? (
+        <>
+          <BackpressureSection
+            pipelineMetrics={active?.metrics ?? []}
+            globalMetrics={data.global.metrics}
+          />
+          <FunnelSection
+            pipelineMetrics={active?.metrics ?? []}
+            globalMetrics={data.global.metrics}
+          />
+          <StateGaugesSection
+            pipelineMetrics={active?.metrics ?? []}
+            globalMetrics={data.global.metrics}
+          />
+          <ErrorListSection
+            pipelineMetrics={active?.metrics ?? []}
+            globalMetrics={data.global.metrics}
+            prevByName={prevByName}
+          />
+        </>
+      ) : (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="flex items-start gap-3">
+            <Info className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-semibold">No active pipelines</span>
+              <p className="text-sm text-muted-foreground">
+                Pipeline-level metrics are unavailable because no capture
+                pipelines are running. Typical causes:
+              </p>
+              <ul className="ml-4 list-disc text-sm text-muted-foreground">
+                <li>No pcap source or ZMQ ingest configured</li>
+                <li>
+                  Pcap file finished and TokenScope is staying up (
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    --exit-after-drain
+                  </code>{" "}
+                  disabled)
+                </li>
+                <li>All sources stopped</li>
+              </ul>
+              <p className="text-sm text-muted-foreground">
+                Global metrics are still shown below for diagnostics.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <AllMetricsTable
         pipelineMetrics={active?.metrics ?? []}
         globalMetrics={data.global.metrics}
