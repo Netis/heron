@@ -427,6 +427,9 @@ mod tests {
             ],
             None,
         );
-        assert_eq!(CodexCliProfile.subagent(&c.ctx()).as_deref(), Some("review"));
+        assert_eq!(
+            CodexCliProfile.subagent(&c.ctx()).as_deref(),
+            Some("review")
+        );
     }
 }

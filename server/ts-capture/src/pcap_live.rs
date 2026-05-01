@@ -204,6 +204,11 @@ impl CaptureSource for PcapLiveSource {
                             }
                             metrics.counter(Metric::CaptureHeartbeatsEmitted).inc();
                             last_hb_ts = raw.timestamp_us;
+                            // Flush dump buffers on each heartbeat so a hard
+                            // termination loses at most ~1s of buffered data.
+                            if let Some(d) = dumper.as_mut() {
+                                d.flush_all();
+                            }
                         }
 
                         if let Some(d) = dumper.as_mut() {
@@ -264,6 +269,10 @@ impl CaptureSource for PcapLiveSource {
                                 }
                                 metrics.counter(Metric::CaptureHeartbeatsEmitted).inc();
                                 last_hb_ts = hb_ts;
+                                // Flush dump buffers on each idle heartbeat too.
+                                if let Some(d) = dumper.as_mut() {
+                                    d.flush_all();
+                                }
                             }
                         }
 

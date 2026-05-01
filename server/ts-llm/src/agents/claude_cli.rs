@@ -338,7 +338,10 @@ mod tests {
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(true));
         // And the call is correctly tagged as sub-agent.
-        assert_eq!(ClaudeCliProfile.subagent(&c.ctx()), Some("task".to_string()));
+        assert_eq!(
+            ClaudeCliProfile.subagent(&c.ctx()),
+            Some("task".to_string())
+        );
     }
 
     #[test]

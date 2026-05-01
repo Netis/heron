@@ -229,6 +229,13 @@ impl CaptureSource for CloudProbeSource {
                                                 .counter(Metric::CaptureHeartbeatsEmitted)
                                                 .inc();
                                             hb_count += 1;
+                                            // Flush dump buffers on each synthesized heartbeat so
+                                            // a hard termination loses at most ~1s of buffered
+                                            // data — same contract as pcap_live.rs's
+                                            // heartbeat-driven flush.
+                                            if let Some(d) = dumper.as_mut() {
+                                                d.flush_all();
+                                            }
                                         }
 
                                         if let Some(d) = dumper.as_mut() {
@@ -262,6 +269,11 @@ impl CaptureSource for CloudProbeSource {
                                                 .counter(Metric::CaptureHeartbeatsEmitted)
                                                 .inc();
                                             hb_count += 1;
+                                            // Flush dump buffers on upstream heartbeats too —
+                                            // matches the synthesized-HB cadence above.
+                                            if let Some(d) = dumper.as_mut() {
+                                                d.flush_all();
+                                            }
                                         } else {
                                             metrics
                                                 .counter(Metric::CapturePacketsReceived)

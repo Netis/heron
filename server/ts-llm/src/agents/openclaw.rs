@@ -140,10 +140,11 @@ impl AgentProfile for OpenClawProfile {
             }
             wa::OPENAI_CHAT => {
                 let user_text = wa::openai::chat::first_user_text(req)?;
-                let sig = wa::openai::chat::first_assistant_sig_from_request(req).or_else(|| {
-                    ctx.resp
-                        .and_then(wa::openai::chat::first_assistant_sig_from_response_value)
-                })?;
+                let sig =
+                    wa::openai::chat::first_assistant_sig_from_request(req).or_else(|| {
+                        ctx.resp
+                            .and_then(wa::openai::chat::first_assistant_sig_from_response_value)
+                    })?;
                 (user_text, sig)
             }
             wa::OPENAI_RESPONSES => {
@@ -247,7 +248,11 @@ mod tests {
     use crate::model::{ApiType, LlmCall};
     use std::net::IpAddr;
 
-    fn call(wire_api: &'static str, req: Option<&str>, resp: Option<&str>) -> crate::profile::TestCall {
+    fn call(
+        wire_api: &'static str,
+        req: Option<&str>,
+        resp: Option<&str>,
+    ) -> crate::profile::TestCall {
         crate::profile::TestCall::new(LlmCall {
             source_id: String::new(),
             id: "c".into(),

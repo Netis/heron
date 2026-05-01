@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Capture
+
+- `pcap_dump` now writes to `<dir>/<sanitized_source_id>/<minute>.pcap[.snappy]`
+  (per-source subdirectory + wall-clock minute rotation, sparse). Old flat
+  `<dir>/<source>.pcap` files from prior runs are not migrated and remain
+  alongside the new layout. **Breaking** for operators relying on the old
+  flat path.
+- `pcap_dump` snappy framed compression added (`compression = "snappy"`);
+  writes `.pcap.snappy` files. Decompress with `snzip -d` before opening
+  in Wireshark.
+- New internal metric `dump_late_minute_pkts` (capture group): incremented
+  when an out-of-order packet's timestamp falls in an earlier minute than
+  the file currently being written. Late packets ratchet forward into the
+  current file (timestamps preserved inside the pcap record).
+- Cloud-probe dumper now flushes on every heartbeat, matching pcap-live's
+  `~1s crash-loss horizon` on hard termination.
+
+### Configuration
+
+- `[pipeline.pcap_dump]`: `filename_template` removed, `compression` added
+  (`"none" | "snappy"`). Stale `filename_template` keys in existing TOML
+  are silently ignored by serde. **Breaking** if you scripted output paths
+  off the template.
+
 ## [0.1.0] — 2026-04-30
 
 Initial release of TokenScope — an LLM API performance monitoring system that

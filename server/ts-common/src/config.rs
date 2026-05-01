@@ -614,18 +614,19 @@ fn default_metrics_shard_count() -> usize {
 }
 
 /// Per-pipeline packet dump. When enabled, every non-heartbeat `RawPacket`
-/// captured by this pipeline's sources is written to a pcap file, grouped
-/// by `source_id` — one file per source, lazily created on first packet.
-/// Files are Wireshark-openable classic pcap with the source's observed
-/// link type. Off by default.
+/// captured by this pipeline's sources is written to a Wireshark-openable
+/// classic pcap file under `<dir>/<sanitized_source_id>/`. Files rotate on
+/// wall-clock minute boundaries (by packet timestamp); empty minutes are
+/// skipped. Optional snappy framed compression appends `.snappy` to the
+/// filename. Off by default.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PcapDumpConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_pcap_dump_dir")]
     pub dir: String,
-    #[serde(default = "default_pcap_dump_template")]
-    pub filename_template: String,
+    #[serde(default)]
+    pub compression: PcapCompression,
 }
 
 impl Default for PcapDumpConfig {
@@ -633,7 +634,7 @@ impl Default for PcapDumpConfig {
         Self {
             enabled: false,
             dir: default_pcap_dump_dir(),
-            filename_template: default_pcap_dump_template(),
+            compression: PcapCompression::None,
         }
     }
 }
@@ -642,8 +643,15 @@ fn default_pcap_dump_dir() -> String {
     "data/dumps".to_string()
 }
 
-fn default_pcap_dump_template() -> String {
-    "{source_id}.pcap".to_string()
+/// Compression mode for pcap dump output. `None` writes plain `.pcap`;
+/// `Snappy` writes snappy framed `.pcap.snappy` (decompress with `snzip
+/// -d` or `snap::read::FrameDecoder` before opening in Wireshark).
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PcapCompression {
+    #[default]
+    None,
+    Snappy,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1127,8 +1135,8 @@ mod phase2_tests {
         assert!(!cfg.pipelines[0].pcap_dump.enabled);
         assert_eq!(cfg.pipelines[0].pcap_dump.dir, "data/dumps");
         assert_eq!(
-            cfg.pipelines[0].pcap_dump.filename_template,
-            "{source_id}.pcap"
+            cfg.pipelines[0].pcap_dump.compression,
+            crate::config::PcapCompression::None,
         );
     }
 
@@ -1403,7 +1411,7 @@ mod phase2_tests {
             [pipeline.pcap_dump]
             enabled = true
             dir = "/tmp/dumps"
-            filename_template = "{source_id}_x.pcap"
+            compression = "snappy"
 
             [[pipeline.sources]]
             type = "pcap"
@@ -1413,6 +1421,6 @@ mod phase2_tests {
         let d = &cfg.pipelines[0].pcap_dump;
         assert!(d.enabled);
         assert_eq!(d.dir, "/tmp/dumps");
-        assert_eq!(d.filename_template, "{source_id}_x.pcap");
+        assert_eq!(d.compression, crate::config::PcapCompression::Snappy);
     }
 }

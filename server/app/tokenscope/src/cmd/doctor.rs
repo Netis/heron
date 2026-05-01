@@ -166,9 +166,7 @@ fn collect_config_checks(
             if issues.is_empty() {
                 checks.push(DoctorCheck::pass("config.validate", "no issues"));
             } else {
-                let any_error = issues
-                    .iter()
-                    .any(|i| i.severity() == IssueSeverity::Error);
+                let any_error = issues.iter().any(|i| i.severity() == IssueSeverity::Error);
                 let detail = issues
                     .iter()
                     .map(ConfigIssue::to_string)

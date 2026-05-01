@@ -50,10 +50,14 @@
 # # started by systemd or via install.sh layout, the CWD is not the install
 # # tree, so use an absolute path (e.g. /var/lib/tokenscope/dumps/local) to
 # # keep dumps next to the DuckDB file.
+# # Per-source directory layout: <dir>/<sanitized_source_id>/<minute>.pcap[.snappy]
+# # Files rotate on wall-clock minute (by packet timestamp). Empty minutes
+# # are skipped. compression="snappy" appends .snappy and writes via the
+# # snap framed format (decompress with `snzip -d` before opening in Wireshark).
 # [pipeline.pcap_dump]
 # enabled = false
 # dir = "data/dumps/local"
-# filename_template = "{source_id}.pcap"   # "{source_id}_{start_iso}.pcap" keeps prior runs on restart
+# compression = "none"   # "none" | "snappy"
 
 # Bounded channel capacities between pipeline stages. All default to 4096.
 # Override per-pipeline under [[pipeline]].

@@ -412,6 +412,7 @@ async fn run_pipeline(cli: Cli) {
                                 Metric::CaptureZmqBatchesDropped,
                                 Metric::CaptureReadErrors,
                                 Metric::CaptureDumpErrors,
+                                Metric::CaptureDumpLateMinutePackets,
                             ],
                         )
                     })

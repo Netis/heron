@@ -114,9 +114,15 @@ trace to support:
 [pipeline.pcap_dump]
 enabled = false                # off by default
 dir = "data/dumps/local"
-filename_template = "{source_id}.pcap"
-# {source_id}_{start_iso}.pcap  — keeps prior runs on restart
+compression = "none"           # "none" | "snappy"
 ```
+
+Files land at `<dir>/<sanitized_source_id>/<minute>.pcap[.snappy]` —
+one subdirectory per capture source, rotated on the wall-clock minute
+boundary. Files are sparse, so an idle minute costs no disk. With
+`compression = "snappy"` the per-minute file is written using
+snappy-framed compression and gets a `.snappy` suffix; decompress with
+`snzip -d` before opening in Wireshark.
 
 ### Optional: tune internal queue depths
 

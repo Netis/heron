@@ -41,10 +41,11 @@ impl AgentProfile for GenericProfile {
             }
             wa::OPENAI_CHAT => {
                 let user_text = wa::openai::chat::first_user_text(req)?;
-                let sig = wa::openai::chat::first_assistant_sig_from_request(req).or_else(|| {
-                    ctx.resp
-                        .and_then(wa::openai::chat::first_assistant_sig_from_response_value)
-                })?;
+                let sig =
+                    wa::openai::chat::first_assistant_sig_from_request(req).or_else(|| {
+                        ctx.resp
+                            .and_then(wa::openai::chat::first_assistant_sig_from_response_value)
+                    })?;
                 (user_text, sig)
             }
             wa::OPENAI_RESPONSES => {
@@ -258,8 +259,14 @@ mod tests {
             ]}"#;
             let c1 = ant(vec![], Some(req1), Some(resp));
             let c2 = ant(vec![], Some(req2), None);
-            let id1 = GenericProfile.extract_session_id(&c1.ctx()).unwrap().session_id;
-            let id2 = GenericProfile.extract_session_id(&c2.ctx()).unwrap().session_id;
+            let id1 = GenericProfile
+                .extract_session_id(&c1.ctx())
+                .unwrap()
+                .session_id;
+            let id2 = GenericProfile
+                .extract_session_id(&c2.ctx())
+                .unwrap()
+                .session_id;
             assert_eq!(
                 id1, id2,
                 "call #1 and call #2 must synthesize same session_id"
@@ -282,8 +289,14 @@ mod tests {
             );
             let c2 = ant(vec![], Some(req2), None);
             assert_eq!(
-                GenericProfile.extract_session_id(&c1.ctx()).unwrap().session_id,
-                GenericProfile.extract_session_id(&c2.ctx()).unwrap().session_id,
+                GenericProfile
+                    .extract_session_id(&c1.ctx())
+                    .unwrap()
+                    .session_id,
+                GenericProfile
+                    .extract_session_id(&c2.ctx())
+                    .unwrap()
+                    .session_id,
             );
         }
 
@@ -349,8 +362,14 @@ mod tests {
             ]}"#;
             let c1 = oai(Some(req1), Some(resp));
             let c2 = oai(Some(req2), None);
-            let id1 = GenericProfile.extract_session_id(&c1.ctx()).unwrap().session_id;
-            let id2 = GenericProfile.extract_session_id(&c2.ctx()).unwrap().session_id;
+            let id1 = GenericProfile
+                .extract_session_id(&c1.ctx())
+                .unwrap()
+                .session_id;
+            let id2 = GenericProfile
+                .extract_session_id(&c2.ctx())
+                .unwrap()
+                .session_id;
             assert_eq!(id1, "call_abc");
             assert_eq!(id1, id2, "canonicalized form must match across calls");
         }
@@ -461,8 +480,14 @@ mod tests {
             let c1 = resp(Some(req1), Some(r));
             let c2 = resp(Some(req2), None);
             assert_eq!(
-                GenericProfile.extract_session_id(&c1.ctx()).unwrap().session_id,
-                GenericProfile.extract_session_id(&c2.ctx()).unwrap().session_id,
+                GenericProfile
+                    .extract_session_id(&c1.ctx())
+                    .unwrap()
+                    .session_id,
+                GenericProfile
+                    .extract_session_id(&c2.ctx())
+                    .unwrap()
+                    .session_id,
             );
         }
 
@@ -483,7 +508,10 @@ mod tests {
             let r = r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_simple"}]}"#;
             let c = resp(Some(req), Some(r));
             assert_eq!(
-                GenericProfile.extract_session_id(&c.ctx()).unwrap().session_id,
+                GenericProfile
+                    .extract_session_id(&c.ctx())
+                    .unwrap()
+                    .session_id,
                 "fc_simple",
             );
         }
