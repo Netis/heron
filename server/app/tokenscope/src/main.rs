@@ -364,6 +364,11 @@ async fn run_pipeline(cli: Cli) {
         cancel.clone(),
     );
 
+    // Pcap-dump file retention: one task per pipeline that has dumping
+    // enabled. Spawned inside the per-pipeline setup block below; declared
+    // here so the shutdown path can join the handles.
+    let mut pcap_retention_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
     // Bind API server early so port-bind errors abort startup fast. The actual
     // `axum::serve` spawn happens after the per-pipeline + global
     // `MetricsSystem::start()` calls below so the API's `ApiMetricsContext`
@@ -421,15 +426,65 @@ async fn run_pipeline(cli: Cli) {
             .collect();
 
         // Resolve per-pipeline packet-dump configs once; `None` when the
-        // pipeline has `pcap_dump.enabled = false` (the default).
+        // pipeline has `pcap_dump.enabled = false` (the default) or when
+        // its name produces an unsafe path component. The configured
+        // `pcap_dump.dir` is the *base*; we always append a sanitized
+        // pipeline-name layer so multiple pipelines that happen to share
+        // a base dir stay fully isolated on disk.
         let pipeline_dump_cfgs: Vec<Option<ts_capture::PacketDumperConfig>> = effective_pipelines
             .iter()
             .map(|def| {
-                def.pcap_dump
-                    .enabled
-                    .then(|| ts_capture::PacketDumperConfig::from_config(&def.pcap_dump))
+                if !def.pcap_dump.enabled {
+                    return None;
+                }
+                let base = PathBuf::from(&def.pcap_dump.dir);
+                let resolved = match ts_capture::pcap_dump_dir_for(&base, &def.name) {
+                    Some(p) => p,
+                    None => {
+                        tracing::error!(
+                            pipeline = %def.name,
+                            "pcap_dump: pipeline name is not a safe path component; disabling dump for this pipeline"
+                        );
+                        return None;
+                    }
+                };
+                Some(ts_capture::PacketDumperConfig {
+                    dir: resolved,
+                    compression: def.pcap_dump.compression,
+                })
             })
             .collect();
+
+        // Spawn one pcap-dump retention task per pipeline that has dumping
+        // enabled. Each task scans only its own pipeline's subtree (same
+        // `<dir>/<pipeline>` path the dumper writes to) — this is what
+        // keeps multiple pipelines using a shared base dir isolated:
+        // tasks never see each other's files. Retention workers are
+        // registered against the same per-pipeline `MetricsSystem` so
+        // counters land in that pipeline's reporter line.
+        for ((def, sys), dump_cfg) in effective_pipelines
+            .iter()
+            .zip(per_pipeline_metrics.iter_mut())
+            .zip(pipeline_dump_cfgs.iter())
+        {
+            let Some(dump_cfg) = dump_cfg else {
+                continue;
+            };
+            let worker = sys.register_worker(
+                "pcap_retention",
+                &[
+                    Metric::CaptureDumpRetentionFilesDeleted,
+                    Metric::CaptureDumpRetentionBytesDeleted,
+                    Metric::CaptureDumpRetentionErrors,
+                ],
+            );
+            pcap_retention_handles.push(ts_capture::spawn_pcap_retention_task(
+                dump_cfg.dir.clone(),
+                def.pcap_dump.retention.clone(),
+                worker,
+                cancel.clone(),
+            ));
+        }
 
         // Build the pipeline: channels, stages, sink — all wired in one
         // place. `Pipeline::build` registers per-pipeline stage workers
@@ -787,6 +842,23 @@ async fn run_pipeline(cli: Cli) {
                 "retention task did not stop in time; exiting forcefully"
             );
             std::process::exit(1);
+        }
+    }
+
+    // Same treatment for each pcap-dump retention task. Per-handle timeout
+    // (not a shared budget) — each task exits within one `select!` poll,
+    // so the total worst case is N * timeout but in practice << N seconds.
+    for h in pcap_retention_handles {
+        match tokio::time::timeout(RETENTION_SHUTDOWN_TIMEOUT, h).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!("pcap retention task join error: {e}"),
+            Err(_) => {
+                tracing::error!(
+                    timeout_secs = RETENTION_SHUTDOWN_TIMEOUT.as_secs(),
+                    "pcap retention task did not stop in time; exiting forcefully"
+                );
+                std::process::exit(1);
+            }
         }
     }
 

@@ -14,5 +14,6 @@
 pub mod config;
 pub mod error;
 pub mod internal_metrics;
+pub mod path;
 pub mod throttle;
 pub mod version;

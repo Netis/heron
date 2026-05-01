@@ -326,17 +326,25 @@ impl PacketDumper {
             }
         );
         let path = src_dir.join(&filename);
-        let pre_existing = path.exists();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        // Retry once on ENOENT after recreating the source dir. Covers the
+        // case where the dir was removed out from under us (operator rm,
+        // or — historically — the retention sweeper). Cheap when the dir
+        // exists; recovery cost paid only when the rare race fires.
+        let file = match OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                std::fs::create_dir_all(src_dir)?;
+                OpenOptions::new().create(true).append(true).open(&path)?
+            }
+            Err(e) => return Err(e),
+        };
+        let needs_global_header = file.metadata()?.len() == 0;
         let buf = BufWriter::with_capacity(BUF_CAPACITY, file);
         let mut sink = match compression {
             PcapCompression::None => Sink::Plain(buf),
             PcapCompression::Snappy => Sink::Snappy(FrameEncoder::new(buf)),
         };
-        if !pre_existing {
+        if needs_global_header {
             if let Err(e) = write_pcap_global_header(&mut sink, link_type) {
                 // Best-effort cleanup; ignore remove errors (e.g. double-failure
                 // on disk-full). Return the original error.
@@ -359,37 +367,75 @@ impl PacketDumper {
     }
 }
 
-/// Replace any byte outside `[A-Za-z0-9._-]` with `_`. Rejects empty, `.`,
-/// and `..` entirely — those would create ambiguous or traversal-prone paths.
+/// Resolve the per-pipeline dump root: `<base>/<sanitized_pipeline_name>`.
+/// Each pipeline gets its own subtree so the dumper and retention sweeper
+/// stay fully isolated even when multiple pipelines configure the same
+/// `pcap_dump.dir`. Returns `None` for pipeline names that would produce
+/// an unsafe path (empty, `.`, `..`). The retention task and dumper both
+/// take this composed path as their root.
+pub fn pcap_dump_dir_for(base: &std::path::Path, pipeline_name: &str) -> Option<PathBuf> {
+    sanitize(pipeline_name).map(|s| base.join(s))
+}
+
+/// Sanitize a single path component. Delegates to
+/// [`ts_common::path::sanitize_path_component`] so config validation
+/// (`AppConfig::validate`) and the dumper share one rule.
 fn sanitize(source_id: &str) -> Option<String> {
-    if source_id.is_empty() {
-        return None;
-    }
-    let out: String = source_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if out == "." || out == ".." {
-        return None;
-    }
-    Some(out)
+    ts_common::path::sanitize_path_component(source_id)
 }
 
 /// Compact UTC label for a wall-clock minute. `minute_key` is
 /// `pkt.timestamp_us / 60_000_000`. Returns e.g. `"20260501T1530"`.
-fn minute_label(minute_key: i64) -> String {
+pub(crate) fn minute_label(minute_key: i64) -> String {
     let total_secs = minute_key * 60;
     let days = total_secs.div_euclid(86_400);
     let rem = total_secs.rem_euclid(86_400);
     let (h, m) = ((rem / 3600) as u32, ((rem % 3600) / 60) as u32);
     let (y, mo, d) = days_to_ymd(days);
     format!("{y:04}{mo:02}{d:02}T{h:02}{m:02}")
+}
+
+/// Inverse of [`minute_label`]. Returns `None` for any string that doesn't
+/// match the exact `YYYYMMDDTHHMM` shape produced by `minute_label`, or whose
+/// fields don't form a valid UTC instant. Callers (e.g. `pcap_retention`)
+/// rely on this strict round-trip property to safely reap files we created.
+pub(crate) fn parse_minute_label(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() != 13 || b[8] != b'T' {
+        return None;
+    }
+    if !b[..8].iter().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    if !b[9..].iter().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let y: i32 = s[0..4].parse().ok()?;
+    let mo: u32 = s[4..6].parse().ok()?;
+    let d: u32 = s[6..8].parse().ok()?;
+    let h: u32 = s[9..11].parse().ok()?;
+    let mi: u32 = s[11..13].parse().ok()?;
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 {
+        return None;
+    }
+    let days = ymd_to_days(y, mo, d);
+    // Round-trip: rejects invalid day-of-month (e.g. Feb 30, Apr 31).
+    if days_to_ymd(days) != (y, mo, d) {
+        return None;
+    }
+    Some(days * 1440 + i64::from(h) * 60 + i64::from(mi))
+}
+
+/// Inverse of [`days_to_ymd`]: convert (year, month, day) UTC to
+/// days-since-1970-01-01. Days-from-civil algorithm by Howard Hinnant.
+fn ymd_to_days(y: i32, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { i64::from(y) - 1 } else { i64::from(y) };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let m_shift = if m > 2 { m - 3 } else { m + 9 } as u64;
+    let doy = (153 * m_shift + 2) / 5 + u64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe as i64 - 719_468
 }
 
 /// Convert days-since-1970-01-01 (UTC) to (year, month, day). Civil-from-days
@@ -620,6 +666,55 @@ mod tests {
     }
 
     #[test]
+    fn pcap_dump_dir_for_appends_sanitized_pipeline_name() {
+        let base = Path::new("/var/lib/dumps");
+        assert_eq!(
+            pcap_dump_dir_for(base, "local"),
+            Some(PathBuf::from("/var/lib/dumps/local"))
+        );
+        // Special chars get scrubbed; the result must stay inside `base`.
+        let scrubbed = pcap_dump_dir_for(base, "a/b").unwrap();
+        assert!(scrubbed.starts_with(base));
+        assert_eq!(scrubbed, PathBuf::from("/var/lib/dumps/a_b"));
+    }
+
+    #[test]
+    fn pcap_dump_dir_for_rejects_dangerous_names() {
+        let base = Path::new("/var/lib/dumps");
+        assert_eq!(pcap_dump_dir_for(base, ""), None);
+        assert_eq!(pcap_dump_dir_for(base, "."), None);
+        assert_eq!(pcap_dump_dir_for(base, ".."), None);
+    }
+
+    #[test]
+    fn parse_minute_label_round_trips() {
+        for &key in &[0i64, 1, 60, 29_633_130, 100_000_000] {
+            let label = minute_label(key);
+            assert_eq!(parse_minute_label(&label), Some(key), "label = {label}");
+        }
+    }
+
+    #[test]
+    fn parse_minute_label_known_value() {
+        assert_eq!(parse_minute_label("20260505T1330"), Some(1_777_987_800 / 60));
+        assert_eq!(parse_minute_label("19700101T0000"), Some(0));
+    }
+
+    #[test]
+    fn parse_minute_label_rejects_bad_input() {
+        assert_eq!(parse_minute_label(""), None);
+        assert_eq!(parse_minute_label("abc"), None);
+        assert_eq!(parse_minute_label("2026-05-05T13:30"), None);
+        assert_eq!(parse_minute_label("20260505T133"), None);    // too short
+        assert_eq!(parse_minute_label("20260505T13300"), None);  // too long
+        assert_eq!(parse_minute_label("20261305T1330"), None);   // month 13
+        assert_eq!(parse_minute_label("20260532T1330"), None);   // day 32
+        assert_eq!(parse_minute_label("20260505T2530"), None);   // hour 25
+        assert_eq!(parse_minute_label("20260505T1360"), None);   // minute 60
+        assert_eq!(parse_minute_label("20260505X1330"), None);   // missing T
+    }
+
+    #[test]
     fn rotate_on_minute_boundary() {
         let dir = tempfile::tempdir().unwrap();
         let mut d = PacketDumper::new(cfg(dir.path()), test_metrics()).unwrap();
@@ -811,6 +906,60 @@ mod tests {
         // Size must have grown (would shrink under truncation).
         let size_after_second = std::fs::metadata(&path).unwrap().len();
         assert!(size_after_second > size_after_first);
+    }
+
+    #[test]
+    fn zero_byte_existing_minute_file_gets_global_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("s");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let path = src_dir.join("19700101T0000.pcap");
+        std::fs::write(&path, []).unwrap();
+
+        let mut file = PacketDumper::open_minute_file(&src_dir, 0, 1, PcapCompression::None)
+            .expect("open minute file");
+        file.sink.flush_all_layers().unwrap();
+        drop(file);
+
+        let (lt, pkts) = read_pcap(&path);
+        assert_eq!(lt, 1);
+        assert!(pkts.is_empty(), "newly recreated file should contain only the global header");
+    }
+
+    #[test]
+    fn recovers_when_source_dir_was_externally_removed() {
+        // Once `PacketDumper` has cached a `SourceWriter`, it never
+        // re-runs `create_dir_all` for that source. If retention (or an
+        // operator) deletes an idle source's dir, the next packet must
+        // still produce a usable file — `open_minute_file` recreates the
+        // dir on ENOENT instead of disabling the source.
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("s");
+        let mut d = PacketDumper::new(cfg(dir.path()), test_metrics()).unwrap();
+
+        // First packet at minute 0 — caches the SourceWriter.
+        d.write(&make_pkt("s", 1_000_000, &[0xa1]));
+        d.flush_all();
+        assert!(src_dir.is_dir());
+
+        // External removal: drain the dir and remove it.
+        std::fs::remove_dir_all(&src_dir).unwrap();
+        assert!(!src_dir.exists());
+
+        // Second packet at minute 1 — must recover, write to a new file.
+        d.write(&make_pkt("s", 61_000_000, &[0xb2]));
+        d.flush_all();
+        drop(d);
+
+        let path = src_dir.join("19700101T0001.pcap");
+        assert!(
+            path.is_file(),
+            "expected recovered minute file at {}",
+            path.display()
+        );
+        let (_, pkts) = read_pcap(&path);
+        assert_eq!(pkts.len(), 1);
+        assert_eq!(pkts[0].1, vec![0xb2]);
     }
 
     #[test]

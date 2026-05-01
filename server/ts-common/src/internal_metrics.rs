@@ -139,6 +139,9 @@ define_metrics! {
     CaptureReadErrors            => { kind: Counter, group: Capture,  short: "read_errors"          },
     CaptureDumpErrors            => { kind: Counter, group: Capture,  short: "dump_errors"          },
     CaptureDumpLateMinutePackets => { kind: Counter, group: Capture,  short: "dump_late_minute_pkts" },
+    CaptureDumpRetentionFilesDeleted => { kind: Counter, group: Capture, short: "dump_retention_files_deleted" },
+    CaptureDumpRetentionBytesDeleted => { kind: Counter, group: Capture, short: "dump_retention_bytes_deleted" },
+    CaptureDumpRetentionErrors       => { kind: Counter, group: Capture, short: "dump_retention_errors" },
 
     // -- Protocol (dispatcher + flow workers) --
     // Heartbeat received/dropped are both attributed to the destination

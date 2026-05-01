@@ -615,7 +615,11 @@ fn default_metrics_shard_count() -> usize {
 
 /// Per-pipeline packet dump. When enabled, every non-heartbeat `RawPacket`
 /// captured by this pipeline's sources is written to a Wireshark-openable
-/// classic pcap file under `<dir>/<sanitized_source_id>/`. Files rotate on
+/// classic pcap file under
+/// `<dir>/<pipeline_name>/<sanitized_source_id>/<minute>.pcap[.snappy]`.
+/// The `<pipeline_name>` layer is appended automatically by the runtime —
+/// multiple pipelines may safely share `dir` and stay fully isolated on
+/// disk, including per-pipeline retention scope. Files rotate on
 /// wall-clock minute boundaries (by packet timestamp); empty minutes are
 /// skipped. Optional snappy framed compression appends `.snappy` to the
 /// filename. Off by default.
@@ -627,6 +631,8 @@ pub struct PcapDumpConfig {
     pub dir: String,
     #[serde(default)]
     pub compression: PcapCompression,
+    #[serde(default)]
+    pub retention: PcapDumpRetentionConfig,
 }
 
 impl Default for PcapDumpConfig {
@@ -635,12 +641,71 @@ impl Default for PcapDumpConfig {
             enabled: false,
             dir: default_pcap_dump_dir(),
             compression: PcapCompression::None,
+            retention: PcapDumpRetentionConfig::default(),
         }
     }
 }
 
 fn default_pcap_dump_dir() -> String {
     "data/dumps".to_string()
+}
+
+/// File retention for `pcap_dump` output. Both rules default on so a
+/// long-running deploy with `pcap_dump.enabled = true` cannot silently fill
+/// the disk. Set `max_age_hours = 0` or `max_size_mb = 0` to disable that
+/// individual rule; set `enabled = false` to skip retention entirely.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PcapDumpRetentionConfig {
+    #[serde(default = "default_pcap_retention_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_pcap_retention_check_interval_secs")]
+    pub check_interval_secs: u64,
+    /// Delete files whose minute label is older than `now - max_age_hours`.
+    /// `0` = no age cutoff.
+    #[serde(default = "default_pcap_retention_max_age_hours")]
+    pub max_age_hours: u32,
+    /// Per-pipeline-dir total size cap in MiB. When the dump directory
+    /// exceeds this, oldest minute files are deleted first until usage is
+    /// back under the cap. `0` = no size cap.
+    #[serde(default = "default_pcap_retention_max_size_mb")]
+    pub max_size_mb: u64,
+}
+
+impl Default for PcapDumpRetentionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_pcap_retention_enabled(),
+            check_interval_secs: default_pcap_retention_check_interval_secs(),
+            max_age_hours: default_pcap_retention_max_age_hours(),
+            max_size_mb: default_pcap_retention_max_size_mb(),
+        }
+    }
+}
+
+impl PcapDumpRetentionConfig {
+    /// True when retention is enabled but every rule is `0` — the sweeper
+    /// would have nothing to do. Mirrors `RetentionPolicy::is_empty` for
+    /// storage retention so the same "exit-immediately" branch logic
+    /// applies in `spawn_pcap_retention_task`.
+    pub fn is_empty(&self) -> bool {
+        self.max_age_hours == 0 && self.max_size_mb == 0
+    }
+}
+
+fn default_pcap_retention_enabled() -> bool {
+    true
+}
+
+fn default_pcap_retention_check_interval_secs() -> u64 {
+    3600
+}
+
+fn default_pcap_retention_max_age_hours() -> u32 {
+    24
+}
+
+fn default_pcap_retention_max_size_mb() -> u64 {
+    10_240
 }
 
 /// Compression mode for pcap dump output. `None` writes plain `.pcap`;
@@ -721,6 +786,18 @@ pub enum ConfigIssue {
     /// effective retention map at load time; reported here so typos fail
     /// validation rather than only producing a startup warn.
     UnknownRetentionGranularity(String),
+    /// `[pipeline.pcap_dump.retention] enabled = true` but both
+    /// `max_age_hours` and `max_size_mb` are `0`. Legal: the sweeper task
+    /// exits immediately, so dumps accumulate unbounded — surfaced as a
+    /// warning so operators don't think retention is running when nothing
+    /// actually does.
+    PcapDumpRetentionNoRules { pipeline: String },
+    /// Pipeline has `pcap_dump.enabled = true` but its name doesn't
+    /// produce a safe path component (empty after sanitization, or `.` /
+    /// `..`). The runtime would silently disable pcap_dump for this
+    /// pipeline since it can't build a valid `<dir>/<pipeline>/...` path.
+    /// Fail validation hard so the operator sees the problem before deploy.
+    UnsafePcapDumpPipelineName { pipeline: String },
 }
 
 impl ConfigIssue {
@@ -730,11 +807,14 @@ impl ConfigIssue {
     /// else is `Error`.
     pub fn severity(&self) -> IssueSeverity {
         match self {
-            Self::NoPipelines | Self::NoSourcesInPipeline { .. } => IssueSeverity::Warn,
+            Self::NoPipelines
+            | Self::NoSourcesInPipeline { .. }
+            | Self::PcapDumpRetentionNoRules { .. } => IssueSeverity::Warn,
             Self::DuplicatePipelineName(_)
             | Self::DuplicateSourceId { .. }
             | Self::StoragePathParentUnwritable { .. }
-            | Self::UnknownRetentionGranularity(_) => IssueSeverity::Error,
+            | Self::UnknownRetentionGranularity(_)
+            | Self::UnsafePcapDumpPipelineName { .. } => IssueSeverity::Error,
         }
     }
 }
@@ -789,6 +869,18 @@ impl std::fmt::Display for ConfigIssue {
                     known.join(", ")
                 )
             }
+            Self::PcapDumpRetentionNoRules { pipeline } => write!(
+                f,
+                "pipeline '{pipeline}': pcap_dump.retention is enabled but \
+                 max_age_hours and max_size_mb are both 0 (no rules to apply)"
+            ),
+            Self::UnsafePcapDumpPipelineName { pipeline } => write!(
+                f,
+                "pipeline '{pipeline}': pcap_dump.enabled = true but the \
+                 pipeline name is not a safe path component (empty after \
+                 sanitization, or '.' / '..'); the runtime cannot build a \
+                 dump directory path"
+            ),
         }
     }
 }
@@ -893,6 +985,21 @@ impl AppConfig {
                         });
                     }
                 }
+            }
+            if def.pcap_dump.enabled
+                && def.pcap_dump.retention.enabled
+                && def.pcap_dump.retention.is_empty()
+            {
+                issues.push(ConfigIssue::PcapDumpRetentionNoRules {
+                    pipeline: def.name.clone(),
+                });
+            }
+            if def.pcap_dump.enabled
+                && !crate::path::is_safe_path_component(&def.name)
+            {
+                issues.push(ConfigIssue::UnsafePcapDumpPipelineName {
+                    pipeline: def.name.clone(),
+                });
             }
         }
 
@@ -1422,5 +1529,252 @@ mod phase2_tests {
         assert!(d.enabled);
         assert_eq!(d.dir, "/tmp/dumps");
         assert_eq!(d.compression, crate::config::PcapCompression::Snappy);
+    }
+
+    #[test]
+    fn pcap_dump_retention_has_aggressive_defaults() {
+        // No explicit retention block — defaults must keep both rules on so
+        // a long-running deploy with `pcap_dump.enabled` cannot silently
+        // fill the disk. 24-hour TTL covers typical post-mortem windows;
+        // 10 GiB size cap is the disk safety net.
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+
+            [pipeline.pcap_dump]
+            enabled = true
+
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let r = &cfg.pipelines[0].pcap_dump.retention;
+        assert!(r.enabled);
+        assert_eq!(r.check_interval_secs, 3600);
+        assert_eq!(r.max_age_hours, 24);
+        assert_eq!(r.max_size_mb, 10_240);
+    }
+
+    #[test]
+    fn pcap_dump_retention_parses_full_block() {
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+
+            [pipeline.pcap_dump]
+            enabled = true
+
+            [pipeline.pcap_dump.retention]
+            enabled = false
+            check_interval_secs = 60
+            max_age_hours = 24
+            max_size_mb = 0
+
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let r = &cfg.pipelines[0].pcap_dump.retention;
+        assert!(!r.enabled);
+        assert_eq!(r.check_interval_secs, 60);
+        assert_eq!(r.max_age_hours, 24);
+        assert_eq!(r.max_size_mb, 0);
+    }
+
+    #[test]
+    fn validate_pcap_dump_retention_enabled_but_no_rules() {
+        // Both rules zeroed while retention is enabled → the sweeper would
+        // exit immediately. Surface as a warning so operators don't think
+        // their dumps are being cleaned when nothing actually runs.
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+
+            [pipeline.pcap_dump]
+            enabled = true
+
+            [pipeline.pcap_dump.retention]
+            enabled = true
+            max_age_hours = 0
+            max_size_mb = 0
+
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            issues.iter().any(|i| matches!(
+                i,
+                ConfigIssue::PcapDumpRetentionNoRules { pipeline } if pipeline == "p"
+            )),
+            "expected PcapDumpRetentionNoRules('p'), got {issues:?}"
+        );
+        // Severity is `warn` — runtime tolerates (task simply exits).
+        let issue = issues
+            .iter()
+            .find(|i| matches!(i, ConfigIssue::PcapDumpRetentionNoRules { .. }))
+            .unwrap();
+        assert_eq!(issue.severity(), IssueSeverity::Warn);
+    }
+
+    #[test]
+    fn validate_pcap_dump_retention_disabled_does_not_warn() {
+        // Retention disabled — empty rules are irrelevant; no issue should fire.
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+
+            [pipeline.pcap_dump]
+            enabled = true
+
+            [pipeline.pcap_dump.retention]
+            enabled = false
+            max_age_hours = 0
+            max_size_mb = 0
+
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::PcapDumpRetentionNoRules { .. })),
+            "did not expect PcapDumpRetentionNoRules, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_pipelines_sharing_pcap_dump_dir_is_allowed() {
+        // The runtime auto-appends a sanitized pipeline-name layer
+        // (`<dir>/<pipeline>/<source_id>/`), so two pipelines sharing the
+        // configured `pcap_dump.dir` end up with disjoint effective
+        // directories — no validation issue should fire. `DuplicatePipelineName`
+        // already prevents the only collision case (same name + same base).
+        let toml = r#"
+            [[pipeline]]
+            name = "a"
+            [pipeline.pcap_dump]
+            enabled = true
+            dir = "/tmp/dumps-shared"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+
+            [[pipeline]]
+            name = "b"
+            [pipeline.pcap_dump]
+            enabled = true
+            dir = "/tmp/dumps-shared"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth1"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        // No issue should be raised for the shared dir or the source_ids
+        // (eth0 vs eth1 don't collide). Other unrelated issues — e.g.
+        // `StoragePathParentUnwritable` from the default duckdb path under
+        // a non-writable cwd in some test runners — are out of scope.
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::DuplicateSourceId { .. })),
+            "expected no DuplicateSourceId, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_unsafe_pipeline_name_with_pcap_dump_enabled_is_an_error() {
+        // Pipeline name sanitizes to empty/./.. → the runtime would
+        // silently disable pcap_dump for this pipeline. Surface as a
+        // hard error so `tokenscope config validate` catches it before
+        // deploy. We test '..' specifically; other unsafe shapes share
+        // the same code path (covered by ts-common::path tests).
+        let toml = r#"
+            [[pipeline]]
+            name = ".."
+
+            [pipeline.pcap_dump]
+            enabled = true
+
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            issues.iter().any(|i| matches!(
+                i,
+                ConfigIssue::UnsafePcapDumpPipelineName { pipeline } if pipeline == ".."
+            )),
+            "expected UnsafePcapDumpPipelineName('..'), got {issues:?}"
+        );
+        let issue = issues
+            .iter()
+            .find(|i| matches!(i, ConfigIssue::UnsafePcapDumpPipelineName { .. }))
+            .unwrap();
+        assert_eq!(issue.severity(), IssueSeverity::Error);
+    }
+
+    #[test]
+    fn validate_unsafe_pipeline_name_with_pcap_dump_disabled_is_silent() {
+        // Same name, but pcap_dump is off — the runtime never tries to
+        // build a path from this name, so no issue should fire.
+        let toml = r#"
+            [[pipeline]]
+            name = ".."
+
+            [pipeline.pcap_dump]
+            enabled = false
+
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::UnsafePcapDumpPipelineName { .. })),
+            "did not expect UnsafePcapDumpPipelineName when dump disabled, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_pcap_dump_disabled_skips_retention_check() {
+        // pcap_dump itself is off — retention config is irrelevant.
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+
+            [pipeline.pcap_dump]
+            enabled = false
+
+            [pipeline.pcap_dump.retention]
+            enabled = true
+            max_age_hours = 0
+            max_size_mb = 0
+
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::PcapDumpRetentionNoRules { .. })),
+            "did not expect PcapDumpRetentionNoRules when dump disabled, got {issues:?}"
+        );
     }
 }
