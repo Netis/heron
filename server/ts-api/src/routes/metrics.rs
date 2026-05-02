@@ -297,6 +297,7 @@ mod tests {
             test_metrics_context(),
             test_runtime_config_context(),
             test_health_context(),
+            std::sync::Arc::new(vec![]),
         );
 
         // start/end are seconds (matches existing /api/metrics/* convention).
@@ -372,6 +373,7 @@ mod tests {
             test_metrics_context(),
             test_runtime_config_context(),
             test_health_context(),
+            std::sync::Arc::new(vec![]),
         );
 
         let start_s = (ts / 1_000_000) - 1;
@@ -454,6 +456,7 @@ mod tests {
             test_metrics_context(),
             test_runtime_config_context(),
             test_health_context(),
+            std::sync::Arc::new(vec![]),
         );
 
         let start_s = (ts / 1_000_000) - 1;
@@ -555,6 +558,7 @@ mod tests {
             test_metrics_context(),
             test_runtime_config_context(),
             test_health_context(),
+            std::sync::Arc::new(vec![]),
         );
 
         let start_s = ts / 1_000_000;
@@ -609,6 +613,7 @@ mod tests {
             test_metrics_context(),
             test_runtime_config_context(),
             test_health_context(),
+            std::sync::Arc::new(vec![]),
         );
 
         let start_s = 1_700_000_040i64;
@@ -646,6 +651,7 @@ mod tests {
             test_metrics_context(),
             test_runtime_config_context(),
             test_health_context(),
+            std::sync::Arc::new(vec![]),
         );
         let resp = app
             .oneshot(

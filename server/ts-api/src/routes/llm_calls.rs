@@ -146,6 +146,7 @@ mod tests {
             test_metrics_context(),
             test_runtime_config_context(),
             test_health_context(),
+            std::sync::Arc::new(vec![]),
         );
 
         let resp = app
@@ -188,6 +189,7 @@ mod tests {
             test_metrics_context(),
             test_runtime_config_context(),
             test_health_context(),
+            std::sync::Arc::new(vec![]),
         );
 
         let resp = app

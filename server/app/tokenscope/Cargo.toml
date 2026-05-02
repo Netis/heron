@@ -17,6 +17,7 @@ ts-metrics.workspace = true
 ts-storage.workspace = true
 ts-turn.workspace = true
 ts-api.workspace = true
+ts-pcap-extract.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

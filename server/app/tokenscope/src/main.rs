@@ -283,6 +283,17 @@ async fn run_pipeline(cli: Cli) {
         config.pipelines.clone()
     };
 
+    let pcap_extract_roots: std::sync::Arc<Vec<ts_pcap_extract::PipelineRoot>> =
+        std::sync::Arc::new(
+            effective_pipelines
+                .iter()
+                .map(|def| ts_pcap_extract::PipelineRoot {
+                    name: def.name.clone(),
+                    dump_dir: std::path::PathBuf::from(&def.pcap_dump.dir),
+                })
+                .collect(),
+        );
+
     // Validate no duplicate source_ids across all pipeline sources.
     {
         let mut seen = std::collections::HashSet::new();
@@ -584,9 +595,15 @@ async fn run_pipeline(cli: Cli) {
                     pipelines: pipeline_names,
                     drained: drained.clone(),
                 };
+                let pcap_extract_roots = pcap_extract_roots.clone();
                 Some(tokio::spawn(async move {
-                    let router =
-                        ts_api::router(api_storage, api_metrics, api_runtime_config, api_health);
+                    let router = ts_api::router(
+                        api_storage,
+                        api_metrics,
+                        api_runtime_config,
+                        api_health,
+                        pcap_extract_roots,
+                    );
                     #[cfg(feature = "console")]
                     let router = router.fallback(console::static_handler);
                     let server = axum::serve(listener, router).with_graceful_shutdown(async move {
@@ -784,12 +801,14 @@ async fn run_pipeline(cli: Cli) {
                         pipelines: Vec::new(),
                         drained: drained.clone(),
                     };
+                    let pcap_extract_roots = pcap_extract_roots.clone();
                     Some(tokio::spawn(async move {
                         let router = ts_api::router(
                             api_storage,
                             api_metrics,
                             api_runtime_config,
                             api_health,
+                            pcap_extract_roots,
                         );
                         #[cfg(feature = "console")]
                         let router = router.fallback(console::static_handler);

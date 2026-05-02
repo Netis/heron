@@ -24,6 +24,7 @@ use tower_http::cors::CorsLayer;
 use ts_common::config::{ApiConfig, AppConfig};
 use ts_common::error::{AppError, Result};
 use ts_common::internal_metrics::MetricsSvc;
+use ts_pcap_extract::PipelineRoot;
 use ts_storage::StorageBackend;
 
 /// Carriers for `/api/internal-metrics` — every per-pipeline `MetricsSvc`
@@ -80,6 +81,7 @@ pub fn router(
     metrics: ApiMetricsContext,
     runtime_config: ApiRuntimeConfigContext,
     health: ApiHealthContext,
+    pcap_roots: Arc<Vec<PipelineRoot>>,
 ) -> Router {
     let internal_metrics_routes = Router::new()
         .route(
@@ -98,6 +100,10 @@ pub fn router(
     let health_routes = Router::new()
         .route("/api/health", get(routes::health::health))
         .with_state(health);
+
+    let pcap_extract_routes = Router::new()
+        .route("/api/pcap/extract", get(routes::pcap_extract::handler))
+        .with_state(pcap_roots);
 
     Router::new()
         .route("/api/filters/wire-apis", get(routes::filters::wire_apis))
@@ -140,5 +146,6 @@ pub fn router(
         .merge(internal_metrics_routes)
         .merge(runtime_config_routes)
         .merge(health_routes)
+        .merge(pcap_extract_routes)
         .layer(CorsLayer::permissive())
 }
