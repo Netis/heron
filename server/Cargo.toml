@@ -50,6 +50,7 @@ ts-llm = { path = "ts-llm" }
 ts-turn = { path = "ts-turn" }
 ts-metrics = { path = "ts-metrics" }
 ts-storage = { path = "ts-storage" }
+ts-pcap-extract = { path = "ts-pcap-extract" }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 rust-embed = "8"

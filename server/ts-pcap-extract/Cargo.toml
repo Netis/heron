@@ -1,0 +1,20 @@
+[package]
+name = "ts-pcap-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ts-protocol = { workspace = true }
+ts-common = { workspace = true }
+snap = "1"
+bytes = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = "0.3"
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+pcap = { workspace = true }
