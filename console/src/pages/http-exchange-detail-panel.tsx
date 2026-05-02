@@ -4,6 +4,7 @@ import { formatBytes, formatDateTime, formatMs, formatNumber } from "@/lib/forma
 import { StatusBadge } from "@/components/ui/status-badge"
 import { CollapsibleSection } from "@/components/ui/collapsible-section"
 import type { HttpExchangeDetail } from "@/types/api"
+import { ExtractPacketsButton } from "@/features/pcap-extract/ExtractPacketsButton"
 
 interface Props {
   id: string
@@ -117,6 +118,9 @@ export function HttpExchangeDetailPanel({ id, onClose, onNavigate, hasPrev, hasN
         <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold">HTTP Exchange Detail</h2>
           <div className="flex items-center gap-1">
+            {detail && (
+              <ExtractPacketsButton anchor={{ type: "http_exchange", row: detail }} />
+            )}
             <button
               onClick={() => onNavigate("prev")}
               disabled={!hasPrev}

@@ -7,6 +7,7 @@ import { TimelineBar } from "@/components/llm-call-detail/timeline-bar"
 import { MetadataGrid } from "@/components/llm-call-detail/metadata-grid"
 import { CallRendererDispatch } from "@/components/call-renderers/dispatch"
 import type { LlmCallDetail } from "@/types/api"
+import { ExtractPacketsButton } from "@/features/pcap-extract/ExtractPacketsButton"
 
 function toRawHttpData(detail: LlmCallDetail): RawHttpData {
   return {
@@ -46,6 +47,9 @@ export function LlmCallDetailPanel({ id, onClose, onNavigate, hasPrev, hasNext }
         <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold">LLM Call Detail</h2>
           <div className="flex items-center gap-1">
+            {detail && (
+              <ExtractPacketsButton anchor={{ type: "llm_call", row: detail }} />
+            )}
             <button
               onClick={() => setRawOpen(true)}
               disabled={!detail}
