@@ -3,6 +3,7 @@ import { useHttpExchange } from "@/hooks/use-http-exchange"
 import { formatBytes, formatDateTime, formatMs, formatNumber } from "@/lib/format"
 import { StatusBadge } from "@/components/ui/status-badge"
 import { CollapsibleSection } from "@/components/ui/collapsible-section"
+import { BodyViewer } from "@/components/raw-http/body-viewer"
 import type { HttpExchangeDetail } from "@/types/api"
 import { ExtractPacketsButton } from "@/features/pcap-extract/ExtractPacketsButton"
 
@@ -20,15 +21,6 @@ function parseHeaders(raw: string | null | undefined): [string, string][] {
     return JSON.parse(raw)
   } catch {
     return []
-  }
-}
-
-function formatJson(raw: string | null): string {
-  if (!raw) return ""
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2)
-  } catch {
-    return raw
   }
 }
 
@@ -213,32 +205,20 @@ export function HttpExchangeDetailPanel({ id, onClose, onNavigate, hasPrev, hasN
                 )}
               </CollapsibleSection>
 
-              <CollapsibleSection title="Request Body">
-                {detail.request_body ? (
-                  <pre className="max-h-[400px] overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
-                    {formatJson(detail.request_body)}
-                  </pre>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No body</p>
-                )}
-              </CollapsibleSection>
+              <BodyViewer title="Request Body" raw={detail.request_body} />
 
-              <CollapsibleSection title="Response Body">
-                {detail.is_sse && detail.response_body == null ? (
+              {detail.is_sse && detail.response_body == null ? (
+                <CollapsibleSection title="Response Body" defaultOpen>
                   <p className="text-sm text-muted-foreground">
                     SSE response — raw stream not persisted.{" "}
                     {formatNumber(detail.sse_event_count)} events received,{" "}
                     {formatBytes(detail.sse_data_bytes)} of <code>data:</code> payload
                     (frame overhead excluded).
                   </p>
-                ) : detail.response_body ? (
-                  <pre className="max-h-[400px] overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
-                    {formatJson(detail.response_body)}
-                  </pre>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No body</p>
-                )}
-              </CollapsibleSection>
+                </CollapsibleSection>
+              ) : (
+                <BodyViewer title="Response Body" raw={detail.response_body} />
+              )}
             </>
           )}
         </div>
