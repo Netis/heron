@@ -1636,4 +1636,111 @@ mod tests {
         );
         assert_eq!(result, ParseResult::NeedResync);
     }
+
+    /// Two sequential POST + SSE chunked response cycles on the same flow
+    /// (HTTP/1.1 keepalive, no pipelining). This mirrors what
+    /// `tests/fixtures/keepalive_2sse_pipelined.pcap` shows: agent reuses one
+    /// TCP connection for back-to-back chat completions. Parser must emit
+    /// 2 HttpRequest and 2 HttpResponse events; SSE event order across the
+    /// two responses must be preserved.
+    #[test]
+    fn test_keepalive_two_sse_chunked_responses_one_flow() {
+        let (fk, ca, sa) = test_flow();
+        let mut parser = HttpParser::new();
+
+        let req1 = "POST /v1/chat/completions HTTP/1.1\r\n\
+                    Host: localhost\r\n\
+                    Content-Length: 2\r\n\
+                    \r\n\
+                    {}";
+        let req2 = "POST /v1/chat/completions HTTP/1.1\r\n\
+                    Host: localhost\r\n\
+                    Content-Length: 2\r\n\
+                    \r\n\
+                    []";
+
+        let sse_body_1 = "event: message_start\ndata: {\"id\":\"r1\"}\n\n\
+                          event: content_block_delta\ndata: {\"text\":\"one\"}\n\n\
+                          event: message_stop\ndata: {}\n\n";
+        let sse_body_2 = "event: message_start\ndata: {\"id\":\"r2\"}\n\n\
+                          event: content_block_delta\ndata: {\"text\":\"two\"}\n\n\
+                          event: message_stop\ndata: {}\n\n";
+        let chunk1 = format!("{:x}\r\n{}\r\n0\r\n\r\n", sse_body_1.len(), sse_body_1);
+        let chunk2 = format!("{:x}\r\n{}\r\n0\r\n\r\n", sse_body_2.len(), sse_body_2);
+        let resp1 = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Transfer-Encoding: chunked\r\n\
+             Content-Type: text/event-stream\r\n\
+             \r\n{}",
+            chunk1
+        );
+        let resp2 = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Transfer-Encoding: chunked\r\n\
+             Content-Type: text/event-stream\r\n\
+             \r\n{}",
+            chunk2
+        );
+
+        let mut client_buf = BytesMut::from(format!("{}{}", req1, req2).as_bytes());
+        let mut server_buf = BytesMut::from(format!("{}{}", resp1, resp2).as_bytes());
+
+        let mut output = Vec::new();
+        let result = parser.parse(
+            &mut client_buf,
+            &mut server_buf,
+            &fk,
+            ca,
+            sa,
+            0,
+            0,
+            0,
+            &mut output,
+        );
+
+        assert_eq!(result, ParseResult::Ok, "parse should not need resync");
+        let req_count = output
+            .iter()
+            .filter(|e| matches!(e, HttpParseEvent::HttpRequest(_)))
+            .count();
+        let resp_count = output
+            .iter()
+            .filter(|e| matches!(e, HttpParseEvent::HttpResponse(_)))
+            .count();
+        let sse_count = output
+            .iter()
+            .filter(|e| matches!(e, HttpParseEvent::SseEvent(_)))
+            .count();
+        assert_eq!(
+            req_count, 2,
+            "expected 2 HttpRequest events, got {}; output: {:?}",
+            req_count, output
+        );
+        assert_eq!(
+            resp_count, 2,
+            "expected 2 HttpResponse events, got {}; output: {:?}",
+            resp_count, output
+        );
+        assert_eq!(
+            sse_count, 6,
+            "expected 6 SSE events (3 per response), got {}",
+            sse_count
+        );
+
+        // Order check: request → SSE×3 → response → request → SSE×3 → response.
+        let kinds: Vec<&'static str> = output
+            .iter()
+            .map(|e| match e {
+                HttpParseEvent::HttpRequest(_) => "REQ",
+                HttpParseEvent::HttpResponse(_) => "RESP",
+                HttpParseEvent::SseEvent(_) => "SSE",
+                HttpParseEvent::Heartbeat { .. } => "HB",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["REQ", "SSE", "SSE", "SSE", "RESP", "REQ", "SSE", "SSE", "SSE", "RESP"],
+            "event order mismatch"
+        );
+    }
 }
