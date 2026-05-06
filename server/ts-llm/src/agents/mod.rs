@@ -7,21 +7,25 @@ use crate::profile::AgentProfileRegistry;
 pub mod claude_cli;
 pub mod codex_cli;
 pub mod generic;
+pub mod hermes;
 pub mod openclaw;
 pub mod session_id;
 
 /// Default registry with all built-in agent profiles.
 ///
 /// Order is priority — first match wins. Specific profiles (claude-cli,
-/// codex-cli, openclaw) come first; the generic profile catches traffic
-/// without distinguishing client headers, dispatching internally on
-/// `wire_api`. Header-based detection (claude-cli, codex-cli) precedes
-/// body-fingerprint detection (openclaw) so cheaper checks run first.
+/// codex-cli, openclaw, hermes) come first; the generic profile catches
+/// traffic without distinguishing client headers, dispatching internally
+/// on `wire_api`. Header-based detection (claude-cli, codex-cli) precedes
+/// body-fingerprint detection (openclaw, hermes) so cheaper checks run
+/// first. OpenClaw and Hermes both fingerprint by `tools[]` marker names
+/// but their marker sets are disjoint — order between them is irrelevant.
 pub fn build_default_registry() -> AgentProfileRegistry {
     AgentProfileRegistry::new()
         .with(Box::new(claude_cli::ClaudeCliProfile))
         .with(Box::new(codex_cli::CodexCliProfile))
         .with(Box::new(openclaw::OpenClawProfile))
+        .with(Box::new(hermes::HermesProfile))
         .with(Box::new(generic::GenericProfile))
 }
 
@@ -249,6 +253,64 @@ mod priority_tests {
             Some(body),
         );
         assert_eq!(find_kind(&reg, &c), Some("generic"));
+    }
+
+    /// Hermes OpenAI Chat body — ≥2 Hermes marker tools.
+    const HERMES_OAI_CHAT: &str = r##"{
+      "messages":[
+        {"role":"system","content":"# Hermes Agent Persona"},
+        {"role":"user","content":"hi"}
+      ],
+      "tools":[
+        {"type":"function","function":{"name":"terminal"}},
+        {"type":"function","function":{"name":"skill_view"}},
+        {"type":"function","function":{"name":"delegate_task"}}
+      ]
+    }"##;
+
+    /// Hermes title-generation body — no tools, generic title prompt.
+    const HERMES_TITLE_GEN: &str = r#"{
+      "messages":[
+        {"role":"system","content":"Generate a short, descriptive title (3-7 words) for a conversation."},
+        {"role":"user","content":"User: hi\n\nAssistant: hello"}
+      ]
+    }"#;
+
+    #[test]
+    fn hermes_wins_over_generic_when_openai_chat_marker_tools() {
+        let reg = build_default_registry();
+        let c = call_with_body(
+            wa::OPENAI_CHAT,
+            vec![("User-Agent", "OpenAI/Python 2.33.0")],
+            Some(HERMES_OAI_CHAT),
+        );
+        assert_eq!(find_kind(&reg, &c), Some("hermes"));
+    }
+
+    #[test]
+    fn hermes_title_gen_falls_through_to_generic() {
+        // Hermes's chat-title-generation call carries no tools and no
+        // Hermes markers, so HermesProfile must NOT match it. The call
+        // is correctly classified as generic — and it correctly remains
+        // its own AgentTurn from the wire's perspective (separate
+        // session, fresh user-start, finish_reason=stop).
+        let reg = build_default_registry();
+        let c = call_with_body(
+            wa::OPENAI_CHAT,
+            vec![("User-Agent", "OpenAI/Python 2.33.0")],
+            Some(HERMES_TITLE_GEN),
+        );
+        assert_eq!(find_kind(&reg, &c), Some("generic"));
+    }
+
+    #[test]
+    fn hermes_does_not_collide_with_openclaw_markers() {
+        // OpenClaw marker tools (sessions_spawn, subagents) are disjoint
+        // from Hermes's marker set. An OpenClaw-shaped body must classify
+        // as openclaw, not hermes, regardless of registration order.
+        let reg = build_default_registry();
+        let c = call_with_body(wa::OPENAI_CHAT, vec![], Some(OPENCLAW_OAI_MAIN));
+        assert_eq!(find_kind(&reg, &c), Some("openclaw"));
     }
 
     #[test]

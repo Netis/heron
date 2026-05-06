@@ -2,7 +2,7 @@
 
 ## Overview
 
-A **Turn** in this document always means an **agent turn** — the data type is `AgentTurn`, produced only for traffic matched by an `AgentProfile` (currently `claude-cli`, `codex-cli`). Non-agent LLM traffic still lands in `LlmCall` and `LlmMetric` but never in an `AgentTurn`.
+A **Turn** in this document always means an **agent turn** — the data type is `AgentTurn`, produced for traffic matched by an `AgentProfile` (`claude-cli`, `codex-cli`, `openclaw`, `hermes`, `generic`). Non-agent LLM traffic still lands in `LlmCall` and `LlmMetric` but never in an `AgentTurn`.
 
 A Turn is one user interaction cycle: user submits a question → agent executes a series of LLM API calls (with tool use) → agent produces a final answer. A single Turn contains 1–N `LlmCall` records. A user session contains 1–N Turns.
 
@@ -10,11 +10,17 @@ A Turn is one user interaction cycle: user submits a question → agent executes
 
 This design is implemented by the `ts-turn` crate (see `server/ts-turn/`).
 
-- Header-explicit-only policy: calls without a matching `AgentProfile` do not
-  participate in turn grouping. Extending to a new agent = adding a new
+- Profile-priority policy: header-based profiles (`claude-cli`,
+  `codex-cli`) match first; body-fingerprint profiles (`openclaw`,
+  `hermes`) follow; `generic` catches the rest by inferring session from
+  user/assistant body shape. Extending to a new agent = adding a new
   `AgentProfile` impl in `server/ts-llm/src/agents/`.
-- Currently supported clients: `claude-cli` (Anthropic), `codex_cli_rs` /
-  `codex-tui` (OpenAI Responses).
+- Currently supported clients: `claude-cli` (Anthropic),
+  `codex_cli_rs` / `codex-tui` (OpenAI Responses), `openclaw` (all 3 wire
+  APIs, body-fingerprinted by RPC marker tools), `hermes` (all 3 wire
+  APIs, body-fingerprinted by Hermes-specific tool names like
+  `skill_view`, `delegate_task`, `session_search`), and a `generic`
+  fallback covering header-less LLM traffic.
 - **Assembly model:** buffer-and-finalize. Each `(source_id, session_id)` owns
   a `SessionBuffer` keyed by `request_time`. When a main-agent terminal call
   arrives, a small grace window (`grace_ms`, default 1000) starts; on grace

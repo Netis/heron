@@ -700,6 +700,126 @@ async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
     );
 }
 
+/// Hermes Agent (Nous Research) capture over OpenAI `/v1/chat/completions`.
+/// Hermes uses the upstream `openai-python` SDK with no Hermes-specific
+/// headers (UA: `OpenAI/Python <ver>`), so identification relies on the
+/// body fingerprint in `HermesProfile::matches` (≥2 of `skill_view`,
+/// `skill_manage`, `skills_list`, `delegate_task`, `session_search`,
+/// `cronjob` in `tools[]`).
+///
+/// The fixture contains one user-facing conversation followed by Hermes's
+/// chat-title-generation one-shot. The two are independent on the wire and
+/// emit as two separate AgentTurns by design (independent session_ids,
+/// independent user-start, independent terminal). Asserts:
+///   1. Exactly two OpenAI Chat turns.
+///   2. The 4-call main conversation classifies as `hermes`. Its
+///      `user_input_preview` is the user's prompt verbatim — the title-gen
+///      prompt MUST NOT leak in here.
+///   3. The 1-call title-generation call falls through to `generic` (no
+///      Hermes tool markers in its body). Its `final_answer_preview`
+///      matches the synthesized title.
+#[tokio::test]
+async fn hermes_openai_expects_hermes_main_and_generic_title_gen() {
+    let Some(turns) = run_pcap("hermes-openai.pcap").await else {
+        eprintln!("skip: fixture not present");
+        return;
+    };
+    let chat: Vec<_> = turns
+        .iter()
+        .filter(|t| t.wire_api == wa::OPENAI_CHAT)
+        .collect();
+    eprintln!("hermes-openai: {} openai-chat turns", chat.len());
+    for t in &chat {
+        eprintln!(
+            "  agent={} status={:?} calls={} user={:?} final={:?}",
+            t.agent_kind,
+            t.status,
+            t.call_count,
+            t.user_input_preview.as_deref().unwrap_or(""),
+            t.final_answer_preview.as_deref().unwrap_or(""),
+        );
+    }
+    assert_eq!(chat.len(), 2, "expected 2 turns; got {}", chat.len());
+    assert!(
+        chat.iter().all(|t| t.status == TurnStatus::Complete),
+        "all turns expected Complete (both end with finish_reason=stop)",
+    );
+
+    let main = chat
+        .iter()
+        .find(|t| t.agent_kind == "hermes")
+        .expect("expected one hermes-classified turn (main conversation)");
+    assert_eq!(
+        main.call_count, 4,
+        "main conversation has 4 LLM calls (3 tool roundtrips + 1 final answer)",
+    );
+    let main_user = main.user_input_preview.as_deref().unwrap_or_default();
+    assert!(
+        main_user.starts_with("检查当前tokenscope"),
+        "hermes turn user_input must be the user's prompt verbatim, got {main_user:?}",
+    );
+
+    let title = chat
+        .iter()
+        .find(|t| t.agent_kind == "generic")
+        .expect("title-gen call must fall through to generic (no Hermes markers)");
+    assert_eq!(
+        title.call_count, 1,
+        "title generation is a single one-shot call",
+    );
+    let title_final = title.final_answer_preview.as_deref().unwrap_or_default();
+    assert!(
+        title_final.contains("tokenscope"),
+        "title-gen final_answer must reference the conversation topic, got {title_final:?}",
+    );
+    // The two turns must live in distinct session buckets — that's why
+    // they're separate turns in the first place. If they collapsed into one
+    // session, the tracker would partition them but this assertion guards
+    // against any future session-id heuristic that accidentally fuses them.
+    assert_ne!(
+        main.session_id, title.session_id,
+        "main conversation and title-gen call must occupy distinct session buckets",
+    );
+}
+
+#[tokio::test]
+async fn hermes_openai_pcap_shard_parity() {
+    let Some(single) = run_pcap_sharded("hermes-openai.pcap", 1, 1).await else {
+        eprintln!("skip: fixture not present");
+        return;
+    };
+    let multi = run_pcap_sharded("hermes-openai.pcap", 4, 4)
+        .await
+        .unwrap();
+
+    let single_keys: std::collections::BTreeSet<_> = single
+        .iter()
+        .map(|t| {
+            (
+                t.session_id.clone(),
+                t.agent_kind.clone(),
+                t.call_count,
+                t.status.to_string(),
+            )
+        })
+        .collect();
+    let multi_keys: std::collections::BTreeSet<_> = multi
+        .iter()
+        .map(|t| {
+            (
+                t.session_id.clone(),
+                t.agent_kind.clone(),
+                t.call_count,
+                t.status.to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        single_keys, multi_keys,
+        "turn sets must match across shard counts",
+    );
+}
+
 /// End-to-end unit test: two `LlmCall` records (no claude-cli UA) run through
 /// `build_agent_call_info` + `TurnTracker` produce a single `AgentTurn` with
 /// `agent_kind == "generic"` and `session_id == "toolu_pcap"`. The Anthropic
