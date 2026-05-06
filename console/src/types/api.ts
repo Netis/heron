@@ -21,6 +21,12 @@ export interface LlmCallListItem {
   e2e_latency_ms: number | null
   input_tokens: number | null
   output_tokens: number | null
+  /**
+   * True when input/output tokens came from the fallback tiktoken estimator
+   * instead of a wire-side `usage` block. Surfaces a `~` prefix on tokens
+   * columns. Optional because old API builds may not include it.
+   */
+  tokens_estimated?: boolean
   client_ip: string
   server_ip: string
   server_port: number
@@ -145,6 +151,8 @@ export interface AgentTurnCallItem {
   e2e_latency_ms: number | null
   input_tokens: number | null
   output_tokens: number | null
+  /** See LlmCallListItem.tokens_estimated. */
+  tokens_estimated?: boolean
   request_path: string
   client_ip: string
   client_port: number
@@ -176,6 +184,8 @@ export interface LlmCallDetail {
   input_tokens: number | null
   output_tokens: number | null
   total_tokens: number | null
+  /** See LlmCallListItem.tokens_estimated. */
+  tokens_estimated?: boolean
   ttft_ms: number | null
   e2e_latency_ms: number | null
   response_id: string | null

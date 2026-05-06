@@ -79,8 +79,22 @@ export function CallCard({
           )}>
             {speed === "error" && "✗ "}{formatMs(call.e2e_latency_ms)}
           </span>
-          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-            {formatNumber(call.input_tokens)}↑ {formatNumber(call.output_tokens)}↓
+          <span
+            className={cn(
+              "shrink-0 text-xs tabular-nums",
+              call.tokens_estimated
+                ? "text-amber-700 dark:text-amber-400"
+                : "text-muted-foreground",
+            )}
+            title={
+              call.tokens_estimated
+                ? "Estimated by tokenizer (cl100k) — server returned no usage block"
+                : undefined
+            }
+          >
+            {call.tokens_estimated ? "~" : ""}
+            {formatNumber(call.input_tokens)}↑ {call.tokens_estimated ? "~" : ""}
+            {formatNumber(call.output_tokens)}↓
           </span>
           {expanded ? <ChevronDown className="size-4 text-muted-foreground" /> : <ChevronRight className="size-4 text-muted-foreground" />}
         </div>

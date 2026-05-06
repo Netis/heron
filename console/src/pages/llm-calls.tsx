@@ -84,10 +84,29 @@ function CellValue({ item, column }: { item: LlmCallListItem; column: SortKey })
     case "e2e_latency_ms":
       return <span className="tabular-nums">{formatMs(item.e2e_latency_ms)}</span>
     case "input_tokens":
-      return <span className="tabular-nums">{formatNumber(item.input_tokens)}</span>
+      return <TokenCell value={item.input_tokens} estimated={item.tokens_estimated} />
     case "output_tokens":
-      return <span className="tabular-nums">{formatNumber(item.output_tokens)}</span>
+      return <TokenCell value={item.output_tokens} estimated={item.tokens_estimated} />
   }
+}
+
+/**
+ * In/Out token cell. Prefixes the value with `~` and shows a tooltip when the
+ * row's tokens were filled in by the fallback tiktoken estimator (server
+ * returned no `usage` block — typical for LiteLLM proxy traffic).
+ */
+function TokenCell({ value, estimated }: { value: number | null; estimated?: boolean }) {
+  if (!estimated) {
+    return <span className="tabular-nums">{formatNumber(value)}</span>
+  }
+  return (
+    <span
+      className="tabular-nums text-amber-700 dark:text-amber-400"
+      title="Estimated by tokenizer — server returned no usage block"
+    >
+      ~{formatNumber(value)}
+    </span>
+  )
 }
 
 export function LlmCallsPage() {

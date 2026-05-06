@@ -136,6 +136,11 @@ pub struct CallListItem {
     pub e2e_latency_ms: Option<f64>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
+    /// True when the row's tokens came from the fallback tiktoken estimator
+    /// rather than a wire-side `usage` block. Computed at read time from
+    /// `response_body`; not a stored column.
+    #[serde(default)]
+    pub tokens_estimated: bool,
     pub client_ip: String,
     pub server_ip: String,
     pub server_port: u16,
@@ -322,6 +327,10 @@ pub struct TurnCallItem {
     pub e2e_latency_ms: Option<f64>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
+    /// True when the row's tokens came from the fallback estimator. Mirrors
+    /// `CallListItem.tokens_estimated`.
+    #[serde(default)]
+    pub tokens_estimated: bool,
     pub request_path: String,
     pub client_ip: String,
     pub client_port: u16,
@@ -571,6 +580,10 @@ pub struct CallDetail {
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
     pub total_tokens: Option<u32>,
+    /// True when the row's tokens came from the fallback estimator. See
+    /// `CallListItem.tokens_estimated`.
+    #[serde(default)]
+    pub tokens_estimated: bool,
     pub ttft_ms: Option<f64>,
     pub e2e_latency_ms: Option<f64>,
     pub response_id: Option<String>,

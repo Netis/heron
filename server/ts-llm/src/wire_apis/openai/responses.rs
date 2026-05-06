@@ -515,6 +515,106 @@ pub fn extract_assistant_text_value(resp: &Value) -> Option<String> {
     None
 }
 
+// ─────────────────────────── Token estimation ─────────────────────────────
+
+use crate::token_estimator::{collect_responses_output_text, TokenEstimator};
+
+/// True iff the response body carried any Responses-shape `usage` field.
+pub fn usage_present(body: &Value) -> bool {
+    let u = match body.get("usage") {
+        Some(v) => v,
+        None => return false,
+    };
+    if !u.is_object() {
+        return false;
+    }
+    u.get("input_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|n| n > 0)
+        .unwrap_or(false)
+        || u.get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|n| n > 0)
+            .unwrap_or(false)
+}
+
+/// Walk the top-level `output[*]` array and produce one concatenated, deduped
+/// string of all reasoning summary + reasoning content + assistant message
+/// text + serialized function_call/tool_call payloads. Returns empty if
+/// `output` is missing or wrong-typed.
+pub fn collected_response_text(body: &Value) -> String {
+    if let Some(out) = body.get("output") {
+        return collect_responses_output_text(out);
+    }
+    String::new()
+}
+
+/// Estimate input tokens for an OpenAI Responses request. Walks
+/// `instructions` (system prompt), `input[*]` messages (with role + content
+/// array), and `tools[*]`.
+pub fn estimate_input_tokens(req: &Value, est: &dyn TokenEstimator) -> u32 {
+    let mut total: u32 = 0;
+
+    if let Some(s) = req.get("instructions").and_then(|v| v.as_str()) {
+        total = total.saturating_add(est.count_text(s));
+    }
+
+    if let Some(items) = req.get("input").and_then(|v| v.as_array()) {
+        for it in items {
+            // Items can be:
+            //   {role:"...", content:[{type:"input_text"|"output_text", text}]}
+            //   {type:"function_call_output", output:"..."}
+            //   {type:"function_call", name, arguments}
+            //   {type:"reasoning", ...}  (rare on input but possible if echoed)
+            if let Some(role) = it.get("role").and_then(|v| v.as_str()) {
+                total = total.saturating_add(est.count_text(role));
+            }
+            if let Some(content) = it.get("content").and_then(|v| v.as_array()) {
+                for c in content {
+                    if let Some(t) = c.get("text").and_then(|v| v.as_str()) {
+                        total = total.saturating_add(est.count_text(t));
+                    }
+                }
+            } else if let Some(s) = it.get("content").and_then(|v| v.as_str()) {
+                total = total.saturating_add(est.count_text(s));
+            }
+            // function_call_output: count `output` field
+            if let Some(out) = it.get("output").and_then(|v| v.as_str()) {
+                total = total.saturating_add(est.count_text(out));
+            }
+            // function_call: serialize whole
+            if it.get("type").and_then(|v| v.as_str()) == Some("function_call") {
+                if let Ok(s) = serde_json::to_string(it) {
+                    total = total.saturating_add(est.count_text(&s));
+                }
+            }
+        }
+    }
+
+    if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
+        for t in tools {
+            if let Ok(s) = serde_json::to_string(t) {
+                total = total.saturating_add(est.count_text(&s));
+            }
+        }
+    }
+    if let Some(tc) = req.get("tool_choice") {
+        if let Ok(s) = serde_json::to_string(tc) {
+            total = total.saturating_add(est.count_text(&s));
+        }
+    }
+
+    total
+}
+
+/// Estimate output tokens for an OpenAI Responses response body. Counts
+/// reasoning summary + reasoning content + message text + tool/function
+/// call payloads, all deduplicated.
+pub fn estimate_output_tokens(resp: &Value, est: &dyn TokenEstimator) -> u32 {
+    let text = collected_response_text(resp);
+    est.count_text(&text)
+}
+
 #[cfg(test)]
 mod terminal_helper_tests {
     use super::*;
@@ -726,5 +826,113 @@ mod tests {
         let (info, _body) = extract_sse(&events);
         assert_eq!(info.model.as_deref(), Some("gpt-5"));
         assert_eq!(info.response_id.as_deref(), Some("resp_1"));
+    }
+}
+
+#[cfg(test)]
+mod estimator_tests {
+    use super::*;
+    use crate::token_estimator::CL100kEstimator;
+    use serde_json::json;
+
+    fn cl() -> CL100kEstimator {
+        CL100kEstimator::new()
+    }
+
+    #[test]
+    fn usage_present_true_when_set() {
+        let body = json!({"usage": {"input_tokens": 10, "output_tokens": 5}});
+        assert!(usage_present(&body));
+    }
+
+    #[test]
+    fn usage_present_false_when_missing_or_zero() {
+        assert!(!usage_present(&json!({})));
+        assert!(!usage_present(
+            &json!({"usage": {"input_tokens": 0, "output_tokens": 0}})
+        ));
+    }
+
+    #[test]
+    fn estimate_input_walks_instructions_and_input_messages() {
+        let req = json!({
+            "instructions":"You are helpful",
+            "input":[
+                {"role":"user","content":[
+                    {"type":"input_text","text":"Hello"}
+                ]}
+            ],
+            "tools":[
+                {"type":"function","name":"calc","description":"adds","parameters":{}}
+            ]
+        });
+        let n = estimate_input_tokens(&req, &cl());
+        assert!(n > 5);
+    }
+
+    #[test]
+    fn estimate_input_function_call_output() {
+        let req = json!({
+            "input":[
+                {"type":"function_call_output","call_id":"call_x","output":"the result"}
+            ]
+        });
+        let n = estimate_input_tokens(&req, &cl());
+        assert!(n > 0);
+    }
+
+    #[test]
+    fn estimate_output_reasoning_summary_plus_message() {
+        let resp = json!({
+            "output":[
+                {"type":"reasoning","summary":[{"type":"summary_text","text":"thoughts"}]},
+                {"type":"message","content":[{"type":"output_text","text":"final"}]}
+            ]
+        });
+        let n = estimate_output_tokens(&resp, &cl());
+        let plain = estimate_output_tokens(
+            &json!({"output":[{"type":"message","content":[{"type":"output_text","text":"final"}]}]}),
+            &cl(),
+        );
+        assert!(n > plain, "reasoning summary must add tokens (got {n} vs plain {plain})");
+    }
+
+    #[test]
+    fn estimate_output_dedupes_reasoning_summary_text() {
+        let resp = json!({
+            "output":[
+                {"type":"reasoning","summary":[
+                    {"text":"trace"},
+                    {"text":"trace"}
+                ]},
+                {"type":"message","content":[{"type":"output_text","text":"ok"}]}
+            ]
+        });
+        let single = json!({
+            "output":[
+                {"type":"reasoning","summary":[{"text":"trace"}]},
+                {"type":"message","content":[{"type":"output_text","text":"ok"}]}
+            ]
+        });
+        assert_eq!(
+            estimate_output_tokens(&resp, &cl()),
+            estimate_output_tokens(&single, &cl())
+        );
+    }
+
+    #[test]
+    fn estimate_output_function_call_counted() {
+        let resp = json!({
+            "output":[
+                {"type":"function_call","name":"do","arguments":"{}","call_id":"call_y"}
+            ]
+        });
+        assert!(estimate_output_tokens(&resp, &cl()) > 0);
+    }
+
+    #[test]
+    fn estimate_output_zero_on_empty_or_unexpected() {
+        assert_eq!(estimate_output_tokens(&json!({}), &cl()), 0);
+        assert_eq!(estimate_output_tokens(&json!({"output":[]}), &cl()), 0);
     }
 }

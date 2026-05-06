@@ -180,6 +180,7 @@ define_metrics! {
     LlmGenericToolIdCanonicalized  => { kind: Counter, group: Llm, short: "generic_tool_id_canonicalized"   },
     LlmGenericSessionIdSynthFailed => { kind: Counter, group: Llm, short: "generic_session_id_synth_failed" },
     LlmHeartbeatsReceived          => { kind: Counter, group: Llm, short: "llm_heartbeats_received"      },
+    LlmTokensEstimated             => { kind: Counter, group: Llm, short: "tokens_estimated"            },
 
     // -- Turn tracking --
     // `turn_heartbeats_dropped` is bumped at the LLM stage's try_send site

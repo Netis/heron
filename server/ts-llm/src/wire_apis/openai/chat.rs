@@ -518,6 +518,108 @@ pub fn extract_assistant_text_value(resp: &Value) -> Option<String> {
     }
 }
 
+// ─────────────────────────── Token estimation ─────────────────────────────
+//
+// Fallback estimators for when the response payload omits the `usage` field.
+// These walk the same body shapes as the parsers above and feed every
+// distinct piece of text through the supplied `TokenEstimator`. They exist
+// alongside (not on top of) the wire-usage parsing — the live processor only
+// invokes them when the wire `usage` block was absent.
+
+use crate::token_estimator::{collect_chat_assistant_text, TokenEstimator};
+
+/// True iff the response body carried any Chat-shape `usage` field. The API
+/// handler uses this against `response_body` to decide `tokens_estimated`.
+pub fn usage_present(body: &Value) -> bool {
+    let u = match body.get("usage") {
+        Some(v) => v,
+        None => return false,
+    };
+    if !u.is_object() {
+        return false;
+    }
+    u.get("prompt_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|n| n > 0)
+        .unwrap_or(false)
+        || u.get("completion_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|n| n > 0)
+            .unwrap_or(false)
+        || u.get("total_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|n| n > 0)
+            .unwrap_or(false)
+}
+
+/// Walk the assistant message on choices[0].message and produce a single
+/// concatenated string with reasoning_content / reasoning / `<think>` /
+/// content / tool_calls all deduplicated. Returns empty if the response
+/// shape is unexpected.
+pub fn collected_response_text(body: &Value) -> String {
+    let msg = body
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"));
+    match msg {
+        Some(m) => collect_chat_assistant_text(m),
+        None => String::new(),
+    }
+}
+
+/// Estimate input tokens for an OpenAI Chat request body. Walks every
+/// message (system / user / assistant / tool roles) plus the `tools[*]`
+/// schema. Empty / wrong-shaped bodies return 0.
+pub fn estimate_input_tokens(req: &Value, est: &dyn TokenEstimator) -> u32 {
+    let mut total: u32 = 0;
+    if let Some(msgs) = req.get("messages").and_then(|v| v.as_array()) {
+        for m in msgs {
+            // role token (small but stable on the wire)
+            if let Some(role) = m.get("role").and_then(|v| v.as_str()) {
+                total = total.saturating_add(est.count_text(role));
+            }
+            // content: string or array
+            if let Some(s) = m.get("content").and_then(|v| v.as_str()) {
+                total = total.saturating_add(est.count_text(s));
+            } else if let Some(arr) = m.get("content").and_then(|v| v.as_array()) {
+                for part in arr {
+                    if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                        total = total.saturating_add(est.count_text(t));
+                    }
+                }
+            }
+            // assistant tool_calls (counts as the model output it would have
+            // generated had this been part of a fresh response)
+            if let Some(tcs) = m.get("tool_calls").and_then(|v| v.as_array()) {
+                for tc in tcs {
+                    if let Ok(s) = serde_json::to_string(tc) {
+                        total = total.saturating_add(est.count_text(&s));
+                    }
+                }
+            }
+            // tool result message: tool_call_id is small, content already covered.
+        }
+    }
+    if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
+        for t in tools {
+            if let Ok(s) = serde_json::to_string(t) {
+                total = total.saturating_add(est.count_text(&s));
+            }
+        }
+    }
+    if let Some(s) = req.get("tool_choice").and_then(|v| v.as_str()) {
+        total = total.saturating_add(est.count_text(s));
+    }
+    total
+}
+
+/// Estimate output tokens for an OpenAI Chat response body. Counts all
+/// reasoning channels + content + tool_calls, deduplicated.
+pub fn estimate_output_tokens(resp: &Value, est: &dyn TokenEstimator) -> u32 {
+    let text = collected_response_text(resp);
+    est.count_text(&text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,6 +882,181 @@ mod tests {
         assert!(w.is_tool_use("tool_calls"));
         assert!(w.is_tool_use("function_call"));
         assert!(!w.is_tool_use("stop"));
+    }
+
+    // ─────────── Token estimator walker tests (Step 2) ───────────
+
+    use crate::token_estimator::CL100kEstimator;
+
+    fn cl() -> CL100kEstimator {
+        CL100kEstimator::new()
+    }
+
+    #[test]
+    fn usage_present_true_when_prompt_tokens_set() {
+        let body = json!({"usage": {"prompt_tokens": 10, "completion_tokens": 5}});
+        assert!(usage_present(&body));
+    }
+
+    #[test]
+    fn usage_present_false_when_missing() {
+        let body = json!({"choices":[]});
+        assert!(!usage_present(&body));
+    }
+
+    #[test]
+    fn usage_present_false_when_zero_only() {
+        // LiteLLM proxy sometimes emits an empty usage block with zeros.
+        // Treat zero-only as "no real wire usage" so the estimator still runs.
+        let body = json!({"usage": {"prompt_tokens": 0, "completion_tokens": 0}});
+        assert!(!usage_present(&body));
+    }
+
+    #[test]
+    fn estimate_input_walks_system_user_tools() {
+        let req = json!({
+            "messages": [
+                {"role":"system","content":"You are helpful"},
+                {"role":"user","content":"Hello"}
+            ],
+            "tools": [
+                {"type":"function","function":{"name":"calc","description":"adds two numbers","parameters":{}}}
+            ]
+        });
+        let n = estimate_input_tokens(&req, &cl());
+        // Each piece independently is > 0; the sum must dominate the trivial
+        // (3-token) overhead of any individual fragment.
+        assert!(n > 5, "expected >5 tokens, got {n}");
+    }
+
+    #[test]
+    fn estimate_input_handles_array_content() {
+        let req = json!({
+            "messages": [
+                {"role":"user","content":[
+                    {"type":"text","text":"part one"},
+                    {"type":"text","text":"part two"}
+                ]}
+            ]
+        });
+        let n = estimate_input_tokens(&req, &cl());
+        assert!(n >= 4, "expected >=4 tokens for two text parts, got {n}");
+    }
+
+    #[test]
+    fn estimate_output_text_only() {
+        let resp = json!({
+            "choices": [{
+                "index": 0,
+                "message": {"role":"assistant","content":"Hello world"},
+                "finish_reason":"stop"
+            }]
+        });
+        let n = estimate_output_tokens(&resp, &cl());
+        assert_eq!(n, 2); // "Hello world" is 2 cl100k tokens
+    }
+
+    #[test]
+    fn estimate_output_includes_reasoning_content() {
+        let resp = json!({
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role":"assistant",
+                    "reasoning_content":"long internal trace abcdef",
+                    "content":"final"
+                },
+                "finish_reason":"stop"
+            }]
+        });
+        let with_reasoning = estimate_output_tokens(&resp, &cl());
+        let resp_no_reasoning = json!({
+            "choices": [{
+                "index":0,
+                "message":{"role":"assistant","content":"final"},
+                "finish_reason":"stop"
+            }]
+        });
+        let plain = estimate_output_tokens(&resp_no_reasoning, &cl());
+        assert!(
+            with_reasoning > plain,
+            "reasoning_content must inflate output count (got {with_reasoning} vs plain {plain})"
+        );
+    }
+
+    #[test]
+    fn estimate_output_dedupes_reasoning_field_against_reasoning_content() {
+        // Both fields carry SAME text. Counted once.
+        let resp_dup = json!({
+            "choices": [{
+                "index":0,
+                "message": {
+                    "role":"assistant",
+                    "reasoning_content":"trace text",
+                    "reasoning":"trace text",
+                    "content":"answer"
+                },
+                "finish_reason":"stop"
+            }]
+        });
+        let resp_single = json!({
+            "choices": [{
+                "index":0,
+                "message": {
+                    "role":"assistant",
+                    "reasoning_content":"trace text",
+                    "content":"answer"
+                },
+                "finish_reason":"stop"
+            }]
+        });
+        assert_eq!(
+            estimate_output_tokens(&resp_dup, &cl()),
+            estimate_output_tokens(&resp_single, &cl())
+        );
+    }
+
+    #[test]
+    fn estimate_output_extracts_think_blocks_from_content() {
+        let resp = json!({
+            "choices": [{
+                "index":0,
+                "message": {
+                    "role":"assistant",
+                    "content":"<think>plan ahead</think>final"
+                },
+                "finish_reason":"stop"
+            }]
+        });
+        let n = estimate_output_tokens(&resp, &cl());
+        let plain = estimate_output_tokens(
+            &json!({"choices":[{"index":0,"message":{"role":"assistant","content":"final"},"finish_reason":"stop"}]}),
+            &cl(),
+        );
+        assert!(n > plain, "<think> tokens must be counted (got {n} vs plain {plain})");
+    }
+
+    #[test]
+    fn estimate_output_includes_tool_calls() {
+        let resp = json!({
+            "choices": [{
+                "index":0,
+                "message": {
+                    "role":"assistant",
+                    "content": null,
+                    "tool_calls":[{"id":"call_1","type":"function","function":{"name":"do","arguments":"{}"}}]
+                },
+                "finish_reason":"tool_calls"
+            }]
+        });
+        let n = estimate_output_tokens(&resp, &cl());
+        assert!(n > 0, "tool_calls must contribute tokens");
+    }
+
+    #[test]
+    fn estimate_output_zero_on_unexpected_shape() {
+        let resp = json!({"foo":"bar"});
+        assert_eq!(estimate_output_tokens(&resp, &cl()), 0);
     }
 
     #[test]
