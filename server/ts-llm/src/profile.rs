@@ -4,8 +4,8 @@ use serde_json::Value;
 
 /// Per-call context handed to every `AgentProfile` method. Bodies are
 /// pre-parsed once at the boundary (`build_agent_call_info` and the
-/// off-hot-path extractors in `ts-storage` / `app/dbview`); methods read
-/// `ctx.req` / `ctx.resp` directly instead of running `serde_json::from_str`
+/// off-hot-path extractors in `ts-storage`); methods read `ctx.req` /
+/// `ctx.resp` directly instead of running `serde_json::from_str`
 /// internally. `None` means the body was absent or non-JSON — handled the
 /// same way the per-method `serde_json::from_str(body).ok()?` pattern did
 /// before this refactor.
