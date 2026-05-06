@@ -7,6 +7,18 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
+# Drop debug info from libduckdb-sys's bundled C++ amalgamation. The 290 .o
+# files shrink from ~2.9 GB to ~170 MB, which dramatically speeds up linking
+# of every test/dev binary (libduckdb is statically linked into ~8 binaries
+# per `cargo test --workspace`). Release profile is unaffected.
+[profile.dev.package.libduckdb-sys]
+debug = false
+opt-level = 1
+
+[profile.test.package.libduckdb-sys]
+debug = false
+opt-level = 1
+
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
