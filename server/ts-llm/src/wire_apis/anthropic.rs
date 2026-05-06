@@ -5,6 +5,7 @@ use serde_json::Value;
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
 use crate::model::{RequestInfo, ResponseInfo, RouteVerdict, WireApi};
+use crate::parsed_json::ParsedJson;
 
 /// Check whether the request carries an Anthropic-style API key, either via
 /// `x-api-key` (direct keys) or `Authorization: Bearer` (OAuth tokens issued
@@ -61,7 +62,10 @@ impl WireApi for AnthropicWireApi {
         RouteVerdict::Unknown
     }
 
-    fn matches_shape(&self, _req: &HttpRequestData, body: &Value) -> bool {
+    fn matches_shape(&self, _req: &HttpRequestData, req_body: &ParsedJson) -> bool {
+        let Some(body) = req_body.get() else {
+            return false;
+        };
         // Required spec fields: {model, messages, max_tokens}. Presence of
         // `messages` array and `model` string is table stakes.
         if body.get("model").and_then(|v| v.as_str()).is_none() {
@@ -96,13 +100,13 @@ impl WireApi for AnthropicWireApi {
         body.get("system").is_some() || body.get("stop_sequences").is_some()
     }
 
-    fn extract_request(&self, req: &HttpRequestData, body: &Value) -> RequestInfo {
-        extract_from_request(req, body)
+    fn extract_request(&self, req: &HttpRequestData, req_body: &ParsedJson) -> RequestInfo {
+        extract_from_request(req, req_body)
     }
-    fn extract_response(&self, resp: &HttpResponseData) -> ResponseInfo {
-        extract_from_response(resp)
+    fn extract_response(&self, resp: &HttpResponseData, resp_body: &ParsedJson) -> ResponseInfo {
+        extract_from_response(resp, resp_body)
     }
-    fn extract_sse(&self, events: &[SseEventData]) -> ResponseInfo {
+    fn extract_sse(&self, events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
         extract_from_sse(events)
     }
 
@@ -124,17 +128,18 @@ impl WireApi for AnthropicWireApi {
     }
 }
 
-/// Extract request info from an Anthropic API request. `body` is the
-/// pre-parsed JSON body (or `Value::Null` if the raw bytes weren't JSON).
-pub fn extract_from_request(_req: &HttpRequestData, body: &Value) -> RequestInfo {
+/// Extract request info from an Anthropic API request. Reads JSON via the
+/// shared parse cache, which lazy-parses on first access.
+pub fn extract_from_request(_req: &HttpRequestData, req_body: &ParsedJson) -> RequestInfo {
+    let body = req_body.get();
     let model = body
-        .get("model")
+        .and_then(|b| b.get("model"))
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_string();
 
     let is_stream = body
-        .get("stream")
+        .and_then(|b| b.get("stream"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
@@ -142,45 +147,42 @@ pub fn extract_from_request(_req: &HttpRequestData, body: &Value) -> RequestInfo
 }
 
 /// Extract response info from a non-streaming Anthropic response.
-pub fn extract_from_response(resp: &HttpResponseData) -> ResponseInfo {
-    let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
+pub fn extract_from_response(resp: &HttpResponseData, resp_body: &ParsedJson) -> ResponseInfo {
+    let parsed = resp_body.get();
     let body_str = std::str::from_utf8(&resp.body).ok().map(|s| s.to_string());
 
-    let response_id = body
-        .get("id")
+    let response_id = parsed
+        .and_then(|b| b.get("id"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let model = body
-        .get("model")
+    let model = parsed
+        .and_then(|b| b.get("model"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let finish_reason = body
-        .get("stop_reason")
+    let finish_reason = parsed
+        .and_then(|b| b.get("stop_reason"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let input_tokens = body
-        .get("usage")
+    let usage = parsed.and_then(|b| b.get("usage"));
+    let input_tokens = usage
         .and_then(|u| u.get("input_tokens"))
         .and_then(|v| v.as_u64())
         .map(|v| v as u32);
 
-    let output_tokens = body
-        .get("usage")
+    let output_tokens = usage
         .and_then(|u| u.get("output_tokens"))
         .and_then(|v| v.as_u64())
         .map(|v| v as u32);
 
-    let cache_read_input_tokens = body
-        .get("usage")
+    let cache_read_input_tokens = usage
         .and_then(|u| u.get("cache_read_input_tokens"))
         .and_then(|v| v.as_u64())
         .map(|v| v as u32);
 
-    let cache_creation_input_tokens = body
-        .get("usage")
+    let cache_creation_input_tokens = usage
         .and_then(|u| u.get("cache_creation_input_tokens"))
         .and_then(|v| v.as_u64())
         .map(|v| v as u32);
@@ -199,7 +201,12 @@ pub fn extract_from_response(resp: &HttpResponseData) -> ResponseInfo {
 }
 
 /// Extract response info from accumulated SSE events (streaming response).
-pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
+///
+/// Per-event Values are parsed exactly once each. The synthetic body is
+/// assembled as a `Value`, returned as a body-bound `ParsedJson` cache
+/// for downstream readers, and only then serialized once to a `String`
+/// for storage — never round-trips through serialize+parse.
+pub fn extract_from_sse(sse_events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
     let mut model: Option<String> = None;
     let mut finish_reason: Option<String> = None;
     let mut input_tokens: Option<u32> = None;
@@ -280,10 +287,13 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
         }
     }
 
-    // Build a synthetic response body by assembling content from SSE events.
-    let response_body = build_response_body(sse_events, &parsed);
+    // Build the synthetic response body as a Value; serialize once for
+    // storage and hand the same Value to the returned response cache.
+    let synthetic = build_response_body(sse_events, &parsed);
+    let response_body = synthetic.as_ref().map(Value::to_string);
+    let response_cache = ParsedJson::from_value(synthetic);
 
-    ResponseInfo {
+    let info = ResponseInfo {
         model,
         finish_reason,
         input_tokens,
@@ -293,7 +303,8 @@ pub fn extract_from_sse(sse_events: &[SseEventData]) -> ResponseInfo {
         cache_creation_input_tokens,
         response_body,
         response_id,
-    }
+    };
+    (info, response_cache)
 }
 
 /// Per-block accumulation state, keyed by the `index` field carried on every
@@ -321,7 +332,9 @@ struct PartialBlock {
 ///
 /// Takes events alongside their already-parsed JSON values so we don't re-parse
 /// the same event bodies the caller (`extract_from_sse`) already parsed.
-fn build_response_body(sse_events: &[SseEventData], parsed: &[Value]) -> Option<String> {
+/// Returns a `Value`; the caller serializes once for storage and hands the
+/// same `Value` to the per-call parse cache.
+fn build_response_body(sse_events: &[SseEventData], parsed: &[Value]) -> Option<Value> {
     use serde_json::json;
 
     let mut message_obj: Value = Value::Null;
@@ -426,7 +439,7 @@ fn build_response_body(sse_events: &[SseEventData], parsed: &[Value]) -> Option<
         }
     }
 
-    Some(result.to_string())
+    Some(result)
 }
 
 /// Move accumulated text/json from a `PartialBlock` into the final block JSON.
@@ -713,8 +726,7 @@ mod tests {
             ),
         ];
         let parsed = parse_events(&events);
-        let body = build_response_body(&events, &parsed).unwrap();
-        let v: Value = serde_json::from_str(&body).unwrap();
+        let v = build_response_body(&events, &parsed).unwrap();
         assert_eq!(v["content"][0]["type"], "text");
         assert_eq!(v["content"][0]["text"], "Hello world");
         assert_eq!(v["stop_reason"], "end_turn");
@@ -749,8 +761,7 @@ mod tests {
             make_sse("message_delta", r#"{"delta":{"stop_reason":"end_turn"}}"#),
         ];
         let parsed = parse_events(&events);
-        let body = build_response_body(&events, &parsed).unwrap();
-        let v: Value = serde_json::from_str(&body).unwrap();
+        let v = build_response_body(&events, &parsed).unwrap();
         // thinking block uses "thinking" field, not "text"
         assert_eq!(v["content"][0]["type"], "thinking");
         assert_eq!(v["content"][0]["thinking"], "Let me think...");
@@ -783,8 +794,7 @@ mod tests {
             make_sse("message_delta", r#"{"delta":{"stop_reason":"tool_use"}}"#),
         ];
         let parsed = parse_events(&events);
-        let body = build_response_body(&events, &parsed).unwrap();
-        let v: Value = serde_json::from_str(&body).unwrap();
+        let v = build_response_body(&events, &parsed).unwrap();
         assert_eq!(v["content"][0]["type"], "tool_use");
         assert_eq!(v["content"][0]["input"]["path"], "foo.txt");
         assert_eq!(v["stop_reason"], "tool_use");
@@ -837,8 +847,7 @@ mod tests {
             make_sse("message_delta", r#"{"delta":{"stop_reason":"tool_use"}}"#),
         ];
         let parsed = parse_events(&events);
-        let body = build_response_body(&events, &parsed).unwrap();
-        let v: Value = serde_json::from_str(&body).unwrap();
+        let v = build_response_body(&events, &parsed).unwrap();
         // Blocks are emitted in index order regardless of stream interleaving.
         assert_eq!(v["content"][0]["type"], "thinking");
         assert_eq!(v["content"][0]["thinking"], "plan");
@@ -891,8 +900,7 @@ mod tests {
             make_sse("message_delta", r#"{"delta":{"stop_reason":"tool_use"}}"#),
         ];
         let parsed = parse_events(&events);
-        let body = build_response_body(&events, &parsed).unwrap();
-        let v: Value = serde_json::from_str(&body).unwrap();
+        let v = build_response_body(&events, &parsed).unwrap();
         assert_eq!(v["content"][0]["id"], "call_1");
         assert_eq!(v["content"][0]["input"]["command"], "tail");
         assert_eq!(v["content"][1]["id"], "call_2");
@@ -926,8 +934,7 @@ mod tests {
             make_sse("content_block_stop", r#"{"index":0}"#),
         ];
         let parsed = parse_events(&events);
-        let body = build_response_body(&events, &parsed).unwrap();
-        let v: Value = serde_json::from_str(&body).unwrap();
+        let v = build_response_body(&events, &parsed).unwrap();
         assert_eq!(v["content"].as_array().unwrap().len(), 1);
         assert_eq!(v["content"][0]["text"], "Hello");
     }
@@ -960,7 +967,8 @@ mod tests {
             first_byte_timestamp_us: 0,
             complete_timestamp_us: 0,
         };
-        let info = extract_from_response(&resp);
+        let cache = ParsedJson::from_bytes(resp.body.clone());
+        let info = extract_from_response(&resp, &cache);
         assert_eq!(
             info.response_id.as_deref(),
             Some("msg_01XFDUDYJgAACzvnptvVoYEL")
@@ -1001,7 +1009,7 @@ mod tests {
                 r#"{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}"#,
             ),
         ];
-        let info = extract_from_sse(&events);
+        let (info, _body) = extract_from_sse(&events);
         assert_eq!(info.response_id.as_deref(), Some("msg_stream_01"));
     }
 }

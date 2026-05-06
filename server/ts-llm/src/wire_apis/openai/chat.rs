@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
 use crate::model::{RequestInfo, ResponseInfo, RouteVerdict, WireApi};
+use crate::parsed_json::ParsedJson;
 
 use super::shared::{has_bearer_auth, is_anthropic_request};
 
@@ -37,25 +38,28 @@ impl WireApi for OpenAiChatWireApi {
         RouteVerdict::Unknown
     }
 
-    fn matches_shape(&self, _req: &HttpRequestData, body: &Value) -> bool {
+    fn matches_shape(&self, _req: &HttpRequestData, req_body: &ParsedJson) -> bool {
+        let Some(req_body) = req_body.get() else {
+            return false;
+        };
         // Chat Completions: `model` + non-empty `messages[]`. Presence of
         // `input` means the Responses API, not us.
-        body.get("model").and_then(|v| v.as_str()).is_some()
-            && body.get("input").is_none()
-            && body
+        req_body.get("model").and_then(|v| v.as_str()).is_some()
+            && req_body.get("input").is_none()
+            && req_body
                 .get("messages")
                 .and_then(|v| v.as_array())
                 .map(|a| !a.is_empty())
                 .unwrap_or(false)
     }
 
-    fn extract_request(&self, req: &HttpRequestData, body: &Value) -> RequestInfo {
-        extract_request(req, body)
+    fn extract_request(&self, req: &HttpRequestData, req_body: &ParsedJson) -> RequestInfo {
+        extract_request(req, req_body)
     }
-    fn extract_response(&self, resp: &HttpResponseData) -> ResponseInfo {
-        extract_response(resp)
+    fn extract_response(&self, resp: &HttpResponseData, resp_body: &ParsedJson) -> ResponseInfo {
+        extract_response(resp, resp_body)
     }
-    fn extract_sse(&self, events: &[SseEventData]) -> ResponseInfo {
+    fn extract_sse(&self, events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
         extract_sse(events)
     }
 
@@ -71,42 +75,43 @@ impl WireApi for OpenAiChatWireApi {
     }
 }
 
-fn extract_request(_req: &HttpRequestData, body: &Value) -> RequestInfo {
+fn extract_request(_req: &HttpRequestData, req_body: &ParsedJson) -> RequestInfo {
+    let body = req_body.get();
     RequestInfo {
         model: body
-            .get("model")
+            .and_then(|b| b.get("model"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string(),
         // Chat Completions defaults to non-streaming; explicit opt-in via "stream": true.
         is_stream: body
-            .get("stream")
+            .and_then(|b| b.get("stream"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
     }
 }
 
-fn extract_response(resp: &HttpResponseData) -> ResponseInfo {
-    let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
+fn extract_response(resp: &HttpResponseData, resp_body: &ParsedJson) -> ResponseInfo {
+    let parsed = resp_body.get();
     let body_str = std::str::from_utf8(&resp.body).ok().map(|s| s.to_string());
 
-    let response_id = body
-        .get("id")
+    let response_id = parsed
+        .and_then(|b| b.get("id"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let model = body
-        .get("model")
+    let model = parsed
+        .and_then(|b| b.get("model"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let finish_reason = body
-        .get("choices")
+    let finish_reason = parsed
+        .and_then(|b| b.get("choices"))
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("finish_reason"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let usage = body.get("usage");
+    let usage = parsed.and_then(|b| b.get("usage"));
     let input_tokens = usage
         .and_then(|u| u.get("prompt_tokens"))
         .and_then(|v| v.as_u64())
@@ -142,7 +147,12 @@ fn extract_response(resp: &HttpResponseData) -> ResponseInfo {
 /// numerical fields and the deltas needed to reconstruct a non-streaming
 /// `choices[0].message` response. Events with a non-empty `event_type` are
 /// Responses events and are silently skipped.
-fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
+///
+/// Returns the `ResponseInfo` plus a body-bound `ParsedJson` cache built
+/// from the same synthetic `Value`. The string form is serialized once
+/// for storage; downstream readers (the agent boundary) read the cache
+/// directly — no String→Value round-trip ever happens.
+fn extract_sse(events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
     let mut response_id: Option<String> = None;
     let mut model: Option<String> = None;
     let mut finish_reason: Option<String> = None;
@@ -229,7 +239,7 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
         }
     }
 
-    let response_body = if saw_chunk {
+    let synthetic = if saw_chunk {
         Some(build_synthetic_body(
             model.as_deref(),
             &content,
@@ -243,8 +253,10 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
     } else {
         None
     };
+    let response_body = synthetic.as_ref().map(Value::to_string);
+    let response_cache = ParsedJson::from_value(synthetic);
 
-    ResponseInfo {
+    let info = ResponseInfo {
         model,
         finish_reason,
         input_tokens,
@@ -254,11 +266,15 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
         cache_creation_input_tokens: None,
         response_body,
         response_id,
-    }
+    };
+    (info, response_cache)
 }
 
 /// Compose a non-streaming-shaped response body from accumulated deltas so
-/// downstream consumers don't need a separate streaming reader.
+/// downstream consumers don't need a separate streaming reader. Returns a
+/// `Value`; callers serialize once to `String` for storage and hand the
+/// same `Value` to the per-call `ParsedJson` cache so profile methods read
+/// it without re-parsing.
 #[allow(clippy::too_many_arguments)]
 fn build_synthetic_body(
     model: Option<&str>,
@@ -269,7 +285,7 @@ fn build_synthetic_body(
     output_tokens: Option<u32>,
     total_tokens: Option<u32>,
     cache_read_input_tokens: Option<u32>,
-) -> String {
+) -> Value {
     let mut message = json!({ "role": "assistant" });
     if !content.is_empty() {
         message["content"] = Value::String(content.to_string());
@@ -319,7 +335,7 @@ fn build_synthetic_body(
         }
     }
 
-    result.to_string()
+    result
 }
 
 // ────────────────────────── Body shape parsers ─────────────────────────────
@@ -541,7 +557,7 @@ mod tests {
             ),
             make_sse("", "[DONE]"),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         let body = info.response_body.expect("response_body");
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["model"], "gpt-4");
@@ -569,7 +585,7 @@ mod tests {
                 r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
             ),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         let body = info.response_body.expect("response_body");
         let v: Value = serde_json::from_str(&body).unwrap();
         let tc = &v["choices"][0]["message"]["tool_calls"][0];
@@ -582,8 +598,10 @@ mod tests {
 
     #[test]
     fn test_synthetic_body_empty() {
-        let info = extract_sse(&[]);
+        let (info, body) = extract_sse(&[]);
         assert!(info.response_body.is_none());
+        // Empty stream → no synthetic Value bound to the cache.
+        assert!(body.get().is_none());
     }
 
     #[test]
@@ -598,7 +616,7 @@ mod tests {
                 r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":3}}}"#,
             ),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         let body = info.response_body.expect("response_body");
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["usage"]["prompt_tokens"], 10);
@@ -622,8 +640,8 @@ mod tests {
             body: bytes::Bytes::from(body.to_string()),
             timestamp_us: 0,
         };
-        let body_v = serde_json::from_slice::<Value>(&req.body).unwrap_or(Value::Null);
-        let info = extract_request(&req, &body_v);
+        let cache = ParsedJson::from_bytes(req.body.clone());
+        let info = extract_request(&req, &cache);
         assert!(
             !info.is_stream,
             "stream should default to false for Chat Completions"
@@ -647,7 +665,7 @@ mod tests {
             ),
             make_sse("", "[DONE]"),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         assert_eq!(info.finish_reason.as_deref(), Some("stop"));
     }
 
@@ -663,7 +681,7 @@ mod tests {
                 r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
             ),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         assert_eq!(info.finish_reason.as_deref(), Some("tool_calls"));
     }
 
@@ -680,7 +698,7 @@ mod tests {
                 r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#,
             ),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         assert_eq!(info.input_tokens, Some(10));
         assert_eq!(info.output_tokens, Some(5));
         assert_eq!(info.total_tokens, Some(15));
@@ -706,7 +724,8 @@ mod tests {
             first_byte_timestamp_us: 0,
             complete_timestamp_us: 0,
         };
-        let info = extract_response(&resp);
+        let cache = ParsedJson::from_bytes(resp.body.clone());
+        let info = extract_response(&resp, &cache);
         assert_eq!(info.response_id.as_deref(), Some("chatcmpl-abc123"));
     }
 
@@ -726,7 +745,7 @@ mod tests {
                 r#"{"id":"chatcmpl-stream1","model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
             ),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         assert_eq!(info.response_id.as_deref(), Some("chatcmpl-stream1"));
     }
 
@@ -745,7 +764,7 @@ mod tests {
                 r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":7}}}"#,
             ),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         assert_eq!(info.cache_read_input_tokens, Some(7));
     }
 
@@ -782,7 +801,7 @@ mod tests {
                 r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
             ),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         assert_eq!(info.response_id.as_deref(), Some("chatcmpl-1"));
         assert_eq!(info.model.as_deref(), Some("gpt-4"));
         assert_eq!(info.finish_reason.as_deref(), Some("stop"));

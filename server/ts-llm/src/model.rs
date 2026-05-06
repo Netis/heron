@@ -223,34 +223,53 @@ pub trait WireApi: Send + Sync {
     /// No body parsing — this runs on every HTTP request so it must be cheap.
     fn classify_route(&self, req: &ts_protocol::model::HttpRequestData) -> RouteVerdict;
 
-    /// Pass 2 of detection: inspect the parsed JSON body. Called by the
-    /// registry only when `classify_route` returned `Unknown` for every
-    /// wire API, and the body parses as JSON. `body` is shared across all
-    /// candidates (parsed once per request).
+    /// Pass 2 of detection: inspect the request body via the shared
+    /// parse cache. The first candidate that calls `req_body.get()`
+    /// triggers the parse; the rest hit the cached `Value`.
     fn matches_shape(
         &self,
         req: &ts_protocol::model::HttpRequestData,
-        body: &serde_json::Value,
+        req_body: &crate::parsed_json::ParsedJson,
     ) -> bool;
 
     /// Extract model and stream flag from the request.
     ///
-    /// `body` is the pre-parsed JSON request body supplied by
-    /// `WireApiRegistry::detect`; pass `Value::Null` when the raw bytes
-    /// weren't JSON. This method is invoked only through `detect`, which
-    /// parses the body at most once on accept and never on route-rejected
-    /// requests.
+    /// `req_body` is the per-event request-body parse cache, bound to
+    /// `req.body` at construction by the caller. Implementations that
+    /// need a `Value` call `req_body.get()`; within the current event
+    /// (a single Start or Complete pass through the processor) the cache
+    /// guarantees the body is parsed at most once across detection +
+    /// agent classification. The Start and Complete paths use independent
+    /// caches — see `parsed_json` module docs. Path-only Accept routes
+    /// whose `extract_request` doesn't read the body never trigger a
+    /// parse.
     fn extract_request(
         &self,
         req: &ts_protocol::model::HttpRequestData,
-        body: &serde_json::Value,
+        req_body: &crate::parsed_json::ParsedJson,
     ) -> RequestInfo;
 
     /// Extract fields from a non-streaming HTTP response body.
-    fn extract_response(&self, resp: &ts_protocol::model::HttpResponseData) -> ResponseInfo;
+    /// Implementations call `resp_body.get()`; the resulting `Value` is
+    /// also available downstream via the same cache without re-parsing.
+    fn extract_response(
+        &self,
+        resp: &ts_protocol::model::HttpResponseData,
+        resp_body: &crate::parsed_json::ParsedJson,
+    ) -> ResponseInfo;
 
     /// Extract fields from accumulated SSE events (streaming response).
-    fn extract_sse(&self, events: &[ts_protocol::model::SseEventData]) -> ResponseInfo;
+    /// Implementations parse each event once, assemble a synthetic body
+    /// `Value`, and return both the `ResponseInfo` and a body-bound
+    /// `ParsedJson::from_value(Some(value))` cache so downstream readers
+    /// see the same `Value` without a String→Value round-trip. When the
+    /// stream produced no body (zero usable events), the cache is
+    /// `ParsedJson::from_value(None)`. Total parses for an SSE response:
+    /// N events; no extra round-trip.
+    fn extract_sse(
+        &self,
+        events: &[ts_protocol::model::SseEventData],
+    ) -> (ResponseInfo, crate::parsed_json::ParsedJson);
 
     /// True iff `finish_reason` is a wire-level terminal — i.e. the model has
     /// finished emitting this message and the agent loop must decide whether to

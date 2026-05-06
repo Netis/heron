@@ -3,9 +3,18 @@
 //! Detection is two-pass:
 //!   1. `classify_route` on every wire API. An `Accept` short-circuits and
 //!      wins. Wire APIs that `Reject` are dropped from the candidate pool.
-//!   2. If no wire API accepted and at least one returned `Unknown`, parse
-//!      the request body once and call `matches_shape` on each remaining
-//!      candidate in registry order; the first match wins.
+//!   2. If no wire API accepted and at least one returned `Unknown`, the
+//!      registry primes the shared `ParsedJson` cache once via
+//!      `from_bytes(&req.body)` (so a non-JSON body short-circuits to
+//!      `None`) and then calls `matches_shape` on each remaining candidate
+//!      against that cached `Value`; the first match wins.
+//!
+//! The Accept path never calls `serde_json::from_slice` from the registry
+//! itself — the chosen wire impl's `extract_request` triggers the lazy
+//! parse only if it actually reads the body. Pass 2 primes once before
+//! candidates run, so route-rejected traffic and Accept-only routes whose
+//! `extract_request` ignores the body cost zero parses; only the shape
+//! pass forces a parse, and only once.
 //!
 //! Registry order still matters when multiple wire APIs would `Accept` the
 //! same request (e.g. `/v1/responses` must precede `/v1/chat/completions`)
@@ -14,15 +23,17 @@
 //!   1. Implement `WireApi` in a new module.
 //!   2. Register it in `wire_apis::build_default_wire_api_registry()`.
 
-use serde_json::Value;
 use ts_protocol::model::HttpRequestData;
 
 use crate::model::{RequestInfo, RouteVerdict, WireApi};
+use crate::parsed_json::ParsedJson;
 
-/// Result of a successful `WireApiRegistry::detect` call: the winning wire API
-/// plus the `RequestInfo` extracted from the same single body parse that
-/// detection did. Fusing the two avoids the historical double-parse (once in
-/// shape matching, once in `extract_request`).
+/// Result of a successful `WireApiRegistry::detect` call: the winning wire
+/// API plus the `RequestInfo` it extracted. The request-body parse cache
+/// the caller passed in remains live and may already hold the parsed
+/// `Value`; the caller threads the same cache into
+/// `build_agent_call_info_with_parsed` for the agent boundary so the
+/// request body is parsed at most once on this event.
 pub struct DetectionOutcome<'a> {
     pub wire_api: &'a dyn WireApi,
     pub request_info: RequestInfo,
@@ -45,27 +56,29 @@ impl WireApiRegistry {
         self
     }
 
-    /// Run two-pass detection and extract request info in one pass.
+    /// Run two-pass detection and extract request info.
     ///
     /// Returns the first wire API that accepts the request by route (or — if
     /// nobody accepts — the first Unknown candidate whose `matches_shape`
     /// returns true against the parsed JSON body), paired with the
-    /// `RequestInfo` extracted from that same body. The body is parsed **at
-    /// most once** per call, and only when a wire API actually matches —
-    /// route-rejected non-LLM traffic never triggers a parse.
-    pub fn detect(&self, req: &HttpRequestData) -> Option<DetectionOutcome<'_>> {
+    /// `RequestInfo`. `req_body` is the per-event request-body parse cache
+    /// (bound to `req.body` by the caller); it is the single parse-once
+    /// anchor: if any callee parses the body, every later reader
+    /// (including downstream `build_agent_call_info_with_parsed`) reuses
+    /// that result.
+    pub fn detect<'a>(
+        &'a self,
+        req: &HttpRequestData,
+        req_body: &ParsedJson,
+    ) -> Option<DetectionOutcome<'a>> {
         // Pass 1: iterate, short-circuit on Accept, collect Unknowns.
         let mut deferred: Vec<&dyn WireApi> = Vec::new();
         for p in &self.wire_apis {
             match p.classify_route(req) {
                 RouteVerdict::Accept => {
-                    // Parse the body now for extract_request. `Value::Null`
-                    // on non-JSON bodies preserves prior tolerance.
-                    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-                    let request_info = p.extract_request(req, &body);
                     return Some(DetectionOutcome {
                         wire_api: p.as_ref(),
-                        request_info,
+                        request_info: p.extract_request(req, req_body),
                     });
                 }
                 RouteVerdict::Reject => {}
@@ -76,16 +89,20 @@ impl WireApiRegistry {
             return None;
         }
 
-        // Pass 2: only for POST + JSON bodies that parse.
+        // Pass 2: only for POST + JSON bodies. Touch the cache once before
+        // any candidate runs — `get()` parses lazily on the bound source,
+        // and a non-JSON body short-circuits here to None, matching the
+        // prior behavior of failing the shape pass on parse error.
         if req.method != "POST" || !is_json_content_type(req) {
             return None;
         }
-        let body: Value = serde_json::from_slice(&req.body).ok()?;
-        let winner = deferred.into_iter().find(|p| p.matches_shape(req, &body))?;
-        let request_info = winner.extract_request(req, &body);
+        req_body.get()?;
+        let winner = deferred
+            .into_iter()
+            .find(|p| p.matches_shape(req, req_body))?;
         Some(DetectionOutcome {
             wire_api: winner,
-            request_info,
+            request_info: winner.extract_request(req, req_body),
         })
     }
 
@@ -161,7 +178,8 @@ mod tests {
     }
 
     fn detect_name(reg: &WireApiRegistry, req: &HttpRequestData) -> Option<&'static str> {
-        reg.detect(req).map(|o| o.wire_api.name())
+        let cache = ParsedJson::from_bytes(req.body.clone());
+        reg.detect(req, &cache).map(|o| o.wire_api.name())
     }
 
     fn json_post(uri: &str, extra_headers: Vec<(&str, &str)>, body: &str) -> HttpRequestData {
@@ -216,7 +234,9 @@ mod tests {
     fn detect_none_for_unknown() {
         let reg = build_default_wire_api_registry();
         let req = make_request("GET", "/healthz", vec![]);
-        assert!(reg.detect(&req).is_none());
+        assert!(reg
+            .detect(&req, &ParsedJson::from_bytes(req.body.clone()))
+            .is_none());
     }
 
     #[test]
@@ -227,7 +247,9 @@ mod tests {
             "/v1/messages/count_tokens",
             vec![("anthropic-version", "2023-06-01")],
         );
-        assert!(reg.detect(&req).is_none());
+        assert!(reg
+            .detect(&req, &ParsedJson::from_bytes(req.body.clone()))
+            .is_none());
     }
 
     #[test]
@@ -320,7 +342,9 @@ mod tests {
         // Generic JSON business API on the same host.
         let reg = build_default_wire_api_registry();
         let req = json_post("/api/users", vec![], r#"{"name":"alice"}"#);
-        assert!(reg.detect(&req).is_none());
+        assert!(reg
+            .detect(&req, &ParsedJson::from_bytes(req.body.clone()))
+            .is_none());
     }
 
     #[test]
@@ -337,7 +361,9 @@ mod tests {
             ],
             Bytes::from_static(br#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#),
         );
-        assert!(reg.detect(&req).is_none());
+        assert!(reg
+            .detect(&req, &ParsedJson::from_bytes(req.body.clone()))
+            .is_none());
     }
 
     #[test]
@@ -350,10 +376,15 @@ mod tests {
             vec![],
             r#"{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
         );
-        let outcome = reg.detect(&req).expect("should accept");
+        let cache = ParsedJson::from_bytes(req.body.clone());
+        let outcome = reg.detect(&req, &cache).expect("should accept");
         assert_eq!(outcome.wire_api.name(), wa::OPENAI_CHAT);
         assert_eq!(outcome.request_info.model, "gpt-4");
         assert!(outcome.request_info.is_stream);
+        // Accept path: extract_request reads the body, so the cache is now
+        // populated and downstream readers (e.g. build_agent_call_info_with_parsed)
+        // hit the same Value without a second parse.
+        assert!(cache.get().is_some());
     }
 
     #[test]
@@ -366,10 +397,14 @@ mod tests {
             vec![],
             r#"{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}"#,
         );
-        let outcome = reg.detect(&req).expect("should accept via shape pass");
+        let cache = ParsedJson::from_bytes(req.body.clone());
+        let outcome = reg
+            .detect(&req, &cache)
+            .expect("should accept via shape pass");
         assert_eq!(outcome.wire_api.name(), wa::OPENAI_CHAT);
         assert_eq!(outcome.request_info.model, "gpt-4o");
         assert!(!outcome.request_info.is_stream);
+        assert!(cache.get().is_some());
     }
 
     #[test]

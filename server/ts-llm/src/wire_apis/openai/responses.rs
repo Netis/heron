@@ -15,6 +15,7 @@ use serde_json::Value;
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
 use crate::model::{RequestInfo, ResponseInfo, RouteVerdict, WireApi};
+use crate::parsed_json::ParsedJson;
 
 use super::shared::{has_bearer_auth, is_anthropic_request};
 
@@ -39,20 +40,23 @@ impl WireApi for OpenAiResponsesWireApi {
         RouteVerdict::Unknown
     }
 
-    fn matches_shape(&self, _req: &HttpRequestData, body: &Value) -> bool {
+    fn matches_shape(&self, _req: &HttpRequestData, req_body: &ParsedJson) -> bool {
+        let Some(req_body) = req_body.get() else {
+            return false;
+        };
         // Responses discriminator: `model` + `input` present, `messages` absent.
-        body.get("model").and_then(|v| v.as_str()).is_some()
-            && body.get("input").is_some()
-            && body.get("messages").is_none()
+        req_body.get("model").and_then(|v| v.as_str()).is_some()
+            && req_body.get("input").is_some()
+            && req_body.get("messages").is_none()
     }
 
-    fn extract_request(&self, req: &HttpRequestData, body: &Value) -> RequestInfo {
-        extract_request(req, body)
+    fn extract_request(&self, req: &HttpRequestData, req_body: &ParsedJson) -> RequestInfo {
+        extract_request(req, req_body)
     }
-    fn extract_response(&self, resp: &HttpResponseData) -> ResponseInfo {
-        extract_response(resp)
+    fn extract_response(&self, resp: &HttpResponseData, resp_body: &ParsedJson) -> ResponseInfo {
+        extract_response(resp, resp_body)
     }
-    fn extract_sse(&self, events: &[SseEventData]) -> ResponseInfo {
+    fn extract_sse(&self, events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
         extract_sse(events)
     }
 
@@ -70,38 +74,39 @@ impl WireApi for OpenAiResponsesWireApi {
     }
 }
 
-fn extract_request(_req: &HttpRequestData, body: &Value) -> RequestInfo {
+fn extract_request(_req: &HttpRequestData, req_body: &ParsedJson) -> RequestInfo {
+    let body = req_body.get();
     RequestInfo {
         model: body
-            .get("model")
+            .and_then(|b| b.get("model"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string(),
         is_stream: body
-            .get("stream")
+            .and_then(|b| b.get("stream"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
     }
 }
 
-fn extract_response(resp: &HttpResponseData) -> ResponseInfo {
-    let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
+fn extract_response(resp: &HttpResponseData, resp_body: &ParsedJson) -> ResponseInfo {
+    let parsed = resp_body.get();
     let body_str = std::str::from_utf8(&resp.body).ok().map(|s| s.to_string());
 
-    let response_id = body
-        .get("id")
+    let response_id = parsed
+        .and_then(|b| b.get("id"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let model = body
-        .get("model")
+    let model = parsed
+        .and_then(|b| b.get("model"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let finish_reason = body
-        .get("status")
+    let finish_reason = parsed
+        .and_then(|b| b.get("status"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let usage = body.get("usage");
+    let usage = parsed.and_then(|b| b.get("usage"));
     let input_tokens = usage
         .and_then(|u| u.get("input_tokens"))
         .and_then(|v| v.as_u64())
@@ -133,14 +138,17 @@ fn extract_response(resp: &HttpResponseData) -> ResponseInfo {
     }
 }
 
-fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
+fn extract_sse(events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
     let mut model: Option<String> = None;
     let mut finish_reason: Option<String> = None;
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
     let mut total_tokens: Option<u32> = None;
     let mut cache_read_input_tokens: Option<u32> = None;
-    let mut response_body: Option<String> = None;
+    // Build the assembled response as a `Value`; only serialize once at the
+    // end for storage. The same `Value` is handed to `body` so downstream
+    // readers get it without a String->Value round-trip.
+    let mut response_value: Option<Value> = None;
     let mut response_id: Option<String> = None;
     // Codex streams output items via response.output_item.done; the terminal
     // response.completed often carries an empty `output` array. Accumulate
@@ -224,7 +232,7 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
                             map.insert("output".to_string(), Value::Array(output_items.clone()));
                         }
                     }
-                    response_body = Some(response_obj.to_string());
+                    response_value = Some(response_obj);
                 }
             }
             // Anything else (including untyped Chat-style chunks) is not ours.
@@ -232,7 +240,10 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
         }
     }
 
-    ResponseInfo {
+    let response_body = response_value.as_ref().map(Value::to_string);
+    let response_cache = ParsedJson::from_value(response_value);
+
+    let info = ResponseInfo {
         model,
         finish_reason,
         input_tokens,
@@ -242,7 +253,8 @@ fn extract_sse(events: &[SseEventData]) -> ResponseInfo {
         cache_creation_input_tokens: None,
         response_body,
         response_id,
-    }
+    };
+    (info, response_cache)
 }
 
 /// Decide whether an OpenAI Responses body represents a terminal turn
@@ -584,7 +596,7 @@ mod tests {
                 r#"{"response":{"id":"resp_1","model":"gpt-5","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#,
             ),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         let body = info.response_body.expect("response_body");
         let v: Value = serde_json::from_str(&body).unwrap();
         let out = v.get("output").and_then(|o| o.as_array()).unwrap();
@@ -609,7 +621,7 @@ mod tests {
                 r#"{"response":{"id":"resp_1","model":"gpt-5","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"x"}]}]}}"#,
             ),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         let body = info.response_body.expect("response_body");
         let v: Value = serde_json::from_str(&body).unwrap();
         let out = v.get("output").and_then(|o| o.as_array()).unwrap();
@@ -629,7 +641,7 @@ mod tests {
                 r#"{"response":{"id":"resp_xyz","model":"gpt-4","status":"completed","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
             ),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         assert_eq!(info.response_id.as_deref(), Some("resp_xyz"));
     }
 
@@ -640,7 +652,7 @@ mod tests {
             "response.completed",
             r#"{"response":{"id":"resp_1","model":"gpt-5","status":"completed","usage":{"input_tokens":100,"output_tokens":10,"total_tokens":110,"input_tokens_details":{"cached_tokens":42}}}}"#,
         )];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         assert_eq!(info.cache_read_input_tokens, Some(42));
     }
 
@@ -671,7 +683,8 @@ mod tests {
             first_byte_timestamp_us: 0,
             complete_timestamp_us: 0,
         };
-        let info = extract_response(&resp);
+        let cache = ParsedJson::from_bytes(resp.body.clone());
+        let info = extract_response(&resp, &cache);
         assert_eq!(info.model.as_deref(), Some("gpt-5"));
         assert_eq!(info.response_id.as_deref(), Some("resp_1"));
         assert_eq!(info.finish_reason.as_deref(), Some("completed"));
@@ -710,7 +723,7 @@ mod tests {
                 r#"{"response":{"id":"resp_1","model":"gpt-5","status":"completed"}}"#,
             ),
         ];
-        let info = extract_sse(&events);
+        let (info, _body) = extract_sse(&events);
         assert_eq!(info.model.as_deref(), Some("gpt-5"));
         assert_eq!(info.response_id.as_deref(), Some("resp_1"));
     }

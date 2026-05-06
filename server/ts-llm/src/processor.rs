@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
+use serde_json::Value;
 use ts_common::internal_metrics::{Metric, MetricsWorker};
 use ts_protocol::joiner::HttpJoinerEvent;
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 use uuid::Uuid;
 
 use crate::model::{AgentCallInfo, ApiType, LlmCall, LlmCallStart, LlmEvent};
+use crate::parsed_json::ParsedJson;
 use crate::profile::{parse_bodies, AgentProfileRegistry, CallCtx};
 use crate::wire_api_registry::WireApiRegistry;
 
@@ -49,7 +51,11 @@ impl LlmProcessor {
     }
 
     fn on_request(&mut self, req: &HttpRequestData) -> Vec<LlmEvent> {
-        let Some(outcome) = self.wire_apis.detect(req) else {
+        // Per-event request-body cache, bound to `req.body` at construction.
+        // Lives only for the duration of detection; the Start event doesn't
+        // need a parsed body downstream.
+        let req_body_cache = ParsedJson::from_bytes(req.body.clone());
+        let Some(outcome) = self.wire_apis.detect(req, &req_body_cache) else {
             self.metrics.counter(Metric::WireIgnored).inc();
             return Vec::new();
         };
@@ -70,7 +76,10 @@ impl LlmProcessor {
         response: Arc<HttpResponseData>,
         sse_events: Vec<SseEventData>,
     ) -> Vec<LlmEvent> {
-        let Some(outcome) = self.wire_apis.detect(&request) else {
+        // Per-event request-body cache, bound to `request.body`.
+        let req_body_cache = ParsedJson::from_bytes(request.body.clone());
+
+        let Some(outcome) = self.wire_apis.detect(&request, &req_body_cache) else {
             // Already counted WireIgnored on Request; silent here.
             return Vec::new();
         };
@@ -78,11 +87,16 @@ impl LlmProcessor {
         let extractor = outcome.wire_api;
         let req_info = outcome.request_info;
 
-        // resp_info carries tokens / finish_reason / response_id / reconstructed body.
-        let resp_info = if !sse_events.is_empty() {
+        // Response-body cache: SSE constructs it from the synthetic Value
+        // assembled across events; non-SSE binds it to `response.body` and
+        // lazy-parses on first read. Either way, downstream readers get the
+        // canonical Value via `resp_body_cache.get()`.
+        let (resp_info, resp_body_cache) = if !sse_events.is_empty() {
             extractor.extract_sse(&sse_events)
         } else {
-            extractor.extract_response(&response)
+            let cache = ParsedJson::from_bytes(response.body.clone());
+            let info = extractor.extract_response(&response, &cache);
+            (info, cache)
         };
 
         let model = resp_info.model.unwrap_or(req_info.model);
@@ -145,15 +159,18 @@ impl LlmProcessor {
             response_headers: response.headers.clone(),
         };
 
-        let agent = self.build_call_info(&call);
+        let agent = build_agent_call_info_with_parsed(
+            &call,
+            req_body_cache.get(),
+            resp_body_cache.get(),
+            &self.registry,
+            &self.wire_apis,
+            &self.metrics,
+        );
         vec![LlmEvent::Complete {
             call: Arc::new(call),
             agent,
         }]
-    }
-
-    fn build_call_info(&self, call: &LlmCall) -> Option<AgentCallInfo> {
-        build_agent_call_info(call, &self.registry, &self.wire_apis, &self.metrics)
     }
 }
 
@@ -163,6 +180,11 @@ impl LlmProcessor {
 /// extract a session id — those calls are non-agent traffic and never enter
 /// turn assembly.
 ///
+/// Read-path entry point: parses the bodies from `LlmCall`'s stored `String`
+/// form, then delegates to `build_agent_call_info_with_parsed`. Used by
+/// `ts-storage` and `app/dbview` — places that have an `LlmCall` reconstructed
+/// from the database and no upstream parsed `Value` to hand in.
+///
 /// Public so tests in downstream crates (ts-turn) can construct call-info
 /// records the same way the production pipeline does.
 pub fn build_agent_call_info(
@@ -171,10 +193,36 @@ pub fn build_agent_call_info(
     wire_apis: &WireApiRegistry,
     metrics: &ts_common::internal_metrics::MetricsWorker,
 ) -> Option<AgentCallInfo> {
-    // Parse req/resp bodies once at the boundary; every profile method
-    // reads `ctx.req` / `ctx.resp` directly instead of re-parsing.
     let (req, resp) = parse_bodies(call);
-    let ctx = CallCtx::new(call, req.as_ref(), resp.as_ref());
+    build_agent_call_info_with_parsed(
+        call,
+        req.as_ref(),
+        resp.as_ref(),
+        registry,
+        wire_apis,
+        metrics,
+    )
+}
+
+/// Write-path entry point: caller supplies the already-parsed request/
+/// response bodies, so the agent boundary doesn't re-parse the `String` form
+/// stored on `LlmCall`. Used by `LlmProcessor::on_exchange`, which reads
+/// the `Value`s out of the per-event `ParsedJson` caches that `detect` and
+/// the wire impl's `extract_response` / `extract_sse` populated. SSE is
+/// not a special case: `extract_sse` builds the synthetic body as a
+/// `Value`, hands it to the cache via `set`, and downstream readers see
+/// it through `cache.get()` without any String→Value round-trip.
+/// `req` / `resp` may still be `None` when the underlying body wasn't
+/// JSON or wasn't reached during this event.
+pub fn build_agent_call_info_with_parsed(
+    call: &LlmCall,
+    req: Option<&Value>,
+    resp: Option<&Value>,
+    registry: &AgentProfileRegistry,
+    wire_apis: &WireApiRegistry,
+    metrics: &ts_common::internal_metrics::MetricsWorker,
+) -> Option<AgentCallInfo> {
+    let ctx = CallCtx::new(call, req, resp);
 
     let profile = registry.find(&ctx)?;
     let is_generic = profile.name() == "generic";
