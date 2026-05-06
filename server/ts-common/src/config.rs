@@ -466,10 +466,13 @@ fn default_retention_enabled() -> bool {
 }
 
 fn default_calls_retention_days() -> u32 {
-    7
+    30
 }
 
 fn default_turns_retention_days() -> u32 {
+    // Must satisfy turns <= calls (see ConfigIssue::TurnsRetentionExceedsCalls).
+    // Kept equal to calls so the default deploy is consistent without forcing
+    // operators to think about the dependency.
     30
 }
 
@@ -798,6 +801,15 @@ pub enum ConfigIssue {
     /// pipeline since it can't build a valid `<dir>/<pipeline>/...` path.
     /// Fail validation hard so the operator sees the problem before deploy.
     UnsafePcapDumpPipelineName { pipeline: String },
+    /// `agent_turns` retention outlives `llm_calls` retention, so the
+    /// no-JOIN turn-detail read (`agent_turns.call_ids` → `llm_calls`
+    /// IN-lookup) returns empty/partial calls for surviving turns once the
+    /// calls sweep crosses their `request_time`. `turns_days = 0` is the
+    /// sentinel for "never expire" (which always violates a finite
+    /// `calls_days`); finite-vs-finite triggers when `turns_days > calls_days`.
+    /// Only emitted when `calls_days > 0` — infinite calls retention can
+    /// satisfy any turns retention.
+    TurnsRetentionExceedsCalls { turns_days: u32, calls_days: u32 },
 }
 
 impl ConfigIssue {
@@ -814,7 +826,8 @@ impl ConfigIssue {
             | Self::DuplicateSourceId { .. }
             | Self::StoragePathParentUnwritable { .. }
             | Self::UnknownRetentionGranularity(_)
-            | Self::UnsafePcapDumpPipelineName { .. } => IssueSeverity::Error,
+            | Self::UnsafePcapDumpPipelineName { .. }
+            | Self::TurnsRetentionExceedsCalls { .. } => IssueSeverity::Error,
         }
     }
 }
@@ -881,6 +894,23 @@ impl std::fmt::Display for ConfigIssue {
                  sanitization, or '.' / '..'); the runtime cannot build a \
                  dump directory path"
             ),
+            Self::TurnsRetentionExceedsCalls {
+                turns_days,
+                calls_days,
+            } => {
+                let turns_str = if *turns_days == 0 {
+                    "never expire".to_string()
+                } else {
+                    format!("{turns_days}d")
+                };
+                write!(
+                    f,
+                    "storage.retention.turns ({turns_str}) outlives \
+                     storage.retention.calls ({calls_days}d): turns whose \
+                     llm_calls have been pruned will show empty/partial call \
+                     lists. Set turns <= calls (or set calls = 0 for infinite)."
+                )
+            }
         }
     }
 }
@@ -1007,6 +1037,20 @@ impl AppConfig {
             issues.push(ConfigIssue::UnknownRetentionGranularity(unknown.clone()));
         }
 
+        // agent_turns references llm_calls via JSON call_ids; the no-JOIN
+        // turn-detail read trusts that referenced calls still exist. If turns
+        // outlive calls, surviving turns end up pointing at deleted call ids
+        // and the detail view shows empty/partial results. 0 = never expire,
+        // so finite calls_days with any larger (or 0) turns_days is broken.
+        let calls_days = self.storage.retention.calls;
+        let turns_days = self.storage.retention.turns;
+        if calls_days > 0 && (turns_days == 0 || turns_days > calls_days) {
+            issues.push(ConfigIssue::TurnsRetentionExceedsCalls {
+                turns_days,
+                calls_days,
+            });
+        }
+
         if self.storage.backend == "duckdb" {
             let path = Path::new(&self.storage.duckdb.path);
             let probe_dir = path
@@ -1065,7 +1109,8 @@ mod phase2_tests {
         let cfg = RetentionConfig::default();
         assert!(cfg.enabled);
         assert_eq!(cfg.check_interval_secs, 3600);
-        assert_eq!(cfg.calls, 7);
+        assert_eq!(cfg.calls, 30);
+        // turns must not exceed calls — see ConfigIssue::TurnsRetentionExceedsCalls.
         assert_eq!(cfg.turns, 30);
         assert_eq!(cfg.http_exchanges, 7);
         // metrics map stays empty — per-granularity defaults are merged at
@@ -1078,7 +1123,8 @@ mod phase2_tests {
     fn storage_config_embeds_retention_defaults() {
         let cfg = StorageConfig::default();
         assert!(cfg.retention.enabled);
-        assert_eq!(cfg.retention.calls, 7);
+        assert_eq!(cfg.retention.calls, 30);
+        // turns must not exceed calls — see ConfigIssue::TurnsRetentionExceedsCalls.
         assert_eq!(cfg.retention.turns, 30);
     }
 
@@ -1416,6 +1462,132 @@ mod phase2_tests {
                 .iter()
                 .any(|i| matches!(i, ConfigIssue::StoragePathParentUnwritable { .. })),
             "expected StoragePathParentUnwritable, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_turns_retention_finite_exceeds_calls_is_error() {
+        // turns 30d > calls 7d → turns linger after their child llm_calls
+        // are pruned; the no-JOIN turn-detail read returns empty/partial calls.
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+
+            [storage.retention]
+            calls = 7
+            turns = 30
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            issues.iter().any(|i| matches!(
+                i,
+                ConfigIssue::TurnsRetentionExceedsCalls {
+                    turns_days: 30,
+                    calls_days: 7
+                }
+            )),
+            "expected TurnsRetentionExceedsCalls(30, 7), got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_turns_infinite_with_calls_finite_is_error() {
+        // turns = 0 (never expire) and calls > 0 → turns outlive every call.
+        // Detected as the same issue (sentinel turns_days = 0).
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+
+            [storage.retention]
+            calls = 7
+            turns = 0
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            issues.iter().any(|i| matches!(
+                i,
+                ConfigIssue::TurnsRetentionExceedsCalls {
+                    turns_days: 0,
+                    calls_days: 7
+                }
+            )),
+            "expected TurnsRetentionExceedsCalls(0, 7), got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_turns_finite_with_calls_infinite_is_ok() {
+        // calls = 0 (infinite) trivially outlives any finite turns retention.
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+
+            [storage.retention]
+            calls = 0
+            turns = 30
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::TurnsRetentionExceedsCalls { .. })),
+            "expected no TurnsRetentionExceedsCalls, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_turns_equal_calls_is_ok() {
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+
+            [storage.retention]
+            calls = 7
+            turns = 7
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::TurnsRetentionExceedsCalls { .. })),
+            "expected no TurnsRetentionExceedsCalls, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_default_retention_does_not_violate_constraint() {
+        // Defaults must pass the turns<=calls rule out of the box; otherwise
+        // every default deploy is broken before the operator touches config.
+        let toml = r#"
+            [[pipeline]]
+            name = "p"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+        "#;
+        let cfg = AppConfig::from_toml(toml);
+        let issues = cfg.validate();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::TurnsRetentionExceedsCalls { .. })),
+            "default config raised retention constraint: {issues:?}"
         );
     }
 

@@ -254,7 +254,7 @@ Indexes:
 
 ## Data Lifecycle
 
-Retention is **disabled by default**; operators opt in via `[storage.retention]` in config. Once enabled, a background sweeper (spawned at startup, cancelled on Ctrl+C) runs every `check_interval_secs` (default 3600) and deletes rows older than the per-table / per-granularity cutoff. A value of `0` (or a field absent) means "never expire" for that table/granularity.
+Retention is **enabled by default** with sane TTLs (`calls = turns = 30` days, `http_exchanges = 7` days). Operators tune via `[storage.retention]`; set `enabled = false` to opt out, or set any field to `0` to make that table never expire. A background sweeper (spawned at startup, cancelled on Ctrl+C) runs every `check_interval_secs` (default 3600) and deletes rows older than the per-table / per-granularity cutoff.
 
 **Cutoff columns** (what "old" means):
 - `llm_calls.request_time`
@@ -262,14 +262,17 @@ Retention is **disabled by default**; operators opt in via `[storage.retention]`
 - `llm_metrics.timestamp`, further keyed by `granularity`
 - `llm_finish_metrics.timestamp`, further keyed by `granularity` (sweeper reuses the `llm_metrics` per-granularity cutoffs)
 
-**Recommended defaults** (set explicitly in config; no built-in defaults to avoid surprise deletion):
+**Cross-table constraint:** `turns` must not outlive `calls`. `agent_turns.call_ids` references `llm_calls.id`, and the no-JOIN turn-detail read trusts those references — turns surviving past their calls would render with empty/partial call lists. `validate()` enforces `turns <= calls` (with `calls = 0` treated as infinite, satisfying any finite `turns`).
+
+**Defaults** (active out of the box):
 
 ```toml
 [storage.retention]
 enabled = true
 check_interval_secs = 3600
-calls = 7     # llm_calls max age in days
-turns = 30    # agent_turns max age in days
+calls = 30    # llm_calls max age in days; caps `turns`
+turns = 30    # agent_turns max age in days; must be <= calls (or set calls = 0)
+http_exchanges = 7
 
 [storage.retention.metrics]
 "10s" = 1

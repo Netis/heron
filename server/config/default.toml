@@ -106,11 +106,16 @@ flush_interval_ms = 1000
 # Data retention (enabled by default with sane TTLs — values below are the
 # active defaults, shown for reference). Set `enabled = false` to opt out, or
 # set any field to `0` to make that table never expire.
+#
+# Constraint: `turns` must not outlive `calls` (validate enforces
+# `turns <= calls`, with `calls = 0` treated as infinite). Surviving turns
+# whose llm_calls have been pruned would render as empty/partial in the
+# detail view, since `agent_turns.call_ids` references rows in `llm_calls`.
 # [storage.retention]
 # enabled = true
 # check_interval_secs = 3600
-# calls = 7              # LLM call detail (request/response bodies) — bulky
-# turns = 30             # Agent turn summaries — lightweight
+# calls = 30             # LLM call detail (request/response bodies); caps `turns`
+# turns = 30             # Agent turn summaries; must be <= calls (or set calls = 0)
 # http_exchanges = 7     # Raw HTTP transport records (headers + bodies) — bulkiest table
 #
 # Per-granularity retention for llm_metrics. Missing keys fall back to the

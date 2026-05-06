@@ -186,8 +186,8 @@ defaults** — you only need to add it to override:
 [storage.retention]
 enabled = true                 # set to false to opt out entirely
 check_interval_secs = 3600     # how often to run the cleanup sweep
-calls = 7                      # keep llm_calls for N days
-turns = 30                     # keep agent_turns for N days
+calls = 30                     # keep llm_calls for N days; caps `turns`
+turns = 30                     # keep agent_turns for N days; must be <= calls
 http_exchanges = 7             # keep http_exchanges (bulkiest table) for N days
 
 # Per-granularity retention for llm_metrics. Missing keys fall back to
@@ -211,6 +211,11 @@ Behavior:
 - `http_exchanges` stores raw HTTP transport records (headers + bodies)
   per request/response and is by far the bulkiest table; keep its TTL
   short unless you specifically need a longer forensics window.
+- `turns` must not outlive `calls`. `agent_turns.call_ids` references
+  rows in `llm_calls`, and the no-JOIN turn-detail read returns
+  empty/partial call lists once those references go stale. `tokenscope
+  config validate` enforces `turns <= calls` (with `calls = 0` treated
+  as infinite, which satisfies any finite `turns`).
 
 ## `[api]` — REST server
 
