@@ -3102,6 +3102,7 @@ dependencies = [
  "bytemuck",
  "bytes",
  "httparse",
+ "pcap",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

@@ -56,6 +56,37 @@ pub fn synth_text_hash(user_text: &str, assistant_text: &str) -> String {
     format!("{:016x}", h)
 }
 
+/// Helper-shape one-shot calls (request = `[system, user]` only, response =
+/// assistant text) — like Claude Agent SDK's Bash permission gate or path
+/// extractor sub-agents — never gain a stable shared anchor (no tool id,
+/// no shared first-user-text since each invocation has a different command
+/// embedded). Hashing user+assistant gives a unique id per call which then
+/// fragments agent_turns into N single-call rows.
+///
+/// Hash the system prompt instead — it is invariant for one helper kind —
+/// then mix in a coarse time bucket so that running the same agent twice in
+/// a day still produces two distinct sessions. Bucket size is a tradeoff:
+/// too small splits a single agent run, too large merges adjacent runs.
+/// 60 seconds keeps a typical agent-run's helper batch in one bucket while
+/// separating runs spaced more than a minute apart.
+pub const HELPER_SESSION_BUCKET_US: i64 = 60_000_000;
+
+pub fn synth_helper_session_id(system_text: &str, request_time_us: i64) -> String {
+    let bucket = request_time_us / HELPER_SESSION_BUCKET_US;
+    let mut h: u64 = 0xcbf29ce484222325;
+    for byte in system_text.bytes() {
+        h ^= byte as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    // Mix the bucket index in via the same FNV-1a step so adjacent buckets
+    // don't share long prefixes.
+    for byte in bucket.to_le_bytes() {
+        h ^= byte as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", h)
+}
+
 /// Shared session_id composition: prefer canonicalized tool id (raw form,
 /// debuggable against capture data); fall back to `gen-<16hex>` text hash.
 ///

@@ -12,7 +12,8 @@ use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
 
-use super::session_id::compose_session_id_tracked;
+use super::session_id::{compose_session_id_tracked, synth_helper_session_id};
+use crate::wire_apis::AssistantSig;
 
 pub struct GenericProfile;
 
@@ -30,28 +31,49 @@ impl AgentProfile for GenericProfile {
 
     fn extract_session_id(&self, ctx: &CallCtx<'_>) -> Option<SessionIdExtraction> {
         let req = ctx.req?;
-        let (user_text, sig) = match ctx.call.wire_api {
+        // Track three pieces per wire api:
+        //   * user_text   — first user message (used for the conversation
+        //                   text-hash path; required for everything below).
+        //   * sig_in_req  — Some(sig) if an assistant message already lives
+        //                   inside `req.messages[*]` / `req.input[*]`. This
+        //                   tells us the call belongs to a multi-turn
+        //                   conversation; the caller has already established
+        //                   a stable anchor we can hash.
+        //   * sig_in_resp — Some(sig) only when sig_in_req is None and the
+        //                   response carries the assistant turn for the
+        //                   first user message. Used both for text-hash
+        //                   fallback and for routing helper-shape one-shots
+        //                   to the system+time bucket.
+        //   * system_text — first system message; the only signal a
+        //                   helper-shape one-shot ever has that's stable
+        //                   across replays of the same helper sub-agent.
+        let (user_text, sig_in_req, sig_in_resp, system_text) = match ctx.call.wire_api {
             wa::ANTHROPIC => {
                 let user_text = wa::anthropic::first_user_text(req)?;
-                let sig = wa::anthropic::first_assistant_sig_from_request(req).or_else(|| {
+                let sig_in_req = wa::anthropic::first_assistant_sig_from_request(req);
+                let sig_in_resp = if sig_in_req.is_none() {
                     ctx.resp
                         .and_then(wa::anthropic::first_assistant_sig_from_response_value)
-                })?;
-                (user_text, sig)
+                } else {
+                    None
+                };
+                let system_text = wa::anthropic::first_system_text(req);
+                (user_text, sig_in_req, sig_in_resp, system_text)
             }
             wa::OPENAI_CHAT => {
                 let user_text = wa::openai::chat::first_user_text(req)?;
-                let sig =
-                    wa::openai::chat::first_assistant_sig_from_request(req).or_else(|| {
-                        ctx.resp
-                            .and_then(wa::openai::chat::first_assistant_sig_from_response_value)
-                    })?;
-                (user_text, sig)
+                let sig_in_req = wa::openai::chat::first_assistant_sig_from_request(req);
+                let sig_in_resp = if sig_in_req.is_none() {
+                    ctx.resp
+                        .and_then(wa::openai::chat::first_assistant_sig_from_response_value)
+                } else {
+                    None
+                };
+                let system_text = wa::openai::chat::first_system_text(req);
+                (user_text, sig_in_req, sig_in_resp, system_text)
             }
             wa::OPENAI_RESPONSES => {
-                // Responses works on the `input` array (or string-shorthand)
-                // rather than `messages`, so it has its own walker layer.
-                let (user_text, sig_from_input) = match req.get("input")? {
+                let (user_text, sig_in_req) = match req.get("input")? {
                     serde_json::Value::Array(items) => (
                         wa::openai::responses::first_user_text(items),
                         wa::openai::responses::first_assistant_sig_from_input(items),
@@ -60,14 +82,37 @@ impl AgentProfile for GenericProfile {
                     _ => (None, None),
                 };
                 let user_text = user_text?;
-                let sig = sig_from_input.or_else(|| {
+                let sig_in_resp = if sig_in_req.is_none() {
                     ctx.resp
                         .and_then(wa::openai::responses::first_assistant_sig_from_response_value)
-                })?;
-                (user_text, sig)
+                } else {
+                    None
+                };
+                let system_text = wa::openai::responses::first_system_text(req);
+                (user_text, sig_in_req, sig_in_resp, system_text)
             }
             _ => return None,
         };
+
+        // Helper-shape one-shot detection: the request has no assistant turn
+        // baked in (`sig_in_req` is None) AND the response side is plain
+        // text rather than a tool call (a tool id would already be a
+        // perfectly stable session anchor on its own). Hash the system
+        // prompt + a coarse time bucket so all replays of the same helper
+        // sub-agent within one agent run collapse into one session_id.
+        if sig_in_req.is_none() {
+            if let (Some(AssistantSig::Text(_)), Some(sys)) = (&sig_in_resp, &system_text) {
+                if !sys.is_empty() {
+                    let session_id = synth_helper_session_id(sys, ctx.call.request_time);
+                    return Some(SessionIdExtraction {
+                        session_id: format!("gen-{session_id}"),
+                        tool_id_canonicalized: false,
+                    });
+                }
+            }
+        }
+
+        let sig = sig_in_req.or(sig_in_resp)?;
         let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
         Some(SessionIdExtraction {
             session_id,
@@ -396,6 +441,102 @@ mod tests {
                 .unwrap()
                 .session_id
                 .starts_with("gen-"));
+        }
+
+        /// Helper-shape one-shot calls (request = [system, user] only, response
+        /// = assistant text) coming from a Claude-Agent-SDK helper sub-agent
+        /// like the Bash permission gate or path-extractor: each call has the
+        /// SAME system message but a DIFFERENT user message (different
+        /// command being checked). Without a system+time fallback, every
+        /// call gets a unique gen-<hash> id and the agent_turns view shows
+        /// each helper as its own 1-call turn.
+        ///
+        /// With the fallback, all helpers within the time-bucket window share
+        /// a session_id and group into a single agent_turn.
+        #[test]
+        fn extract_session_id_helper_oneshots_share_session_id_via_system_msg() {
+            let sys = "You are a Claude agent built on Anthropic's Claude Agent SDK. \
+                       Your task is to process Bash commands.";
+            let resp = r#"{"choices":[{"message":{"role":"assistant","content":"allow"}}]}"#;
+            let make = |user: &str, ts_us: i64| {
+                let req = serde_json::json!({
+                    "messages": [
+                        {"role": "system", "content": sys},
+                        {"role": "user", "content": user},
+                    ],
+                })
+                .to_string();
+                let mut tc = oai(Some(&req), Some(resp));
+                tc.call.request_time = ts_us;
+                tc
+            };
+            // 5 calls within a single 60-second bucket (start aligned to a
+            // bucket boundary so a `<60s` spread cannot straddle the next one).
+            let bucket_start: i64 = 60_000_000 * 1_000;
+            let calls: Vec<TestCall> = vec![
+                make("Command: cat file_1", bucket_start + 0),
+                make("Command: cat file_2", bucket_start + 5_000_000),
+                make("Command: ls /workdir", bucket_start + 10_000_000),
+                make("Command: rm temp.log", bucket_start + 30_000_000),
+                make("Command: grep error log", bucket_start + 55_000_000),
+            ];
+            let ids: Vec<String> = calls
+                .iter()
+                .map(|c| {
+                    GenericProfile
+                        .extract_session_id(&c.ctx())
+                        .unwrap()
+                        .session_id
+                })
+                .collect();
+            // All 5 must share the same session_id (they're the same helper
+            // sub-agent firing repeatedly within one agent run).
+            let first = &ids[0];
+            for (i, id) in ids.iter().enumerate() {
+                assert_eq!(
+                    id, first,
+                    "call {} session_id={} differs from first={}; all helpers must share id",
+                    i, id, first
+                );
+            }
+            // Sanity: still a `gen-` synthesised id (not a tool id leak).
+            assert!(first.starts_with("gen-"));
+        }
+
+        /// Two helper batches separated by a long idle gap (> bucket window)
+        /// must split into two distinct session_ids — otherwise running the
+        /// same agent twice in a day collapses both runs' helpers into one
+        /// turn.
+        #[test]
+        fn extract_session_id_helper_oneshots_split_across_idle_gap() {
+            let sys = "You are a Claude agent. Your task is to process Bash commands.";
+            let resp = r#"{"choices":[{"message":{"role":"assistant","content":"allow"}}]}"#;
+            let make = |user: &str, ts_us: i64| {
+                let req = serde_json::json!({
+                    "messages": [
+                        {"role": "system", "content": sys},
+                        {"role": "user", "content": user},
+                    ],
+                })
+                .to_string();
+                let mut tc = oai(Some(&req), Some(resp));
+                tc.call.request_time = ts_us;
+                tc
+            };
+            let early = make("Command: ls", 1_000_000_000);
+            let late = make("Command: ls", 1_000_000_000 + 5 * 60_000_000);
+            let id1 = GenericProfile
+                .extract_session_id(&early.ctx())
+                .unwrap()
+                .session_id;
+            let id2 = GenericProfile
+                .extract_session_id(&late.ctx())
+                .unwrap()
+                .session_id;
+            assert_ne!(
+                id1, id2,
+                "calls 5 minutes apart on same helper must be different sessions"
+            );
         }
 
         #[test]

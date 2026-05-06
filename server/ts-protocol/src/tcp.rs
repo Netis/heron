@@ -150,9 +150,16 @@ impl TcpFlow {
     pub fn push(&mut self, pkt: &ParsedPacket, output: &mut Vec<HttpParseEvent>) -> bool {
         let mut resync = false;
         self.last_pkt_ts = pkt.timestamp_us;
+        let events_before = output.len();
 
         // RST → close immediately.
         if pkt.has_rst() {
+            tracing::debug!(
+                flow = %self.flow_key,
+                dir = ?pkt.direction,
+                seq = pkt.tcp_seq,
+                "tcp.push: RST → close"
+            );
             self.state = TcpState::Closed;
             self.finish_pending_response(output);
             return false;
@@ -160,6 +167,13 @@ impl TcpFlow {
 
         // SYN (no ACK) → client side determined, synced.
         if pkt.has_syn() && !pkt.has_ack() {
+            tracing::debug!(
+                flow = %self.flow_key,
+                dir = ?pkt.direction,
+                seq = pkt.tcp_seq,
+                synced_before = self.synced,
+                "tcp.push: SYN → set client_side, synced=true"
+            );
             self.state = TcpState::SynSent;
             self.client_side = match pkt.direction {
                 Direction::AtoB => ClientSide::AtoB,
@@ -173,6 +187,12 @@ impl TcpFlow {
 
         // SYN-ACK.
         if pkt.has_syn() && pkt.has_ack() {
+            tracing::debug!(
+                flow = %self.flow_key,
+                dir = ?pkt.direction,
+                seq = pkt.tcp_seq,
+                "tcp.push: SYN-ACK → Established"
+            );
             self.state = TcpState::Established;
             self.dir_mut(pkt.direction).next_seq = Some(pkt.tcp_seq.wrapping_add(1));
             return false;
@@ -204,11 +224,13 @@ impl TcpFlow {
         // `NeedResync` site below — `client_side` is preserved and overwritten
         // by the next sync.
         if (pkt.wire_payload_len as usize) > pkt.payload.len() {
-            tracing::trace!(
+            tracing::debug!(
                 flow = %self.flow_key,
+                dir = ?pkt.direction,
+                seq = pkt.tcp_seq,
                 wire_len = pkt.wire_payload_len,
                 cap_len = pkt.payload.len(),
-                "resync: snaplen-truncated segment"
+                "tcp.push: TRUNCATED-GUARD → discard buffers + unsync"
             );
             self.synced = false;
             self.a_to_b.discard_buffers();
@@ -223,7 +245,17 @@ impl TcpFlow {
         if !pkt.payload.is_empty() {
             if !self.synced {
                 // Not yet synced: look for an HTTP request to sync on.
-                if looks_like_http_request(&pkt.payload) {
+                let looks_http = looks_like_http_request(&pkt.payload);
+                let head_preview: &[u8] = &pkt.payload[..pkt.payload.len().min(16)];
+                if looks_http {
+                    tracing::debug!(
+                        flow = %self.flow_key,
+                        dir = ?pkt.direction,
+                        seq = pkt.tcp_seq,
+                        len = pkt.payload.len(),
+                        head = ?String::from_utf8_lossy(head_preview),
+                        "tcp.push: UNSYNCED+HTTP → sync, parse"
+                    );
                     self.client_side = match pkt.direction {
                         Direction::AtoB => ClientSide::AtoB,
                         Direction::BtoA => ClientSide::BtoA,
@@ -243,8 +275,16 @@ impl TcpFlow {
                     self.try_parse_http(output);
                     // We just synced from unsynced — that counts as a resync.
                     resync = true;
+                } else {
+                    tracing::debug!(
+                        flow = %self.flow_key,
+                        dir = ?pkt.direction,
+                        seq = pkt.tcp_seq,
+                        len = pkt.payload.len(),
+                        head = ?String::from_utf8_lossy(head_preview),
+                        "tcp.push: UNSYNCED+non-HTTP → DISCARD"
+                    );
                 }
-                // else: discard (do nothing)
             } else {
                 // Synced: check for new-request-while-waiting-for-response.
                 let is_client = matches!(
@@ -255,9 +295,12 @@ impl TcpFlow {
                     && self.http_parser.is_waiting_for_response()
                     && looks_like_http_request(&pkt.payload)
                 {
-                    tracing::trace!(
+                    tracing::debug!(
                         flow = %self.flow_key,
-                        "resync: new request while waiting for response"
+                        dir = ?pkt.direction,
+                        seq = pkt.tcp_seq,
+                        len = pkt.payload.len(),
+                        "tcp.push: SYNCED+NEW-REQ-DURING-WAIT → resync, parse"
                     );
                     self.a_to_b.discard_buffers();
                     self.b_to_a.discard_buffers();
@@ -268,8 +311,35 @@ impl TcpFlow {
                     self.try_parse_http(output);
                     resync = true;
                 } else {
+                    let dir_state = self.dir_mut(pkt.direction).next_seq;
+                    let diff = match dir_state {
+                        Some(expected) => Some(pkt.tcp_seq.wrapping_sub(expected) as i32),
+                        None => None,
+                    };
+                    tracing::debug!(
+                        flow = %self.flow_key,
+                        dir = ?pkt.direction,
+                        seq = pkt.tcp_seq,
+                        len = pkt.payload.len(),
+                        is_client,
+                        waiting_for_resp = self.http_parser.is_waiting_for_response(),
+                        ?diff,
+                        "tcp.push: SYNCED+APPEND → append+parse"
+                    );
                     self.append_payload(pkt);
-                    resync |= self.try_parse_http(output);
+                    let r = self.try_parse_http(output);
+                    resync |= r;
+                    let new_events = output.len() - events_before;
+                    if r || new_events > 0 {
+                        tracing::debug!(
+                            flow = %self.flow_key,
+                            dir = ?pkt.direction,
+                            seq = pkt.tcp_seq,
+                            resync = r,
+                            new_events,
+                            "tcp.push: parse-result"
+                        );
+                    }
                 }
             }
         }
