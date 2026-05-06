@@ -123,9 +123,19 @@ impl CaptureSource for PcapLiveSource {
                     crate::CaptureError::Other(format!("interface '{}' not found", interface))
                 })?;
 
+            // 16 MiB AF_PACKET ring. The libpcap default (~2 MiB) is too
+            // small to absorb bursts of GRO-coalesced super-segments
+            // (10–60 KB each) that Linux generates on `-i any` for TCP flows
+            // carrying large LLM prompts/SSE bodies. Side-effect of an
+            // undersized ring is silent loss that does NOT show up in
+            // `pcap_stats().dropped` under TPACKET_V3 + immediate_mode,
+            // because dropped packets never reach the per-socket ring.
+            // 16 MiB matches what `tcpdump -B 16384` users typically pick
+            // for chatty TLS / SSE workloads.
             let mut cap = Capture::from_device(device)?
                 .immediate_mode(true)
                 .snaplen(snaplen as i32)
+                .buffer_size(16 * 1024 * 1024)
                 .timeout(500) // 500ms read timeout for shutdown responsiveness
                 .open()?;
 

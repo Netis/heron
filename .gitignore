@@ -46,3 +46,4 @@ server/data/
 .superpowers
 .worktrees/
 
+/logs/
