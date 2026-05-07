@@ -131,6 +131,10 @@ enum Command {
     },
     /// Run pre-flight diagnostics (config, capture privileges, storage, API port, console).
     Doctor(cmd::doctor::DoctorArgs),
+    /// Re-tokenize historical rows whose `usage` block was missing on the wire,
+    /// filling in input_tokens / output_tokens / total_tokens via cl100k.
+    /// Stop the live tokenscope daemon first — DuckDB takes an exclusive lock.
+    BackfillTokens(cmd::backfill_tokens::BackfillTokensArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -197,6 +201,11 @@ async fn main() {
         }
         Some(Command::Doctor(args)) => {
             let code = cmd::doctor::run(cli.config.as_deref(), &args).await;
+            std::process::exit(code);
+        }
+        Some(Command::BackfillTokens(args)) => {
+            init_logger(&cli.color, cli.verbose);
+            let code = cmd::backfill_tokens::run(&args);
             std::process::exit(code);
         }
         None => {

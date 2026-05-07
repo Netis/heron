@@ -675,6 +675,113 @@ pub fn extract_assistant_text_value(resp: &Value) -> Option<String> {
     }
 }
 
+// ─────────────────────────── Token estimation ─────────────────────────────
+
+use crate::token_estimator::{collect_anthropic_assistant_text, TokenEstimator};
+
+/// True iff the response body carried any Anthropic `usage` field with a
+/// non-zero count.
+pub fn usage_present(body: &Value) -> bool {
+    let u = match body.get("usage") {
+        Some(v) => v,
+        None => return false,
+    };
+    if !u.is_object() {
+        return false;
+    }
+    u.get("input_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|n| n > 0)
+        .unwrap_or(false)
+        || u.get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|n| n > 0)
+            .unwrap_or(false)
+}
+
+/// Walk an assistant-shaped Anthropic body (top-level `content[*]` blocks)
+/// and produce one concatenated, deduped string of all reasoning + text +
+/// serialized tool_use blocks.
+pub fn collected_response_text(body: &Value) -> String {
+    collect_anthropic_assistant_text(body)
+}
+
+/// Estimate input tokens for an Anthropic request. Walks `system` (string
+/// or `[{type:"text",text:...}]`), `messages[*]` (with role + content array
+/// or string), and `tools[*]` (each schema serialized whole).
+pub fn estimate_input_tokens(req: &Value, est: &dyn TokenEstimator) -> u32 {
+    let mut total: u32 = 0;
+
+    // system: string OR array of {type:"text",text:...}
+    if let Some(s) = req.get("system").and_then(|v| v.as_str()) {
+        total = total.saturating_add(est.count_text(s));
+    } else if let Some(arr) = req.get("system").and_then(|v| v.as_array()) {
+        for blk in arr {
+            if let Some(t) = blk.get("text").and_then(|v| v.as_str()) {
+                total = total.saturating_add(est.count_text(t));
+            }
+        }
+    }
+
+    if let Some(msgs) = req.get("messages").and_then(|v| v.as_array()) {
+        for m in msgs {
+            if let Some(role) = m.get("role").and_then(|v| v.as_str()) {
+                total = total.saturating_add(est.count_text(role));
+            }
+            if let Some(s) = m.get("content").and_then(|v| v.as_str()) {
+                total = total.saturating_add(est.count_text(s));
+            } else if let Some(arr) = m.get("content").and_then(|v| v.as_array()) {
+                for blk in arr {
+                    let kind = blk.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    match kind {
+                        "text" => {
+                            if let Some(t) = blk.get("text").and_then(|v| v.as_str()) {
+                                total = total.saturating_add(est.count_text(t));
+                            }
+                        }
+                        "thinking" => {
+                            if let Some(t) = blk.get("thinking").and_then(|v| v.as_str()) {
+                                total = total.saturating_add(est.count_text(t));
+                            }
+                        }
+                        "tool_use" | "tool_result" => {
+                            if let Ok(s) = serde_json::to_string(blk) {
+                                total = total.saturating_add(est.count_text(&s));
+                            }
+                        }
+                        _ => {
+                            // image / other modal blocks: skip — we don't tokenize binary.
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
+        for t in tools {
+            if let Ok(s) = serde_json::to_string(t) {
+                total = total.saturating_add(est.count_text(&s));
+            }
+        }
+    }
+    if let Some(tc) = req.get("tool_choice") {
+        if let Ok(s) = serde_json::to_string(tc) {
+            total = total.saturating_add(est.count_text(&s));
+        }
+    }
+
+    total
+}
+
+/// Estimate output tokens for an Anthropic response body. Counts thinking +
+/// text + tool_use blocks; deduplicates think-block text against thinking
+/// blocks.
+pub fn estimate_output_tokens(resp: &Value, est: &dyn TokenEstimator) -> u32 {
+    let text = collected_response_text(resp);
+    est.count_text(&text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1011,5 +1118,122 @@ mod tests {
         ];
         let (info, _body) = extract_from_sse(&events);
         assert_eq!(info.response_id.as_deref(), Some("msg_stream_01"));
+    }
+}
+
+#[cfg(test)]
+mod estimator_tests {
+    use super::*;
+    use crate::token_estimator::CL100kEstimator;
+    use serde_json::json;
+
+    fn cl() -> CL100kEstimator {
+        CL100kEstimator::new()
+    }
+
+    #[test]
+    fn usage_present_true_when_set() {
+        let body = json!({"usage": {"input_tokens": 10, "output_tokens": 5}});
+        assert!(usage_present(&body));
+    }
+
+    #[test]
+    fn usage_present_false_when_missing_or_zero() {
+        assert!(!usage_present(&json!({})));
+        assert!(!usage_present(
+            &json!({"usage": {"input_tokens": 0, "output_tokens": 0}})
+        ));
+    }
+
+    #[test]
+    fn estimate_input_walks_string_system_messages_tools() {
+        let req = json!({
+            "system": "You are helpful",
+            "messages": [
+                {"role":"user","content":"Hello"}
+            ],
+            "tools": [
+                {"name":"calc","description":"adds","input_schema":{"type":"object"}}
+            ]
+        });
+        let n = estimate_input_tokens(&req, &cl());
+        assert!(n > 5);
+    }
+
+    #[test]
+    fn estimate_input_walks_array_system() {
+        let req_arr = json!({
+            "system":[{"type":"text","text":"You are helpful"}],
+            "messages":[{"role":"user","content":"Hi"}]
+        });
+        let req_str = json!({
+            "system":"You are helpful",
+            "messages":[{"role":"user","content":"Hi"}]
+        });
+        // Both forms must yield the same input estimate.
+        assert_eq!(
+            estimate_input_tokens(&req_arr, &cl()),
+            estimate_input_tokens(&req_str, &cl())
+        );
+    }
+
+    #[test]
+    fn estimate_input_walks_message_array_content() {
+        let req = json!({
+            "system":"sys",
+            "messages":[
+                {"role":"user","content":[
+                    {"type":"text","text":"hello there"},
+                    {"type":"tool_result","tool_use_id":"toolu_x","content":"ok"}
+                ]}
+            ]
+        });
+        let n = estimate_input_tokens(&req, &cl());
+        assert!(n > 3);
+    }
+
+    #[test]
+    fn estimate_output_thinking_plus_text_counted() {
+        let resp = json!({
+            "content":[
+                {"type":"thinking","thinking":"plan ahead"},
+                {"type":"text","text":"final answer"}
+            ]
+        });
+        let n = estimate_output_tokens(&resp, &cl());
+        let plain = estimate_output_tokens(
+            &json!({"content":[{"type":"text","text":"final answer"}]}),
+            &cl(),
+        );
+        assert!(n > plain, "thinking block must count (got {n} vs plain {plain})");
+    }
+
+    #[test]
+    fn estimate_output_dedupes_thinking_against_inline_think_block() {
+        let resp = json!({
+            "content":[
+                {"type":"thinking","thinking":"trace"},
+                {"type":"text","text":"<think>trace</think>answer"}
+            ]
+        });
+        let n = estimate_output_tokens(&resp, &cl());
+        // Compare against a response that omits the duplicate inline block.
+        let single = json!({
+            "content":[
+                {"type":"thinking","thinking":"trace"},
+                {"type":"text","text":"answer"}
+            ]
+        });
+        assert_eq!(n, estimate_output_tokens(&single, &cl()));
+    }
+
+    #[test]
+    fn estimate_output_includes_tool_use() {
+        let resp = json!({
+            "content":[
+                {"type":"tool_use","id":"toolu_x","name":"calc","input":{"a":1}}
+            ]
+        });
+        assert!(estimate_output_tokens(&resp, &cl()) > 0);
     }
 }

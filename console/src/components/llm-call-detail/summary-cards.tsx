@@ -37,19 +37,33 @@ export function SummaryCards({ detail }: Props) {
           {formatMs(detail.e2e_latency_ms)}
         </div>
       </SummaryCard>
-      <SummaryCard label="Tokens">
-        <div className="flex items-center gap-3 tabular-nums">
+      <SummaryCard label={detail.tokens_estimated ? "Tokens (estimated)" : "Tokens"}>
+        <div
+          className="flex items-center gap-3 tabular-nums"
+          title={
+            detail.tokens_estimated
+              ? "Estimated by tokenizer (cl100k) — server returned no usage block"
+              : undefined
+          }
+        >
           <span className="flex flex-col">
             <span className="text-[10px] text-muted-foreground">in</span>
-            <span>{formatNumber(detail.input_tokens)}</span>
+            <span className={detail.tokens_estimated ? "text-amber-700 dark:text-amber-400" : ""}>
+              {detail.tokens_estimated ? "~" : ""}
+              {formatNumber(detail.input_tokens)}
+            </span>
           </span>
           <span className="flex flex-col">
             <span className="text-[10px] text-muted-foreground">out</span>
-            <span>{formatNumber(detail.output_tokens)}</span>
+            <span className={detail.tokens_estimated ? "text-amber-700 dark:text-amber-400" : ""}>
+              {detail.tokens_estimated ? "~" : ""}
+              {formatNumber(detail.output_tokens)}
+            </span>
           </span>
         </div>
         <div className="text-xs tabular-nums text-muted-foreground">
-          total: {formatNumber(detail.total_tokens)}
+          total: {detail.tokens_estimated ? "~" : ""}
+          {formatNumber(detail.total_tokens)}
         </div>
       </SummaryCard>
     </div>

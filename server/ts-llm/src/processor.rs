@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::model::{AgentCallInfo, ApiType, LlmCall, LlmCallStart, LlmEvent};
 use crate::parsed_json::ParsedJson;
 use crate::profile::{parse_bodies, AgentProfileRegistry, CallCtx};
+use crate::token_estimator::{CL100kEstimator, TokenEstimator};
 use crate::wire_api_registry::WireApiRegistry;
 
 /// Processes `HttpJoinerEvent`s and extracts `LlmCall` records. Stateless —
@@ -17,6 +18,9 @@ pub struct LlmProcessor {
     wire_apis: Arc<WireApiRegistry>,
     registry: Arc<AgentProfileRegistry>,
     metrics: MetricsWorker,
+    /// Fallback tokenizer used when the wire response omits `usage`. Held as
+    /// `Arc<dyn>` so tests can inject a deterministic stub.
+    estimator: Arc<dyn TokenEstimator>,
 }
 
 impl LlmProcessor {
@@ -25,10 +29,26 @@ impl LlmProcessor {
         registry: Arc<AgentProfileRegistry>,
         metrics: MetricsWorker,
     ) -> Self {
+        Self::with_estimator(
+            wire_apis,
+            registry,
+            metrics,
+            Arc::new(CL100kEstimator::new()),
+        )
+    }
+
+    /// Same as `new` but accepts a custom estimator. Used by tests.
+    pub fn with_estimator(
+        wire_apis: Arc<WireApiRegistry>,
+        registry: Arc<AgentProfileRegistry>,
+        metrics: MetricsWorker,
+        estimator: Arc<dyn TokenEstimator>,
+    ) -> Self {
         Self {
             wire_apis,
             registry,
             metrics,
+            estimator,
         }
     }
 
@@ -91,13 +111,85 @@ impl LlmProcessor {
         // assembled across events; non-SSE binds it to `response.body` and
         // lazy-parses on first read. Either way, downstream readers get the
         // canonical Value via `resp_body_cache.get()`.
-        let (resp_info, resp_body_cache) = if !sse_events.is_empty() {
+        let (mut resp_info, resp_body_cache) = if !sse_events.is_empty() {
             extractor.extract_sse(&sse_events)
         } else {
             let cache = ParsedJson::from_bytes(response.body.clone());
             let info = extractor.extract_response(&response, &cache);
             (info, cache)
         };
+
+        // Fallback estimator: when the wire response omitted `usage` (LiteLLM
+        // proxy + similar upstreams) and the response was a real completion,
+        // tokenize the request and assembled response bodies via tiktoken
+        // (cl100k_base) and patch the counts. The DEBUG log lets `-v` users
+        // see exactly which calls were estimated. Bumps the
+        // `LlmTokensEstimated` metric so the share is visible in /metrics.
+        if response.status >= 200
+            && response.status < 300
+            && resp_info.input_tokens.unwrap_or(0) == 0
+            && resp_info.output_tokens.unwrap_or(0) == 0
+        {
+            if let Some(body_str) = resp_info.response_body.as_deref() {
+                if let Ok(resp_json) = serde_json::from_str::<Value>(body_str) {
+                    let req_json: Value = std::str::from_utf8(&request.body)
+                        .ok()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or(Value::Null);
+                    let est_in;
+                    let est_out;
+                    match extractor.name() {
+                        crate::wire_apis::OPENAI_CHAT => {
+                            est_in = crate::wire_apis::openai::chat::estimate_input_tokens(
+                                &req_json,
+                                self.estimator.as_ref(),
+                            );
+                            est_out = crate::wire_apis::openai::chat::estimate_output_tokens(
+                                &resp_json,
+                                self.estimator.as_ref(),
+                            );
+                        }
+                        crate::wire_apis::OPENAI_RESPONSES => {
+                            est_in = crate::wire_apis::openai::responses::estimate_input_tokens(
+                                &req_json,
+                                self.estimator.as_ref(),
+                            );
+                            est_out = crate::wire_apis::openai::responses::estimate_output_tokens(
+                                &resp_json,
+                                self.estimator.as_ref(),
+                            );
+                        }
+                        crate::wire_apis::ANTHROPIC => {
+                            est_in = crate::wire_apis::anthropic::estimate_input_tokens(
+                                &req_json,
+                                self.estimator.as_ref(),
+                            );
+                            est_out = crate::wire_apis::anthropic::estimate_output_tokens(
+                                &resp_json,
+                                self.estimator.as_ref(),
+                            );
+                        }
+                        _ => {
+                            est_in = 0;
+                            est_out = 0;
+                        }
+                    }
+                    if est_in > 0 || est_out > 0 {
+                        resp_info.input_tokens = Some(est_in);
+                        resp_info.output_tokens = Some(est_out);
+                        resp_info.total_tokens = Some(est_in.saturating_add(est_out));
+                        self.metrics.counter(Metric::LlmTokensEstimated).inc();
+                        tracing::debug!(
+                            wire_api = extractor.name(),
+                            model = %resp_info.model.as_deref().unwrap_or("unknown"),
+                            input_tokens = est_in,
+                            output_tokens = est_out,
+                            "estimated tokens (no usage in wire payload)"
+                        );
+                    }
+                }
+            }
+        }
 
         let model = resp_info.model.unwrap_or(req_info.model);
 
@@ -280,6 +372,7 @@ mod tests {
                 Metric::LlmGenericToolIdCanonicalized,
                 Metric::LlmGenericSessionIdSynthFailed,
                 Metric::LlmHeartbeatsReceived,
+                Metric::LlmTokensEstimated,
             ],
         );
         let _svc = sys.start();
@@ -388,6 +481,88 @@ mod tests {
         };
         let events = proc.process(HttpJoinerEvent::Request(Arc::new(req)));
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn exchange_no_usage_triggers_estimator_chat() {
+        // Regression: LiteLLM-proxy + similar upstreams omit `usage`. The
+        // live processor must fall back to the tiktoken estimator and write
+        // non-zero input/output tokens, otherwise the row shows as 0/0 in
+        // the console.
+        use serde_json::json;
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
+        let req_body = json!({
+            "model":"exp_model",
+            "messages":[
+                {"role":"system","content":"You are helpful"},
+                {"role":"user","content":"What is the capital of France?"}
+            ]
+        });
+        let req = openai_request(&req_body);
+        // Note: NO `usage` field on the response — the bug we're fixing.
+        let resp_body = json!({
+            "id":"chatcmpl-noUsage",
+            "model":"exp_model",
+            "choices":[{
+                "index":0,
+                "message":{"role":"assistant","content":"The capital of France is Paris."},
+                "finish_reason":"stop"
+            }]
+        });
+        let (request, response) = exchange_parts(req, Bytes::from(resp_body.to_string()), false);
+        let events = proc.process(HttpJoinerEvent::Exchange {
+            id: "xchg-noUsage".to_string(),
+            request,
+            response: Arc::new(response),
+            sse_events: vec![],
+        });
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            LlmEvent::Complete { call, .. } => {
+                let it = call
+                    .input_tokens
+                    .expect("input_tokens populated by estimator");
+                let ot = call
+                    .output_tokens
+                    .expect("output_tokens populated by estimator");
+                assert!(it > 0, "estimator should produce >0 input tokens");
+                assert!(ot > 0, "estimator should produce >0 output tokens");
+                assert_eq!(call.total_tokens, Some(it + ot));
+            }
+            _ => panic!("expected Complete"),
+        }
+    }
+
+    #[test]
+    fn exchange_with_usage_does_not_run_estimator() {
+        // Negative case: when the wire usage is present, the estimator must
+        // NOT run — assertable by checking the tokens equal the wire values
+        // exactly (estimator would replace them).
+        use serde_json::json;
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
+        let req_body = json!({"model":"gpt-4","messages":[{"role":"user","content":"hi"}]});
+        let req = openai_request(&req_body);
+        let resp_body = json!({
+            "id":"chatcmpl-withUsage",
+            "model":"gpt-4",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"a much longer answer than the input prompt to ensure clear divergence between estimator output and wire usage values"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+        });
+        let (request, response) = exchange_parts(req, Bytes::from(resp_body.to_string()), false);
+        let events = proc.process(HttpJoinerEvent::Exchange {
+            id: "xchg-withUsage".to_string(),
+            request,
+            response: Arc::new(response),
+            sse_events: vec![],
+        });
+        match &events[0] {
+            LlmEvent::Complete { call, .. } => {
+                assert_eq!(call.input_tokens, Some(1));
+                assert_eq!(call.output_tokens, Some(1));
+                assert_eq!(call.total_tokens, Some(2));
+            }
+            _ => panic!("expected Complete"),
+        }
     }
 
     #[test]

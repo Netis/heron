@@ -73,6 +73,7 @@ pub fn spawn_llm_stage(
                 Metric::LlmGenericToolIdCanonicalized,
                 Metric::LlmGenericSessionIdSynthFailed,
                 Metric::LlmHeartbeatsReceived,
+                Metric::LlmTokensEstimated,
                 Metric::MetricsHeartbeatsDropped,
                 Metric::TurnHeartbeatsDropped,
             ],
