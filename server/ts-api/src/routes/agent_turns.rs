@@ -242,13 +242,22 @@ pub async fn calls(
     State(ctx): State<ApiAgentTurnsContext>,
     Path(turn_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // In-progress turns currently have no `llm_calls` join — return
-    // an empty list rather than a 404 so the UI can render the detail
-    // panel without a "calls table failed to load" toast.
-    if let Ok(map) = ctx.active_turns.read() {
-        if map.contains_key(&turn_id) {
-            return Ok(ApiResponse::ok(Vec::<ts_storage::query::TurnCallItem>::new()));
-        }
+    // In-progress turns: pull call_ids from the in-memory registry
+    // snapshot, then ask storage to fetch the matching `llm_calls`
+    // rows. A call may be ingested into the tracker microseconds before
+    // its row gets flushed from `WriteBuffer` to DuckDB; in that
+    // narrow window the call is missing from the result and shows up on
+    // the next refresh. Total lag is bounded by storage.flush_interval_ms
+    // (200 ms after PR #5).
+    let in_progress_call_ids: Option<Vec<String>> = ctx
+        .active_turns
+        .read()
+        .ok()
+        .and_then(|map| map.get(&turn_id).map(|t| t.call_ids.clone()));
+
+    if let Some(call_ids) = in_progress_call_ids {
+        let items = ctx.storage.query_calls_by_ids(&call_ids).await?;
+        return Ok(ApiResponse::ok(items));
     }
     let items = ctx.storage.query_turn_calls(&turn_id).await?;
     Ok(ApiResponse::ok(items))
