@@ -3078,6 +3078,7 @@ dependencies = [
  "ts-metrics",
  "ts-pcap-extract",
  "ts-storage",
+ "ts-turn",
 ]
 
 [[package]]

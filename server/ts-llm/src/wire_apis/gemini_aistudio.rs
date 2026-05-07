@@ -629,24 +629,21 @@ fn wrap_sig(sig_and_kind: (String, bool)) -> AssistantSig {
 /// stability across the conversation's calls.
 pub fn first_user_text(req: &Value) -> Option<String> {
     let contents = req.get("contents")?.as_array()?;
-    for c in contents {
-        if c.get("role").and_then(|r| r.as_str()) != Some("user") {
-            continue;
-        }
-        let parts = c.get("parts").and_then(|v| v.as_array()).map(|p| {
-            p.iter()
-                .filter_map(|x| x.get("text").and_then(|t| t.as_str()).map(str::to_string))
-                .collect::<Vec<_>>()
-        });
-        if let Some(parts) = parts {
-            let joined = parts.join("\n");
-            let trimmed = joined.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
+    let first_user = contents
+        .iter()
+        .find(|c| c.get("role").and_then(|r| r.as_str()) == Some("user"))?;
+    let parts = first_user.get("parts").and_then(|v| v.as_array())?;
+    let joined = parts
+        .iter()
+        .filter_map(|x| x.get("text").and_then(|t| t.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trimmed = joined.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
-    None
 }
 
 /// Top-level `systemInstruction.parts[].text` joined. Gemini puts system
@@ -667,22 +664,19 @@ pub fn first_system_text(req: &Value) -> Option<String> {
     }
 }
 
-/// Sig of the first role==model content in `contents[]`. Computes
-/// `parts_sig` over the first model content's parts. `None` when no
-/// model content exists (true on the first call before any tool
-/// roundtrip).
+/// Sig of the **first** `role:model` content in `contents[]` — and only
+/// that one. `None` when no model content exists (first call, no tool
+/// roundtrip yet) OR when the first model content has no extractable
+/// signal (parts missing, empty, or all-`thought`). Does NOT fall through
+/// to later model contents — those belong to turn 2+ and are not a stable
+/// session anchor.
 pub fn first_assistant_sig_from_request(req: &Value) -> Option<AssistantSig> {
     let contents = req.get("contents")?.as_array()?;
-    for c in contents {
-        if c.get("role").and_then(|r| r.as_str()) != Some("model") {
-            continue;
-        }
-        let parts = c.get("parts").and_then(|v| v.as_array())?;
-        if let Some(sig) = parts_sig(parts) {
-            return Some(wrap_sig(sig));
-        }
-    }
-    None
+    let first_model = contents
+        .iter()
+        .find(|c| c.get("role").and_then(|r| r.as_str()) == Some("model"))?;
+    let parts = first_model.get("parts").and_then(|v| v.as_array())?;
+    parts_sig(parts).map(wrap_sig)
 }
 
 /// Sig of the first candidate's parts in a Gemini response body. Mirrors
@@ -1334,6 +1328,84 @@ mod tests {
             .filter(|p| p.get("functionCall").is_some())
             .count();
         assert!(function_calls >= 1, "fixture has at least one functionCall");
+    }
+
+    // ─── first_user_text: strict "first role:user" semantics ────────────────
+
+    #[test]
+    fn first_user_text_none_when_first_user_has_no_text() {
+        // First user content has only `functionResponse` parts (no text);
+        // a later user has text. Strict semantics: don't fall through.
+        let req = serde_json::json!({
+            "contents": [
+                {"role":"user","parts":[
+                    {"functionResponse":{"name":"f","response":{"r":1}}}
+                ]},
+                {"role":"model","parts":[{"text":"ack"}]},
+                {"role":"user","parts":[{"text":"later"}]}
+            ]
+        });
+        assert_eq!(first_user_text(&req), None);
+    }
+
+    #[test]
+    fn first_user_text_none_when_first_user_text_is_whitespace() {
+        let req = serde_json::json!({
+            "contents": [
+                {"role":"user","parts":[{"text":"   "}]},
+                {"role":"model","parts":[{"text":"ack"}]},
+                {"role":"user","parts":[{"text":"later"}]}
+            ]
+        });
+        assert_eq!(first_user_text(&req), None);
+    }
+
+    // ─── first_assistant_sig_from_request: strict "first only" semantics ────
+
+    #[test]
+    fn first_assistant_sig_from_request_returns_first_models_sig() {
+        let req = serde_json::json!({
+            "contents": [
+                {"role":"user","parts":[{"text":"u1"}]},
+                {"role":"model","parts":[{"text":"first model reply"}]},
+                {"role":"user","parts":[{"text":"u2"}]},
+                {"role":"model","parts":[{"functionCall":{"name":"f","args":{"x":1}}}]}
+            ]
+        });
+        let sig = first_assistant_sig_from_request(&req).unwrap();
+        // First model is text-only → wrap_sig produces AssistantSig::Text.
+        assert!(matches!(sig, AssistantSig::Text(t) if t.contains("first model reply")));
+    }
+
+    #[test]
+    fn first_assistant_sig_from_request_none_when_first_model_parts_all_thought() {
+        // First model's parts are all `thought:true` (chain-of-thought
+        // tokens that parts_sig deliberately filters out). Must NOT fall
+        // through to the second model content.
+        let req = serde_json::json!({
+            "contents": [
+                {"role":"user","parts":[{"text":"u1"}]},
+                {"role":"model","parts":[
+                    {"thought":true,"text":"hidden cot"}
+                ]},
+                {"role":"user","parts":[{"text":"u2"}]},
+                {"role":"model","parts":[{"text":"this would be a leak"}]}
+            ]
+        });
+        assert!(first_assistant_sig_from_request(&req).is_none());
+    }
+
+    #[test]
+    fn first_assistant_sig_from_request_none_when_first_model_parts_empty() {
+        let req = serde_json::json!({
+            "contents": [
+                {"role":"user","parts":[{"text":"u1"}]},
+                {"role":"model","parts":[]},
+                {"role":"user","parts":[{"text":"u2"}]},
+                {"role":"model","parts":[{"functionCall":{"name":"f","args":{}}}]}
+            ]
+        });
+        assert!(first_assistant_sig_from_request(&req).is_none());
     }
 }
 

@@ -391,26 +391,25 @@ pub fn message_text(item: &Value) -> Option<String> {
     }
 }
 
+/// Text of the **first** `type:"message", role:"user"` item. If that item
+/// has no extractable text, return `None` instead of falling through to
+/// later user messages (which would be turn 2+ — not a stable anchor).
 pub fn first_user_text(items: &[Value]) -> Option<String> {
-    for it in items {
-        if it.get("type").and_then(|v| v.as_str()) != Some("message") {
-            continue;
-        }
-        if it.get("role").and_then(|v| v.as_str()) != Some("user") {
-            continue;
-        }
-        if let Some(t) = message_text(it) {
-            return Some(t);
-        }
-    }
-    None
+    let first_user = items.iter().find(|it| {
+        it.get("type").and_then(|v| v.as_str()) == Some("message")
+            && it.get("role").and_then(|v| v.as_str()) == Some("user")
+    })?;
+    message_text(first_user)
 }
 
-/// First-pass scan of `input[]`: prefer the earliest `function_call.call_id`
-/// (tool dispatched on a prior turn); fall back to the first assistant
+/// Scan a single generation's items for sig. Prefers the earliest
+/// `function_call.call_id`; falls back to the earliest assistant
 /// `message`'s text. The `function_call` precedence matches Anthropic's
 /// `tool_use` precedence in `wire_apis::anthropic::first_assistant_sig_*`.
-pub fn first_assistant_sig_from_input(items: &[Value]) -> Option<AssistantSig> {
+///
+/// Caller must have already bounded `items` to a single generation — this
+/// helper does **not** do any turn / generation boundary detection.
+fn scan_generation_for_sig(items: &[Value]) -> Option<AssistantSig> {
     let mut tool_id: Option<String> = None;
     let mut text: Option<String> = None;
     for it in items {
@@ -439,16 +438,76 @@ pub fn first_assistant_sig_from_input(items: &[Value]) -> Option<AssistantSig> {
     }
 }
 
+/// Sig of the **first assistant generation** in a request `input[]` (multi-
+/// turn conversation history). Bounding has two stages — both needed
+/// because Responses uses flat sibling items (`reasoning` / `message` /
+/// `function_call` / `function_call_output`) rather than nested
+/// message-with-blocks like Anthropic / OpenAI Chat:
+///
+///   1. **Skip the entire leading user run.** Some clients (Codex CLI,
+///      Gemini-style scaffolding ports) split turn 1's user side into two
+///      consecutive `role:user` items — a synthetic environment_context
+///      followed by the real prompt. A naive "first user → next user" window
+///      would collapse those two into an empty window. Skip past the whole
+///      run of consecutive leading user messages instead.
+///   2. **Stop at the first `function_call_output`.** That marks the boundary
+///      between generation 1 and generation 2 of the same turn. Without this
+///      bound, a generation-1 text-only response followed by a generation-2
+///      `function_call` (within the same turn) would yield `ToolId(fc_e2)`
+///      from input but `Text(msg_e1)` from response — splitting the session
+///      id between call 1 and call 2.
+pub fn first_assistant_sig_from_input(items: &[Value]) -> Option<AssistantSig> {
+    let is_user_message = |it: &Value| {
+        it.get("type").and_then(|v| v.as_str()) == Some("message")
+            && it.get("role").and_then(|v| v.as_str()) == Some("user")
+    };
+    let is_fco =
+        |it: &Value| it.get("type").and_then(|v| v.as_str()) == Some("function_call_output");
+
+    // (1) Skip past the whole run of leading user messages. `start` lands on
+    //     the first non-user item — the first assistant generation begins here.
+    let start = match items.iter().position(is_user_message) {
+        None => 0,
+        Some(idx) => {
+            let mut i = idx;
+            while i < items.len() && is_user_message(&items[i]) {
+                i += 1;
+            }
+            i
+        }
+    };
+    // Turn 1 ends at the next `role:user` message (start of turn 2) or array
+    // end. Used only to scope the generation boundary search below.
+    let turn_end = items[start..]
+        .iter()
+        .position(is_user_message)
+        .map(|i| start + i)
+        .unwrap_or(items.len());
+    // (2) Generation 1 ends at the first `function_call_output` within turn 1,
+    //     or at turn 1's end if there isn't one.
+    let generation_end = items[start..turn_end]
+        .iter()
+        .position(is_fco)
+        .map(|i| start + i)
+        .unwrap_or(turn_end);
+
+    scan_generation_for_sig(&items[start..generation_end])
+}
+
 pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
     let resp: Value = serde_json::from_str(body).ok()?;
     first_assistant_sig_from_response_value(&resp)
 }
 
-/// `Value`-input sibling of `first_assistant_sig_from_response`. Used by
-/// agent-profile session-id extractors on the parse-once hot path.
+/// Sig of the assistant generation in a response `output[]`. A response is
+/// the model's single inference product, so `output[]` IS one generation —
+/// no turn / generation boundaries to detect, just scan it directly. (Splits
+/// from `first_assistant_sig_from_input` deliberately: input's bounding
+/// logic is meaningless for output and only adds coupling risk if future
+/// API surfaces ever introduce input-shaped items in responses.)
 pub fn first_assistant_sig_from_response_value(resp: &Value) -> Option<AssistantSig> {
     let output = resp.get("output")?.as_array()?;
-    first_assistant_sig_from_input(output)
+    scan_generation_for_sig(output)
 }
 
 /// Extract the latest user-message text in `input[]`. Walks in reverse so
@@ -934,5 +993,178 @@ mod estimator_tests {
     fn estimate_output_zero_on_empty_or_unexpected() {
         assert_eq!(estimate_output_tokens(&json!({}), &cl()), 0);
         assert_eq!(estimate_output_tokens(&json!({"output":[]}), &cl()), 0);
+    }
+
+    // ─── first_user_text: strict "first role:user" semantics ────────────────
+
+    #[test]
+    fn first_user_text_returns_text_of_first_user_message() {
+        let items = vec![
+            json!({"type":"message","role":"developer","content":[{"type":"input_text","text":"sys"}]}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}),
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"more"}]}),
+        ];
+        assert_eq!(first_user_text(&items).as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn first_user_text_none_when_first_user_has_no_text() {
+        // First user item has empty content array; second user has text.
+        // Strict semantics: don't fall through.
+        let items = vec![
+            json!({"type":"message","role":"user","content":[]}),
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"later"}]}),
+        ];
+        assert_eq!(first_user_text(&items), None);
+    }
+
+    // ─── first_assistant_sig_from_input: window bounded to turn 1 ───────────
+
+    #[test]
+    fn first_assistant_sig_from_input_stable_across_turn_2_function_call() {
+        // Turn 1 was text-only (no function_call). Turn 2 introduces a
+        // function_call. The sig must still come from turn 1's text — an
+        // unbounded scan would jump to turn 2's fc and break session_id
+        // stability across calls.
+        let items_call_2 = vec![
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"u1"}]}),
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"u2"}]}),
+        ];
+        let items_call_3 = vec![
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"u1"}]}),
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"u2"}]}),
+            json!({"type":"reasoning","summary":[],"content":[]}),
+            json!({"type":"function_call","name":"f","arguments":"{}","call_id":"fc_t2"}),
+            json!({"type":"function_call_output","call_id":"fc_t2","output":"ok"}),
+        ];
+        let sig_2 = first_assistant_sig_from_input(&items_call_2).unwrap();
+        let sig_3 = first_assistant_sig_from_input(&items_call_3).unwrap();
+        assert!(matches!(&sig_2, AssistantSig::Text(t) if t == "hello"));
+        assert!(matches!(&sig_3, AssistantSig::Text(t) if t == "hello"));
+    }
+
+    #[test]
+    fn first_assistant_sig_from_input_picks_fc_within_first_turn() {
+        // Turn 1 has text + function_call; turn 2 also has function_call.
+        // The bounded scan must pick turn 1's fc, not turn 2's.
+        let items = vec![
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"u1"}]}),
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"working"}]}),
+            json!({"type":"function_call","name":"f","arguments":"{}","call_id":"fc_t1"}),
+            json!({"type":"function_call_output","call_id":"fc_t1","output":"ok"}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"u2"}]}),
+            json!({"type":"function_call","name":"f","arguments":"{}","call_id":"fc_t2"}),
+        ];
+        let sig = first_assistant_sig_from_input(&items).unwrap();
+        assert!(matches!(sig, AssistantSig::ToolId(id) if id == "fc_t1"));
+    }
+
+    // ─── first_assistant_sig_from_response_value: direct generation scan ──────
+
+    #[test]
+    fn first_assistant_sig_from_response_value_picks_fc_over_text() {
+        // Standard response: reasoning + assistant text + function_call.
+        // The response path scans the generation directly (no input bounding)
+        // and applies the same fc > text precedence.
+        let resp = json!({"output":[
+            {"type":"reasoning","summary":[],"content":[]},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]},
+            {"type":"function_call","name":"f","arguments":"{}","call_id":"fc_resp"},
+        ]});
+        let sig = first_assistant_sig_from_response_value(&resp).unwrap();
+        assert!(matches!(sig, AssistantSig::ToolId(id) if id == "fc_resp"));
+    }
+
+    #[test]
+    fn first_assistant_sig_from_response_value_falls_back_to_text_when_no_fc() {
+        let resp = json!({"output":[
+            {"type":"reasoning","summary":[],"content":[]},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"final"}]},
+        ]});
+        let sig = first_assistant_sig_from_response_value(&resp).unwrap();
+        assert!(matches!(sig, AssistantSig::Text(t) if t == "final"));
+    }
+
+    #[test]
+    fn first_assistant_sig_from_response_value_does_not_apply_input_bounding() {
+        // Pathological output that mixes input-shaped items (a stray
+        // function_call_output, a stray user message) into a response.
+        // The response path must NOT short-circuit at the fco (which is
+        // input-only generation boundary) or skip leading user items;
+        // it just scans the whole array and picks fc > text. This guards
+        // against re-coupling response_value back to input's bounding logic.
+        let resp = json!({"output":[
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"intro"}]},
+            {"type":"function_call_output","call_id":"fc_dummy","output":"x"},
+            {"type":"function_call","name":"f","arguments":"{}","call_id":"fc_after_fco"},
+        ]});
+        let sig = first_assistant_sig_from_response_value(&resp).unwrap();
+        // input bounding would have stopped at the fco and returned Text(intro);
+        // response scan ignores fco semantics → picks fc_after_fco.
+        assert!(matches!(sig, AssistantSig::ToolId(id) if id == "fc_after_fco"));
+    }
+
+    #[test]
+    fn first_assistant_sig_from_input_codex_dual_user_prefix() {
+        // Codex CLI splits turn 1's user side into two consecutive
+        // `role:user` items: a synthetic environment_context, then the real
+        // prompt. The leading user run must be skipped past entirely;
+        // generation 1 starts at the assistant generation AFTER both users.
+        // Sig must be stable across calls within turn 1 and across turn 2.
+        let items_call_1_resp_only = vec![
+            // Sanity-equivalent of what call 1's response output gives us:
+            json!({"type":"reasoning","summary":[],"content":[]}),
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"working"}]}),
+            json!({"type":"function_call","name":"f","arguments":"{}","call_id":"fc_e1"}),
+        ];
+        let sig_call_1 = first_assistant_sig_from_input(&items_call_1_resp_only).unwrap();
+
+        let items_call_2 = vec![
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"environment_context"}]}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"real prompt"}]}),
+            json!({"type":"reasoning","summary":[],"content":[]}),
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"working"}]}),
+            json!({"type":"function_call","name":"f","arguments":"{}","call_id":"fc_e1"}),
+            json!({"type":"function_call_output","call_id":"fc_e1","output":"ok"}),
+        ];
+        let sig_call_2 = first_assistant_sig_from_input(&items_call_2).unwrap();
+
+        let items_turn_2_call = vec![
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"environment_context"}]}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"real prompt"}]}),
+            json!({"type":"reasoning","summary":[],"content":[]}),
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"working"}]}),
+            json!({"type":"function_call","name":"f","arguments":"{}","call_id":"fc_e1"}),
+            json!({"type":"function_call_output","call_id":"fc_e1","output":"ok"}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"follow-up"}]}),
+            json!({"type":"function_call","name":"f","arguments":"{}","call_id":"fc_t2"}),
+        ];
+        let sig_turn_2 = first_assistant_sig_from_input(&items_turn_2_call).unwrap();
+
+        for sig in [&sig_call_1, &sig_call_2, &sig_turn_2] {
+            assert!(matches!(sig, AssistantSig::ToolId(id) if id == "fc_e1"));
+        }
+    }
+
+    #[test]
+    fn first_assistant_sig_from_input_generation_1_text_only_does_not_leak_to_generation_2() {
+        // Generation 1 is text-only; generation 2 (within the same turn 1, after
+        // an fco) carries a function_call. Strict "generation 1 only" semantics
+        // means we must return Text(generation_1_msg), not ToolId(fc_e2).
+        // (This shape only arises with non-standard agents that loop through
+        // a turn without producing a final terminal generation, but the bound
+        // is what guarantees session_id stability when it does.)
+        let items = vec![
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"u1"}]}),
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"intermediate"}]}),
+            json!({"type":"function_call_output","call_id":"fc_dummy","output":"x"}),
+            json!({"type":"function_call","name":"f","arguments":"{}","call_id":"fc_e2"}),
+        ];
+        let sig = first_assistant_sig_from_input(&items).unwrap();
+        assert!(matches!(sig, AssistantSig::Text(t) if t == "intermediate"));
     }
 }

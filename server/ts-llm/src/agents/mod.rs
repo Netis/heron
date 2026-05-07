@@ -133,7 +133,10 @@ mod priority_tests {
         let reg = build_default_registry();
         let c = call_with(
             wa::ANTHROPIC,
-            vec![("User-Agent", "claude-cli/2.1.98 (cli)")],
+            vec![
+                ("User-Agent", "claude-cli/2.1.98 (cli)"),
+                ("X-Claude-Code-Session-Id", "deadbeef-0000-0000-0000-000000000000"),
+            ],
         );
         assert_eq!(find_kind(&reg, &c), Some("claude-cli"));
     }
@@ -149,9 +152,31 @@ mod priority_tests {
     }
 
     #[test]
+    fn generic_catches_claude_cli_ua_without_session_header() {
+        // UA-spoofing or header-stripping: looks like claude-cli but the
+        // session header is absent. ClaudeCliProfile must NOT claim it
+        // (otherwise extract_session_id would return None with no fallback) —
+        // GenericProfile picks it up and synthesizes a session anchor.
+        let reg = build_default_registry();
+        let c = call_with(
+            wa::ANTHROPIC,
+            vec![("User-Agent", "claude-cli/2.1.98 (cli)")],
+        );
+        assert_eq!(find_kind(&reg, &c), Some("generic"));
+    }
+
+    const CODEX_STUB_META: &str = r#"{"session_id":"deadbeef-0000-0000-0000-000000000000"}"#;
+
+    #[test]
     fn codex_cli_wins_over_generic_by_originator() {
         let reg = build_default_registry();
-        let c = call_with(wa::OPENAI_RESPONSES, vec![("Originator", "codex_cli_rs")]);
+        let c = call_with(
+            wa::OPENAI_RESPONSES,
+            vec![
+                ("Originator", "codex_cli_rs"),
+                ("X-Codex-Turn-Metadata", CODEX_STUB_META),
+            ],
+        );
         assert_eq!(find_kind(&reg, &c), Some("codex-cli"));
     }
 
@@ -160,7 +185,10 @@ mod priority_tests {
         let reg = build_default_registry();
         let c = call_with(
             wa::OPENAI_RESPONSES,
-            vec![("User-Agent", "codex-tui/0.118.0")],
+            vec![
+                ("User-Agent", "codex-tui/0.118.0"),
+                ("X-Codex-Turn-Metadata", CODEX_STUB_META),
+            ],
         );
         assert_eq!(find_kind(&reg, &c), Some("codex-cli"));
     }
@@ -171,6 +199,20 @@ mod priority_tests {
         let c = call_with(
             wa::OPENAI_RESPONSES,
             vec![("User-Agent", "OpenAI/Python 1.50")],
+        );
+        assert_eq!(find_kind(&reg, &c), Some("generic"));
+    }
+
+    #[test]
+    fn generic_catches_codex_ua_without_turn_metadata_header() {
+        // UA-spoofing or header-stripping: looks like codex but the
+        // turn-metadata header is absent. CodexCliProfile must NOT claim it
+        // (otherwise extract_session_id would return None with no fallback) —
+        // GenericProfile picks it up and synthesizes a session anchor.
+        let reg = build_default_registry();
+        let c = call_with(
+            wa::OPENAI_RESPONSES,
+            vec![("User-Agent", "codex-tui/0.118.0")],
         );
         assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
@@ -211,7 +253,10 @@ mod priority_tests {
         let reg = build_default_registry();
         let c = call_with_body(
             wa::OPENAI_RESPONSES,
-            vec![("User-Agent", "codex-tui/0.118.0")],
+            vec![
+                ("User-Agent", "codex-tui/0.118.0"),
+                ("X-Codex-Turn-Metadata", CODEX_STUB_META),
+            ],
             Some(OPENCLAW_RESPONSES_MAIN),
         );
         assert_eq!(find_kind(&reg, &c), Some("codex-cli"));
@@ -321,7 +366,10 @@ mod priority_tests {
         let reg = build_default_registry();
         let c = call_with_body(
             wa::ANTHROPIC,
-            vec![("User-Agent", "claude-cli/2.1.98")],
+            vec![
+                ("User-Agent", "claude-cli/2.1.98"),
+                ("X-Claude-Code-Session-Id", "deadbeef-0000-0000-0000-000000000000"),
+            ],
             Some(OPENCLAW_ANT_MAIN),
         );
         assert_eq!(find_kind(&reg, &c), Some("claude-cli"));

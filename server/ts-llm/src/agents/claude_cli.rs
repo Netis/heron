@@ -63,12 +63,23 @@ impl AgentProfile for ClaudeCliProfile {
     }
 
     fn matches(&self, ctx: &CallCtx<'_>) -> bool {
+        // Both UA prefix AND SESSION_HEADER must be present. UA alone isn't
+        // enough: the registry is first-match-wins (`profile.rs:181`), so
+        // claiming a call here when the session header is missing leaves the
+        // call with `extract_session_id() = None` and no fallback. By
+        // requiring the header up front, UA-spoofed / header-stripped /
+        // pre-session-header-version traffic falls through to GenericProfile,
+        // which can synthesize a session anchor from the body.
         if ctx.call.wire_api != wa::ANTHROPIC {
             return false;
         }
-        header(ctx.call, "user-agent")
+        let ua_ok = header(ctx.call, "user-agent")
             .map(|ua| ua.starts_with(UA_PREFIX))
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if !ua_ok {
+            return false;
+        }
+        header(ctx.call, SESSION_HEADER).is_some()
     }
 
     fn extract_session_id(&self, ctx: &CallCtx<'_>) -> Option<SessionIdExtraction> {
@@ -243,7 +254,10 @@ mod tests {
     fn matches_anthropic_claude_cli_user_agent() {
         let c = call_with(
             wa::ANTHROPIC,
-            vec![("User-Agent", "claude-cli/2.1.98 (external, cli)")],
+            vec![
+                ("User-Agent", "claude-cli/2.1.98 (external, cli)"),
+                ("X-Claude-Code-Session-Id", "deadbeef-0000-0000-0000-000000000000"),
+            ],
             None,
         );
         assert!(ClaudeCliProfile.matches(&c.ctx()));
@@ -253,7 +267,10 @@ mod tests {
     fn does_not_match_other_wire_api() {
         let c = call_with(
             wa::OPENAI_RESPONSES,
-            vec![("User-Agent", "claude-cli/2.1.98 (external, cli)")],
+            vec![
+                ("User-Agent", "claude-cli/2.1.98 (external, cli)"),
+                ("X-Claude-Code-Session-Id", "deadbeef-0000-0000-0000-000000000000"),
+            ],
             None,
         );
         assert!(!ClaudeCliProfile.matches(&c.ctx()));
@@ -261,7 +278,27 @@ mod tests {
 
     #[test]
     fn does_not_match_other_user_agent() {
-        let c = call_with(wa::ANTHROPIC, vec![("User-Agent", "curl/8.1.2")], None);
+        let c = call_with(
+            wa::ANTHROPIC,
+            vec![
+                ("User-Agent", "curl/8.1.2"),
+                ("X-Claude-Code-Session-Id", "deadbeef-0000-0000-0000-000000000000"),
+            ],
+            None,
+        );
+        assert!(!ClaudeCliProfile.matches(&c.ctx()));
+    }
+
+    #[test]
+    fn does_not_match_when_session_header_missing() {
+        // UA alone is not enough — without `x-claude-code-session-id` we
+        // cannot extract a session_id, so the registry must let the call
+        // fall through to GenericProfile rather than claiming and dropping it.
+        let c = call_with(
+            wa::ANTHROPIC,
+            vec![("User-Agent", "claude-cli/2.1.98 (external, cli)")],
+            None,
+        );
         assert!(!ClaudeCliProfile.matches(&c.ctx()));
     }
 
