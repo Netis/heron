@@ -988,3 +988,93 @@ async fn generic_profile_anthropic_two_call_session() {
         t.status
     );
 }
+
+/// Gemini CLI (API-key mode) capture against a local proxy. Wire format is
+/// the public Gemini AI Studio REST surface
+/// (`POST /v1beta/models/{m}:streamGenerateContent`). Gemini CLI is a
+/// multi-turn agent, but no dedicated `gemini-cli` profile exists yet — the
+/// `generic` profile dispatches by `wire_api`.
+///
+/// Ground truth (from manual inspection of the 7 captured POSTs across 3 TCP
+/// streams):
+///
+///   - Turn A: 4 calls — initial prompt + 3 tool roundtrips. Closes when
+///     call 4's response is pure text (no functionCall) → Gemini wire `STOP`
+///     does NOT trigger our synthetic `TOOL_USE` rewrite, so
+///     `is_turn_terminal` evaluates true.
+///   - Turn B: 3 calls — user follow-up prompt mid-conversation (re-arms
+///     `is_user_turn_start`) + 2 more tool roundtrips. Closes the same way
+///     as turn A.
+///
+/// Both turns share one synthesized `session_id` of form `tu-<16hex>`.
+/// Gemini's wire protocol has no opaque tool-call ids, so
+/// `first_assistant_sig_*` returns `ToolId(<fnv1a hash of canonical sig>)`
+/// when the model turn carries any non-text part; both response-side and
+/// request-history-side observations of the same model turn produce
+/// identical hashes.
+///
+/// Catches two regressions:
+///
+///   1. Profile-match coverage: `GenericProfile::matches()` must include
+///      `wa::GEMINI_AISTUDIO`. Without it, no profile matches and no turn
+///      is emitted at all.
+///   2. Sig variant correctness: `first_assistant_sig_from_*` must return
+///      `ToolId(_)` (not `Text(_)`) when the model turn carries any
+///      functionCall, otherwise `generic` profile's helper-shape one-shot
+///      gate spuriously fires on call 1 (sig=Text + system_text non-empty
+///      + no model history) and gives it a `gen-<helper_hash>` session_id
+///      distinct from calls 2..7's `gen-<text_hash>`. The pcap then
+///      shatters into 1 + N turns instead of 4 + 3.
+#[tokio::test]
+async fn gemini_cli_apikey_expects_two_turns_4_and_3() {
+    let Some(turns) = run_pcap("gemini-cli-apikey.pcap").await else {
+        eprintln!("skip: fixture not present");
+        return;
+    };
+    let gemini: Vec<_> = turns
+        .iter()
+        .filter(|t| t.wire_api == wa::GEMINI_AISTUDIO)
+        .collect();
+    eprintln!("gemini-cli-apikey: {} gemini-aistudio turns", gemini.len());
+    for t in &gemini {
+        eprintln!(
+            "  turn {} status={:?} calls={} session={}",
+            t.turn_id, t.status, t.call_count, t.session_id,
+        );
+    }
+
+    assert_eq!(gemini.len(), 2, "expected 2 turns; got {}", gemini.len());
+
+    // No dedicated profile yet — generic dispatcher handles Gemini.
+    assert!(
+        gemini.iter().all(|t| t.agent_kind == "generic"),
+        "agent_kind should be 'generic'; got {:?}",
+        gemini.iter().map(|t| &t.agent_kind).collect::<Vec<_>>(),
+    );
+
+    // All 7 calls must share one session_id — proves the sig algorithm is
+    // stable across the resp/req-history boundary AND the helper-shape
+    // gate is correctly skipped for tools-bearing first calls.
+    let sessions: std::collections::BTreeSet<_> =
+        gemini.iter().map(|t| t.session_id.as_str()).collect();
+    assert_eq!(
+        sessions.len(),
+        1,
+        "all turns must share one session_id; got {sessions:?}",
+    );
+
+    // Turn split: 4 + 3 (order-insensitive — turn assembly emits in
+    // completion order, which depends on tracker flush behavior).
+    let mut counts: Vec<u32> = gemini.iter().map(|t| t.call_count).collect();
+    counts.sort();
+    assert_eq!(
+        counts,
+        vec![3, 4],
+        "expected calls split 4+3; got {counts:?}",
+    );
+    assert_eq!(
+        gemini.iter().map(|t| t.call_count).sum::<u32>(),
+        7,
+        "total LlmCall count across turns must equal 7",
+    );
+}

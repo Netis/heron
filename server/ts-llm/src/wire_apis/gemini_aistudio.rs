@@ -17,6 +17,7 @@ use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 
 use crate::model::{RequestInfo, ResponseInfo, RouteVerdict, WireApi};
 use crate::parsed_json::ParsedJson;
+use crate::wire_apis::AssistantSig;
 
 /// Synthetic finish-reason emitted when `finishReason == "STOP"` and the
 /// response contains a `functionCall` part. Gemini has no native tool-use
@@ -425,6 +426,353 @@ fn finalize_candidate(p: PartialCandidate) -> Value {
     out
 }
 
+// ────────────────────────── body-shape parsers ────────────────────────────
+//
+// Helpers that walk a Gemini AI Studio request / response body to pull out
+// the pieces agent profiles need (first/last user text, assistant signature,
+// system prompt). All operate on a parsed `serde_json::Value`.
+//
+// Conventions:
+//   * `parts[]` of role==user content can mix `text`, `inlineData`, and
+//     `functionResponse` (tool roundtrip). User text helpers ignore
+//     `functionResponse` parts so a tool-result-only continuation doesn't
+//     masquerade as a fresh user input.
+//   * `parts[]` of role==model content can mix `text`, `thought:true text`,
+//     and `functionCall`. The assistant-sig path **strips `thought` parts**:
+//     thought never survives client-side echo into the next request's
+//     `contents[]`, so signing over thought would break sig consistency
+//     between `first_assistant_sig_from_response_value` (current call) and
+//     `first_assistant_sig_from_request` (next call's history).
+//   * `functionCall.id` is optional in the Gemini protocol — server may
+//     issue, otherwise Gemini CLI synthesizes `{name}_{ms}_{counter}` only
+//     in `functionResponse` echoes (NOT on the assistant turn). So sigs
+//     must work without relying on id presence.
+
+/// Concatenate all visible text parts (text, with `thought != true`) from
+/// a content block's `parts[]`. Returns `String::new()` when no visible
+/// text exists.
+fn visible_text_of_parts(parts: &[Value]) -> String {
+    let mut out = String::new();
+    for p in parts {
+        if p.get("thought").and_then(|t| t.as_bool()) == Some(true) {
+            continue;
+        }
+        if let Some(t) = p.get("text").and_then(|v| v.as_str()) {
+            out.push_str(t);
+        }
+    }
+    out
+}
+
+/// Canonical JSON serialization with object keys sorted lexicographically.
+/// Required for sig stability: the same `args` object can come from the
+/// streaming response (server's preferred key order) or from the next
+/// request's `contents[]` (whatever order Gemini CLI rebuilds it in), and
+/// both must hash identically. Self-walking the `Value` instead of relying
+/// on `serde_json::to_string` because Map's key order behavior depends on
+/// the `preserve_order` cargo feature.
+fn canonical_json(value: &Value) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    fn write(value: &Value, out: &mut String) {
+        match value {
+            Value::Null => out.push_str("null"),
+            Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Value::Number(n) => {
+                let _ = write!(out, "{n}");
+            }
+            Value::String(s) => {
+                // `serde_json::to_string` of a String escapes correctly;
+                // delegating ensures we match standard JSON escaping rules.
+                let _ = write!(
+                    out,
+                    "{}",
+                    serde_json::to_string(s).unwrap_or_else(|_| String::from("\"\""))
+                );
+            }
+            Value::Array(arr) => {
+                out.push('[');
+                for (i, v) in arr.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    write(v, out);
+                }
+                out.push(']');
+            }
+            Value::Object(map) => {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                out.push('{');
+                for (i, k) in keys.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    let _ = write!(
+                        out,
+                        "{}",
+                        serde_json::to_string(*k).unwrap_or_else(|_| String::from("\"\""))
+                    );
+                    out.push(':');
+                    write(&map[*k], out);
+                }
+                out.push('}');
+            }
+        }
+    }
+    write(value, &mut out);
+    out
+}
+
+/// Build a stable signature over a model turn's `parts[]`. Returns
+/// `(canonical_string, is_pure_text)` where:
+///
+///   - `canonical_string` joins one segment per non-`thought` part with `|`.
+///     Per-part encoding:
+///       - text         → `t:<text>`
+///       - functionCall → `f:<id>` if `id` present, else `f:<name>/<canonical_args>`
+///       - inlineData   → `d:<mimeType>:<data_len>`
+///       - unknown      → `?:<canonical_json>` (verbatim so future part types
+///         still contribute to sig stability)
+///
+///   - `is_pure_text` is true iff every contributing segment was `text` —
+///     no functionCall, inlineData, or unknown parts. Callers wrap pure-
+///     text sigs in `AssistantSig::Text` (so `generic` profile's helper-
+///     shape one-shot detector keeps working as designed) and tools-bearing
+///     sigs in `AssistantSig::ToolId` (so the same detector — which
+///     pattern-matches `Text(_)` only — skips multi-turn agent first
+///     calls).
+///
+/// Returns `None` when the parts array yields zero non-thought segments.
+fn parts_sig(parts: &[Value]) -> Option<(String, bool)> {
+    let mut segs: Vec<String> = Vec::new();
+    let mut is_pure_text = true;
+    for p in parts {
+        if p.get("thought").and_then(|t| t.as_bool()) == Some(true) {
+            continue;
+        }
+        if let Some(t) = p.get("text").and_then(|v| v.as_str()) {
+            segs.push(format!("t:{t}"));
+            continue;
+        }
+        is_pure_text = false;
+        if let Some(fc) = p.get("functionCall") {
+            if let Some(id) = fc.get("id").and_then(|v| v.as_str()) {
+                segs.push(format!("f:{id}"));
+            } else {
+                let name = fc.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let args = fc.get("args").cloned().unwrap_or(Value::Null);
+                segs.push(format!("f:{name}/{}", canonical_json(&args)));
+            }
+            continue;
+        }
+        if let Some(inline) = p.get("inlineData") {
+            let mime = inline
+                .get("mimeType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let len = inline
+                .get("data")
+                .and_then(|v| v.as_str())
+                .map(|s| s.len())
+                .unwrap_or(0);
+            segs.push(format!("d:{mime}:{len}"));
+            continue;
+        }
+        segs.push(format!("?:{}", canonical_json(p)));
+    }
+    if segs.is_empty() {
+        None
+    } else {
+        Some((segs.join("|"), is_pure_text))
+    }
+}
+
+/// FNV-1a 64-bit. Used to compress a tools-bearing canonical sig string
+/// (which can be hundreds of bytes for parallel tool calls + long args)
+/// into a fixed-width opaque id for `AssistantSig::ToolId`. Same primitive
+/// as `agents::session_id::synth_text_hash`; kept inline here to avoid a
+/// cross-module helper for a one-off call site.
+fn fnv1a_64(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for byte in s.bytes() {
+        h ^= byte as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Wrap a `parts_sig` result into the right `AssistantSig` variant.
+/// Pure-text sigs go in `Text` (helper-shape gate eligible); tools-bearing
+/// sigs go in `ToolId(tu-<16hex>)` (helper-shape gate skipped). The `tu-`
+/// prefix is intentionally chosen to **not** match any of the prefixes
+/// `canonicalize_tool_id` rewrites (`call`, `toolu`, `fc`, `chatcmpl`),
+/// so the synthesized id passes through unmodified.
+fn wrap_sig(sig_and_kind: (String, bool)) -> AssistantSig {
+    let (sig, is_pure_text) = sig_and_kind;
+    if is_pure_text {
+        AssistantSig::Text(sig)
+    } else {
+        AssistantSig::ToolId(format!("tu-{:016x}", fnv1a_64(&sig)))
+    }
+}
+
+/// First user content's text — used as a stable session anchor in the
+/// per-conversation hash. Joins all `text` parts of the first role==user
+/// content; ignores `functionResponse` and `inlineData` parts. `None`
+/// when no role==user content exists or all its text is empty/whitespace.
+///
+/// Note: Gemini CLI prepends a synthetic `<session_context>` user content
+/// in front of the real prompt. We deliberately take that one (the FIRST
+/// user content) as the anchor — its scaffolding text is constant within
+/// a session, which is exactly the property we want for session_id
+/// stability across the conversation's calls.
+pub fn first_user_text(req: &Value) -> Option<String> {
+    let contents = req.get("contents")?.as_array()?;
+    for c in contents {
+        if c.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        let parts = c.get("parts").and_then(|v| v.as_array()).map(|p| {
+            p.iter()
+                .filter_map(|x| x.get("text").and_then(|t| t.as_str()).map(str::to_string))
+                .collect::<Vec<_>>()
+        });
+        if let Some(parts) = parts {
+            let joined = parts.join("\n");
+            let trimmed = joined.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Top-level `systemInstruction.parts[].text` joined. Gemini puts system
+/// prompt in a dedicated top-level field rather than inline among contents,
+/// so the helper-shape one-shot detection has a clean signal.
+pub fn first_system_text(req: &Value) -> Option<String> {
+    let parts = req.get("systemInstruction")?.get("parts")?.as_array()?;
+    let joined = parts
+        .iter()
+        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trimmed = joined.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Sig of the first role==model content in `contents[]`. Computes
+/// `parts_sig` over the first model content's parts. `None` when no
+/// model content exists (true on the first call before any tool
+/// roundtrip).
+pub fn first_assistant_sig_from_request(req: &Value) -> Option<AssistantSig> {
+    let contents = req.get("contents")?.as_array()?;
+    for c in contents {
+        if c.get("role").and_then(|r| r.as_str()) != Some("model") {
+            continue;
+        }
+        let parts = c.get("parts").and_then(|v| v.as_array())?;
+        if let Some(sig) = parts_sig(parts) {
+            return Some(wrap_sig(sig));
+        }
+    }
+    None
+}
+
+/// Sig of the first candidate's parts in a Gemini response body. Mirrors
+/// `first_assistant_sig_from_request` so the sig is stable across the
+/// boundary: a call's response and the next call's echoed history hash
+/// to the same `AssistantSig` (same variant, same string).
+pub fn first_assistant_sig_from_response_value(resp: &Value) -> Option<AssistantSig> {
+    let candidates = resp.get("candidates")?.as_array()?;
+    let first = candidates.first()?;
+    let parts = first.get("content")?.get("parts")?.as_array()?;
+    parts_sig(parts).map(wrap_sig)
+}
+
+/// Trimmed text of the **last** user-side input. Skips contents whose
+/// parts are entirely `functionResponse` (those are tool-result roundtrip
+/// continuations, not fresh user input). Falls back to the previous
+/// user content with text. `None` when no user content has visible text.
+pub fn extract_user_input(req: &Value) -> Option<String> {
+    let contents = req.get("contents")?.as_array()?;
+    for c in contents.iter().rev() {
+        if c.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        let Some(parts) = c.get("parts").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        // Pure-functionResponse content = tool roundtrip, not user input.
+        // Skip and look further back.
+        let has_only_function_responses = !parts.is_empty()
+            && parts
+                .iter()
+                .all(|p| p.get("functionResponse").is_some());
+        if has_only_function_responses {
+            continue;
+        }
+        let joined = parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let trimmed = joined.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+/// True iff the **last** content is role==user AND has at least one
+/// non-`functionResponse` part with non-empty content (text, image, …).
+/// Pure-functionResponse last content means "tool roundtrip continuing
+/// the same agent turn", not a fresh user-initiated turn.
+pub fn is_user_turn_start(req: &Value) -> Option<bool> {
+    let last = req.get("contents")?.as_array()?.last()?;
+    if last.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return Some(false);
+    }
+    let parts = last.get("parts")?.as_array()?;
+    if parts.is_empty() {
+        return Some(false);
+    }
+    Some(parts.iter().any(|p| {
+        if p.get("functionResponse").is_some() {
+            return false;
+        }
+        if let Some(t) = p.get("text").and_then(|v| v.as_str()) {
+            return !t.trim().is_empty();
+        }
+        // Non-text, non-functionResponse part (image, file, future types)
+        // counts as a user-side contribution.
+        p.get("inlineData").is_some()
+    }))
+}
+
+/// Joined visible text of the first candidate's `parts[]` in a response
+/// (thought stripped). Used by the agent-profile assistant-text extractor
+/// for downstream UI rendering and post-hoc analysis.
+pub fn extract_assistant_text_value(resp: &Value) -> Option<String> {
+    let candidates = resp.get("candidates")?.as_array()?;
+    let first = candidates.first()?;
+    let parts = first.get("content")?.get("parts")?.as_array()?;
+    let joined = visible_text_of_parts(parts);
+    let trimmed = joined.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,6 +1059,244 @@ mod tests {
         assert_eq!(info.output_tokens, Some(2));
         assert_eq!(info.total_tokens, Some(17));
         assert_eq!(info.cache_read_input_tokens, Some(7));
+    }
+
+    // ── body-shape parser tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_first_user_text_takes_first_user_content() {
+        // Mirrors real Gemini CLI shape: contents[0] is a synthetic
+        // <session_context> user msg, contents[1] is the real prompt. Sig
+        // anchor uses [0] because session_context is constant within a
+        // session — the property we want for stable session_id grouping.
+        let req: Value = serde_json::from_str(r#"{
+            "contents": [
+                {"role":"user","parts":[{"text":"<session_context>\nthis is the gemini cli"}]},
+                {"role":"user","parts":[{"text":"  hello there  "}]}
+            ]
+        }"#).unwrap();
+        assert_eq!(
+            first_user_text(&req).as_deref(),
+            Some("<session_context>\nthis is the gemini cli"),
+        );
+    }
+
+    #[test]
+    fn test_first_system_text_from_system_instruction() {
+        let req: Value = serde_json::from_str(r#"{
+            "systemInstruction": {"role":"user","parts":[{"text":"You are an assistant."}]},
+            "contents": []
+        }"#).unwrap();
+        assert_eq!(first_system_text(&req).as_deref(), Some("You are an assistant."));
+
+        let req_empty: Value = serde_json::from_str(r#"{"contents": []}"#).unwrap();
+        assert_eq!(first_system_text(&req_empty), None);
+    }
+
+    #[test]
+    fn test_canonical_json_sorts_keys() {
+        // Same logical args, different physical key orders → identical canonical form.
+        let a: Value = serde_json::from_str(r#"{"pattern":"x","dir_path":"/a"}"#).unwrap();
+        let b: Value = serde_json::from_str(r#"{"dir_path":"/a","pattern":"x"}"#).unwrap();
+        assert_eq!(canonical_json(&a), canonical_json(&b));
+        assert_eq!(
+            canonical_json(&a),
+            r#"{"dir_path":"/a","pattern":"x"}"#,
+        );
+
+        // Recursive sort: nested objects also sort.
+        let c: Value = serde_json::from_str(r#"{"z":{"b":1,"a":2},"y":[3,2,1]}"#).unwrap();
+        assert_eq!(canonical_json(&c), r#"{"y":[3,2,1],"z":{"a":2,"b":1}}"#);
+    }
+
+    #[test]
+    fn test_assistant_sig_resp_matches_request_history() {
+        // Critical: the same model turn, viewed once as response of call N
+        // and once as echoed history (contents[i].role==model) in request
+        // of call N+1, must hash identically. This is the load-bearing
+        // invariant for cross-call session_id stability.
+
+        // Response side: parts have visible text + 2 functionCalls + thought
+        // (thought must be stripped from the sig).
+        let resp: Value = serde_json::from_str(r#"{
+            "candidates": [{
+                "index": 0,
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {"thought": true, "text": "let me think about this"},
+                        {"text": "I'll search."},
+                        {"functionCall": {"name": "grep", "args": {"q": "x", "path": "/a"}}},
+                        {"functionCall": {"name": "read", "args": {"file": "/a"}}}
+                    ]
+                }
+            }]
+        }"#).unwrap();
+        let sig_resp = first_assistant_sig_from_response_value(&resp).unwrap();
+
+        // Request side: same turn echoed back as contents[2] (CLI strips thought,
+        // and may have args in different key order — see canonical_json).
+        let req: Value = serde_json::from_str(r#"{
+            "contents": [
+                {"role":"user","parts":[{"text":"hi"}]},
+                {"role":"user","parts":[{"text":"hi2"}]},
+                {"role":"model","parts":[
+                    {"text": "I'll search."},
+                    {"functionCall": {"name": "grep", "args": {"path": "/a", "q": "x"}}},
+                    {"functionCall": {"name": "read", "args": {"file": "/a"}}}
+                ]}
+            ]
+        }"#).unwrap();
+        let sig_req = first_assistant_sig_from_request(&req).unwrap();
+
+        // Tools-bearing model turn → ToolId variant (so the helper-shape
+        // one-shot detector in `generic` profile skips it). Both sides
+        // hash the same canonical string → same opaque id.
+        let id_resp = match sig_resp {
+            AssistantSig::ToolId(s) => s,
+            AssistantSig::Text(_) => panic!("tools-bearing sig should be ToolId, not Text"),
+        };
+        let id_req = match sig_req {
+            AssistantSig::ToolId(s) => s,
+            AssistantSig::Text(_) => panic!("tools-bearing sig should be ToolId, not Text"),
+        };
+        assert_eq!(id_resp, id_req, "sig must be stable across resp/req boundary");
+        // tu-<16hex>: 3 + 16 = 19 chars exactly.
+        assert!(id_resp.starts_with("tu-"), "got: {id_resp}");
+        assert_eq!(id_resp.len(), 19, "got: {id_resp}");
+    }
+
+    #[test]
+    fn test_assistant_sig_falls_back_to_function_call_when_no_visible_text() {
+        // Model goes straight to functionCall with zero text preamble — sig
+        // must still be non-None (else first-call session_id synthesis fails).
+        // Tools-bearing → ToolId variant (helper-shape gate skipped).
+        let resp: Value = serde_json::from_str(r#"{
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {"thought": true, "text": "thinking..."},
+                        {"functionCall": {"name": "grep", "args": {"q": "x"}}}
+                    ]
+                }
+            }]
+        }"#).unwrap();
+        let sig = first_assistant_sig_from_response_value(&resp).unwrap();
+        match sig {
+            AssistantSig::ToolId(s) => {
+                assert!(s.starts_with("tu-"), "got: {s}");
+                assert_eq!(s.len(), 19);
+            }
+            AssistantSig::Text(_) => panic!("tools-bearing sig should be ToolId"),
+        }
+    }
+
+    #[test]
+    fn test_assistant_sig_pure_text_response_uses_text_variant() {
+        // When the model returns ONLY text (no functionCall / inlineData),
+        // sig must be Text(_) so the helper-shape one-shot detector can
+        // still trigger for true single-shot helper agents.
+        let resp: Value = serde_json::from_str(r#"{
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {"thought": true, "text": "let me think"},
+                        {"text": "hello there"}
+                    ]
+                }
+            }]
+        }"#).unwrap();
+        let sig = first_assistant_sig_from_response_value(&resp).unwrap();
+        match sig {
+            AssistantSig::Text(s) => assert_eq!(s, "t:hello there"),
+            AssistantSig::ToolId(_) => panic!("pure-text sig should be Text"),
+        }
+    }
+
+    #[test]
+    fn test_assistant_sig_uses_id_when_present() {
+        // When server eventually issues opaque ids, the canonical string
+        // uses the id directly. functionCall is still a non-text part so
+        // variant is ToolId regardless.
+        let resp: Value = serde_json::from_str(r#"{
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {"functionCall": {"id": "fc_abc123", "name": "grep", "args": {"q": "x"}}}
+                    ]
+                }
+            }]
+        }"#).unwrap();
+        let sig = first_assistant_sig_from_response_value(&resp).unwrap();
+        match sig {
+            AssistantSig::ToolId(s) => {
+                assert!(s.starts_with("tu-"), "got: {s}");
+                assert_eq!(s.len(), 19);
+            }
+            AssistantSig::Text(_) => panic!("tools-bearing sig should be ToolId"),
+        }
+    }
+
+    #[test]
+    fn test_extract_user_input_skips_pure_function_response_content() {
+        // Last content is functionResponse only (tool roundtrip continuation)
+        // — extract_user_input must skip it and return the prior real prompt.
+        let req: Value = serde_json::from_str(r#"{
+            "contents": [
+                {"role":"user","parts":[{"text":"<session_context>scaffold"}]},
+                {"role":"user","parts":[{"text":"actual user question"}]},
+                {"role":"model","parts":[{"functionCall":{"name":"f","args":{}}}]},
+                {"role":"user","parts":[
+                    {"functionResponse":{"name":"f","response":{"r":1},"id":"f_123_0"}}
+                ]}
+            ]
+        }"#).unwrap();
+        assert_eq!(
+            extract_user_input(&req).as_deref(),
+            Some("actual user question"),
+        );
+    }
+
+    #[test]
+    fn test_is_user_turn_start_false_on_function_response_only() {
+        let req: Value = serde_json::from_str(r#"{
+            "contents": [
+                {"role":"user","parts":[{"text":"hi"}]},
+                {"role":"model","parts":[{"functionCall":{"name":"f","args":{}}}]},
+                {"role":"user","parts":[
+                    {"functionResponse":{"name":"f","response":{"r":1}}}
+                ]}
+            ]
+        }"#).unwrap();
+        // Last content is user but pure functionResponse → not a fresh turn.
+        assert_eq!(is_user_turn_start(&req), Some(false));
+
+        let req_fresh: Value = serde_json::from_str(r#"{
+            "contents": [
+                {"role":"user","parts":[{"text":"please help"}]}
+            ]
+        }"#).unwrap();
+        assert_eq!(is_user_turn_start(&req_fresh), Some(true));
+    }
+
+    #[test]
+    fn test_extract_assistant_text_strips_thought() {
+        let resp: Value = serde_json::from_str(r#"{
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {"thought": true, "text": "internal monologue"},
+                        {"text": "visible answer"},
+                        {"functionCall": {"name": "f", "args": {}}}
+                    ]
+                }
+            }]
+        }"#).unwrap();
+        assert_eq!(extract_assistant_text_value(&resp).as_deref(), Some("visible answer"));
     }
 
     #[test]

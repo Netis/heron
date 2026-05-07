@@ -25,7 +25,7 @@ impl AgentProfile for GenericProfile {
     fn matches(&self, ctx: &CallCtx<'_>) -> bool {
         matches!(
             ctx.call.wire_api,
-            wa::ANTHROPIC | wa::OPENAI_CHAT | wa::OPENAI_RESPONSES
+            wa::ANTHROPIC | wa::OPENAI_CHAT | wa::OPENAI_RESPONSES | wa::GEMINI_AISTUDIO
         )
     }
 
@@ -91,6 +91,18 @@ impl AgentProfile for GenericProfile {
                 let system_text = wa::openai::responses::first_system_text(req);
                 (user_text, sig_in_req, sig_in_resp, system_text)
             }
+            wa::GEMINI_AISTUDIO => {
+                let user_text = wa::gemini_aistudio::first_user_text(req)?;
+                let sig_in_req = wa::gemini_aistudio::first_assistant_sig_from_request(req);
+                let sig_in_resp = if sig_in_req.is_none() {
+                    ctx.resp
+                        .and_then(wa::gemini_aistudio::first_assistant_sig_from_response_value)
+                } else {
+                    None
+                };
+                let system_text = wa::gemini_aistudio::first_system_text(req);
+                (user_text, sig_in_req, sig_in_resp, system_text)
+            }
             _ => return None,
         };
 
@@ -126,6 +138,7 @@ impl AgentProfile for GenericProfile {
             wa::ANTHROPIC => wa::anthropic::is_user_turn_start(req),
             wa::OPENAI_CHAT => wa::openai::chat::is_user_turn_start(req),
             wa::OPENAI_RESPONSES => wa::openai::responses::is_user_turn_start(req),
+            wa::GEMINI_AISTUDIO => wa::gemini_aistudio::is_user_turn_start(req),
             _ => None,
         }
     }
@@ -136,6 +149,7 @@ impl AgentProfile for GenericProfile {
             wa::ANTHROPIC => wa::anthropic::extract_user_input(req),
             wa::OPENAI_CHAT => wa::openai::chat::extract_user_input(req),
             wa::OPENAI_RESPONSES => wa::openai::responses::extract_user_input(req),
+            wa::GEMINI_AISTUDIO => wa::gemini_aistudio::extract_user_input(req),
             _ => None,
         }
     }
@@ -146,6 +160,7 @@ impl AgentProfile for GenericProfile {
             wa::ANTHROPIC => wa::anthropic::extract_assistant_text_value(resp),
             wa::OPENAI_CHAT => wa::openai::chat::extract_assistant_text_value(resp),
             wa::OPENAI_RESPONSES => wa::openai::responses::extract_assistant_text_value(resp),
+            wa::GEMINI_AISTUDIO => wa::gemini_aistudio::extract_assistant_text_value(resp),
             _ => None,
         }
     }
@@ -188,10 +203,21 @@ mod tests {
         req: Option<&str>,
         resp: Option<&str>,
     ) -> TestCall {
+        call_with_finish(wire_api, headers, req, resp, None)
+    }
+
+    fn call_with_finish(
+        wire_api: &'static str,
+        headers: Vec<(&str, &str)>,
+        req: Option<&str>,
+        resp: Option<&str>,
+        finish_reason: Option<&str>,
+    ) -> TestCall {
         let path = match wire_api {
             wa::ANTHROPIC => "/v1/messages",
             wa::OPENAI_CHAT => "/v1/chat/completions",
             wa::OPENAI_RESPONSES => "/v1/responses",
+            wa::GEMINI_AISTUDIO => "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
             _ => "/",
         };
         TestCall::new(LlmCall {
@@ -207,7 +233,7 @@ mod tests {
             is_stream: true,
             request_body: req.map(str::to_string),
             status_code: None,
-            finish_reason: None,
+            finish_reason: finish_reason.map(str::to_string),
             response_body: resp.map(str::to_string),
             input_tokens: None,
             output_tokens: None,
@@ -232,10 +258,460 @@ mod tests {
     // ── Cross-wire-api: matches() ───────────────────────────────────────────
 
     #[test]
-    fn matches_all_three_wire_apis() {
-        for &wire in &[wa::ANTHROPIC, wa::OPENAI_CHAT, wa::OPENAI_RESPONSES] {
+    fn matches_all_supported_wire_apis() {
+        for &wire in &[
+            wa::ANTHROPIC,
+            wa::OPENAI_CHAT,
+            wa::OPENAI_RESPONSES,
+            wa::GEMINI_AISTUDIO,
+        ] {
             let c = call_with(wire, vec![], None, None);
             assert!(GenericProfile.matches(&c.ctx()), "should match {wire}");
+        }
+    }
+
+    // ───────────────────── Gemini AI Studio (gemini-aistudio) ──────────────
+    mod gemini_aistudio_wire {
+        use super::*;
+
+        fn g(req: Option<&str>, resp: Option<&str>) -> TestCall {
+            call_with(wa::GEMINI_AISTUDIO, vec![], req, resp)
+        }
+
+        #[test]
+        fn extract_session_id_call_n_with_model_history() {
+            // Multi-turn: contents has a prior model turn → sig from request
+            // anchors session_id; resp not consulted.
+            let req = r#"{
+                "contents": [
+                    {"role":"user","parts":[{"text":"<session_context>session"}]},
+                    {"role":"user","parts":[{"text":"original question"}]},
+                    {"role":"model","parts":[
+                        {"text":"I'll search."},
+                        {"functionCall":{"name":"grep","args":{"q":"x"}}}
+                    ]},
+                    {"role":"user","parts":[
+                        {"functionResponse":{"name":"grep","response":{"hits":1}}}
+                    ]}
+                ]
+            }"#;
+            let c = g(Some(req), None);
+            let extracted = GenericProfile.extract_session_id(&c.ctx());
+            assert!(extracted.is_some(), "should extract session_id from request history");
+        }
+
+        #[test]
+        fn extract_session_id_call_one_uses_response_sig() {
+            // First call: no model turn in contents yet → fall back to response sig.
+            let req = r#"{
+                "contents": [
+                    {"role":"user","parts":[{"text":"<session_context>scaffold"}]},
+                    {"role":"user","parts":[{"text":"hello"}]}
+                ]
+            }"#;
+            let resp = r#"{
+                "candidates": [{
+                    "content":{"role":"model","parts":[
+                        {"text":"hi there"},
+                        {"functionCall":{"name":"f","args":{"x":1}}}
+                    ]}
+                }]
+            }"#;
+            let c = g(Some(req), Some(resp));
+            let extracted = GenericProfile.extract_session_id(&c.ctx());
+            assert!(extracted.is_some(), "should fall back to response sig");
+        }
+
+        #[test]
+        fn extract_user_input_skips_function_response_continuation() {
+            let req = r#"{
+                "contents": [
+                    {"role":"user","parts":[{"text":"<session_context>scaffold"}]},
+                    {"role":"user","parts":[{"text":"the real question"}]},
+                    {"role":"model","parts":[{"functionCall":{"name":"f","args":{}}}]},
+                    {"role":"user","parts":[
+                        {"functionResponse":{"name":"f","response":{"r":1}}}
+                    ]}
+                ]
+            }"#;
+            let c = g(Some(req), None);
+            assert_eq!(
+                GenericProfile.extract_user_input(&c.ctx()).as_deref(),
+                Some("the real question"),
+            );
+        }
+
+        #[test]
+        fn is_user_turn_start_false_on_function_response_only_continuation() {
+            let req = r#"{
+                "contents": [
+                    {"role":"user","parts":[{"text":"hi"}]},
+                    {"role":"model","parts":[{"functionCall":{"name":"f","args":{}}}]},
+                    {"role":"user","parts":[
+                        {"functionResponse":{"name":"f","response":{}}}
+                    ]}
+                ]
+            }"#;
+            let c = g(Some(req), None);
+            assert_eq!(GenericProfile.is_user_turn_start(&c.ctx()), Some(false));
+        }
+
+        // ── Pcap ground-truth: 7 calls → 2 turns of 4 + 3 ────────────────
+        //
+        // Mirrors the 7 LlmCalls captured in
+        // `~/Downloads/gemini-cli-apikey.pcap`. Each call's `contents` field
+        // is the actual sequence the wire transmitted (text/functionCall/
+        // functionResponse types preserved; bodies abbreviated for legibility
+        // but structurally faithful — the text bytes themselves don't drive
+        // any turn-boundary decision).
+        //
+        // Expected turn split per the user-confirmed ground truth:
+        //   Turn A = calls 1..=4   (initial prompt + tool roundtrips,
+        //                            closes when call-4's model response
+        //                            is pure text — no functionCall — so
+        //                            finish_reason stays STOP.)
+        //   Turn B = calls 5..=7   (user's follow-up at call-5,
+        //                            then two more tool roundtrips.)
+        //
+        // We verify three load-bearing predicates that drive turn assembly:
+        //   1. session_id is identical for all 7 calls (proves sig algo
+        //      stays consistent across the resp-vs-req-history boundary).
+        //   2. is_user_turn_start = [T, F, F, F, T, F, F] — boundaries
+        //      only on calls 1 and 5.
+        //   3. is_turn_terminal = [F, F, F, T, F, F, T] — call 4 closes
+        //      turn A (model's response was pure text), call 7 closes
+        //      turn B at end of session.
+
+        // For brevity, abbreviate the long shared scaffolding to short
+        // strings — the sig algorithm does not care about content length,
+        // only structural identity across the resp-vs-req-echo boundary.
+        // What matters: identical bytes for the same content across calls.
+        // The real pcap also carries a 24KB systemInstruction (Gemini CLI
+        // persona). We include a non-empty system here on every request so
+        // the test exercises the helper-shape one-shot gate in
+        // `extract_session_id` — historically that gate triggered
+        // incorrectly on call 1 (sig_in_req=None + sig_in_resp=Text +
+        // system non-empty), splitting the session and producing
+        // 1+6 / 1+3+3 turn breakdowns instead of 4+3.
+        const SYSTEM_PROMPT: &str = "You are an interactive CLI agent.";
+        const SESSION_CTX: &str = "<session_context>scaffold";
+        const ORIGINAL_PROMPT: &str = "original prompt about ts-turn";
+        const FOLLOWUP_PROMPT: &str = "user follow-up at call 5";
+        const MODEL_TURN_1_TEXT: &str = "I'll investigate.";
+        const MODEL_TURN_3_TEXT: &str = "Got it. Asking user.";
+        const MODEL_TURN_4_TEXT: &str = "Final analysis text only — no tool call.";
+        const MODEL_TURN_5_TEXT: &str = "Understood. Continuing.";
+        const MODEL_TURN_6_TEXT: &str = "Refining further.";
+
+        // Build conversation prefix incrementally — each call's contents
+        // is a strict extension of the previous call's. Mirrors how
+        // Gemini CLI accumulates `contents[]` across roundtrips.
+        fn req_call_1() -> String {
+            format!(
+                r#"{{"systemInstruction":{{"role":"user","parts":[{{"text":"{SYSTEM_PROMPT}"}}]}},"contents":[
+                    {{"role":"user","parts":[{{"text":"{SESSION_CTX}"}}]}},
+                    {{"role":"user","parts":[{{"text":"{ORIGINAL_PROMPT}"}}]}}
+                ]}}"#
+            )
+        }
+        fn req_call_2() -> String {
+            format!(
+                r#"{{"systemInstruction":{{"role":"user","parts":[{{"text":"{SYSTEM_PROMPT}"}}]}},"contents":[
+                    {{"role":"user","parts":[{{"text":"{SESSION_CTX}"}}]}},
+                    {{"role":"user","parts":[{{"text":"{ORIGINAL_PROMPT}"}}]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_1_TEXT}"}},
+                        {{"functionCall":{{"name":"grep","args":{{"q":"x"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"a"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"b"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"grep","response":{{"r":1}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":2}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":3}}}}}}
+                    ]}}
+                ]}}"#
+            )
+        }
+        fn req_call_3() -> String {
+            format!(
+                r#"{{"systemInstruction":{{"role":"user","parts":[{{"text":"{SYSTEM_PROMPT}"}}]}},"contents":[
+                    {{"role":"user","parts":[{{"text":"{SESSION_CTX}"}}]}},
+                    {{"role":"user","parts":[{{"text":"{ORIGINAL_PROMPT}"}}]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_1_TEXT}"}},
+                        {{"functionCall":{{"name":"grep","args":{{"q":"x"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"a"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"b"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"grep","response":{{"r":1}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":2}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":3}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"functionCall":{{"name":"read","args":{{"f":"c"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"read","response":{{"r":4}}}}}}
+                    ]}}
+                ]}}"#
+            )
+        }
+        fn req_call_4() -> String {
+            format!(
+                r#"{{"systemInstruction":{{"role":"user","parts":[{{"text":"{SYSTEM_PROMPT}"}}]}},"contents":[
+                    {{"role":"user","parts":[{{"text":"{SESSION_CTX}"}}]}},
+                    {{"role":"user","parts":[{{"text":"{ORIGINAL_PROMPT}"}}]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_1_TEXT}"}},
+                        {{"functionCall":{{"name":"grep","args":{{"q":"x"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"a"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"b"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"grep","response":{{"r":1}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":2}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":3}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"functionCall":{{"name":"read","args":{{"f":"c"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"read","response":{{"r":4}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_3_TEXT}"}},
+                        {{"functionCall":{{"name":"ask_user","args":{{"q":"ok?"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"ask_user","response":{{"a":"yes"}}}}}}
+                    ]}}
+                ]}}"#
+            )
+        }
+        // Call 5: user fires a follow-up text — this is the new turn boundary.
+        fn req_call_5() -> String {
+            format!(
+                r#"{{"systemInstruction":{{"role":"user","parts":[{{"text":"{SYSTEM_PROMPT}"}}]}},"contents":[
+                    {{"role":"user","parts":[{{"text":"{SESSION_CTX}"}}]}},
+                    {{"role":"user","parts":[{{"text":"{ORIGINAL_PROMPT}"}}]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_1_TEXT}"}},
+                        {{"functionCall":{{"name":"grep","args":{{"q":"x"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"a"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"b"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"grep","response":{{"r":1}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":2}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":3}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"functionCall":{{"name":"read","args":{{"f":"c"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"read","response":{{"r":4}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_3_TEXT}"}},
+                        {{"functionCall":{{"name":"ask_user","args":{{"q":"ok?"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"ask_user","response":{{"a":"yes"}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_4_TEXT}"}}
+                    ]}},
+                    {{"role":"user","parts":[{{"text":"{FOLLOWUP_PROMPT}"}}]}}
+                ]}}"#
+            )
+        }
+        fn req_call_6() -> String {
+            // Call 5 completes with model response `MODEL_TURN_5_TEXT + 2 fc`,
+            // CLI echoes them back along with two functionResponses.
+            format!(
+                r#"{{"systemInstruction":{{"role":"user","parts":[{{"text":"{SYSTEM_PROMPT}"}}]}},"contents":[
+                    {{"role":"user","parts":[{{"text":"{SESSION_CTX}"}}]}},
+                    {{"role":"user","parts":[{{"text":"{ORIGINAL_PROMPT}"}}]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_1_TEXT}"}},
+                        {{"functionCall":{{"name":"grep","args":{{"q":"x"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"a"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"b"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"grep","response":{{"r":1}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":2}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":3}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"functionCall":{{"name":"read","args":{{"f":"c"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"read","response":{{"r":4}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_3_TEXT}"}},
+                        {{"functionCall":{{"name":"ask_user","args":{{"q":"ok?"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"ask_user","response":{{"a":"yes"}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_4_TEXT}"}}
+                    ]}},
+                    {{"role":"user","parts":[{{"text":"{FOLLOWUP_PROMPT}"}}]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_5_TEXT}"}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"d"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"e"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"read","response":{{"r":5}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":6}}}}}}
+                    ]}}
+                ]}}"#
+            )
+        }
+        fn req_call_7() -> String {
+            format!(
+                r#"{{"systemInstruction":{{"role":"user","parts":[{{"text":"{SYSTEM_PROMPT}"}}]}},"contents":[
+                    {{"role":"user","parts":[{{"text":"{SESSION_CTX}"}}]}},
+                    {{"role":"user","parts":[{{"text":"{ORIGINAL_PROMPT}"}}]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_1_TEXT}"}},
+                        {{"functionCall":{{"name":"grep","args":{{"q":"x"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"a"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"b"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"grep","response":{{"r":1}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":2}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":3}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"functionCall":{{"name":"read","args":{{"f":"c"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"read","response":{{"r":4}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_3_TEXT}"}},
+                        {{"functionCall":{{"name":"ask_user","args":{{"q":"ok?"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"ask_user","response":{{"a":"yes"}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_4_TEXT}"}}
+                    ]}},
+                    {{"role":"user","parts":[{{"text":"{FOLLOWUP_PROMPT}"}}]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_5_TEXT}"}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"d"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"e"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"read","response":{{"r":5}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":6}}}}}}
+                    ]}},
+                    {{"role":"model","parts":[
+                        {{"text":"{MODEL_TURN_6_TEXT}"}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"g"}}}}}},
+                        {{"functionCall":{{"name":"read","args":{{"f":"h"}}}}}}
+                    ]}},
+                    {{"role":"user","parts":[
+                        {{"functionResponse":{{"name":"read","response":{{"r":7}}}}}},
+                        {{"functionResponse":{{"name":"read","response":{{"r":8}}}}}}
+                    ]}}
+                ]}}"#
+            )
+        }
+
+        // Synthetic responses for call 1 — used as `sig_in_resp` fallback
+        // when no model turn yet exists in `contents`. Subsequent calls
+        // already have model history in their `contents`, so their session_id
+        // derives from `sig_in_req`; we set their resp/finish_reason just to
+        // exercise `is_turn_terminal`.
+        fn resp_call_1() -> String {
+            format!(
+                r#"{{"candidates":[{{"index":0,"content":{{"role":"model","parts":[
+                    {{"text":"{MODEL_TURN_1_TEXT}"}},
+                    {{"functionCall":{{"name":"grep","args":{{"q":"x"}}}}}},
+                    {{"functionCall":{{"name":"read","args":{{"f":"a"}}}}}},
+                    {{"functionCall":{{"name":"read","args":{{"f":"b"}}}}}}
+                ]}},"finishReason":"STOP"}}]}}"#
+            )
+        }
+
+        #[test]
+        fn pcap_seven_calls_split_into_two_turns_of_four_and_three() {
+            // Each row mirrors a real LlmCall extracted from the pcap.
+            // (request_body, response_body, finish_reason)
+            let calls: [(String, Option<String>, &'static str); 7] = [
+                // Call 1 — first prompt; turn A start.
+                // Resp has functionCalls so wire-api synthesizes finish_reason=TOOL_USE.
+                (req_call_1(), Some(resp_call_1()), "TOOL_USE"),
+                // Calls 2..4 — tool roundtrips inside turn A.
+                (req_call_2(), None, "TOOL_USE"),
+                (req_call_3(), None, "TOOL_USE"),
+                // Call 4 — model's response is pure text; finish_reason stays
+                // STOP (no functionCall to trigger TOOL_USE synthesis), so
+                // is_turn_terminal=true, closing turn A.
+                (req_call_4(), None, "STOP"),
+                // Call 5 — user's follow-up; turn B start.
+                (req_call_5(), None, "TOOL_USE"),
+                // Calls 6..7 — tool roundtrips inside turn B.
+                (req_call_6(), None, "TOOL_USE"),
+                (req_call_7(), None, "STOP"),
+            ];
+
+            let wires = wa::build_default_wire_api_registry();
+            let mut session_ids: Vec<String> = Vec::new();
+            let mut user_starts: Vec<bool> = Vec::new();
+            let mut terminals: Vec<bool> = Vec::new();
+
+            for (i, (req, resp, fr)) in calls.iter().enumerate() {
+                let c = call_with_finish(
+                    wa::GEMINI_AISTUDIO,
+                    vec![],
+                    Some(req),
+                    resp.as_deref(),
+                    Some(fr),
+                );
+                let sid = GenericProfile
+                    .extract_session_id(&c.ctx())
+                    .map(|x| x.session_id)
+                    .unwrap_or_else(|| panic!("call {} should produce a session_id", i + 1));
+                session_ids.push(sid);
+                user_starts
+                    .push(GenericProfile.is_user_turn_start(&c.ctx()).unwrap_or(false));
+                terminals.push(GenericProfile.is_turn_terminal(&c.ctx(), &wires));
+            }
+
+            // (1) All 7 calls land in the same session.
+            for (i, sid) in session_ids.iter().enumerate().skip(1) {
+                assert_eq!(
+                    sid, &session_ids[0],
+                    "call {} session_id diverged from call 1",
+                    i + 1,
+                );
+            }
+
+            // (2) Turn-start boundaries: only calls 1 and 5.
+            assert_eq!(
+                user_starts,
+                vec![true, false, false, false, true, false, false],
+                "is_user_turn_start mismatched expected boundaries",
+            );
+
+            // (3) Terminal boundaries: turn A closes at call 4, turn B at call 7.
+            assert_eq!(
+                terminals,
+                vec![false, false, false, true, false, false, true],
+                "is_turn_terminal mismatched expected closures",
+            );
         }
     }
 
