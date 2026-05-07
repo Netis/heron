@@ -98,10 +98,14 @@ backend = "duckdb"
 [storage.duckdb]
 path = "data/tokenscope.duckdb"
 
-# Storage sink batching
+# Storage sink batching. flush_interval_ms is the upper bound on how long a
+# single LlmCall / AgentTurn / metric row can sit in the in-memory buffer
+# before being committed to DuckDB. 200 ms keeps the worst-case "captured
+# → visible" latency under ~250 ms while costing < 3 % extra wall-clock vs.
+# 1000 ms (each flush is ~5 ms; producer typically interval-bound).
 [storage.sink]
 batch_size = 1000
-flush_interval_ms = 1000
+flush_interval_ms = 200
 
 # Data retention (enabled by default with sane TTLs — values below are the
 # active defaults, shown for reference). Set `enabled = false` to opt out, or

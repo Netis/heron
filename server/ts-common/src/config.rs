@@ -744,7 +744,12 @@ fn default_sink_batch_size() -> usize {
 }
 
 fn default_sink_flush_interval_ms() -> u64 {
-    1000
+    // 200 ms keeps the worst-case "row visible to a SELECT" under ~250 ms
+    // when the producer is interval-bound (i.e. < 1000 calls/sec, the
+    // typical wuneng-class workload). At 200 ms the writer fires ~5×
+    // more often than at 1000 ms; each flush is ~5 ms (DuckDB appender),
+    // so the extra wall-clock cost stays under 3 %.
+    200
 }
 
 /// Severity of a [`ConfigIssue`]. `Error` blocks `tokenscope config validate`
@@ -1101,7 +1106,8 @@ mod phase2_tests {
     fn storage_sink_config_defaults() {
         let cfg = StorageSinkConfig::default();
         assert_eq!(cfg.batch_size, 1000);
-        assert_eq!(cfg.flush_interval_ms, 1000);
+        // 200 ms — see comment on default_sink_flush_interval_ms for rationale.
+        assert_eq!(cfg.flush_interval_ms, 200);
     }
 
     #[test]
