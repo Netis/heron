@@ -121,6 +121,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
         storage.clone(),
         &mut per_pipeline_metrics,
         &mut shared_metrics,
+        ts_turn::new_active_turn_registry(),
     );
     let _metrics_svcs: Vec<_> = per_pipeline_metrics
         .into_iter()

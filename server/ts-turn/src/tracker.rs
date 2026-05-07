@@ -14,7 +14,7 @@ use uuid::Uuid;
 use ts_common::internal_metrics::{Metric, MetricsWorker};
 use ts_llm::model::AgentCall;
 
-use crate::model::{AgentTurn, TurnStatus};
+use crate::model::{ActiveTurnRegistry, AgentTurn, TurnStatus};
 
 const FINAL_ANSWER_PREVIEW_CHARS: usize = 500;
 const USER_INPUT_PREVIEW_CHARS: usize = 500;
@@ -93,6 +93,14 @@ struct SessionBuffer {
     /// Latest per-source `virtual_now` observed for this buffer, in
     /// event-time µs. Used as the idle reference by `sweep` / `gc_buffers`.
     last_activity_us: i64,
+    /// Stable `turn_id` for the in-progress turn currently assembling in
+    /// this buffer. Minted lazily on the first ingest after the previous
+    /// turn was finalized; reused by every snapshot inserted into the
+    /// `ActiveTurnRegistry` and by the eventual `Completed` turn so the
+    /// in-memory in-progress entry's id matches the row that gets
+    /// persisted (lets the API drop the registry entry without a
+    /// frontend "row jump"). Cleared on every finalize / sweep / flush.
+    current_turn_id: Option<String>,
 }
 
 /// Single stateful owner of turn assembly. Passive: callers drive it via
@@ -120,16 +128,35 @@ pub struct TurnTracker {
     /// only controls how often `sweep` iterates buffers, not correctness.
     last_sweep_us: i64,
     metrics: MetricsWorker,
+    /// Optional in-memory registry of in-progress turns, shared between
+    /// every tracker and the API handler. When present, every `ingest_at`
+    /// upserts a snapshot into the registry, and every finalize /
+    /// sweep / flush removes the entry. `None` is used by tests that
+    /// don't care about the snapshot path.
+    active_registry: Option<ActiveTurnRegistry>,
 }
 
 impl TurnTracker {
     pub fn new(config: TrackerConfig, metrics: MetricsWorker) -> Self {
+        Self::with_registry(config, metrics, None)
+    }
+
+    /// Variant that wires an [`ActiveTurnRegistry`] into the tracker so
+    /// the API can read in-progress snapshots without going through the
+    /// DB or a channel fan-out. Pipelines call this; tests that don't
+    /// exercise the snapshot path use [`Self::new`].
+    pub fn with_registry(
+        config: TrackerConfig,
+        metrics: MetricsWorker,
+        active_registry: Option<ActiveTurnRegistry>,
+    ) -> Self {
         Self {
             config,
             buffers: HashMap::new(),
             virtual_now_by_source: HashMap::new(),
             last_sweep_us: 0,
             metrics,
+            active_registry,
         }
     }
 
@@ -169,6 +196,7 @@ impl TurnTracker {
             .or(ic.call.response_time)
             .unwrap_or(ic.call.request_time);
         let source_id = ic.call.source_id.clone();
+        let session_id = ic.agent.session_id.clone();
         let virtual_now = self.bump_event_time(&source_id, arrival_ts);
         self.metrics.counter(Metric::TurnCallsIngested).inc();
 
@@ -179,7 +207,7 @@ impl TurnTracker {
             return self.flush_ready_buffers(now_wall);
         }
 
-        let key = (source_id, ic.agent.session_id.clone());
+        let key = (source_id.clone(), session_id.clone());
         let buf = self.buffers.entry(key).or_default();
 
         if let Some(hw) = buf.last_finalized_request_time {
@@ -207,7 +235,93 @@ impl TurnTracker {
             buf.grace_started_at_wall = Some(now_wall);
         }
 
+        // Mint a stable `turn_id` for this in-progress turn the first time we
+        // see a call after the previous turn finalized. Reused by every
+        // registry snapshot AND by the eventual persisted `Completed`, so the
+        // `agent_turns` row's `turn_id` matches the in-progress entry the
+        // console has been showing. Cleared by `emit_or_discard` after
+        // finalize so the next ingest mints a fresh one.
+        if buf.current_turn_id.is_none() {
+            buf.current_turn_id = Some(Uuid::now_v7().to_string());
+        }
+
+        // Refresh the registry's snapshot for this turn. Cheap (one HashMap
+        // upsert + an AgentTurn alloc); skipped if no registry is wired (e.g.
+        // tests via `TurnTracker::new`).
+        self.refresh_active_snapshot(&source_id, &session_id);
+
         self.flush_ready_buffers(now_wall)
+    }
+
+    /// Build the in-progress AgentTurn snapshot for a given session and
+    /// upsert it into the active registry. Truncates the partition at the
+    /// first main-agent terminal so multi-turn buffers don't mix two
+    /// turns' state into one snapshot. Applies the same discard rule as
+    /// `emit_or_discard` so we don't leak phantom in-progress rows for
+    /// sub-agent-only filler sessions.
+    fn refresh_active_snapshot(&self, source_id: &str, session_id: &str) {
+        let registry = match &self.active_registry {
+            Some(r) => r,
+            None => return,
+        };
+        let buf = match self.buffers.get(&(source_id.to_string(), session_id.to_string())) {
+            Some(b) => b,
+            None => return,
+        };
+        let turn_id = match &buf.current_turn_id {
+            Some(id) => id.clone(),
+            None => return,
+        };
+
+        // Partition: calls up to and including the first main-agent terminal.
+        let partition: Vec<&AgentCall> = {
+            let mut sorted: Vec<&BufferedCall> = buf.pending.values().flatten().collect();
+            sorted.sort_by_key(|bc| bc.ic.call.request_time);
+            let mut acc: Vec<&AgentCall> = Vec::with_capacity(sorted.len());
+            for bc in sorted {
+                acc.push(&bc.ic);
+                if bc.is_terminal {
+                    break;
+                }
+            }
+            acc
+        };
+        if partition.is_empty() {
+            return;
+        }
+        // Same discard rule as emit_or_discard — only show in-progress rows
+        // whose partition has a main-agent user_turn_start. Without this, a
+        // sub-agent dispatch's first call (which carries
+        // `is_user_turn_start=Some(true)` AND `subagent_name=Some(_)`) would
+        // produce a phantom row that finalize will eventually drop.
+        let has_user_start = partition.iter().any(|ic| {
+            ic.agent.subagent_name.is_none() && ic.agent.is_user_turn_start == Some(true)
+        });
+        if !has_user_start {
+            return;
+        }
+
+        let mut snap = build_turn(&partition, Some(turn_id.clone()), Some(TurnStatus::InProgress));
+        snap.source_id = source_id.to_string();
+        snap.session_id = session_id.to_string();
+
+        if let Ok(mut map) = registry.write() {
+            map.insert(turn_id, snap);
+        }
+    }
+
+    /// Read-side helper used by tests to inspect the registry contents
+    /// without going through the lock directly. Returns a clone of every
+    /// in-progress snapshot currently registered. Production reads happen
+    /// in `ts-api` directly against the `ActiveTurnRegistry` Arc.
+    pub fn snapshot_active(&self) -> Vec<AgentTurn> {
+        match &self.active_registry {
+            Some(reg) => reg
+                .read()
+                .map(|map| map.values().cloned().collect())
+                .unwrap_or_default(),
+            None => Vec::new(),
+        }
     }
 
     /// Walk every buffer; for each whose front-pending terminal's grace has
@@ -239,7 +353,28 @@ impl TurnTracker {
             );
         }
         self.gc_buffers();
+        self.drop_completed_from_registry(&events);
         events
+    }
+
+    /// After any Completed turn is emitted, drop its in-progress entry
+    /// from the registry — the persisted DB row replaces it in the API's
+    /// UNION view, so leaving the snapshot would double-count. Idempotent;
+    /// safe to call with stacked-partition turn_ids that were never in
+    /// the registry.
+    fn drop_completed_from_registry(&self, events: &[TurnEvent]) {
+        let registry = match &self.active_registry {
+            Some(r) => r,
+            None => return,
+        };
+        let mut map = match registry.write() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        for ev in events {
+            let TurnEvent::Completed(t) = ev;
+            map.remove(&t.turn_id);
+        }
     }
 
     /// Drop fully-drained buffers whose `last_activity_us` is well past the
@@ -339,6 +474,10 @@ impl TurnTracker {
                 .expect("non-empty");
             buf.last_finalized_request_time = Some(max_request_time);
             buf.grace_started_at_wall = None;
+            // Reuse the in-progress turn_id so the persisted Incomplete
+            // turn shares the same id the registry has been advertising.
+            // The registry entry will be dropped at the end of this fn.
+            let turn_id_override = buf.current_turn_id.take();
 
             // sweep already counts itself via FinalizeKind::Idle inside
             // emit_or_discard; the returned bool isn't needed here.
@@ -346,12 +485,14 @@ impl TurnTracker {
                 &key.0,
                 &key.1,
                 &drained,
+                turn_id_override,
                 &self.metrics,
                 &mut events,
                 FinalizeKind::Idle,
             );
         }
         self.gc_buffers();
+        self.drop_completed_from_registry(&events);
         events
     }
 
@@ -407,17 +548,25 @@ impl TurnTracker {
                 .expect("non-empty");
             buf.last_finalized_request_time = Some(max_request_time);
             buf.grace_started_at_wall = None;
+            // Step 1's finalize_session may already have consumed
+            // current_turn_id; if any non-terminal tail is still here it
+            // belongs to a turn that the shutdown caught mid-flight. Reuse
+            // the id when present so the API's UNION view doesn't briefly
+            // show two rows (in-progress + Incomplete) for the same turn.
+            let turn_id_override = buf.current_turn_id.take();
             // flush_all's non-terminal tail doesn't have a dedicated counter
             // beyond TurnsCompleted (bumped inside emit_or_discard).
             let _ = emit_or_discard(
                 &key.0,
                 &key.1,
                 &drained,
+                turn_id_override,
                 &self.metrics,
                 &mut events,
                 FinalizeKind::Flush,
             );
         }
+        self.drop_completed_from_registry(&events);
         events
     }
 }
@@ -481,10 +630,19 @@ fn finalize_session(
         // the loop may have already pushed a Completed in a previous
         // iteration, which would falsely bump the grace counter for a
         // discarded partition.
+        //
+        // First pass through the loop: hand the buffer's in-progress
+        // current_turn_id to emit_or_discard so the persisted Completed
+        // shares the id with the active-registry snapshot. Subsequent
+        // partitions in the same buffer are independent turns that never
+        // had an in-progress entry, so they get fresh UUIDs (None →
+        // build_turn mints).
+        let turn_id_override = buf.current_turn_id.take();
         let emitted = emit_or_discard(
             source_id,
             session_id,
             &turn_calls,
+            turn_id_override,
             metrics,
             events,
             FinalizeKind::Flush, // grace-driven; only bump grace counter if actually emitted
@@ -500,7 +658,13 @@ fn finalize_session(
 
 /// Apply the discard rule and emit (or count-and-drop) one turn per drained
 /// partition. The caller has already removed `calls` from the buffer and
-/// updated bookkeeping.
+/// updated bookkeeping. Pass `turn_id_override` to reuse the in-progress
+/// snapshot's `turn_id` (so the persisted `Completed` carries the same id
+/// the active registry has been advertising — when the API drops the
+/// registry entry on UNION, the row appears to "transition" in place
+/// rather than disappear-and-reappear). `None` lets `build_turn` mint a
+/// fresh UUID — used by partitions that never had an in-progress entry
+/// (stacked terminals in one finalize_session loop, shutdown drains).
 ///
 /// Returns `true` iff a `TurnEvent::Completed` was actually pushed — callers
 /// that need to count grace-finalizations can rely on this instead of
@@ -511,6 +675,7 @@ fn emit_or_discard(
     source_id: &str,
     session_id: &str,
     calls: &[BufferedCall],
+    turn_id_override: Option<String>,
     metrics: &MetricsWorker,
     events: &mut Vec<TurnEvent>,
     kind: FinalizeKind,
@@ -533,7 +698,7 @@ fn emit_or_discard(
     }
 
     let refs: Vec<&AgentCall> = calls.iter().map(|bc| &bc.ic).collect();
-    let mut turn = build_turn(&refs);
+    let mut turn = build_turn(&refs, turn_id_override, None);
     // The buffer key is authoritative for source/session — call.source_id
     // can legitimately be empty in tests; identity.session_id may differ
     // from a future cross-bucket scheme. Using the key keeps us consistent.
@@ -553,7 +718,20 @@ fn push_unique(list: &mut Vec<String>, value: String) {
     }
 }
 
-/// Pure constructor over a request_time-sorted, complete partition.
+/// Pure constructor over a request_time-sorted partition.
+///
+/// `turn_id_override`: caller-supplied id. Used by the in-progress
+/// snapshot path so every snapshot for the same in-flight turn shares
+/// one id, and the eventual finalized `AgentTurn` carries the same id
+/// the registry has been advertising. `None` mints a fresh UUID.
+///
+/// `status_override`: forces a status. Used by the in-progress snapshot
+/// path to pin `InProgress` even when the partition's terminal call has
+/// already landed (which can happen briefly during the grace window —
+/// the user shouldn't see the row flip via a snapshot; that transition
+/// belongs to the persisted Completed). `None` falls back to derived
+/// status (Complete iff a main-agent terminal is in the partition;
+/// Incomplete otherwise).
 ///
 /// Turn status and `final_*` are both derived from the composed main-agent
 /// terminal pick — `agent.subagent_name.is_none() && agent.is_turn_terminal`,
@@ -565,7 +743,11 @@ fn push_unique(list: &mut Vec<String>, value: String) {
 /// canonical decision lives upstream. For partitions drained via idle-sweep
 /// / EOF-flush with no terminal in the buffer, `final_*` stay `None` and
 /// status falls to `Incomplete`.
-fn build_turn(calls: &[&AgentCall]) -> AgentTurn {
+fn build_turn(
+    calls: &[&AgentCall],
+    turn_id_override: Option<String>,
+    status_override: Option<TurnStatus>,
+) -> AgentTurn {
     assert!(!calls.is_empty(), "build_turn requires at least one call");
     let first = calls[0];
     let source_id = first.call.source_id.clone();
@@ -574,7 +756,7 @@ fn build_turn(calls: &[&AgentCall]) -> AgentTurn {
     let wire_api = first.call.wire_api.to_string();
     let client_ip = first.call.client_ip;
     let server_ip = first.call.server_ip;
-    let turn_id = Uuid::now_v7().to_string();
+    let turn_id = turn_id_override.unwrap_or_else(|| Uuid::now_v7().to_string());
 
     let start_time_us = first.call.request_time;
     let end_time_us = calls
@@ -651,11 +833,15 @@ fn build_turn(calls: &[&AgentCall]) -> AgentTurn {
     // `terminal` is `Some` iff a real wire-level terminal landed before
     // finalize. Wire-level vocabulary (`end_turn`, `max_tokens`, `refusal`,
     // `completed`, …) lives entirely in `final_finish_reason` below; status
-    // is the binary "did we close cleanly" signal.
-    let status = match terminal {
+    // is the lifecycle signal. `status_override` lets the in-progress
+    // snapshot path pin `InProgress` even when the terminal has already
+    // landed in the partition (which can happen briefly during the grace
+    // window — the row should flip to Complete only via the Completed
+    // event, never via an in-progress snapshot).
+    let status = status_override.unwrap_or_else(|| match terminal {
         Some(_) => TurnStatus::Complete,
         None => TurnStatus::Incomplete,
-    };
+    });
 
     let (final_answer_preview, final_call_id, final_finish_reason) = match terminal {
         Some(ic) => {
@@ -1322,5 +1508,243 @@ mod tests {
         // And nothing should now be buffered for this session beyond what's
         // already finalized — c0 was dropped at the entry guard.
         assert_eq!(t.active_count(), 0);
+    }
+
+    // -----------------------------------------------------------------
+    // ActiveTurnRegistry — in-memory in-progress visibility (PR B / Plan C)
+    // -----------------------------------------------------------------
+
+    fn mk_tracker_with_registry() -> (TurnTracker, crate::model::ActiveTurnRegistry) {
+        let reg = crate::model::new_active_turn_registry();
+        let t = TurnTracker::with_registry(TrackerConfig::default(), test_metrics(), Some(reg.clone()));
+        (t, reg)
+    }
+
+    fn registry_snapshot(reg: &crate::model::ActiveTurnRegistry) -> Vec<AgentTurn> {
+        reg.read().unwrap().values().cloned().collect()
+    }
+
+    #[test]
+    fn registry_holds_in_progress_after_first_call() {
+        // First user_start call: tracker mints turn_id, builds an
+        // InProgress snapshot, and inserts it into the registry. The
+        // API reading the registry sees the turn before any DB write.
+        let (mut t, reg) = mk_tracker_with_registry();
+        let c1 = anthropic_call("S-reg", 1_000_000, "text", "tool_use");
+        let id1 = call_info_for_anthropic(&c1);
+        let events = t.ingest(ic(c1, id1));
+        assert!(
+            drain_completed(events).is_empty(),
+            "no terminal landed yet — no Completed event"
+        );
+
+        let snaps = registry_snapshot(&reg);
+        assert_eq!(snaps.len(), 1, "exactly one in-progress snapshot");
+        let s = &snaps[0];
+        assert_eq!(s.status, TurnStatus::InProgress);
+        assert_eq!(s.call_count, 1);
+        assert_eq!(s.session_id, "S-reg");
+        assert!(s.final_finish_reason.is_none());
+        assert!(s.final_call_id.is_none());
+    }
+
+    #[test]
+    fn registry_updates_in_place_on_each_ingest() {
+        // Subsequent calls in the same turn upsert the SAME registry
+        // entry (same turn_id) with the latest cumulative state — the
+        // map never grows beyond one entry per session.
+        let (mut t, reg) = mk_tracker_with_registry();
+        let c1 = anthropic_call("S-upd", 1_000_000, "text", "tool_use");
+        let id1 = call_info_for_anthropic(&c1);
+        let _ = t.ingest(ic(c1, id1));
+        let first_id = registry_snapshot(&reg)[0].turn_id.clone();
+
+        let c2 = anthropic_call("S-upd", 2_000_000, "tool_result", "tool_use");
+        let id2 = call_info_for_anthropic(&c2);
+        let _ = t.ingest(ic(c2, id2));
+        let c3 = anthropic_call("S-upd", 3_000_000, "tool_result", "tool_use");
+        let id3 = call_info_for_anthropic(&c3);
+        let _ = t.ingest(ic(c3, id3));
+
+        let snaps = registry_snapshot(&reg);
+        assert_eq!(snaps.len(), 1, "one entry per session, upserted in place");
+        let s = &snaps[0];
+        assert_eq!(s.turn_id, first_id, "turn_id stable across ingests");
+        assert_eq!(s.call_count, 3, "snapshot reflects cumulative state");
+        assert_eq!(s.status, TurnStatus::InProgress);
+    }
+
+    #[test]
+    fn registry_drops_entry_after_grace_completes_turn() {
+        // Once the terminal call lands and grace expires, the persisted
+        // Completed event reuses the in-progress turn_id, AND the
+        // registry entry is removed so the API doesn't double-count
+        // the turn (one in-memory + one in DuckDB).
+        let (mut t, reg) = mk_tracker_with_registry();
+        let now = std::time::Instant::now();
+
+        let c1 = anthropic_call("S-grace", 1_000_000, "text", "tool_use");
+        let id1 = call_info_for_anthropic(&c1);
+        let _ = t.ingest_at(ic(c1, id1), now);
+        let in_progress_id = registry_snapshot(&reg)[0].turn_id.clone();
+        assert_eq!(registry_snapshot(&reg).len(), 1);
+
+        let c2 = anthropic_call("S-grace", 2_000_000, "tool_result", "end_turn");
+        let id2 = call_info_for_anthropic(&c2);
+        let _ = t.ingest_at(ic(c2, id2), now + Duration::from_millis(50));
+
+        // Force grace expiry.
+        let later = now + Duration::from_secs(2);
+        let events = t.flush_all_at(later);
+        let completed = drain_completed(events);
+        assert_eq!(completed.len(), 1, "exactly one Completed");
+        assert_eq!(
+            completed[0].turn_id, in_progress_id,
+            "Completed reuses in-progress turn_id (UI sees in-place transition)"
+        );
+        assert_eq!(completed[0].status, TurnStatus::Complete);
+        assert!(
+            registry_snapshot(&reg).is_empty(),
+            "registry entry must be removed once Completed lands in DB"
+        );
+    }
+
+    #[test]
+    fn registry_drops_entry_after_idle_sweep() {
+        // Idle path: no terminal arrives, but `idle_timeout_us` of
+        // event-time inactivity passes. Sweep emits Completed/Incomplete
+        // and the registry entry is removed so the user sees the row
+        // flip in place from in_progress to incomplete (rather than the
+        // in-progress row hanging around with the same turn_id as a
+        // newly-persisted incomplete row).
+        let cfg = TrackerConfig {
+            idle_timeout_us: 1_000_000,
+            sweep_interval_us: 100_000,
+            grace: Duration::from_millis(1_000),
+        };
+        let reg = crate::model::new_active_turn_registry();
+        let mut t = TurnTracker::with_registry(cfg, test_metrics(), Some(reg.clone()));
+        let now = std::time::Instant::now();
+
+        let c1 = anthropic_call("S-idle", 1_000_000, "text", "tool_use");
+        let id1 = call_info_for_anthropic(&c1);
+        let _ = t.ingest_at(ic(c1, id1), now);
+        let in_progress_id = registry_snapshot(&reg)[0].turn_id.clone();
+
+        let events = t.advance_time_at(3_500_000, "", now);
+        let completed = drain_completed(events);
+        assert_eq!(completed.len(), 1, "idle sweep emits exactly one Completed");
+        assert_eq!(completed[0].turn_id, in_progress_id);
+        assert_eq!(completed[0].status, TurnStatus::Incomplete);
+        assert!(
+            registry_snapshot(&reg).is_empty(),
+            "idle sweep must drop the in-progress registry entry"
+        );
+    }
+
+    #[test]
+    fn registry_skips_subagent_only_partition() {
+        // The discard rule (no main-agent user_turn_start → drop on
+        // finalize) must apply at registry-insert time too — otherwise
+        // the API would briefly show a phantom in-progress row that
+        // never makes it to the DB. We synthesize the case by feeding
+        // a tool_result first (continuation, no user_start) and asserting
+        // the registry stays empty until a user_start call arrives.
+        let (mut t, reg) = mk_tracker_with_registry();
+        // tool_result body ⇒ is_user_turn_start = false on main agent.
+        let c1 = anthropic_call("S-no-start", 1_000_000, "tool_result", "tool_use");
+        let id1 = call_info_for_anthropic(&c1);
+        let _ = t.ingest(ic(c1, id1));
+        assert!(
+            registry_snapshot(&reg).is_empty(),
+            "no user_start ⇒ registry stays empty"
+        );
+
+        // user_start arrives — registry now populates.
+        let c2 = anthropic_call("S-no-start", 2_000_000, "text", "tool_use");
+        let id2 = call_info_for_anthropic(&c2);
+        let _ = t.ingest(ic(c2, id2));
+        let snaps = registry_snapshot(&reg);
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].call_count, 2, "snapshot includes both buffered calls");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn registry_handles_100_sessions_no_panics() {
+        // Stress test (Plan C analogue of the original DB-upsert test):
+        // 100 distinct sessions, each ingesting 50 calls in parallel
+        // tasks, all sharing the SAME tracker behind a Mutex. The
+        // registry's RwLock + the tracker's serialized ingest path must
+        // not panic, deadlock, or leak entries.
+        //
+        // Why a Mutex around the tracker rather than 100 trackers: the
+        // production wiring runs ONE TurnTracker per shard, sharded by
+        // session_id, so a single tracker really does see all sessions.
+        // 100 concurrent ingests through a Mutex models that fan-in
+        // worst case.
+        use std::sync::{Arc as StdArc, Mutex as StdMutex};
+
+        let (tracker, reg) = mk_tracker_with_registry();
+        let tracker = StdArc::new(StdMutex::new(tracker));
+
+        const N_SESSIONS: usize = 100;
+        const ITERS: usize = 50;
+
+        let mut joins = Vec::with_capacity(N_SESSIONS);
+        for s in 0..N_SESSIONS {
+            let tracker = tracker.clone();
+            joins.push(tokio::spawn(async move {
+                let session = format!("S-stress-{s}");
+                for k in 0..ITERS {
+                    // Each call needs a strictly-increasing request_time
+                    // within its session so the orphan guard doesn't
+                    // drop later arrivals.
+                    let body = if k == 0 { "text" } else { "tool_result" };
+                    let ts_us = 1_000_000 + (s as i64) * 10_000_000 + k as i64;
+                    let call = anthropic_call(&session, ts_us, body, "tool_use");
+                    let id = call_info_for_anthropic(&call);
+                    {
+                        let mut tr = tracker.lock().unwrap();
+                        let _ = tr.ingest(ic(call, id));
+                    }
+                    // Yield so other tasks can interleave.
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+        for j in joins {
+            j.await.unwrap();
+        }
+
+        // Every session is in-progress (no terminals fired) → registry
+        // should have exactly 100 entries, each with call_count = ITERS.
+        let snaps = registry_snapshot(&reg);
+        assert_eq!(
+            snaps.len(),
+            N_SESSIONS,
+            "exactly one in-progress entry per session"
+        );
+        assert!(
+            snaps.iter().all(|s| s.call_count == ITERS as u32),
+            "every snapshot reflects the full per-session ingest count"
+        );
+        assert!(
+            snaps.iter().all(|s| s.status == TurnStatus::InProgress),
+            "every snapshot is in_progress"
+        );
+
+        // Finalize all of them via flush_all and confirm registry empties.
+        let mut tr = tracker.lock().unwrap();
+        let events = tr.flush_all_at(std::time::Instant::now() + Duration::from_secs(2));
+        let completed = drain_completed(events);
+        assert_eq!(
+            completed.len(),
+            N_SESSIONS,
+            "every session emits one Completed (Incomplete, no terminals)"
+        );
+        assert!(
+            registry_snapshot(&reg).is_empty(),
+            "registry must be drained after flush_all"
+        );
     }
 }

@@ -511,6 +511,12 @@ async fn run_pipeline(cli: Cli) {
         // against the corresponding entry in `per_pipeline_metrics`, and
         // shared (storage sink + queue probes) workers against
         // `shared_metrics`. There is no cross-pipeline metrics stage.
+        // In-memory registry of in-progress agent turns. Shared by every
+        // turn-tracker shard (writers) and the API's /api/agent-turns
+        // handler (reader) so the console sees in-progress turns alongside
+        // finalized ones without DB write amplification.
+        let active_turns = ts_turn::new_active_turn_registry();
+
         let Pipeline {
             pipeline_txs,
             pipeline_sources,
@@ -524,6 +530,7 @@ async fn run_pipeline(cli: Cli) {
             storage.clone(),
             &mut per_pipeline_metrics,
             &mut shared_metrics,
+            active_turns.clone(),
         );
 
         // Start each per-pipeline MetricsSystem and, if enabled, one
@@ -605,6 +612,7 @@ async fn run_pipeline(cli: Cli) {
                     drained: drained.clone(),
                 };
                 let pcap_extract_roots = pcap_extract_roots.clone();
+                let api_active_turns = active_turns.clone();
                 Some(tokio::spawn(async move {
                     let router = ts_api::router(
                         api_storage,
@@ -612,6 +620,7 @@ async fn run_pipeline(cli: Cli) {
                         api_runtime_config,
                         api_health,
                         pcap_extract_roots,
+                        api_active_turns,
                     );
                     #[cfg(feature = "console")]
                     let router = router.fallback(console::static_handler);
@@ -811,6 +820,11 @@ async fn run_pipeline(cli: Cli) {
                         drained: drained.clone(),
                     };
                     let pcap_extract_roots = pcap_extract_roots.clone();
+                    // No pipelines were configured ⇒ no tracker is running ⇒
+                    // the registry stays empty for the lifetime of this
+                    // process. Construct a fresh empty one so the API still
+                    // serves /api/agent-turns (returning DB rows only).
+                    let api_active_turns = ts_turn::new_active_turn_registry();
                     Some(tokio::spawn(async move {
                         let router = ts_api::router(
                             api_storage,
@@ -818,6 +832,7 @@ async fn run_pipeline(cli: Cli) {
                             api_runtime_config,
                             api_health,
                             pcap_extract_roots,
+                            api_active_turns,
                         );
                         #[cfg(feature = "console")]
                         let router = router.fallback(console::static_handler);

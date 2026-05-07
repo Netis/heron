@@ -7,6 +7,6 @@ pub mod model;
 pub mod stage;
 pub mod tracker;
 
-pub use model::{AgentTurn, TurnKey, TurnStatus};
+pub use model::{new_active_turn_registry, ActiveTurnRegistry, AgentTurn, TurnKey, TurnStatus};
 pub use stage::spawn_turn_stage;
 pub use tracker::{TurnEvent, TurnTracker};

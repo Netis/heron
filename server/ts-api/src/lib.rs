@@ -26,6 +26,7 @@ use ts_common::error::{AppError, Result};
 use ts_common::internal_metrics::MetricsSvc;
 use ts_pcap_extract::PipelineRoot;
 use ts_storage::StorageBackend;
+use ts_turn::ActiveTurnRegistry;
 
 /// Carriers for `/api/internal-metrics` — every per-pipeline `MetricsSvc`
 /// plus the cross-pipeline (storage) one. Build this in `main.rs` after
@@ -64,6 +65,18 @@ pub struct ApiHealthContext {
     pub drained: Arc<AtomicBool>,
 }
 
+/// Composite state for the `/api/agent-turns*` routes. Carries both the
+/// storage backend (for finalized rows) and the in-memory
+/// `ActiveTurnRegistry` (for in-progress rows). The list handler unions
+/// the two; detail / calls only need storage. We pass the composite
+/// around for all three handlers so the registry is available where it
+/// matters without a separate router for the list endpoint.
+#[derive(Clone)]
+pub struct ApiAgentTurnsContext {
+    pub storage: Arc<dyn StorageBackend>,
+    pub active_turns: ActiveTurnRegistry,
+}
+
 /// Bind the API server listener. Call this before spawning so bind errors
 /// propagate to the caller (and can abort startup).
 pub async fn bind(config: &ApiConfig) -> Result<TcpListener> {
@@ -82,6 +95,7 @@ pub fn router(
     runtime_config: ApiRuntimeConfigContext,
     health: ApiHealthContext,
     pcap_roots: Arc<Vec<PipelineRoot>>,
+    active_turns: ActiveTurnRegistry,
 ) -> Router {
     let internal_metrics_routes = Router::new()
         .route(
@@ -105,6 +119,24 @@ pub fn router(
         .route("/api/pcap/extract", get(routes::pcap_extract::handler))
         .with_state(pcap_roots);
 
+    // Agent-turns routes use a composite state (storage + in-memory
+    // active-turn registry) so the list handler can union finalized
+    // (DuckDB) and in-progress (RAM) rows in one response. detail/calls
+    // only need storage but ride on the same composite for plumbing
+    // simplicity.
+    let agent_turns_state = ApiAgentTurnsContext {
+        storage: storage.clone(),
+        active_turns,
+    };
+    let agent_turns_routes = Router::new()
+        .route("/api/agent-turns", get(routes::agent_turns::list))
+        .route("/api/agent-turns/{id}", get(routes::agent_turns::detail))
+        .route(
+            "/api/agent-turns/{id}/calls",
+            get(routes::agent_turns::calls),
+        )
+        .with_state(agent_turns_state);
+
     Router::new()
         .route("/api/filters/wire-apis", get(routes::filters::wire_apis))
         .route("/api/filters/models", get(routes::filters::models))
@@ -127,12 +159,6 @@ pub fn router(
             "/api/http-exchanges/{id}",
             get(routes::http_exchanges::detail),
         )
-        .route("/api/agent-turns", get(routes::agent_turns::list))
-        .route("/api/agent-turns/{id}", get(routes::agent_turns::detail))
-        .route(
-            "/api/agent-turns/{id}/calls",
-            get(routes::agent_turns::calls),
-        )
         .route("/api/agent-sessions", get(routes::agent_sessions::list))
         .route(
             "/api/agent-sessions/{source_id}/{session_id}",
@@ -147,5 +173,6 @@ pub fn router(
         .merge(runtime_config_routes)
         .merge(health_routes)
         .merge(pcap_extract_routes)
+        .merge(agent_turns_routes)
         .layer(CorsLayer::permissive())
 }

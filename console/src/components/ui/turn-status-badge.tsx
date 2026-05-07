@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils"
 
 const colorMap: Record<string, string> = {
+  in_progress: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
   complete: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
   incomplete: "bg-gray-100 text-gray-600 dark:bg-gray-800/30 dark:text-gray-400",
 }
@@ -11,10 +12,13 @@ export function TurnStatusBadge({ status }: { status: string | null }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium",
+        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
         colorMap[status] ?? "bg-gray-100 text-gray-600 dark:bg-gray-800/30 dark:text-gray-400",
       )}
     >
+      {status === "in_progress" && (
+        <span className="size-1.5 rounded-full bg-blue-500 animate-pulse" />
+      )}
       {status}
     </span>
   )
