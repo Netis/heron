@@ -197,7 +197,14 @@ impl LlmProcessor {
         let response_time = response.first_byte_timestamp_us;
         let complete_time = response.complete_timestamp_us;
 
-        let ttft_ms = if response_time > request_time {
+        // TTFT (time to first token) is only meaningful for streaming
+        // responses — the wire `first_byte` then marks when the model
+        // started emitting tokens. Non-streaming servers buffer the full
+        // generation server-side and ship the complete JSON in one shot,
+        // so `first_byte ≈ complete_byte` and the metric collapses to E2E
+        // latency. Reporting that under the TTFT label was misleading and
+        // polluted the streaming-TTFT distributions on the dashboard.
+        let ttft_ms = if req_info.is_stream && response_time > request_time {
             Some((response_time - request_time) as f64 / 1000.0)
         } else {
             None
@@ -595,6 +602,162 @@ mod tests {
                 assert_eq!(call.total_tokens, Some(8));
                 assert_eq!(call.response_id.as_deref(), Some("chatcmpl-xyz"));
                 assert!(call.response_body.is_some());
+            }
+            _ => panic!("expected Complete"),
+        }
+    }
+
+    #[test]
+    fn ttft_is_none_for_non_streaming_request() {
+        // For non-streaming requests, the wire `first_byte_timestamp_us`
+        // marks when the server starts shipping the JSON response — which
+        // only happens AFTER the model has finished generating. Reporting
+        // this gap as "TTFT" makes the metric collapse to E2E latency and
+        // pollutes the dashboard's TTFT percentiles. The processor must
+        // refuse to populate `ttft_ms` for non-streaming exchanges.
+        use serde_json::json;
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
+        let req_body = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hi"}]
+            // NOTE: no "stream": true field → is_stream=false
+        });
+        let req = openai_request(&req_body);
+        let resp_body = json!({
+            "id": "chatcmpl-nostream",
+            "model": "gpt-4",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        });
+        // exchange_parts() sets first_byte_timestamp_us = request_ts + 100_000 (i.e.
+        // 100 ms gap — enough for the old code path to compute ttft_ms = 100.0).
+        let (request, response) = exchange_parts(req, Bytes::from(resp_body.to_string()), false);
+        let events = proc.process(HttpJoinerEvent::Exchange {
+            id: "xchg-nostream".to_string(),
+            request,
+            response: Arc::new(response),
+            sse_events: vec![],
+        });
+        match &events[0] {
+            LlmEvent::Complete { call, .. } => {
+                assert!(!call.is_stream, "fixture should be non-streaming");
+                assert!(
+                    call.ttft_ms.is_none(),
+                    "ttft_ms must be None for non-streaming, got {:?}",
+                    call.ttft_ms,
+                );
+                // E2E latency stays meaningful regardless of streaming flag — it's
+                // (request_ts → complete_ts) which the wire genuinely measures.
+                assert!(
+                    call.e2e_latency_ms.is_some(),
+                    "e2e_latency_ms must remain populated for non-streaming",
+                );
+            }
+            _ => panic!("expected Complete"),
+        }
+    }
+
+    #[test]
+    fn ttft_is_populated_for_streaming_request() {
+        // For streaming requests, the wire `first_byte_timestamp_us`
+        // marks the first SSE chunk — which corresponds to the moment
+        // the first generated token reaches the client. This IS the TTFT
+        // we want to expose.
+        use serde_json::json;
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
+        let req_body = json!({
+            "model": "gpt-4",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let req = openai_request(&req_body);
+        let (request, response) = exchange_parts(req, Bytes::new(), true);
+        let sse = vec![
+            sse_event(
+                "",
+                r#"{"model":"gpt-4","choices":[{"index":0,"delta":{"content":"hi"}}]}"#,
+                1_150_000,
+            ),
+            sse_event(
+                "",
+                r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                1_200_000,
+            ),
+        ];
+        let events = proc.process(HttpJoinerEvent::Exchange {
+            id: "xchg-stream-ttft".to_string(),
+            request,
+            response: Arc::new(response),
+            sse_events: sse,
+        });
+        match &events[0] {
+            LlmEvent::Complete { call, .. } => {
+                assert!(call.is_stream, "fixture should be streaming");
+                let ttft = call
+                    .ttft_ms
+                    .expect("ttft_ms must be populated for streaming");
+                // exchange_parts() sets first_byte = request_ts + 100_000 us = +100 ms.
+                assert!(
+                    (ttft - 100.0).abs() < 1.0,
+                    "ttft_ms expected ~100.0, got {}",
+                    ttft,
+                );
+                let e2e = call
+                    .e2e_latency_ms
+                    .expect("e2e_latency_ms must be populated for streaming");
+                assert!(
+                    ttft <= e2e,
+                    "ttft ({}) must be <= e2e ({}) on a healthy stream",
+                    ttft,
+                    e2e,
+                );
+            }
+            _ => panic!("expected Complete"),
+        }
+    }
+
+    #[test]
+    fn ttft_is_none_when_response_predates_request() {
+        // Defensive: a malformed capture where first_byte_timestamp_us
+        // somehow precedes request_ts (clock skew between capture points,
+        // out-of-order packet reassembly, etc.) must NOT produce a
+        // negative or wrap-around ttft. The original guard
+        // `response_time > request_time` already covered this; the gate
+        // we just added is `&&`-ed onto it, so we re-assert it holds.
+        use serde_json::json;
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
+        let req_body = json!({
+            "model": "gpt-4",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let mut req = openai_request(&req_body);
+        // Bump the request timestamp PAST the response's first_byte timestamp
+        // produced by exchange_parts (= request_ts + 100_000). We push the
+        // request to t=2_000_000 so that first_byte_timestamp_us ends up
+        // 1_100_000 — earlier than the request.
+        req.timestamp_us = 1_000_000;
+        let (request, mut response) = exchange_parts(req, Bytes::new(), true);
+        // Now mutate the response so first_byte happens BEFORE request_ts.
+        response.first_byte_timestamp_us = 500_000;
+        let sse = vec![sse_event(
+            "",
+            r#"{"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+            1_200_000,
+        )];
+        let events = proc.process(HttpJoinerEvent::Exchange {
+            id: "xchg-stream-skew".to_string(),
+            request,
+            response: Arc::new(response),
+            sse_events: sse,
+        });
+        match &events[0] {
+            LlmEvent::Complete { call, .. } => {
+                assert!(call.is_stream);
+                assert!(
+                    call.ttft_ms.is_none(),
+                    "ttft_ms must be None when response_time <= request_time",
+                );
             }
             _ => panic!("expected Complete"),
         }
