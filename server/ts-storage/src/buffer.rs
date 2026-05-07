@@ -256,6 +256,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn flush_interval_200ms_fires_within_one_window() {
+        // Regression for the production default of 200 ms (see
+        // ts_common::config::default_sink_flush_interval_ms). Asserts that
+        // a single push lands in DuckDB within the 200 ms interval (plus a
+        // tokio::time::interval slack), independent of batch_size.
+        let flush_count = Arc::new(AtomicUsize::new(0));
+        let flush_count_clone = flush_count.clone();
+
+        let (tx, rx) = mpsc::channel::<i32>(16);
+        // batch_size deliberately huge so flush is interval-bound.
+        let buffer = WriteBuffer::new("test", rx, 1_000_000, Duration::from_millis(200), None);
+
+        let task = tokio::spawn(async move {
+            buffer
+                .run(move |batch| {
+                    let fc = flush_count_clone.clone();
+                    async move {
+                        fc.fetch_add(batch.len(), Ordering::SeqCst);
+                        Ok(())
+                    }
+                })
+                .await;
+        });
+
+        let t0 = Instant::now();
+        tx.send(42).await.unwrap();
+
+        // The interval-based flush should land within 200 ms ± the
+        // tokio::time::interval slack. We poll with a 50 ms granularity up
+        // to a generous 600 ms ceiling so the test isn't flaky on slow CI.
+        let mut elapsed = Duration::ZERO;
+        while flush_count.load(Ordering::SeqCst) == 0 && elapsed < Duration::from_millis(600) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            elapsed = t0.elapsed();
+        }
+
+        assert_eq!(
+            flush_count.load(Ordering::SeqCst),
+            1,
+            "interval-bound flush did not fire within 600 ms (elapsed: {elapsed:?})",
+        );
+        // And the actual elapsed must be ~200 ms — guards against a future
+        // refactor that silently delays the first interval tick.
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "interval-bound flush took {elapsed:?}, expected ~200 ms",
+        );
+
+        drop(tx);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_flush_failure_does_not_stop_loop() {
         // First flush returns Err; second flush must still get driven and
         // the shutdown flush must still run.
