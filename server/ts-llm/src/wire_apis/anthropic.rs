@@ -515,54 +515,62 @@ pub fn first_system_text(req: &Value) -> Option<String> {
     }
 }
 
+/// Extract text from the **first** `role:user` message — and only that one.
+/// If the first user message has no extractable text (empty string, image-
+/// only blocks, tool_result-only blocks), return `None` rather than falling
+/// through to later user messages. Falling through could pick up text from
+/// turn 2+, which is not a stable session anchor.
 pub fn first_user_text(req: &Value) -> Option<String> {
     let msgs = req.get("messages")?.as_array()?;
-    for m in msgs {
-        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
-            continue;
-        }
-        match m.get("content")? {
-            Value::String(s) if !s.trim().is_empty() => return Some(s.clone()),
-            Value::Array(blocks) => {
-                let parts: Vec<String> = blocks
-                    .iter()
-                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
-                    .collect();
-                if !parts.is_empty() {
-                    return Some(parts.join("\n"));
-                }
+    let first_user = msgs
+        .iter()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))?;
+    match first_user.get("content")? {
+        Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
+        Value::Array(blocks) => {
+            let parts: Vec<String> = blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
+                .collect();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
             }
-            _ => {}
         }
+        _ => None,
     }
-    None
 }
 
+/// Sig of the **first** `role:assistant` message — and only that one. If
+/// the first assistant has no `tool_use` block AND no `text` block, return
+/// `None` rather than falling through to later assistant messages (which
+/// would belong to turn 2+ and are not a stable session anchor).
+/// Within that one message, `tool_use` takes precedence over `text`.
 pub fn first_assistant_sig_from_request(req: &Value) -> Option<AssistantSig> {
     let msgs = req.get("messages")?.as_array()?;
-    for m in msgs {
-        if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
-            continue;
-        }
-        let blocks = m.get("content")?.as_array()?;
-        for b in blocks {
-            if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                if let Some(id) = b.get("id").and_then(|x| x.as_str()) {
-                    return Some(AssistantSig::ToolId(id.to_string()));
-                }
+    let first_assistant = msgs
+        .iter()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))?;
+    let blocks = first_assistant.get("content")?.as_array()?;
+    for b in blocks {
+        if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+            if let Some(id) = b.get("id").and_then(|x| x.as_str()) {
+                return Some(AssistantSig::ToolId(id.to_string()));
             }
         }
-        let parts: Vec<String> = blocks
-            .iter()
-            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-            .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
-            .collect();
-        if !parts.is_empty() {
-            return Some(AssistantSig::Text(parts.join("\n")));
-        }
     }
-    None
+    let parts: Vec<String> = blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+        .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(AssistantSig::Text(parts.join("\n")))
+    }
 }
 
 pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
@@ -1235,5 +1243,101 @@ mod estimator_tests {
             ]
         });
         assert!(estimate_output_tokens(&resp, &cl()) > 0);
+    }
+
+    // ─── first_user_text: strict "first role:user" semantics ────────────────
+
+    #[test]
+    fn first_user_text_returns_text_of_first_user_message() {
+        let req = json!({
+            "messages": [
+                {"role":"user","content":"hello"},
+                {"role":"assistant","content":[{"type":"text","text":"hi"}]},
+                {"role":"user","content":[{"type":"text","text":"more"}]}
+            ]
+        });
+        assert_eq!(first_user_text(&req).as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn first_user_text_none_when_first_user_is_empty_string() {
+        // First user has empty content; second user has text. Strict
+        // semantics: don't fall through — return None.
+        let req = json!({
+            "messages": [
+                {"role":"user","content":""},
+                {"role":"assistant","content":[{"type":"text","text":"hi"}]},
+                {"role":"user","content":[{"type":"text","text":"later"}]}
+            ]
+        });
+        assert_eq!(first_user_text(&req), None);
+    }
+
+    #[test]
+    fn first_user_text_none_when_first_user_has_only_tool_result_blocks() {
+        // Pathological: messages[0] is a tool_result-only user message
+        // (would never happen in a real first turn, but covers the
+        // fall-through behavior). Must return None — must not jump to
+        // messages[2].
+        let req = json!({
+            "messages": [
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"t","content":"ok"}
+                ]},
+                {"role":"assistant","content":[{"type":"text","text":"reply"}]},
+                {"role":"user","content":[{"type":"text","text":"later"}]}
+            ]
+        });
+        assert_eq!(first_user_text(&req), None);
+    }
+
+    // ─── first_assistant_sig_from_request: strict "first only" semantics ────
+
+    #[test]
+    fn first_assistant_sig_from_request_returns_first_assistants_tool_use() {
+        let req = json!({
+            "messages": [
+                {"role":"user","content":[{"type":"text","text":"hi"}]},
+                {"role":"assistant","content":[
+                    {"type":"text","text":"working"},
+                    {"type":"tool_use","id":"toolu_first","name":"R","input":{}}
+                ]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_first","content":"ok"}]},
+                {"role":"assistant","content":[{"type":"tool_use","id":"toolu_second","name":"R","input":{}}]}
+            ]
+        });
+        let sig = first_assistant_sig_from_request(&req).unwrap();
+        assert!(matches!(sig, AssistantSig::ToolId(id) if id == "toolu_first"));
+    }
+
+    #[test]
+    fn first_assistant_sig_from_request_none_when_first_assistant_has_no_extractable_blocks() {
+        // First assistant's content has neither `tool_use` nor `text` blocks
+        // (e.g., thinking-only or filtered-out blocks). Must return None —
+        // must not skip to the second assistant message.
+        let req = json!({
+            "messages": [
+                {"role":"user","content":[{"type":"text","text":"hi"}]},
+                {"role":"assistant","content":[
+                    {"type":"thinking","thinking":"hidden chain-of-thought"}
+                ]},
+                {"role":"user","content":[{"type":"text","text":"more"}]},
+                {"role":"assistant","content":[{"type":"text","text":"this would be a leak"}]}
+            ]
+        });
+        assert!(first_assistant_sig_from_request(&req).is_none());
+    }
+
+    #[test]
+    fn first_assistant_sig_from_request_none_when_first_assistant_content_empty_array() {
+        let req = json!({
+            "messages": [
+                {"role":"user","content":[{"type":"text","text":"hi"}]},
+                {"role":"assistant","content":[]},
+                {"role":"user","content":[{"type":"text","text":"more"}]},
+                {"role":"assistant","content":[{"type":"tool_use","id":"toolu_leak","name":"R","input":{}}]}
+            ]
+        });
+        assert!(first_assistant_sig_from_request(&req).is_none());
     }
 }

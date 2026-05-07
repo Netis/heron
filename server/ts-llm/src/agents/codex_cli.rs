@@ -35,19 +35,33 @@ impl AgentProfile for CodexCliProfile {
     }
 
     fn matches(&self, ctx: &CallCtx<'_>) -> bool {
+        // Both a client identifier (Originator or UA prefix) AND TURN_META_HEADER
+        // must be present. Identifier alone isn't enough: the registry is
+        // first-match-wins (`profile.rs:181`), so claiming a call here when the
+        // turn-metadata header is missing leaves the call with
+        // `extract_session_id() = None` and no fallback. By requiring the
+        // header up front, identifier-spoofing / header-stripping /
+        // pre-metadata-version traffic falls through to GenericProfile, which
+        // can synthesize a session anchor from the body.
+        //
+        // KNOWN LIMITATION: header presence does NOT prove parseability.
+        // `parse_turn_metadata` only accepts raw JSON today; a future codex
+        // release that switches to base64-encoded metadata would still match
+        // here but fail to extract. Address by extending `parse_turn_metadata`
+        // when that lands, not by parsing in `matches`.
         if ctx.call.wire_api != wa::OPENAI_RESPONSES {
             return false;
         }
-        // Prefer Originator (stable short identifier); fall back to UA prefix.
-        if let Some(orig) = header(ctx.call, ORIGINATOR_HEADER) {
-            if ORIGINATOR_VALUES.contains(&orig) {
-                return true;
-            }
+        let id_ok = match header(ctx.call, ORIGINATOR_HEADER) {
+            Some(orig) if ORIGINATOR_VALUES.contains(&orig) => true,
+            _ => header(ctx.call, "user-agent")
+                .map(|ua| UA_PREFIXES.iter().any(|p| ua.starts_with(p)))
+                .unwrap_or(false),
+        };
+        if !id_ok {
+            return false;
         }
-        if let Some(ua) = header(ctx.call, "user-agent") {
-            return UA_PREFIXES.iter().any(|p| ua.starts_with(p));
-        }
-        false
+        header(ctx.call, TURN_META_HEADER).is_some()
     }
 
     fn extract_session_id(&self, ctx: &CallCtx<'_>) -> Option<SessionIdExtraction> {
@@ -231,11 +245,16 @@ mod tests {
         })
     }
 
+    const STUB_META: &str = r#"{"session_id":"deadbeef-0000-0000-0000-000000000000"}"#;
+
     #[test]
     fn matches_by_originator() {
         let c = call_with(
             wa::OPENAI_RESPONSES,
-            vec![("Originator", "codex_cli_rs")],
+            vec![
+                ("Originator", "codex_cli_rs"),
+                ("X-Codex-Turn-Metadata", STUB_META),
+            ],
             None,
         );
         assert!(CodexCliProfile.matches(&c.ctx()));
@@ -245,7 +264,10 @@ mod tests {
     fn matches_codex_tui_by_ua() {
         let c = call_with(
             wa::OPENAI_RESPONSES,
-            vec![("User-Agent", "codex-tui/0.118.0 (Mac OS)")],
+            vec![
+                ("User-Agent", "codex-tui/0.118.0 (Mac OS)"),
+                ("X-Codex-Turn-Metadata", STUB_META),
+            ],
             None,
         );
         assert!(CodexCliProfile.matches(&c.ctx()));
@@ -255,7 +277,10 @@ mod tests {
     fn matches_codex_exec_by_originator() {
         let c = call_with(
             wa::OPENAI_RESPONSES,
-            vec![("Originator", "codex_exec")],
+            vec![
+                ("Originator", "codex_exec"),
+                ("X-Codex-Turn-Metadata", STUB_META),
+            ],
             None,
         );
         assert!(CodexCliProfile.matches(&c.ctx()));
@@ -265,7 +290,10 @@ mod tests {
     fn matches_codex_exec_by_ua() {
         let c = call_with(
             wa::OPENAI_RESPONSES,
-            vec![("User-Agent", "codex_exec/0.120.0 (Ubuntu 24.4.0; x86_64)")],
+            vec![
+                ("User-Agent", "codex_exec/0.120.0 (Ubuntu 24.4.0; x86_64)"),
+                ("X-Codex-Turn-Metadata", STUB_META),
+            ],
             None,
         );
         assert!(CodexCliProfile.matches(&c.ctx()));
@@ -273,7 +301,27 @@ mod tests {
 
     #[test]
     fn does_not_match_chat_api() {
-        let c = call_with(wa::OPENAI_CHAT, vec![("Originator", "codex_cli_rs")], None);
+        let c = call_with(
+            wa::OPENAI_CHAT,
+            vec![
+                ("Originator", "codex_cli_rs"),
+                ("X-Codex-Turn-Metadata", STUB_META),
+            ],
+            None,
+        );
+        assert!(!CodexCliProfile.matches(&c.ctx()));
+    }
+
+    #[test]
+    fn does_not_match_when_turn_metadata_header_missing() {
+        // Identifier alone is not enough — without `x-codex-turn-metadata`
+        // we cannot extract a session_id, so the registry must let the call
+        // fall through to GenericProfile rather than claiming and dropping it.
+        let c = call_with(
+            wa::OPENAI_RESPONSES,
+            vec![("Originator", "codex_cli_rs")],
+            None,
+        );
         assert!(!CodexCliProfile.matches(&c.ctx()));
     }
 

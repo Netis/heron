@@ -410,41 +410,46 @@ pub fn first_system_text(req: &Value) -> Option<String> {
     None
 }
 
+/// Text of the **first** `role:user` message only. If that message has no
+/// extractable text, return `None` instead of scanning later user messages
+/// — those belong to subsequent turns and aren't a stable session anchor.
 pub fn first_user_text(req: &Value) -> Option<String> {
     let msgs = req.get("messages")?.as_array()?;
-    for m in msgs {
-        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
-            continue;
-        }
-        if let Some(t) = m.get("content").and_then(user_content_to_text) {
-            return Some(t);
-        }
-    }
-    None
+    let first_user = msgs
+        .iter()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))?;
+    first_user.get("content").and_then(user_content_to_text)
 }
 
+/// Sig of the **first** `role:assistant` message — and only that one. If
+/// the first assistant has no usable `tool_calls[0].id` AND no non-empty
+/// `content` string, return `None` rather than falling through to later
+/// assistant messages (which would belong to turn 2+ and are not a stable
+/// session anchor). Within that one message, `tool_calls` takes precedence
+/// over `content`.
 pub fn first_assistant_sig_from_request(req: &Value) -> Option<AssistantSig> {
     let msgs = req.get("messages")?.as_array()?;
-    for m in msgs {
-        if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
-            continue;
-        }
-        if let Some(arr) = m.get("tool_calls").and_then(|v| v.as_array()) {
-            if let Some(id) = arr
-                .first()
-                .and_then(|tc| tc.get("id"))
-                .and_then(|v| v.as_str())
-            {
-                return Some(AssistantSig::ToolId(id.to_string()));
-            }
-        }
-        if let Some(c) = m.get("content").and_then(|v| v.as_str()) {
-            if !c.trim().is_empty() {
-                return Some(AssistantSig::Text(c.to_string()));
-            }
+    let first_assistant = msgs
+        .iter()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))?;
+    if let Some(arr) = first_assistant
+        .get("tool_calls")
+        .and_then(|v| v.as_array())
+    {
+        if let Some(id) = arr
+            .first()
+            .and_then(|tc| tc.get("id"))
+            .and_then(|v| v.as_str())
+        {
+            return Some(AssistantSig::ToolId(id.to_string()));
         }
     }
-    None
+    let c = first_assistant.get("content").and_then(|v| v.as_str())?;
+    if c.trim().is_empty() {
+        None
+    } else {
+        Some(AssistantSig::Text(c.to_string()))
+    }
 }
 
 pub fn first_assistant_sig_from_response(body: &str) -> Option<AssistantSig> {
@@ -1082,5 +1087,99 @@ mod tests {
         assert_eq!(info.response_id.as_deref(), Some("chatcmpl-1"));
         assert_eq!(info.model.as_deref(), Some("gpt-4"));
         assert_eq!(info.finish_reason.as_deref(), Some("stop"));
+    }
+
+    // ─── first_user_text: strict "first role:user" semantics ────────────────
+
+    #[test]
+    fn first_user_text_returns_text_of_first_user_message() {
+        let req = serde_json::json!({
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+                {"role": "user", "content": "more"}
+            ]
+        });
+        assert_eq!(first_user_text(&req).as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn first_user_text_none_when_first_user_is_empty_string() {
+        let req = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": ""},
+                {"role": "assistant", "content": "hi"},
+                {"role": "user", "content": "later"}
+            ]
+        });
+        assert_eq!(first_user_text(&req), None);
+    }
+
+    #[test]
+    fn first_user_text_none_when_first_user_has_no_text_blocks() {
+        // multimodal-only first user message (image_url with no text part).
+        let req = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": "data:..."}}
+                ]},
+                {"role": "assistant", "content": "ack"},
+                {"role": "user", "content": "later"}
+            ]
+        });
+        assert_eq!(first_user_text(&req), None);
+    }
+
+    // ─── first_assistant_sig_from_request: strict "first only" semantics ────
+
+    #[test]
+    fn first_assistant_sig_from_request_returns_first_assistants_tool_call() {
+        let req = serde_json::json!({
+            "messages": [
+                {"role":"system","content":"sys"},
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":null,"tool_calls":[
+                    {"id":"call_first","type":"function","function":{"name":"f","arguments":"{}"}}
+                ]},
+                {"role":"tool","tool_call_id":"call_first","content":"ok"},
+                {"role":"assistant","content":null,"tool_calls":[
+                    {"id":"call_second","type":"function","function":{"name":"f","arguments":"{}"}}
+                ]}
+            ]
+        });
+        let sig = first_assistant_sig_from_request(&req).unwrap();
+        assert!(matches!(sig, AssistantSig::ToolId(id) if id == "call_first"));
+    }
+
+    #[test]
+    fn first_assistant_sig_from_request_none_when_first_assistant_is_empty() {
+        // First assistant has null content and no tool_calls — pathological
+        // shape (truncated/malformed). Must NOT fall through to the second
+        // assistant message (which would be turn-2's anchor, not turn-1's).
+        let req = serde_json::json!({
+            "messages": [
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":null},
+                {"role":"user","content":"more"},
+                {"role":"assistant","content":"this would be a leak"}
+            ]
+        });
+        assert!(first_assistant_sig_from_request(&req).is_none());
+    }
+
+    #[test]
+    fn first_assistant_sig_from_request_none_when_first_tool_call_lacks_id() {
+        let req = serde_json::json!({
+            "messages": [
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":null,"tool_calls":[
+                    {"type":"function","function":{"name":"f","arguments":"{}"}}
+                ]},
+                {"role":"user","content":"more"},
+                {"role":"assistant","content":"this would be a leak"}
+            ]
+        });
+        assert!(first_assistant_sig_from_request(&req).is_none());
     }
 }
