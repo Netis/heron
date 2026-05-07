@@ -67,7 +67,7 @@ export function ModelBreakdownChart({ models }: Props) {
             fontSize: "12px",
           }}
         />
-        <Bar dataKey="requests" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={20} />
+        <Bar dataKey="requests" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={20} isAnimationActive={false} />
       </BarChart>
     </ResponsiveContainer>
   )

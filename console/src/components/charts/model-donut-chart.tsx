@@ -58,6 +58,7 @@ export function ModelDonutChart({ models, height = 240 }: Props) {
           }
           labelLine={{ strokeWidth: 1 }}
           style={{ fontSize: "11px" }}
+          isAnimationActive={false}
         >
           {data.map((_, i) => (
             <Cell key={i} fill={COLORS[i % COLORS.length]} />

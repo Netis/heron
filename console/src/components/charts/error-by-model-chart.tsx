@@ -70,9 +70,9 @@ export function ErrorByModelChart({ models }: Props) {
           }}
         />
         <Legend wrapperStyle={{ fontSize: "12px" }} />
-        <Bar dataKey="4xx" stackId="err" fill="#f59e0b" radius={0} barSize={20} />
-        <Bar dataKey="429" stackId="err" fill="#ef4444" radius={0} barSize={20} />
-        <Bar dataKey="5xx" stackId="err" fill="#dc2626" radius={[0, 4, 4, 0]} barSize={20} />
+        <Bar dataKey="4xx" stackId="err" fill="#f59e0b" radius={0} barSize={20} isAnimationActive={false} />
+        <Bar dataKey="429" stackId="err" fill="#ef4444" radius={0} barSize={20} isAnimationActive={false} />
+        <Bar dataKey="5xx" stackId="err" fill="#dc2626" radius={[0, 4, 4, 0]} barSize={20} isAnimationActive={false} />
       </BarChart>
     </ResponsiveContainer>
   )

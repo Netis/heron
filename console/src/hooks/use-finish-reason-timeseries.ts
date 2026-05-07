@@ -48,5 +48,6 @@ export function useFinishReasonTimeseries(opts?: { granularity?: string }) {
         ...fp,
       }),
     meta: { preset },
+    placeholderData: (prev) => prev,
   })
 }

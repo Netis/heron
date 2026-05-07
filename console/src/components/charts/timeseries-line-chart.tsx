@@ -107,6 +107,7 @@ export function TimeseriesLineChart({
               strokeWidth={2}
               dot={false}
               connectNulls
+              isAnimationActive={false}
             />
           ) : (
             <Line
@@ -118,6 +119,7 @@ export function TimeseriesLineChart({
               strokeWidth={2}
               dot={false}
               connectNulls
+              isAnimationActive={false}
             />
           ),
         )}
