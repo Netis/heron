@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::net::IpAddr;
+use std::sync::{Arc, RwLock};
 
 /// Composite key identifying a single in-flight turn.
 ///
@@ -13,13 +15,22 @@ pub struct TurnKey {
     pub turn_id: String,
 }
 
-/// Whether this turn closed cleanly. The wire-level reason (e.g. `end_turn`,
-/// `max_tokens`, `refusal`) lives in `final_finish_reason: Option<String>` —
-/// status only encodes "did a terminal land before finalize". `Incomplete`
-/// means we never saw a wire-level terminal: idle timeout, pcap EOF, server
-/// shutdown, or connection RST mid-stream.
+/// Lifecycle state of an agent turn. Three states:
+///
+/// * `InProgress` — at least one call has been ingested for this turn, no
+///   wire-level terminal has landed yet. Lives only in the in-memory
+///   [`ActiveTurnRegistry`]; never written to the `agent_turns` table.
+/// * `Complete` — a main-agent terminal call (e.g. `end_turn`,
+///   `max_tokens`, `refusal`) landed and the buffer's grace window expired.
+///   Persisted to the `agent_turns` table.
+/// * `Incomplete` — buffer drained without a terminal (idle timeout, pcap
+///   EOF, server shutdown, RST mid-stream). Persisted to `agent_turns`.
+///
+/// The wire-level reason (e.g. `end_turn`) lives separately in
+/// `final_finish_reason: Option<String>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnStatus {
+    InProgress,
     Complete,
     Incomplete,
 }
@@ -27,10 +38,41 @@ pub enum TurnStatus {
 impl fmt::Display for TurnStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            TurnStatus::InProgress => write!(f, "in_progress"),
             TurnStatus::Complete => write!(f, "complete"),
             TurnStatus::Incomplete => write!(f, "incomplete"),
         }
     }
+}
+
+/// In-memory registry of currently-in-flight agent turns, keyed by
+/// `turn_id`. Each `TurnTracker` writes a snapshot here on every ingest
+/// (replacing any prior snapshot for the same turn_id), and removes the
+/// entry when the turn finalizes. The `ts-api` `/api/agent-turns` handler
+/// reads this registry, filters by the requested time window, and unions
+/// the result with rows persisted in DuckDB so the console sees both
+/// in-progress and finalized turns in one list.
+///
+/// Why a registry instead of writing to DuckDB on every call:
+/// * On a busy capbench run (100 concurrent agents × 50 calls/turn) the
+///   per-call DB upsert path would cost ~50 000 writes per session.
+///   HashMap insert is ~100 ns; DuckDB upsert is ~5 ms. Same visibility
+///   guarantee, no write amplification.
+/// * The `agent_turns` table stays the canonical source of truth for
+///   *finalized* turns (clean SQL semantics; survives restart). The
+///   registry is a short-lived "currently observable" view layered on
+///   top of it.
+///
+/// A server restart loses the registry; in-progress turns vanish from
+/// `/api/agent-turns` until either the next ingest re-creates them or
+/// the turn finalizes and writes to DuckDB. This matches the existing
+/// in-memory `SessionBuffer` behavior — both were already RAM-only.
+pub type ActiveTurnRegistry = Arc<RwLock<HashMap<String, AgentTurn>>>;
+
+/// Construct an empty `ActiveTurnRegistry` ready to share between
+/// trackers and the API.
+pub fn new_active_turn_registry() -> ActiveTurnRegistry {
+    Arc::new(RwLock::new(HashMap::new()))
 }
 
 /// Aggregated record for one agent turn (user input → final assistant output).

@@ -64,6 +64,14 @@ pub trait StorageBackend: Send + Sync {
     async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage>;
     async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>>;
     async fn query_turn_calls(&self, turn_id: &str) -> Result<Vec<TurnCallItem>>;
+    /// Sister of `query_turn_calls` for in-progress turns: the API
+    /// already knows the call_ids (from the in-memory active-turn
+    /// registry) and only needs Step 2 of the join. Returns the same
+    /// `TurnCallItem` shape so the frontend's calls panel renders
+    /// identically whether the turn is still in progress or finalized.
+    /// Calls not yet flushed from `WriteBuffer` to `llm_calls` are
+    /// silently skipped — they appear on the next refresh.
+    async fn query_calls_by_ids(&self, call_ids: &[String]) -> Result<Vec<TurnCallItem>>;
 
     /// Paginated session list (view over `agent_turns`; no materialised
     /// session table). A session is included when at least one of its turns

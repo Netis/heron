@@ -13,16 +13,22 @@ use tokio::task::JoinHandle;
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_llm::model::TurnShardInput;
 
-use crate::model::AgentTurn;
+use crate::model::{ActiveTurnRegistry, AgentTurn};
 use crate::tracker::{TrackerConfig, TurnEvent, TurnTracker};
 
 /// Spawn one turn-tracker task per shard (inferred from `shard_rxs.len()`).
 /// Panics on empty `shard_rxs` — a wiring bug in the composition root.
+///
+/// `active_registry` is the shared in-memory map of in-progress turns,
+/// written by every tracker on each ingest and read by the API. `None`
+/// disables the in-progress visibility path (used by tests that don't
+/// need it).
 pub fn spawn_turn_stage(
     tracker_cfg: TrackerConfig,
     shard_rxs: Vec<mpsc::Receiver<TurnShardInput>>,
     turns_tx: mpsc::Sender<AgentTurn>,
     metrics_sys: &mut MetricsSystem,
+    active_registry: Option<ActiveTurnRegistry>,
 ) -> Vec<JoinHandle<()>> {
     assert!(
         !shard_rxs.is_empty(),
@@ -63,9 +69,10 @@ pub fn spawn_turn_stage(
                 Metric::TurnHeartbeatsReceived,
             ],
         );
+        let registry_clone = active_registry.clone();
         handles.push(tokio::spawn(async move {
             let shard = i;
-            let mut tracker = TurnTracker::new(tracker_cfg, worker_metrics);
+            let mut tracker = TurnTracker::with_registry(tracker_cfg, worker_metrics, registry_clone);
             let reason = 'main: loop {
                 let input = match rx.recv().await {
                     Some(x) => x,
@@ -204,6 +211,7 @@ mod tests {
             vec![shard_rx],
             turns_tx.clone(),
             &mut metrics_sys,
+            None,
         );
         let _svc = metrics_sys.start();
         drop(turns_tx);
@@ -255,6 +263,7 @@ mod tests {
             shard_rxs,
             turns_tx.clone(),
             &mut metrics_sys,
+            None,
         );
         let _svc = metrics_sys.start();
         drop(turns_tx);
@@ -301,6 +310,7 @@ mod tests {
             vec![],
             _turns_tx,
             &mut metrics_sys,
+            None,
         );
     }
 }

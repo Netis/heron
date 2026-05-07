@@ -125,6 +125,7 @@ impl Pipeline {
         storage: Arc<dyn StorageBackend>,
         per_pipeline_metrics: &mut [MetricsSystem],
         shared_metrics: &mut MetricsSystem,
+        active_turns: ts_turn::ActiveTurnRegistry,
     ) -> Self {
         // ---- Shared sinks (fan-in across every pipeline) ----
         // Use the max queue capacity across all pipelines for shared channels.
@@ -353,6 +354,7 @@ impl Pipeline {
                 turn_shard_rxs,
                 turns_tx.clone(),
                 metrics_sys,
+                Some(active_turns.clone()),
             );
             debug_assert_eq!(turn_handles.len(), turn_shards);
             for (j, h) in turn_handles.into_iter().enumerate() {

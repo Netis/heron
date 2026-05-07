@@ -147,6 +147,7 @@ mod tests {
             test_runtime_config_context(),
             test_health_context(),
             std::sync::Arc::new(vec![]),
+            ts_turn::new_active_turn_registry(),
         );
 
         let resp = app
@@ -190,6 +191,7 @@ mod tests {
             test_runtime_config_context(),
             test_health_context(),
             std::sync::Arc::new(vec![]),
+            ts_turn::new_active_turn_registry(),
         );
 
         let resp = app

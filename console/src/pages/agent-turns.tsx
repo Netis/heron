@@ -9,7 +9,7 @@ import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
 import type { AgentTurnListItem } from "@/types/api"
 
-const STATUS_OPTIONS = ["complete", "incomplete"]
+const STATUS_OPTIONS = ["in_progress", "complete", "incomplete"]
 const AGENT_KIND_OPTIONS = ["claude-cli", "codex-cli", "generic"]
 
 const PAGE_SIZES = [20, 50, 100] as const

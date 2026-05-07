@@ -432,6 +432,142 @@ fn parse_json_string_list(raw: Option<&str>) -> Vec<String> {
     }
 }
 
+/// Shared "fetch calls by id list" — used by both `query_turn_calls`
+/// (which derives the ids from the persisted `agent_turns.call_ids`)
+/// and `query_calls_by_ids` (which receives the ids directly from the
+/// API for in-progress turns whose call_ids live in the in-memory
+/// active-turn registry). Calls not yet flushed from `WriteBuffer` to
+/// `llm_calls` simply don't return — caller treats that as "show
+/// fewer rows on this refresh, more on the next one."
+fn read_calls_by_ids_sync(
+    conn: &duckdb::Connection,
+    call_ids: &[String],
+) -> Result<Vec<TurnCallItem>> {
+    if call_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(call_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT
+            id,
+            epoch_ms(request_time),
+            epoch_ms(response_time),
+            epoch_ms(complete_time),
+            wire_api, model, status_code, is_stream,
+            finish_reason, ttft_ms, e2e_latency_ms,
+            input_tokens, output_tokens,
+            request_path, client_ip, client_port,
+            server_ip, server_port,
+            request_body, response_body,
+            request_headers, response_headers
+        FROM llm_calls
+        WHERE id IN ({placeholders})
+        ORDER BY request_time ASC, complete_time ASC"
+    );
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Storage(format!("failed to prepare turn_calls step2: {e}")))?;
+    let mut rows = stmt
+        .query(duckdb::params_from_iter(call_ids.iter()))
+        .map_err(|e| AppError::Storage(format!("failed to execute turn_calls step2: {e}")))?;
+
+    let mut items = Vec::new();
+    let mut seq: u32 = 0;
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+    {
+        seq += 1;
+        items.push(TurnCallItem {
+            id: row
+                .get(0)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            sequence: seq,
+            request_time: row
+                .get(1)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            response_time: row
+                .get::<_, Option<i64>>(2)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            complete_time: row
+                .get::<_, Option<i64>>(3)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            wire_api: row
+                .get(4)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            model: row
+                .get(5)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            status_code: row
+                .get::<_, Option<u16>>(6)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            is_stream: row
+                .get(7)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            finish_reason: row
+                .get::<_, Option<String>>(8)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            ttft_ms: row
+                .get::<_, Option<f64>>(9)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            e2e_latency_ms: row
+                .get::<_, Option<f64>>(10)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            input_tokens: {
+                let v: Option<u32> = row
+                    .get(11)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                v
+            },
+            output_tokens: {
+                let v: Option<u32> = row
+                    .get(12)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                v
+            },
+            tokens_estimated: false, // overwritten below once we read response_body
+            request_path: row
+                .get(13)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            client_ip: row
+                .get(14)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            client_port: row
+                .get(15)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            server_ip: row
+                .get(16)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            server_port: row
+                .get(17)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            request_body: row
+                .get::<_, Option<String>>(18)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            response_body: row
+                .get::<_, Option<String>>(19)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            request_headers: row
+                .get::<_, Option<String>>(20)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            response_headers: row
+                .get::<_, Option<String>>(21)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+        });
+        let last = items.last_mut().expect("just pushed");
+        last.tokens_estimated = derive_tokens_estimated(
+            last.input_tokens,
+            last.output_tokens,
+            last.response_body.as_deref(),
+        );
+    }
+    Ok(items)
+}
+
 enum ExtractKind {
     User,
     Assistant,
@@ -2725,139 +2861,24 @@ impl StorageBackend for DuckDbBackend {
             };
 
             let call_ids = parse_json_string_list(call_ids_raw.as_deref());
-            if call_ids.is_empty() {
-                return Ok(Vec::new());
-            }
-
-            // Step 2: fetch calls by id via PK point-lookups in IN (...).
-            let placeholders = std::iter::repeat("?")
-                .take(call_ids.len())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let sql = format!(
-                "SELECT
-                    id,
-                    epoch_ms(request_time),
-                    epoch_ms(response_time),
-                    epoch_ms(complete_time),
-                    wire_api, model, status_code, is_stream,
-                    finish_reason, ttft_ms, e2e_latency_ms,
-                    input_tokens, output_tokens,
-                    request_path, client_ip, client_port,
-                    server_ip, server_port,
-                    request_body, response_body,
-                    request_headers, response_headers
-                FROM llm_calls
-                WHERE id IN ({placeholders})
-                ORDER BY request_time ASC, complete_time ASC"
-            );
-
-            let mut stmt = conn.prepare(&sql).map_err(|e| {
-                AppError::Storage(format!("failed to prepare turn_calls step2: {e}"))
-            })?;
-
-            let mut rows = stmt
-                .query(duckdb::params_from_iter(call_ids.iter()))
-                .map_err(|e| {
-                    AppError::Storage(format!("failed to execute turn_calls step2: {e}"))
-                })?;
-
-            let mut items = Vec::new();
-            let mut seq: u32 = 0;
-            while let Some(row) = rows
-                .next()
-                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
-            {
-                seq += 1;
-                items.push(TurnCallItem {
-                    id: row
-                        .get(0)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    sequence: seq,
-                    request_time: row
-                        .get(1)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    response_time: row
-                        .get::<_, Option<i64>>(2)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    complete_time: row
-                        .get::<_, Option<i64>>(3)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    wire_api: row
-                        .get(4)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    model: row
-                        .get(5)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    status_code: row
-                        .get::<_, Option<u16>>(6)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    is_stream: row
-                        .get(7)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    finish_reason: row
-                        .get::<_, Option<String>>(8)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    ttft_ms: row
-                        .get::<_, Option<f64>>(9)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    e2e_latency_ms: row
-                        .get::<_, Option<f64>>(10)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    input_tokens: {
-                        let v: Option<u32> = row
-                            .get(11)
-                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                        v
-                    },
-                    output_tokens: {
-                        let v: Option<u32> = row
-                            .get(12)
-                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                        v
-                    },
-                    tokens_estimated: false, // overwritten below once we read response_body
-                    request_path: row
-                        .get(13)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    client_ip: row
-                        .get(14)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    client_port: row
-                        .get(15)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    server_ip: row
-                        .get(16)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    server_port: row
-                        .get(17)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    request_body: row
-                        .get::<_, Option<String>>(18)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    response_body: row
-                        .get::<_, Option<String>>(19)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    request_headers: row
-                        .get::<_, Option<String>>(20)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    response_headers: row
-                        .get::<_, Option<String>>(21)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                });
-                // Now backfill tokens_estimated from the values just inserted.
-                let last = items.last_mut().expect("just pushed");
-                last.tokens_estimated = derive_tokens_estimated(
-                    last.input_tokens,
-                    last.output_tokens,
-                    last.response_body.as_deref(),
-                );
-            }
-
-            Ok(items)
+            // Step 2 lives in a shared helper so `query_calls_by_ids` (used
+            // by the API for in-progress turns whose call_ids come from
+            // the in-memory registry) can reuse the exact same projection.
+            read_calls_by_ids_sync(&conn, &call_ids)
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    async fn query_calls_by_ids(&self, call_ids: &[String]) -> Result<Vec<TurnCallItem>> {
+        if call_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.read_pool.acquire().await?;
+        let call_ids: Vec<String> = call_ids.to_vec();
+        tokio::task::spawn_blocking(move || read_calls_by_ids_sync(&conn, &call_ids))
+            .await
+            .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
     async fn query_sessions(&self, query: &SessionListQuery) -> Result<SessionsPage> {

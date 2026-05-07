@@ -112,6 +112,7 @@ async fn run_pcap_full_sharded(
         turn_shard_rxs,
         turns_tx,
         &mut metrics_sys,
+        None,
     );
 
     ts_metrics::spawn_metrics_stage(metrics_shard_rxs, m_out_tx, &mut metrics_sys);
@@ -240,6 +241,7 @@ async fn run_pcap_collecting_calls(
         turn_shard_rxs,
         turns_tx,
         &mut metrics_sys,
+        None,
     );
 
     ts_metrics::spawn_metrics_stage(metrics_shard_rxs, m_out_tx, &mut metrics_sys);

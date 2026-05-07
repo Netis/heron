@@ -326,6 +326,9 @@ mod tests {
         async fn query_turn_calls(&self, _turn_id: &str) -> Result<Vec<TurnCallItem>> {
             Ok(vec![])
         }
+        async fn query_calls_by_ids(&self, _call_ids: &[String]) -> Result<Vec<TurnCallItem>> {
+            Ok(vec![])
+        }
         async fn query_sessions(&self, _query: &SessionListQuery) -> Result<SessionsPage> {
             Ok(SessionsPage {
                 items: vec![],

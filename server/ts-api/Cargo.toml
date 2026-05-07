@@ -8,6 +8,7 @@ license.workspace = true
 ts-common.workspace = true
 ts-llm.workspace = true
 ts-storage.workspace = true
+ts-turn.workspace = true
 ts-pcap-extract = { workspace = true }
 axum.workspace = true
 tokio.workspace = true
