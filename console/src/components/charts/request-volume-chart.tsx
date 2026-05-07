@@ -93,6 +93,7 @@ export function RequestVolumeChart({ data }: Props) {
             fill={SERIES_COLORS[i % SERIES_COLORS.length]}
             stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
             fillOpacity={0.4}
+            isAnimationActive={false}
           />
         ))}
       </AreaChart>

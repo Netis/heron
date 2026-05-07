@@ -92,6 +92,7 @@ export function StackedBarChart({ data, field, height = 240, yFormatter = format
             dataKey={group}
             stackId="1"
             fill={GROUP_COLORS[i % GROUP_COLORS.length]}
+            isAnimationActive={false}
           />
         ))}
       </BarChart>

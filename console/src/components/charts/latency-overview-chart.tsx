@@ -90,6 +90,7 @@ export function LatencyOverviewChart({ data }: Props) {
             strokeWidth={2}
             dot={false}
             connectNulls
+            isAnimationActive={false}
           />
         ))}
       </LineChart>

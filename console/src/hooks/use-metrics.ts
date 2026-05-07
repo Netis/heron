@@ -12,6 +12,7 @@ export function useMetricsSummary() {
   return useQuery({
     queryKey: ["metrics-summary", { start, end, ...fp }],
     queryFn: () => apiFetch<MetricsSummary>("/api/metrics/summary", { start, end, ...fp }),
+    placeholderData: (prev) => prev,
   })
 }
 
@@ -49,6 +50,7 @@ export function useTimeseries(
       }),
     // Include preset in dep tracking for reactivity
     meta: { preset },
+    placeholderData: (prev) => prev,
   })
 }
 
@@ -60,5 +62,6 @@ export function useModels() {
   return useQuery({
     queryKey: ["models", { start, end, ...fp }],
     queryFn: () => apiFetch<ModelsData>("/api/metrics/models", { start, end, ...fp }),
+    placeholderData: (prev) => prev,
   })
 }
