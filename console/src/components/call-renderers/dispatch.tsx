@@ -1,4 +1,5 @@
 import { AnthropicCallView, AnthropicOutputBlocks, AnthropicInputBlocks, anthropicParseForOutput, anthropicParseForInput } from "./anthropic"
+import { GeminiAiStudioCallView, GeminiAiStudioOutputBlocks, GeminiAiStudioInputBlocks, geminiAiStudioParseForOutput, geminiAiStudioParseForInput } from "./gemini-aistudio"
 import { OpenAiChatCallView, OpenAiChatOutputBlocks, OpenAiChatInputBlocks, openaiChatParseForOutput, openaiChatParseForInput } from "./openai-chat"
 import { OpenAiResponsesCallView, OpenAiResponsesOutputBlocks, OpenAiResponsesInputBlocks, openaiResponsesParseForOutput, openaiResponsesParseForInput } from "./openai-responses"
 import { RawJsonFallback } from "./fallback"
@@ -63,6 +64,14 @@ export function CallRendererDispatch(props: CallRendererDispatchProps) {
           hasRequestBody={props.hasRequestBody}
         />
       )
+    case "gemini-aistudio":
+      return (
+        <GeminiAiStudioCallView
+          requestBody={props.requestBody}
+          responseBody={props.responseBody}
+          hasRequestBody={props.hasRequestBody}
+        />
+      )
     default:
       return (
         <RawJsonFallback
@@ -110,6 +119,10 @@ export function CallOutputDispatch(props: CallOutputDispatchProps) {
       const { response } = openaiResponsesParseForOutput(null, props.responseBody)
       return <OpenAiResponsesOutputBlocks response={response} overlay={overlay} ctx={ctx} />
     }
+    case "gemini-aistudio": {
+      const { response } = geminiAiStudioParseForOutput(null, props.responseBody)
+      return <GeminiAiStudioOutputBlocks response={response} />
+    }
     default:
       return (
         <div className="rounded border border-border/60 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
@@ -143,6 +156,8 @@ export function CallInputDispatch(props: CallInputDispatchProps) {
       return <OpenAiChatInputBlocks parsed={openaiChatParseForInput(props.requestBody)} overlay={overlay} ctx={ctx} />
     case "openai-responses":
       return <OpenAiResponsesInputBlocks parsed={openaiResponsesParseForInput(props.requestBody)} overlay={overlay} ctx={ctx} />
+    case "gemini-aistudio":
+      return <GeminiAiStudioInputBlocks parsed={geminiAiStudioParseForInput(props.requestBody)} />
     default:
       return null
   }

@@ -1,5 +1,6 @@
 import type { CallType } from "./call-type"
 import { classifyAnthropicType } from "./anthropic/classify"
+import { classifyGeminiAiStudioType } from "./gemini-aistudio/classify"
 import { classifyOpenAiChatType } from "./openai-chat/classify"
 import { classifyOpenAiResponsesType } from "./openai-responses/classify"
 
@@ -24,6 +25,8 @@ export function classifyType(
       return classifyOpenAiChatType(responseBody, callId, finalCallId)
     case "openai-responses":
       return classifyOpenAiResponsesType(responseBody, callId, finalCallId)
+    case "gemini-aistudio":
+      return classifyGeminiAiStudioType(responseBody, callId, finalCallId)
     default:
       return "text"
   }

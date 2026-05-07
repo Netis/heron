@@ -31,10 +31,12 @@
 //!   2. Register it here via `.with(Box::new(MyWireApi))`.
 
 pub mod anthropic;
+pub mod gemini_aistudio;
 pub mod openai;
 
 use crate::wire_api_registry::WireApiRegistry;
 use anthropic::AnthropicWireApi;
+use gemini_aistudio::GeminiAiStudioWireApi;
 use openai::{OpenAiChatWireApi, OpenAiResponsesWireApi};
 
 /// Anthropic currently ships one public chat-style API (Messages). If a
@@ -45,6 +47,17 @@ pub const ANTHROPIC: &str = "anthropic";
 pub const OPENAI_CHAT: &str = "openai-chat";
 pub const OPENAI_RESPONSES: &str = "openai-responses";
 
+/// Gemini ships at least three known wire shapes from day one: the public
+/// AI Studio REST surface (here), the Code Assist OAuth wrap (used by
+/// Gemini CLI when logged in with a personal Google account; body wraps
+/// `contents` under a `request` envelope), and Vertex AI (different host
+/// and auth, body identical to AI Studio). We allocate the namespace up
+/// front to avoid storage migration when the OAuth and Vertex variants
+/// land, analogous to how `openai-chat` and `openai-responses` already
+/// split. Future constants land here as `GEMINI_CODEASSIST` and
+/// `GEMINI_VERTEX`; never collapse them back to a bare `gemini`.
+pub const GEMINI_AISTUDIO: &str = "gemini-aistudio";
+
 /// Resolve a stored wire-API string back to its `&'static str` constant.
 /// Returns `None` for unknown values — callers that need a static wire_api
 /// (e.g. to rebuild an `LlmCall` from a DB row) should treat this as "drop
@@ -54,6 +67,7 @@ pub fn by_name(name: &str) -> Option<&'static str> {
         ANTHROPIC => Some(ANTHROPIC),
         OPENAI_CHAT => Some(OPENAI_CHAT),
         OPENAI_RESPONSES => Some(OPENAI_RESPONSES),
+        GEMINI_AISTUDIO => Some(GEMINI_AISTUDIO),
         _ => None,
     }
 }
@@ -63,6 +77,7 @@ pub fn build_default_wire_api_registry() -> WireApiRegistry {
     WireApiRegistry::new()
         .with(Box::new(AnthropicWireApi))
         .with(Box::new(OpenAiResponsesWireApi))
+        .with(Box::new(GeminiAiStudioWireApi))
         .with(Box::new(OpenAiChatWireApi))
 }
 
