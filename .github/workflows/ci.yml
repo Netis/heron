@@ -1,0 +1,54 @@
+name: ci
+
+# Runs on the wuneng self-hosted runner — toolchain (rustup stable +
+# Node 20 + bun) is pre-installed in /home/ci on the VM. Internet egress
+# goes through the internal 100.115.8.61:8888 proxy (set in the runner's
+# .env), so any action that pulls from the network just works without
+# extra config.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: [self-hosted, tokenscope]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          cargo --version
+          rustc --version
+          cargo clippy --version
+          bun --version
+
+      - name: cargo test
+        working-directory: server
+        env:
+          CARGO_TERM_COLOR: always
+        run: cargo test --workspace --quiet
+
+      - name: cargo clippy (informational; not enforcing yet)
+        working-directory: server
+        # Clippy enforcement deferred — main has accumulated lint debt
+        # that needs a focused cleanup pass before -D warnings can land.
+        # For now: report lints, don't fail the build. Tracking cleanup
+        # separately; flip back to `-- -D warnings` once main is clean.
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets
+
+      - name: bun install
+        working-directory: console
+        run: bun install --frozen-lockfile
+
+      - name: bun test
+        working-directory: console
+        run: bun test

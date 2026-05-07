@@ -174,18 +174,10 @@ impl RawAppConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct CaptureConfig {
     #[serde(default)]
     pub sources: Vec<CaptureSourceConfig>,
-}
-
-impl Default for CaptureConfig {
-    fn default() -> Self {
-        Self {
-            sources: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

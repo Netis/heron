@@ -366,6 +366,7 @@ struct QueueProbe {
 
 /// Build-phase metrics registry. Workers register during setup. Once finalized
 /// via [`start()`], it produces a read-only [`MetricsSvc`].
+#[derive(Default)]
 pub struct MetricsSystem {
     next_worker_id: u32,
     registry: BTreeMap<Metric, Vec<(WorkerIdentity, MetricHandle)>>,
@@ -374,11 +375,7 @@ pub struct MetricsSystem {
 
 impl MetricsSystem {
     pub fn new() -> Self {
-        Self {
-            next_worker_id: 0,
-            registry: BTreeMap::new(),
-            probes: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Register a new worker with the given role and metric set.
