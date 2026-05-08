@@ -23,7 +23,7 @@ use ts_common::config::{
 };
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_llm::wire_apis as wa;
-use ts_storage::create_backend;
+use tokenscope::create_backend;
 
 fn fixture(name: &str) -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

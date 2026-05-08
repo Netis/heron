@@ -15,6 +15,7 @@ ts-protocol.workspace = true
 ts-llm.workspace = true
 ts-metrics.workspace = true
 ts-storage.workspace = true
+ts-storage-duckdb.workspace = true
 ts-turn.workspace = true
 ts-api.workspace = true
 ts-pcap-extract.workspace = true

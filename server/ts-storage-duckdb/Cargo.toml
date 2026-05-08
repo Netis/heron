@@ -1,5 +1,5 @@
 [package]
-name = "ts-storage"
+name = "ts-storage-duckdb"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,12 +10,14 @@ ts-llm.workspace = true
 ts-metrics.workspace = true
 ts-protocol.workspace = true
 ts-turn.workspace = true
-bytes.workspace = true
-tokio.workspace = true
-tokio-util.workspace = true
+ts-storage.workspace = true
+duckdb.workspace = true
 async-trait.workspace = true
+tokio.workspace = true
 tracing.workspace = true
-chrono.workspace = true
-serde.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
+bytes.workspace = true
 
+[dev-dependencies]
+tempfile = "3"

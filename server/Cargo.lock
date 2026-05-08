@@ -2846,6 +2846,7 @@ dependencies = [
  "ts-pcap-extract",
  "ts-protocol",
  "ts-storage",
+ "ts-storage-duckdb",
  "ts-turn",
 ]
 
@@ -3078,6 +3079,7 @@ dependencies = [
  "ts-metrics",
  "ts-pcap-extract",
  "ts-storage",
+ "ts-storage-duckdb",
  "ts-turn",
 ]
 
@@ -3179,10 +3181,8 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
- "duckdb",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
@@ -3190,6 +3190,26 @@ dependencies = [
  "ts-llm",
  "ts-metrics",
  "ts-protocol",
+ "ts-turn",
+]
+
+[[package]]
+name = "ts-storage-duckdb"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "duckdb",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ts-common",
+ "ts-llm",
+ "ts-metrics",
+ "ts-protocol",
+ "ts-storage",
  "ts-turn",
 ]
 

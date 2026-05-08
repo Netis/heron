@@ -16,7 +16,7 @@ use ts_common::config::{
     config_search_paths, discover_config_path, AppConfig, CaptureSourceConfig, PipelineDef,
 };
 use ts_common::internal_metrics::{Metric, MetricsReporter, MetricsSystem};
-use ts_storage::create_backend;
+use tokenscope::create_backend;
 
 mod cmd;
 

@@ -221,7 +221,7 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
     use ts_metrics::model::LlmFinishMetric;
-    use ts_storage::duckdb::DuckDbBackend;
+    use ts_storage_duckdb::DuckDbBackend;
 
     use crate::{router, ApiHealthContext, ApiMetricsContext, ApiRuntimeConfigContext};
 

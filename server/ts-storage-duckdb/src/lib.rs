@@ -15,9 +15,9 @@ use ts_metrics::model::{LlmFinishMetric, LlmMetric};
 use ts_protocol::HttpExchange;
 use ts_turn::AgentTurn;
 
-use crate::query::*;
-use crate::retention::{RetentionPolicy, RetentionReport};
-use crate::StorageBackend;
+use ts_storage::query::*;
+use ts_storage::retention::{RetentionPolicy, RetentionReport};
+use ts_storage::StorageBackend;
 
 /// Decide whether a row's `(input_tokens, output_tokens)` came from the
 /// fallback estimator vs the wire `usage` block. Returns true when the row
@@ -3654,7 +3654,7 @@ fn timestamp_value(t: SystemTime) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StorageBackend;
+    use ts_storage::StorageBackend;
     use std::net::IpAddr;
     use ts_llm::model::ApiType;
 
@@ -5864,7 +5864,7 @@ mod turn_tests {
 
     #[tokio::test]
     async fn query_session_turns_cursor_pagination() {
-        use crate::query::decode_session_turns_cursor;
+        use ts_storage::query::decode_session_turns_cursor;
 
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
@@ -6190,7 +6190,7 @@ mod concurrent_tests {
 #[cfg(test)]
 mod retention_tests {
     use super::*;
-    use crate::StorageBackend;
+    use ts_storage::StorageBackend;
     use std::net::IpAddr;
     use std::time::{Duration, SystemTime};
     use ts_llm::model::ApiType;
