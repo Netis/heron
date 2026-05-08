@@ -289,45 +289,58 @@ fn default_flow_shard_count() -> usize {
 
 /// Capacities of every bounded `mpsc` channel sitting between pipeline stages.
 /// All default to 4096 — override individually under `[pipeline.queues]`.
+///
+/// Field names mirror the queue probe metrics surfaced by `internal_metrics`
+/// (and the `pipeline-health` UI), modulo the `q_` prefix: e.g. config
+/// `agent_calls` ↔ metric `q_agent_calls`. The `storage_*` quartet feeds the
+/// shared sink that fans every pipeline into one DB writer.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct QueueConfig {
     /// capture → flow dispatcher
     #[serde(default = "default_queue_capacity")]
-    pub raw: usize,
+    pub raw_pkts: usize,
     /// flow dispatcher → each protocol parser shard (ParsedPacket)
     #[serde(default = "default_queue_capacity")]
-    pub parsed_packet: usize,
-    /// protocol parser → llm stage (HttpParseEvent, per shard)
+    pub parsed_pkts: usize,
+    /// protocol parser → http joiner (HttpParseEvent, per shard)
     #[serde(default = "default_queue_capacity")]
-    pub flow_event: usize,
-    /// llm stage → each turn shard (per shard)
+    pub http_parse_events: usize,
+    /// http joiner → llm stage (HttpJoinerEvent, per shard)
     #[serde(default = "default_queue_capacity")]
-    pub turn_event: usize,
-    /// llm stage → each metrics shard (per shard)
+    pub http_joiner_events: usize,
+    /// llm stage → each turn shard (AgentCall, per shard)
     #[serde(default = "default_queue_capacity")]
-    pub metrics_event: usize,
-    /// llm stage → storage sink (LlmCall records)
+    pub agent_calls: usize,
+    /// llm stage → each metrics shard (LlmEvent, per shard)
     #[serde(default = "default_queue_capacity")]
-    pub call_sink: usize,
-    /// turn stage → storage sink (AgentTurn records)
+    pub llm_events: usize,
+    /// llm stage → shared storage sink (LlmCall records)
     #[serde(default = "default_queue_capacity")]
-    pub turn_sink: usize,
-    /// metrics stage → storage sink (LlmMetric records)
+    pub storage_calls: usize,
+    /// turn stage → shared storage sink (AgentTurn records)
     #[serde(default = "default_queue_capacity")]
-    pub metric_sink: usize,
+    pub storage_turns: usize,
+    /// metrics stage → shared storage sink (LlmMetric records)
+    #[serde(default = "default_queue_capacity")]
+    pub storage_metrics: usize,
+    /// http joiner → shared storage sink (HttpExchange records)
+    #[serde(default = "default_queue_capacity")]
+    pub storage_exchanges: usize,
 }
 
 impl Default for QueueConfig {
     fn default() -> Self {
         Self {
-            raw: default_queue_capacity(),
-            parsed_packet: default_queue_capacity(),
-            flow_event: default_queue_capacity(),
-            turn_event: default_queue_capacity(),
-            metrics_event: default_queue_capacity(),
-            call_sink: default_queue_capacity(),
-            turn_sink: default_queue_capacity(),
-            metric_sink: default_queue_capacity(),
+            raw_pkts: default_queue_capacity(),
+            parsed_pkts: default_queue_capacity(),
+            http_parse_events: default_queue_capacity(),
+            http_joiner_events: default_queue_capacity(),
+            agent_calls: default_queue_capacity(),
+            llm_events: default_queue_capacity(),
+            storage_calls: default_queue_capacity(),
+            storage_turns: default_queue_capacity(),
+            storage_metrics: default_queue_capacity(),
+            storage_exchanges: default_queue_capacity(),
         }
     }
 }
@@ -1199,14 +1212,16 @@ mod phase2_tests {
     #[test]
     fn queue_config_defaults_all_4096() {
         let cfg = QueueConfig::default();
-        assert_eq!(cfg.raw, 4096);
-        assert_eq!(cfg.parsed_packet, 4096);
-        assert_eq!(cfg.flow_event, 4096);
-        assert_eq!(cfg.turn_event, 4096);
-        assert_eq!(cfg.metrics_event, 4096);
-        assert_eq!(cfg.call_sink, 4096);
-        assert_eq!(cfg.turn_sink, 4096);
-        assert_eq!(cfg.metric_sink, 4096);
+        assert_eq!(cfg.raw_pkts, 4096);
+        assert_eq!(cfg.parsed_pkts, 4096);
+        assert_eq!(cfg.http_parse_events, 4096);
+        assert_eq!(cfg.http_joiner_events, 4096);
+        assert_eq!(cfg.agent_calls, 4096);
+        assert_eq!(cfg.llm_events, 4096);
+        assert_eq!(cfg.storage_calls, 4096);
+        assert_eq!(cfg.storage_turns, 4096);
+        assert_eq!(cfg.storage_metrics, 4096);
+        assert_eq!(cfg.storage_exchanges, 4096);
     }
 
     #[test]

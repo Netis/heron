@@ -128,22 +128,27 @@ impl Pipeline {
         active_turns: ts_turn::ActiveTurnRegistry,
     ) -> Self {
         // ---- Shared sinks (fan-in across every pipeline) ----
-        // Use the max queue capacity across all pipelines for shared channels.
-        let sink_capacity = pipeline_defs
-            .iter()
-            .map(|d| {
-                d.queues
-                    .call_sink
-                    .max(d.queues.turn_sink)
-                    .max(d.queues.metric_sink)
-            })
-            .max()
-            .unwrap_or(4096);
+        // Each shared channel takes the max of its dedicated config across
+        // every pipeline. We don't unify under one knob: a slow `storage_calls`
+        // shouldn't force `storage_turns` to over-allocate.
+        let max_q =
+            |pick: fn(&ts_common::config::QueueConfig) -> usize| -> usize {
+                pipeline_defs
+                    .iter()
+                    .map(|d| pick(&d.queues))
+                    .max()
+                    .unwrap_or(4096)
+            };
+        let calls_cap = max_q(|q| q.storage_calls);
+        let turns_cap = max_q(|q| q.storage_turns);
+        let metrics_cap = max_q(|q| q.storage_metrics);
+        let exchanges_cap = max_q(|q| q.storage_exchanges);
 
-        let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(sink_capacity);
-        let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(sink_capacity);
-        let (metrics_out_tx, metrics_out_rx) = mpsc::channel::<LlmMetricsBatch>(sink_capacity);
-        let (http_exchanges_tx, http_exchanges_rx) = mpsc::channel::<HttpExchange>(sink_capacity);
+        let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(calls_cap);
+        let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(turns_cap);
+        let (metrics_out_tx, metrics_out_rx) = mpsc::channel::<LlmMetricsBatch>(metrics_cap);
+        let (http_exchanges_tx, http_exchanges_rx) =
+            mpsc::channel::<HttpExchange>(exchanges_cap);
 
         let registry = Arc::new(ts_llm::agents::build_default_registry());
         let wire_api_registry = Arc::new(ts_llm::wire_apis::build_default_wire_api_registry());
@@ -156,13 +161,14 @@ impl Pipeline {
 
         // Shared sink queue depth probes — registered against `shared_metrics`
         // (same MetricsSystem as the storage_sink worker), so they show up in
-        // the `[INTERNAL] global | storage | …` line.
+        // the `[INTERNAL] global | storage | …` line. Each probe reports its
+        // own channel's capacity (not a unified max) so the UI gauge matches
+        // the actual mpsc bound.
         {
-            let cap = sink_capacity as u64;
             let w = calls_tx.downgrade();
             shared_metrics.register_queue_probe_capped(
                 Metric::StorageQueueDepthCalls,
-                cap,
+                calls_cap as u64,
                 move || {
                     w.upgrade()
                         .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
@@ -171,7 +177,7 @@ impl Pipeline {
             let w = turns_tx.downgrade();
             shared_metrics.register_queue_probe_capped(
                 Metric::StorageQueueDepthTurns,
-                cap,
+                turns_cap as u64,
                 move || {
                     w.upgrade()
                         .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
@@ -180,7 +186,7 @@ impl Pipeline {
             let w = metrics_out_tx.downgrade();
             shared_metrics.register_queue_probe_capped(
                 Metric::StorageQueueDepthMetrics,
-                cap,
+                metrics_cap as u64,
                 move || {
                     w.upgrade()
                         .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
@@ -189,7 +195,7 @@ impl Pipeline {
             let w = http_exchanges_tx.downgrade();
             shared_metrics.register_queue_probe_capped(
                 Metric::StorageQueueDepthHttpExchanges,
-                cap,
+                exchanges_cap as u64,
                 move || {
                     w.upgrade()
                         .map_or(0, |s| (s.max_capacity() - s.capacity()) as u64)
@@ -227,7 +233,7 @@ impl Pipeline {
             };
 
             let (parsed_txs, parsed_rxs) =
-                make_shard_channels::<WorkerInput>(flow_shards, q.parsed_packet);
+                make_shard_channels::<WorkerInput>(flow_shards, q.parsed_pkts);
             // Capture weaks now; `parsed_txs` originals are dropped after
             // cloning into dispatchers, but the weaks remain upgradeable as
             // long as any dispatcher task holds a strong clone of the same channel.
@@ -235,21 +241,21 @@ impl Pipeline {
                 parsed_txs.iter().map(|tx| tx.downgrade()).collect();
             let (event_txs, event_rxs) = make_shard_channels::<ts_protocol::model::HttpParseEvent>(
                 flow_shards,
-                q.flow_event,
+                q.http_parse_events,
             );
             let event_weaks: Vec<WeakSender<ts_protocol::model::HttpParseEvent>> =
                 event_txs.iter().map(|tx| tx.downgrade()).collect();
             // Joiner output: per-shard HttpJoinerEvent channels into the LLM stage.
             let (joiner_event_txs, joiner_event_rxs) =
-                make_shard_channels::<HttpJoinerEvent>(flow_shards, q.flow_event);
+                make_shard_channels::<HttpJoinerEvent>(flow_shards, q.http_joiner_events);
             let joiner_event_weaks: Vec<WeakSender<HttpJoinerEvent>> =
                 joiner_event_txs.iter().map(|tx| tx.downgrade()).collect();
             let (turn_shard_txs, turn_shard_rxs) =
-                make_shard_channels::<TurnShardInput>(turn_shards, q.turn_event);
+                make_shard_channels::<TurnShardInput>(turn_shards, q.agent_calls);
             let turn_shard_weaks: Vec<WeakSender<TurnShardInput>> =
                 turn_shard_txs.iter().map(|tx| tx.downgrade()).collect();
             let (metrics_shard_txs, metrics_shard_rxs) =
-                make_shard_channels::<LlmEvent>(metrics_shards, q.metrics_event);
+                make_shard_channels::<LlmEvent>(metrics_shards, q.llm_events);
             let metrics_shard_weaks: Vec<WeakSender<LlmEvent>> =
                 metrics_shard_txs.iter().map(|tx| tx.downgrade()).collect();
 
@@ -260,7 +266,7 @@ impl Pipeline {
             // `hash(source_id) % D`.
             let mut disp_txs = Vec::with_capacity(dispatcher_count);
             for i in 0..dispatcher_count {
-                let (dtx, drx) = mpsc::channel::<RawPacket>(q.raw);
+                let (dtx, drx) = mpsc::channel::<RawPacket>(q.raw_pkts);
                 disp_txs.push(dtx);
                 let worker_txs_clone: Vec<_> = parsed_txs.iter().map(|tx| tx.clone()).collect();
                 let worker_name = if dispatcher_count > 1 {
@@ -398,7 +404,7 @@ impl Pipeline {
                 disp_txs.iter().map(|tx| tx.downgrade()).collect();
             metrics_sys.register_queue_probe_capped(
                 Metric::QueueDepthRaw,
-                q.raw as u64,
+                q.raw_pkts as u64,
                 move || {
                     raw_weaks
                         .iter()
@@ -410,7 +416,7 @@ impl Pipeline {
             );
             metrics_sys.register_queue_probe_capped(
                 Metric::QueueDepthParsed,
-                q.parsed_packet as u64,
+                q.parsed_pkts as u64,
                 move || {
                     parsed_weaks
                         .iter()
@@ -422,7 +428,7 @@ impl Pipeline {
             );
             metrics_sys.register_queue_probe_capped(
                 Metric::QueueDepthHttpParseEvent,
-                q.flow_event as u64,
+                q.http_parse_events as u64,
                 move || {
                     event_weaks
                         .iter()
@@ -434,7 +440,7 @@ impl Pipeline {
             );
             metrics_sys.register_queue_probe_capped(
                 Metric::QueueDepthHttpJoinerEvent,
-                q.flow_event as u64,
+                q.http_joiner_events as u64,
                 move || {
                     joiner_event_weaks
                         .iter()
@@ -446,7 +452,7 @@ impl Pipeline {
             );
             metrics_sys.register_queue_probe_capped(
                 Metric::QueueDepthAgentCall,
-                q.turn_event as u64,
+                q.agent_calls as u64,
                 move || {
                     turn_shard_weaks
                         .iter()
@@ -458,7 +464,7 @@ impl Pipeline {
             );
             metrics_sys.register_queue_probe_capped(
                 Metric::QueueDepthLlmEvent,
-                q.metrics_event as u64,
+                q.llm_events as u64,
                 move || {
                     metrics_shard_weaks
                         .iter()

@@ -115,7 +115,7 @@ fn collect_in_progress(ctx: &ApiAgentTurnsContext, query: &TurnsQuery) -> Vec<Tu
             t.end_time_us >= start_us && t.start_time_us <= end_us
         })
         .filter(|t| matches_filter(t, filter))
-        .filter(|t| {
+        .filter(|_t| {
             // status filter: in-progress rows match only if `in_progress`
             // is in the requested set, OR if the filter is empty (= all).
             query.statuses.is_empty() || query.statuses.iter().any(|s| s == "in_progress")
@@ -173,7 +173,12 @@ fn matches_filter(t: &AgentTurn, f: &ts_storage::query::DimensionFilter) -> bool
     if !f.wire_apis.is_empty() && !f.wire_apis.iter().any(|w| w == &t.wire_api) {
         return false;
     }
-    if !f.models.is_empty() && !f.models.iter().any(|m| t.models_used.iter().any(|tm| tm == m)) {
+    if !f.models.is_empty()
+        && !f
+            .models
+            .iter()
+            .any(|m| t.models_used.iter().any(|tm| tm == m))
+    {
         return false;
     }
     let server_ip_str = t.server_ip.to_string();

@@ -78,16 +78,22 @@
 #                         # 0 = no size cap.
 
 # Bounded channel capacities between pipeline stages. All default to 4096.
+# Keys mirror the queue probe metrics shown on the pipeline-health page
+# (without the `q_` prefix), so the dashboard cell that reddens names the
+# config key to bump. `storage_*` are shared sinks (fan-in across every
+# pipeline); the other queues are per-pipeline.
 # Override per-pipeline under [[pipeline]].
 # [pipeline.queues]
-# raw = 4096
-# parsed_packet = 4096
-# flow_event = 4096
-# turn_event = 4096
-# metrics_event = 4096
-# call_sink = 4096
-# turn_sink = 4096
-# metric_sink = 4096
+# raw_pkts           = 4096
+# parsed_pkts        = 4096
+# http_parse_events  = 4096
+# http_joiner_events = 4096
+# agent_calls        = 4096
+# llm_events         = 4096
+# storage_calls      = 4096
+# storage_turns      = 4096
+# storage_metrics    = 4096
+# storage_exchanges  = 4096
 
 # ---------------------------------------------------------------------------
 # Storage
