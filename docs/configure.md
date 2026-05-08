@@ -130,18 +130,22 @@ Bounded channels between pipeline stages, all default to 4096:
 
 ```toml
 [pipeline.queues]
-raw = 4096
-parsed_packet = 4096
-flow_event = 4096
-turn_event = 4096
-metrics_event = 4096
-call_sink = 4096
-turn_sink = 4096
-metric_sink = 4096
+raw_pkts           = 4096
+parsed_pkts        = 4096
+http_parse_events  = 4096
+http_joiner_events = 4096
+agent_calls        = 4096
+llm_events         = 4096
+storage_calls      = 4096
+storage_turns      = 4096
+storage_metrics    = 4096
+storage_exchanges  = 4096
 ```
 
-Increase queue depths if you observe `internal_metrics` reporting
-backpressure on a specific stage; decrease them if memory is tight.
+Keys mirror the `pipeline-health` page's queue cell labels (drop the
+`q_` prefix). `storage_*` are shared sinks (fan-in across every pipeline);
+the others are per-pipeline. Bump the queue named by the first cell that
+reddens; lower them if memory is tight.
 
 ## `[storage]` — backend selection
 
@@ -299,8 +303,8 @@ shard_count = 2
 [pipeline.metrics]
 shard_count = 2
 [pipeline.queues]
-raw = 16384
-parsed_packet = 16384
+raw_pkts = 16384
+parsed_pkts = 16384
 [[pipeline.sources]]
 type = "cloud-probe"
 endpoint = "tcp://0.0.0.0:5555"
