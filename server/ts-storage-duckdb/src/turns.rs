@@ -1,0 +1,1206 @@
+//! `agent_turns` table I/O — write, paginated query, by-id detail.
+
+use duckdb::types::{TimeUnit, Value};
+use ts_common::error::{AppError, Result};
+use ts_storage::query::*;
+use ts_turn::AgentTurn;
+
+use crate::util::{
+    extract_full_text, parse_json_string_list, us_to_timestamp, ExtractKind,
+};
+use crate::DuckDbBackend;
+
+struct PreparedTurn {
+    turn_id: String,
+    source_id: String,
+    session_id: String,
+    wire_api: String,
+    agent_kind: String,
+    client_ip: String,
+    server_ip: String,
+    start_time: Value,
+    end_time: Value,
+    duration_ms: u64,
+    call_count: u32,
+    models_used: String,
+    subagents_used: String,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    total_cache_read_input_tokens: u64,
+    total_cache_creation_input_tokens: u64,
+    total_cost_usd: Option<f64>,
+    status: String,
+    final_finish_reason: Option<String>,
+    user_input_preview: Option<String>,
+    user_call_id: Option<String>,
+    final_answer_preview: Option<String>,
+    final_call_id: Option<String>,
+    call_ids: String,
+    metadata: String,
+}
+
+fn prepare_turn(t: AgentTurn) -> PreparedTurn {
+    PreparedTurn {
+        turn_id: t.turn_id,
+        source_id: t.source_id,
+        session_id: t.session_id,
+        wire_api: t.wire_api,
+        agent_kind: t.agent_kind,
+        client_ip: t.client_ip.to_string(),
+        server_ip: t.server_ip.to_string(),
+        start_time: Value::Timestamp(TimeUnit::Microsecond, t.start_time_us),
+        end_time: Value::Timestamp(TimeUnit::Microsecond, t.end_time_us),
+        duration_ms: t.duration_ms,
+        call_count: t.call_count,
+        models_used: serde_json::to_string(&t.models_used).unwrap_or_default(),
+        subagents_used: serde_json::to_string(&t.subagents_used).unwrap_or_default(),
+        total_input_tokens: t.total_input_tokens,
+        total_output_tokens: t.total_output_tokens,
+        total_cache_read_input_tokens: t.total_cache_read_input_tokens,
+        total_cache_creation_input_tokens: t.total_cache_creation_input_tokens,
+        total_cost_usd: t.total_cost_usd,
+        status: t.status.to_string(),
+        final_finish_reason: t.final_finish_reason,
+        user_input_preview: t.user_input_preview,
+        user_call_id: t.user_call_id,
+        final_answer_preview: t.final_answer_preview,
+        final_call_id: t.final_call_id,
+        call_ids: serde_json::to_string(&t.call_ids).unwrap_or_default(),
+        metadata: t.metadata.to_string(),
+    }
+}
+
+
+impl DuckDbBackend {
+    pub(crate) async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()> {
+        if turns.is_empty() {
+            return Ok(());
+        }
+        let conn = self.write_turns_conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let prepared: Vec<PreparedTurn> = turns.into_iter().map(prepare_turn).collect();
+
+            let conn = conn
+                .lock()
+                .map_err(|e| AppError::Storage(format!("failed to lock writer: {e}")))?;
+            let mut appender = conn
+                .appender("agent_turns")
+                .map_err(|e| AppError::Storage(format!("failed to create turns appender: {e}")))?;
+            for p in &prepared {
+                appender
+                    .append_row(duckdb::params![
+                        p.turn_id,
+                        p.source_id,
+                        p.session_id,
+                        p.wire_api,
+                        p.agent_kind,
+                        p.client_ip,
+                        p.server_ip,
+                        p.start_time,
+                        p.end_time,
+                        p.duration_ms,
+                        p.call_count,
+                        p.models_used,
+                        p.subagents_used,
+                        p.total_input_tokens,
+                        p.total_output_tokens,
+                        p.total_cache_read_input_tokens,
+                        p.total_cache_creation_input_tokens,
+                        p.total_cost_usd,
+                        p.status,
+                        p.final_finish_reason,
+                        p.user_input_preview,
+                        p.user_call_id,
+                        p.final_answer_preview,
+                        p.final_call_id,
+                        p.call_ids,
+                        p.metadata,
+                    ])
+                    .map_err(|e| AppError::Storage(format!("failed to append turn: {e}")))?;
+            }
+            appender
+                .flush()
+                .map_err(|e| AppError::Storage(format!("failed to flush turns: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    pub(crate) async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage> {
+        const VALID_SORT_FIELDS: &[&str] = &[
+            "start_time",
+            "end_time",
+            "duration_ms",
+            "call_count",
+            "total_input_tokens",
+            "total_output_tokens",
+        ];
+
+        if !VALID_SORT_FIELDS.contains(&query.sort_by.as_str()) {
+            return Err(AppError::Storage(format!(
+                "invalid sort_by field: {}",
+                query.sort_by
+            )));
+        }
+        let sort_order = if query.sort_order.to_uppercase() == "ASC" {
+            "ASC"
+        } else {
+            "DESC"
+        };
+
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+        let sort_order = sort_order.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+
+            let mut where_parts = vec!["start_time >= ?".to_string(), "start_time < ?".to_string()];
+
+            if !query.filter.wire_apis.is_empty() {
+                let list: Vec<String> = query
+                    .filter
+                    .wire_apis
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!("wire_api IN ({})", list.join(", ")));
+            }
+            if !query.filter.models.is_empty() {
+                // models_used is stored as a JSON-encoded VARCHAR of Vec<String>.
+                // Match if any requested model appears in the stored list.
+                let list: Vec<String> = query
+                    .filter
+                    .models
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!(
+                    "list_has_any(CAST(CAST(models_used AS JSON) AS VARCHAR[]), [{}])",
+                    list.join(", ")
+                ));
+            }
+            if !query.statuses.is_empty() {
+                let list: Vec<String> = query
+                    .statuses
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!("status IN ({})", list.join(", ")));
+            }
+            if !query.agent_kinds.is_empty() {
+                let list: Vec<String> = query
+                    .agent_kinds
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!("agent_kind IN ({})", list.join(", ")));
+            }
+            if !query.client_ips.is_empty() {
+                let list: Vec<String> = query
+                    .client_ips
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!("client_ip IN ({})", list.join(", ")));
+            }
+            if !query.filter.server_ips.is_empty() {
+                let list: Vec<String> = query
+                    .filter
+                    .server_ips
+                    .iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "''")))
+                    .collect();
+                where_parts.push(format!("server_ip IN ({})", list.join(", ")));
+            }
+
+            let where_sql = where_parts.join(" AND ");
+            let sort_by = &query.sort_by;
+
+            let count_sql = format!("SELECT COUNT(*) FROM agent_turns WHERE {where_sql}");
+            let mut count_stmt = conn
+                .prepare(&count_sql)
+                .map_err(|e| AppError::Storage(format!("failed to prepare count query: {e}")))?;
+            let total: u64 = count_stmt
+                .query_row(duckdb::params![start_ts, end_ts], |row| row.get(0))
+                .map_err(|e| AppError::Storage(format!("failed to execute count query: {e}")))?;
+
+            let offset = (query.page.saturating_sub(1)) as u64 * query.page_size as u64;
+            let limit = query.page_size;
+            let items_sql = format!(
+                "SELECT turn_id, source_id, session_id, \
+                 epoch_ms(start_time), epoch_ms(end_time), duration_ms, \
+                 wire_api, agent_kind, models_used, call_count, \
+                 total_input_tokens, total_output_tokens, status, \
+                 final_finish_reason, user_input_preview, final_answer_preview, \
+                 client_ip, server_ip \
+                 FROM agent_turns WHERE {where_sql} \
+                 ORDER BY {sort_by} {sort_order} \
+                 LIMIT {limit} OFFSET {offset}"
+            );
+
+            let mut items_stmt = conn
+                .prepare(&items_sql)
+                .map_err(|e| AppError::Storage(format!("failed to prepare items query: {e}")))?;
+
+            let mut items = Vec::new();
+            let mut query_rows = items_stmt
+                .query(duckdb::params![start_ts, end_ts])
+                .map_err(|e| AppError::Storage(format!("failed to execute items query: {e}")))?;
+
+            while let Some(row) = query_rows
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                let models_used_raw: Option<String> = row
+                    .get(8)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let models_used = parse_json_string_list(models_used_raw.as_deref());
+                let primary_model = models_used.first().cloned();
+                items.push(TurnListItem {
+                    turn_id: row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    source_id: row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    session_id: row
+                        .get(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    start_time: row
+                        .get(3)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    end_time: row
+                        .get(4)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    duration_ms: row
+                        .get(5)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    wire_api: row
+                        .get(6)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    agent_kind: row
+                        .get(7)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    client_ip: row
+                        .get(16)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    server_ip: row
+                        .get(17)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    primary_model,
+                    models_used,
+                    call_count: row
+                        .get(9)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_input_tokens: row
+                        .get(10)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_output_tokens: row
+                        .get(11)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    status: row
+                        .get(12)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    final_finish_reason: row
+                        .get::<_, Option<String>>(13)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    user_input_preview: row
+                        .get::<_, Option<String>>(14)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    final_answer_preview: row
+                        .get::<_, Option<String>>(15)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                });
+            }
+
+            Ok(TurnsPage { total, items })
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    pub(crate) async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>> {
+        let conn = self.read_pool.acquire().await?;
+        let turn_id = turn_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let sql = "
+                SELECT
+                    turn_id, source_id, session_id, wire_api, agent_kind,
+                    epoch_ms(start_time), epoch_ms(end_time), duration_ms, call_count,
+                    models_used, subagents_used,
+                    total_input_tokens, total_output_tokens,
+                    total_cache_read_input_tokens, total_cache_creation_input_tokens,
+                    total_cost_usd, status, final_finish_reason,
+                    user_input_preview, user_call_id,
+                    final_answer_preview, final_call_id,
+                    call_ids, metadata,
+                    client_ip, server_ip
+                FROM agent_turns
+                WHERE turn_id = ?
+            ";
+
+            let mut stmt = conn.prepare(sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare turn_by_id query: {e}"))
+            })?;
+
+            #[allow(clippy::type_complexity)]
+            let result = stmt.query_row(duckdb::params![turn_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,          // turn_id
+                    row.get::<_, String>(1)?,          // source_id
+                    row.get::<_, String>(2)?,          // session_id
+                    row.get::<_, String>(3)?,          // wire_api
+                    row.get::<_, String>(4)?,          // agent_kind
+                    row.get::<_, i64>(5)?,             // start_time
+                    row.get::<_, i64>(6)?,             // end_time
+                    row.get::<_, u64>(7)?,             // duration_ms
+                    row.get::<_, u32>(8)?,             // call_count
+                    row.get::<_, Option<String>>(9)?,  // models_used
+                    row.get::<_, Option<String>>(10)?, // subagents_used
+                    row.get::<_, u64>(11)?,            // total_input_tokens
+                    row.get::<_, u64>(12)?,            // total_output_tokens
+                    row.get::<_, u64>(13)?,            // total_cache_read_input_tokens
+                    row.get::<_, u64>(14)?,            // total_cache_creation_input_tokens
+                    row.get::<_, Option<f64>>(15)?,    // total_cost_usd
+                    row.get::<_, String>(16)?,         // status
+                    row.get::<_, Option<String>>(17)?, // final_finish_reason
+                    row.get::<_, Option<String>>(18)?, // user_input_preview
+                    row.get::<_, Option<String>>(19)?, // user_call_id
+                    row.get::<_, Option<String>>(20)?, // final_answer_preview
+                    row.get::<_, Option<String>>(21)?, // final_call_id
+                    row.get::<_, Option<String>>(22)?, // call_ids (JSON)
+                    row.get::<_, Option<String>>(23)?, // metadata
+                    row.get::<_, String>(24)?,         // client_ip
+                    row.get::<_, String>(25)?,         // server_ip
+                ))
+            });
+
+            let tuple = match result {
+                Ok(t) => t,
+                Err(duckdb::Error::QueryReturnedNoRows) => return Ok(None),
+                Err(e) => {
+                    return Err(AppError::Storage(format!(
+                        "failed to query turn by id: {e}"
+                    )));
+                }
+            };
+
+            let (
+                turn_id,
+                source_id,
+                session_id,
+                wire_api,
+                agent_kind,
+                start_time,
+                end_time,
+                duration_ms,
+                call_count,
+                models_used_raw,
+                subagents_used_raw,
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_read_input_tokens,
+                total_cache_creation_input_tokens,
+                total_cost_usd,
+                status,
+                final_finish_reason,
+                user_input_preview,
+                user_call_id,
+                final_answer_preview,
+                final_call_id,
+                call_ids_raw,
+                metadata_raw,
+                client_ip,
+                server_ip,
+            ) = tuple;
+
+            let models_used = parse_json_string_list(models_used_raw.as_deref());
+            let subagents_used = parse_json_string_list(subagents_used_raw.as_deref());
+            let call_ids = parse_json_string_list(call_ids_raw.as_deref());
+            let metadata = metadata_raw
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+
+            // `truncate_preview` in ts-turn appends `…` only when it truncates,
+            // so a preview that does not end in `…` is already the full text —
+            // skip the llm_calls lookup + profile re-extraction in that case.
+            let user_input = match user_input_preview.as_deref() {
+                Some(p) if !p.ends_with('…') => user_input_preview.clone(),
+                _ => extract_full_text(
+                    &conn,
+                    &agent_kind,
+                    user_call_id.as_deref(),
+                    ExtractKind::User,
+                )
+                .or_else(|| user_input_preview.clone()),
+            };
+            let final_answer = match final_answer_preview.as_deref() {
+                Some(p) if !p.ends_with('…') => final_answer_preview.clone(),
+                _ => extract_full_text(
+                    &conn,
+                    &agent_kind,
+                    final_call_id.as_deref(),
+                    ExtractKind::Assistant,
+                )
+                .or_else(|| final_answer_preview.clone()),
+            };
+
+            Ok(Some(TurnDetail {
+                turn_id,
+                source_id,
+                session_id,
+                wire_api,
+                agent_kind,
+                client_ip,
+                server_ip,
+                start_time,
+                end_time,
+                duration_ms,
+                call_count,
+                models_used,
+                subagents_used,
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_read_input_tokens,
+                total_cache_creation_input_tokens,
+                total_cost_usd,
+                status,
+                final_finish_reason,
+                user_call_id,
+                user_input,
+                final_call_id,
+                final_answer,
+                call_ids,
+                metadata,
+            }))
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::DuckDbBackend;
+    use std::net::IpAddr;
+    use ts_llm::model::{ApiType, LlmCall};
+    use ts_llm::wire_apis as wa;
+    use ts_storage::query::*;
+    use ts_storage::StorageBackend;
+    use ts_turn::{AgentTurn, TurnStatus};
+
+    fn sample_turn(
+        turn_id: &str,
+        session_id: &str,
+        wire_api: &str,
+        models_used: Vec<&str>,
+        start_us: i64,
+        duration_ms: u64,
+        call_count: u32,
+        call_ids: Vec<&str>,
+        status: TurnStatus,
+    ) -> AgentTurn {
+        AgentTurn {
+            source_id: String::new(),
+            turn_id: turn_id.into(),
+            session_id: session_id.into(),
+            wire_api: wire_api.into(),
+            agent_kind: "claude-cli".into(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            server_ip: "127.0.0.1".parse().unwrap(),
+            start_time_us: start_us,
+            end_time_us: start_us + (duration_ms as i64) * 1000,
+            duration_ms,
+            call_count,
+            models_used: models_used.into_iter().map(String::from).collect(),
+            subagents_used: vec![],
+            total_input_tokens: 100,
+            total_output_tokens: 50,
+            total_cache_read_input_tokens: 0,
+            total_cache_creation_input_tokens: 0,
+            total_cost_usd: None,
+            status,
+            final_finish_reason: Some("complete".into()),
+            user_input_preview: Some("hello".into()),
+            user_call_id: None,
+            final_answer_preview: Some("world".into()),
+            final_call_id: None,
+            call_ids: call_ids.into_iter().map(String::from).collect(),
+            metadata: serde_json::json!({}),
+        }
+    }
+
+    fn mk_call_with_time(id: &str, request_time_us: i64) -> LlmCall {
+        LlmCall {
+            source_id: String::new(),
+            id: id.into(),
+            wire_api: wa::OPENAI_CHAT,
+            model: "gpt-4".into(),
+            api_type: ApiType::Chat,
+            request_time: request_time_us,
+            response_time: Some(request_time_us + 100_000),
+            complete_time: Some(request_time_us + 500_000),
+            request_path: "/v1/chat/completions".into(),
+            is_stream: false,
+            request_body: None,
+            status_code: Some(200),
+            finish_reason: Some("stop".to_string()),
+            response_body: None,
+            input_tokens: Some(10),
+            output_tokens: Some(5),
+            total_tokens: Some(15),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            ttft_ms: Some(100.0),
+            e2e_latency_ms: Some(500.0),
+            client_ip: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            client_port: 1000,
+            server_ip: "10.0.0.2".parse::<IpAddr>().unwrap(),
+            server_port: 8080,
+            response_id: None,
+            request_headers: vec![],
+            response_headers: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn round_trip_one_turn() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+        let turn = sample_turn(
+            "t1",
+            "s1",
+            wa::ANTHROPIC,
+            vec!["claude-sonnet"],
+            1_700_000_000_000_000,
+            1500,
+            3,
+            vec!["call-42"],
+            TurnStatus::Complete,
+        );
+        backend.write_turns(vec![turn]).await.unwrap();
+    }
+
+    fn base_turns_query() -> TurnsQuery {
+        TurnsQuery {
+            time_range: TimeRange {
+                start_us: 1_700_000_000_000_000 - 1,
+                end_us: 1_800_000_000_000_000,
+            },
+            filter: DimensionFilter::default(),
+            client_ips: vec![],
+            statuses: vec![],
+            agent_kinds: vec![],
+            sort_by: "start_time".into(),
+            sort_order: "desc".into(),
+            page: 1,
+            page_size: 50,
+        }
+    }
+
+    #[tokio::test]
+    async fn query_turns_filters_and_paginates() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        let base = 1_700_000_000_000_000_i64;
+        let turns = vec![
+            sample_turn(
+                "t1",
+                "s1",
+                wa::OPENAI_CHAT,
+                vec!["gpt-4"],
+                base + 1_000_000,
+                100,
+                1,
+                vec!["c1"],
+                TurnStatus::Complete,
+            ),
+            sample_turn(
+                "t2",
+                "s1",
+                wa::ANTHROPIC,
+                vec!["claude-sonnet"],
+                base + 2_000_000,
+                200,
+                2,
+                vec!["c2", "c3"],
+                TurnStatus::Complete,
+            ),
+            sample_turn(
+                "t3",
+                "s2",
+                wa::OPENAI_CHAT,
+                vec!["gpt-4o"],
+                base + 3_000_000,
+                300,
+                3,
+                vec!["c4"],
+                TurnStatus::Incomplete,
+            ),
+            sample_turn(
+                "t4",
+                "s3",
+                wa::OPENAI_CHAT,
+                vec!["gpt-4", "gpt-4o"],
+                base + 4_000_000,
+                400,
+                4,
+                vec!["c5"],
+                TurnStatus::Complete,
+            ),
+        ];
+        backend.write_turns(turns).await.unwrap();
+
+        // No filter: all 4 turns, default sort_by=start_time DESC
+        let page = backend.query_turns(&base_turns_query()).await.unwrap();
+        assert_eq!(page.total, 4);
+        assert_eq!(page.items.len(), 4);
+        assert_eq!(page.items[0].turn_id, "t4");
+        assert_eq!(page.items[3].turn_id, "t1");
+        assert_eq!(page.items[0].primary_model.as_deref(), Some("gpt-4"));
+        assert_eq!(page.items[0].models_used, vec!["gpt-4", "gpt-4o"]);
+
+        // wire_api filter
+        let mut q = base_turns_query();
+        q.filter.wire_apis = vec![wa::ANTHROPIC.into()];
+        let page = backend.query_turns(&q).await.unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].turn_id, "t2");
+
+        // Model filter via list_has_any — should include t1 and t4 (both list gpt-4)
+        let mut q = base_turns_query();
+        q.filter.models = vec!["gpt-4".into()];
+        let page = backend.query_turns(&q).await.unwrap();
+        assert_eq!(page.total, 2);
+        let ids: Vec<_> = page.items.iter().map(|t| t.turn_id.clone()).collect();
+        assert!(ids.contains(&"t1".to_string()));
+        assert!(ids.contains(&"t4".to_string()));
+
+        // Status filter (TurnStatus Display: incomplete)
+        let mut q = base_turns_query();
+        q.statuses = vec!["incomplete".into()];
+        let page = backend.query_turns(&q).await.unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].turn_id, "t3");
+
+        // Sort by duration_ms ASC
+        let mut q = base_turns_query();
+        q.sort_by = "duration_ms".into();
+        q.sort_order = "asc".into();
+        let page = backend.query_turns(&q).await.unwrap();
+        let durations: Vec<_> = page.items.iter().map(|t| t.duration_ms).collect();
+        assert_eq!(durations, vec![100, 200, 300, 400]);
+
+        // Pagination
+        let mut q = base_turns_query();
+        q.page_size = 2;
+        q.page = 1;
+        let page1 = backend.query_turns(&q).await.unwrap();
+        assert_eq!(page1.total, 4);
+        assert_eq!(page1.items.len(), 2);
+        q.page = 2;
+        let page2 = backend.query_turns(&q).await.unwrap();
+        assert_eq!(page2.items.len(), 2);
+        assert_ne!(page1.items[0].turn_id, page2.items[0].turn_id);
+
+        // Invalid sort field is rejected
+        let mut q = base_turns_query();
+        q.sort_by = "bogus".into();
+        assert!(backend.query_turns(&q).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn query_turn_by_id_hit_and_miss() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        let turn = sample_turn(
+            "t-detail",
+            "s1",
+            wa::ANTHROPIC,
+            vec!["claude-sonnet", "claude-haiku"],
+            1_700_000_000_000_000,
+            1500,
+            2,
+            vec!["call-a", "call-b"],
+            TurnStatus::Complete,
+        );
+        backend.write_turns(vec![turn]).await.unwrap();
+
+        let hit = backend.query_turn_by_id("t-detail").await.unwrap();
+        let d = hit.expect("turn exists");
+        assert_eq!(d.turn_id, "t-detail");
+        assert_eq!(d.models_used, vec!["claude-sonnet", "claude-haiku"]);
+        assert_eq!(d.call_ids, vec!["call-a", "call-b"]);
+        // With no user_call_id/final_call_id, full text falls back to previews.
+        assert_eq!(d.user_input.as_deref(), Some("hello"));
+        assert_eq!(d.final_answer.as_deref(), Some("world"));
+
+        let miss = backend.query_turn_by_id("does-not-exist").await.unwrap();
+        assert!(miss.is_none());
+    }
+
+    #[tokio::test]
+    async fn query_turn_by_id_skips_calls_lookup_when_preview_complete() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        // A matching llm_calls row exists with full-body text that differs from
+        // the preview. If the optimization works, we return the preview
+        // (short, no trailing `…`) and never touch the body.
+        let base = 1_700_000_000_000_000_i64;
+        let mut user_call = mk_call_with_time("c-user", base + 1_000);
+        user_call.wire_api = wa::ANTHROPIC;
+        user_call.request_body =
+            Some(r#"{"messages":[{"role":"user","content":"DB-USER-FULL"}]}"#.into());
+        let mut asst_call = mk_call_with_time("c-asst", base + 2_000);
+        asst_call.wire_api = wa::ANTHROPIC;
+        asst_call.response_body =
+            Some(r#"{"content":[{"type":"text","text":"DB-ASSISTANT-FULL"}]}"#.into());
+        backend
+            .write_calls(vec![user_call, asst_call])
+            .await
+            .unwrap();
+
+        let mut turn = sample_turn(
+            "t-short",
+            "s-short",
+            wa::ANTHROPIC,
+            vec!["claude-sonnet"],
+            base,
+            1500,
+            2,
+            vec!["c-user", "c-asst"],
+            TurnStatus::Complete,
+        );
+        turn.user_input_preview = Some("hi".into());
+        turn.user_call_id = Some("c-user".into());
+        turn.final_answer_preview = Some("bye".into());
+        turn.final_call_id = Some("c-asst".into());
+        backend.write_turns(vec![turn]).await.unwrap();
+
+        let d = backend
+            .query_turn_by_id("t-short")
+            .await
+            .unwrap()
+            .expect("turn exists");
+        // Preview is returned as-is; no llm_calls lookup happened.
+        assert_eq!(d.user_input.as_deref(), Some("hi"));
+        assert_eq!(d.final_answer.as_deref(), Some("bye"));
+    }
+
+    #[tokio::test]
+    async fn query_turn_by_id_reads_full_text_when_preview_truncated() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        // Truncated previews (ending in `…`) must fall through to the llm_calls
+        // lookup and return the full body text.
+        let base = 1_700_000_000_000_000_i64;
+        let full_user: String = "u".repeat(600);
+        let full_asst: String = "a".repeat(600);
+        let mut user_call = mk_call_with_time("c-user", base + 1_000);
+        user_call.wire_api = wa::ANTHROPIC;
+        user_call.request_body = Some(
+            serde_json::json!({
+                "messages": [{ "role": "user", "content": &full_user }]
+            })
+            .to_string(),
+        );
+        let mut asst_call = mk_call_with_time("c-asst", base + 2_000);
+        asst_call.wire_api = wa::ANTHROPIC;
+        asst_call.response_body = Some(
+            serde_json::json!({
+                "content": [{ "type": "text", "text": &full_asst }]
+            })
+            .to_string(),
+        );
+        backend
+            .write_calls(vec![user_call, asst_call])
+            .await
+            .unwrap();
+
+        let truncated_user: String = "u".repeat(500) + "…";
+        let truncated_asst: String = "a".repeat(500) + "…";
+        let mut turn = sample_turn(
+            "t-long",
+            "s-long",
+            wa::ANTHROPIC,
+            vec!["claude-sonnet"],
+            base,
+            1500,
+            2,
+            vec!["c-user", "c-asst"],
+            TurnStatus::Complete,
+        );
+        turn.user_input_preview = Some(truncated_user);
+        turn.user_call_id = Some("c-user".into());
+        turn.final_answer_preview = Some(truncated_asst);
+        turn.final_call_id = Some("c-asst".into());
+        backend.write_turns(vec![turn]).await.unwrap();
+
+        let d = backend
+            .query_turn_by_id("t-long")
+            .await
+            .unwrap()
+            .expect("turn exists");
+        assert_eq!(d.user_input.as_deref(), Some(full_user.as_str()));
+        assert_eq!(d.final_answer.as_deref(), Some(full_asst.as_str()));
+    }
+
+    #[tokio::test]
+    async fn query_turn_calls_orders_and_sequences() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        let base = 1_700_000_000_000_000_i64;
+        // Insert calls out of chronological order to confirm ORDER BY works.
+        let calls = vec![
+            mk_call_with_time("call-b", base + 2_000_000),
+            mk_call_with_time("call-a", base + 1_000_000),
+            mk_call_with_time("call-c", base + 3_000_000),
+            // Extra call not in the turn's call_ids — must be excluded.
+            mk_call_with_time("call-other", base + 500_000),
+        ];
+        backend.write_calls(calls).await.unwrap();
+
+        let turn = sample_turn(
+            "t-calls",
+            "s1",
+            wa::OPENAI_CHAT,
+            vec!["gpt-4"],
+            base,
+            3000,
+            3,
+            vec!["call-a", "call-b", "call-c"],
+            TurnStatus::Complete,
+        );
+        backend.write_turns(vec![turn]).await.unwrap();
+
+        let items = backend.query_turn_calls("t-calls").await.unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].id, "call-a");
+        assert_eq!(items[0].sequence, 1);
+        assert_eq!(items[1].id, "call-b");
+        assert_eq!(items[1].sequence, 2);
+        assert_eq!(items[2].id, "call-c");
+        assert_eq!(items[2].sequence, 3);
+        assert!(items[0].request_time < items[1].request_time);
+
+        // Unknown turn → empty vec (not error).
+        let empty = backend.query_turn_calls("no-such-turn").await.unwrap();
+        assert!(empty.is_empty());
+    }
+
+    fn sample_turn_for_session(
+        turn_id: &str,
+        session_id: &str,
+        start_us: i64,
+        user_input: Option<&str>,
+    ) -> AgentTurn {
+        let mut t = sample_turn(
+            turn_id,
+            session_id,
+            wa::ANTHROPIC,
+            vec!["claude-sonnet"],
+            start_us,
+            500,
+            1,
+            vec![turn_id],
+            TurnStatus::Complete,
+        );
+        t.user_input_preview = user_input.map(String::from);
+        t.user_call_id = user_input.map(|_| format!("call-{turn_id}"));
+        t
+    }
+
+    #[tokio::test]
+    async fn query_sessions_window_filters_and_aggregates_full_lifetime() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        // Three sessions, each with multiple turns spread over time.
+        //   S1: turns at t=10, t=50 (lifetime 10..50, middle turn in window 40..60)
+        //   S2: turns at t=30, t=45 (both in window)
+        //   S3: turns at t=100, t=200 (out of window)
+        let base = 1_700_000_000_000_000_i64;
+        let us = |secs: i64| base + secs * 1_000_000;
+        backend
+            .write_turns(vec![
+                sample_turn_for_session("t1a", "S1", us(10), Some("first S1")),
+                sample_turn_for_session("t1b", "S1", us(50), None),
+                sample_turn_for_session("t2a", "S2", us(30), Some("first S2")),
+                sample_turn_for_session("t2b", "S2", us(45), None),
+                sample_turn_for_session("t3a", "S3", us(100), Some("first S3")),
+                sample_turn_for_session("t3b", "S3", us(200), None),
+            ])
+            .await
+            .unwrap();
+
+        // Window [40, 60). S3 entirely out, so excluded. S1 has t=50 in window.
+        // S2 has t=45 in window. Both S1 and S2 should return full-lifetime aggregates.
+        let page = backend
+            .query_sessions(&SessionListQuery {
+                time_range: TimeRange {
+                    start_us: us(40),
+                    end_us: us(60),
+                },
+                source_id: None,
+                agent_kind: None,
+                cursor: None,
+                page_size: 10,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 2);
+        // Sort key is MAX(end_time_in_window) DESC. S1's in-window turn ends
+        // latest (t=50 + 500ms), so S1 should be first.
+        let s1 = &page.items[0];
+        assert_eq!(s1.session_id, "S1");
+        assert_eq!(s1.turn_count, 2); // full lifetime: both turns counted
+        assert_eq!(s1.first_user_input_preview.as_deref(), Some("first S1"));
+        // first_turn_at should be the lifetime's MIN(start_time), not the
+        // in-window one. S1's earliest turn is at t=10.
+        assert_eq!(s1.first_turn_at, (us(10)) / 1000);
+
+        let s2 = &page.items[1];
+        assert_eq!(s2.session_id, "S2");
+        assert_eq!(s2.turn_count, 2);
+        assert_eq!(s2.first_user_input_preview.as_deref(), Some("first S2"));
+
+        assert!(page.next_cursor.is_none());
+
+        // Page size 1 + cursor roundtrip.
+        let p1 = backend
+            .query_sessions(&SessionListQuery {
+                time_range: TimeRange {
+                    start_us: us(40),
+                    end_us: us(60),
+                },
+                source_id: None,
+                agent_kind: None,
+                cursor: None,
+                page_size: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(p1.items.len(), 1);
+        assert_eq!(p1.items[0].session_id, "S1");
+        let cursor = p1.next_cursor.expect("has next page");
+        let decoded = decode_session_cursor(&cursor).expect("cursor decodes");
+
+        let p2 = backend
+            .query_sessions(&SessionListQuery {
+                time_range: TimeRange {
+                    start_us: us(40),
+                    end_us: us(60),
+                },
+                source_id: None,
+                agent_kind: None,
+                cursor: Some(decoded),
+                page_size: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(p2.items.len(), 1);
+        assert_eq!(p2.items[0].session_id, "S2");
+        assert!(p2.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn query_session_by_id_and_turns_roundtrip() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        let base = 1_700_000_000_000_000_i64;
+        let us = |secs: i64| base + secs * 1_000_000;
+        backend
+            .write_turns(vec![
+                sample_turn_for_session("ta", "SX", us(10), Some("opener")),
+                sample_turn_for_session("tb", "SX", us(20), None),
+                sample_turn_for_session("tc", "SX", us(30), None),
+            ])
+            .await
+            .unwrap();
+
+        let d = backend
+            .query_session_by_id("", "SX")
+            .await
+            .unwrap()
+            .expect("session exists");
+        assert_eq!(d.session_id, "SX");
+        assert_eq!(d.turn_count, 3);
+        assert_eq!(d.first_user_input_preview.as_deref(), Some("opener"));
+
+        let miss = backend.query_session_by_id("", "ZZZ").await.unwrap();
+        assert!(miss.is_none());
+
+        // Turns list: ordered by start_time DESC.
+        let turns = backend
+            .query_session_turns(&SessionTurnsQuery {
+                source_id: String::new(),
+                session_id: "SX".into(),
+                cursor: None,
+                page_size: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(turns.items.len(), 3);
+        assert_eq!(turns.items[0].turn_id, "tc");
+        assert_eq!(turns.items[2].turn_id, "ta");
+        // Fewer rows than page_size → no next page.
+        assert!(turns.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn query_session_turns_cursor_pagination() {
+        use ts_storage::query::decode_session_turns_cursor;
+
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        // Seed 5 turns in session "S-CURSOR" with strictly increasing start_time.
+        // Short previews (no `…`) keep this test purely about cursor mechanics —
+        // no full-text extraction round-trip is triggered.
+        let base = 1_700_000_000_000_000_i64;
+        let us = |secs: i64| base + secs * 1_000_000;
+        let turns: Vec<AgentTurn> = (0..5)
+            .map(|i| {
+                sample_turn_for_session(
+                    &format!("turn-{i}"),
+                    "S-CURSOR",
+                    us(i as i64 * 10),
+                    Some("hi"),
+                )
+            })
+            .collect();
+        backend.write_turns(turns).await.unwrap();
+
+        // Page 1: newest 2 (turn-4, turn-3).
+        let p1 = backend
+            .query_session_turns(&SessionTurnsQuery {
+                source_id: String::new(),
+                session_id: "S-CURSOR".into(),
+                cursor: None,
+                page_size: 2,
+            })
+            .await
+            .unwrap();
+        assert_eq!(p1.items.len(), 2);
+        assert_eq!(p1.items[0].turn_id, "turn-4");
+        assert_eq!(p1.items[1].turn_id, "turn-3");
+        let cursor1 = p1.next_cursor.expect("more pages");
+
+        // Page 2: turn-2, turn-1.
+        let p2 = backend
+            .query_session_turns(&SessionTurnsQuery {
+                source_id: String::new(),
+                session_id: "S-CURSOR".into(),
+                cursor: decode_session_turns_cursor(&cursor1),
+                page_size: 2,
+            })
+            .await
+            .unwrap();
+        assert_eq!(p2.items.len(), 2);
+        assert_eq!(p2.items[0].turn_id, "turn-2");
+        assert_eq!(p2.items[1].turn_id, "turn-1");
+        let cursor2 = p2.next_cursor.expect("more pages");
+
+        // Page 3: turn-0, no next cursor.
+        let p3 = backend
+            .query_session_turns(&SessionTurnsQuery {
+                source_id: String::new(),
+                session_id: "S-CURSOR".into(),
+                cursor: decode_session_turns_cursor(&cursor2),
+                page_size: 2,
+            })
+            .await
+            .unwrap();
+        assert_eq!(p3.items.len(), 1);
+        assert_eq!(p3.items[0].turn_id, "turn-0");
+        assert!(p3.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn query_session_turns_extracts_full_text_when_preview_truncated() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+
+        // Build llm_calls carrying real bodies that the Anthropic profile
+        // extractor can parse. Bodies must be long enough that the preview is
+        // `…`-terminated (i.e. > 500 chars so the stored preview is truncated).
+        let base = 1_700_000_000_000_000_i64;
+        let full_user: String = "u".repeat(600);
+        let full_asst: String = "a".repeat(600);
+
+        let mut user_call = mk_call_with_time("sc-user", base + 1_000);
+        user_call.wire_api = wa::ANTHROPIC;
+        user_call.request_body = Some(
+            serde_json::json!({
+                "messages": [{ "role": "user", "content": &full_user }]
+            })
+            .to_string(),
+        );
+
+        let mut asst_call = mk_call_with_time("sc-asst", base + 2_000);
+        asst_call.wire_api = wa::ANTHROPIC;
+        asst_call.response_body = Some(
+            serde_json::json!({
+                "content": [{ "type": "text", "text": &full_asst }]
+            })
+            .to_string(),
+        );
+        backend
+            .write_calls(vec![user_call, asst_call])
+            .await
+            .unwrap();
+
+        // Turn with `…`-terminated previews pointing at the call ids above.
+        let truncated_user: String = "u".repeat(500) + "…";
+        let truncated_asst: String = "a".repeat(500) + "…";
+        let mut turn = sample_turn(
+            "st-long",
+            "S-EXTRACT",
+            wa::ANTHROPIC,
+            vec!["claude-sonnet"],
+            base,
+            1500,
+            2,
+            vec!["sc-user", "sc-asst"],
+            TurnStatus::Complete,
+        );
+        turn.user_input_preview = Some(truncated_user);
+        turn.user_call_id = Some("sc-user".into());
+        turn.final_answer_preview = Some(truncated_asst);
+        turn.final_call_id = Some("sc-asst".into());
+        backend.write_turns(vec![turn]).await.unwrap();
+
+        let page = backend
+            .query_session_turns(&SessionTurnsQuery {
+                source_id: String::new(),
+                session_id: "S-EXTRACT".into(),
+                cursor: None,
+                page_size: 10,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(
+            page.items[0].user_input.as_deref(),
+            Some(full_user.as_str()),
+            "user_input should be full text, not truncated preview"
+        );
+        assert_eq!(
+            page.items[0].final_answer.as_deref(),
+            Some(full_asst.as_str()),
+            "final_answer should be full text, not truncated preview"
+        );
+    }
+}

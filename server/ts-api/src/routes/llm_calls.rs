@@ -99,7 +99,7 @@ mod tests {
     use http_body_util::BodyExt;
     use serde_json::Value;
     use tower::ServiceExt;
-    use ts_storage::duckdb::DuckDbBackend;
+    use ts_storage_duckdb::DuckDbBackend;
 
     use crate::{router, ApiHealthContext, ApiMetricsContext, ApiRuntimeConfigContext};
 

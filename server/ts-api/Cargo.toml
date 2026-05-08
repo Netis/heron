@@ -22,3 +22,4 @@ chrono = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 ts-metrics.workspace = true
+ts-storage-duckdb.workspace = true
