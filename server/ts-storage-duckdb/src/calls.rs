@@ -601,3 +601,244 @@ impl DuckDbBackend {
             .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::DuckDbBackend;
+    use std::net::IpAddr;
+    use ts_llm::model::{ApiType, LlmCall};
+    use ts_llm::wire_apis as wa;
+    use ts_storage::query::*;
+    use ts_storage::StorageBackend;
+
+    fn in_memory() -> DuckDbBackend {
+        DuckDbBackend::open(":memory:").unwrap()
+    }
+
+    fn sample_call() -> LlmCall {
+        LlmCall {
+            source_id: String::new(),
+            id: "01912345-6789-7abc-def0-123456789abc".to_string(),
+            wire_api: wa::OPENAI_CHAT,
+            model: "gpt-4".to_string(),
+            api_type: ApiType::Chat,
+            request_time: 1_700_000_000_000_000,
+            response_time: Some(1_700_000_000_500_000),
+            complete_time: Some(1_700_000_001_000_000),
+            request_path: "/v1/chat/completions".to_string(),
+            is_stream: true,
+            request_body: Some(r#"{"model":"gpt-4"}"#.to_string()),
+            status_code: Some(200),
+            finish_reason: Some("stop".to_string()),
+            response_body: Some(r#"{"choices":[...]}"#.to_string()),
+            input_tokens: Some(100),
+            output_tokens: Some(50),
+            total_tokens: Some(150),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            ttft_ms: Some(500.0),
+            e2e_latency_ms: Some(1000.0),
+            client_ip: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            client_port: 54321,
+            server_ip: "10.0.0.2".parse::<IpAddr>().unwrap(),
+            server_port: 8080,
+            response_id: Some("chatcmpl-test123".to_string()),
+            request_headers: vec![
+                ("authorization".to_string(), "Bearer sk-test".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ],
+            response_headers: vec![
+                ("content-type".to_string(), "application/json".to_string()),
+                ("x-request-id".to_string(), "req_abc123".to_string()),
+            ],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_write_calls_single() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+
+        let call = sample_call();
+        backend.write_calls(vec![call]).await.unwrap();
+
+        let conn = backend.test_conn().lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, model, is_stream, input_tokens FROM llm_calls")
+            .unwrap();
+        let row = stmt
+            .query_row([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, Option<u32>>(3)?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(row.0, "01912345-6789-7abc-def0-123456789abc");
+        assert_eq!(row.1, "gpt-4");
+        assert!(row.2);
+        assert_eq!(row.3, Some(100));
+    }
+
+    #[tokio::test]
+    async fn test_write_calls_new_fields() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+
+        let call = sample_call();
+        backend.write_calls(vec![call]).await.unwrap();
+
+        let conn = backend.test_conn().lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT response_id, request_headers, response_headers FROM llm_calls")
+            .unwrap();
+        let (resp_id, req_hdr, resp_hdr) = stmt
+            .query_row([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(resp_id.as_deref(), Some("chatcmpl-test123"));
+        // Verify headers are stored as JSON array of pairs
+        let req_parsed: serde_json::Value = serde_json::from_str(&req_hdr).unwrap();
+        assert!(req_parsed.is_array());
+        assert_eq!(req_parsed[0][0], "authorization");
+        assert_eq!(req_parsed[0][1], "Bearer sk-test");
+        let resp_parsed: serde_json::Value = serde_json::from_str(&resp_hdr).unwrap();
+        assert_eq!(resp_parsed[1][0], "x-request-id");
+        assert_eq!(resp_parsed[1][1], "req_abc123");
+    }
+
+    #[tokio::test]
+    async fn test_write_calls_id_present() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+
+        let call = sample_call();
+        backend.write_calls(vec![call]).await.unwrap();
+
+        let conn = backend.test_conn().lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id FROM llm_calls").unwrap();
+        let id: String = stmt.query_row([], |row| row.get(0)).unwrap();
+        assert_eq!(id, "01912345-6789-7abc-def0-123456789abc");
+    }
+
+    #[tokio::test]
+    async fn test_write_calls_empty_batch() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+        backend.write_calls(vec![]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_query_calls_basic() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+
+        let call = sample_call();
+        let call_time = call.request_time;
+        backend.write_calls(vec![call]).await.unwrap();
+
+        let query = CallsQuery {
+            time_range: TimeRange {
+                start_us: call_time - 1,
+                end_us: call_time + 1_000_000,
+            },
+            filter: DimensionFilter::default(),
+            status_codes: vec![],
+            finish_reasons: vec![],
+            client_ips: vec![],
+            request_path_contains: None,
+            sort_by: "request_time".to_string(),
+            sort_order: "DESC".to_string(),
+            page: 1,
+            page_size: 10,
+        };
+
+        let page = backend.query_calls(&query).await.unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id, "01912345-6789-7abc-def0-123456789abc");
+        assert_eq!(page.items[0].model, "gpt-4");
+        assert_eq!(page.items[0].status_code, Some(200));
+        assert_eq!(page.items[0].input_tokens, Some(100));
+        assert_eq!(page.items[0].output_tokens, Some(50));
+    }
+
+    #[tokio::test]
+    async fn test_query_calls_filter_status_code() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+
+        let mut call_200 = sample_call();
+        call_200.id = "call-200".to_string();
+        call_200.status_code = Some(200);
+
+        let mut call_429 = sample_call();
+        call_429.id = "call-429".to_string();
+        call_429.status_code = Some(429);
+
+        let call_time = call_200.request_time;
+        backend.write_calls(vec![call_200, call_429]).await.unwrap();
+
+        let query = CallsQuery {
+            time_range: TimeRange {
+                start_us: call_time - 1,
+                end_us: call_time + 1_000_000,
+            },
+            filter: DimensionFilter::default(),
+            status_codes: vec![429],
+            finish_reasons: vec![],
+            client_ips: vec![],
+            request_path_contains: None,
+            sort_by: "request_time".to_string(),
+            sort_order: "DESC".to_string(),
+            page: 1,
+            page_size: 10,
+        };
+
+        let page = backend.query_calls(&query).await.unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id, "call-429");
+        assert_eq!(page.items[0].status_code, Some(429));
+    }
+
+    #[tokio::test]
+    async fn test_query_call_by_id() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+
+        let call = sample_call();
+        backend.write_calls(vec![call]).await.unwrap();
+
+        // Query by existing id
+        let detail = backend
+            .query_call_by_id("01912345-6789-7abc-def0-123456789abc")
+            .await
+            .unwrap();
+        assert!(detail.is_some());
+        let detail = detail.unwrap();
+        assert_eq!(detail.id, "01912345-6789-7abc-def0-123456789abc");
+        assert_eq!(detail.model, "gpt-4");
+        assert_eq!(detail.wire_api, wa::OPENAI_CHAT);
+        assert_eq!(detail.status_code, Some(200));
+        assert_eq!(detail.input_tokens, Some(100));
+        assert_eq!(detail.output_tokens, Some(50));
+        assert_eq!(detail.total_tokens, Some(150));
+        assert!(detail.request_body.is_some());
+        assert!(detail.response_body.is_some());
+        assert!(detail.request_headers.is_some());
+        assert!(detail.response_headers.is_some());
+
+        // Query nonexistent id
+        let not_found = backend.query_call_by_id("does-not-exist").await.unwrap();
+        assert!(not_found.is_none());
+    }
+
+}

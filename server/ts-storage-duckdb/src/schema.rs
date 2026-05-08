@@ -223,3 +223,36 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
     .await
     .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::DuckDbBackend;
+    use ts_storage::StorageBackend;
+
+    fn in_memory() -> DuckDbBackend {
+        DuckDbBackend::open(":memory:").unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_init_creates_tables() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+
+        let conn = backend.test_conn().lock().unwrap();
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM llm_calls").unwrap();
+        let count: i64 = stmt.query_row([], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM llm_metrics").unwrap();
+        let count: i64 = stmt.query_row([], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_init_is_idempotent() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+        backend.init().await.unwrap();
+    }
+
+}

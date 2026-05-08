@@ -332,3 +332,134 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::DuckDbBackend;
+    use std::net::IpAddr;
+    use ts_storage::StorageBackend;
+
+    fn in_memory() -> DuckDbBackend {
+        DuckDbBackend::open(":memory:").unwrap()
+    }
+
+    #[tokio::test]
+    async fn http_exchange_round_trip() {
+        use bytes::Bytes;
+        use std::sync::Arc;
+        use ts_protocol::model::{HttpRequestData, HttpResponseData};
+        use ts_protocol::net::FlowKey;
+        let backend = in_memory();
+        backend.init().await.unwrap();
+        let client_ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let server_ip: IpAddr = "10.0.0.2".parse().unwrap();
+        let request = Arc::new(HttpRequestData {
+            flow_key: FlowKey::new("source-x".into(), client_ip, 54321, server_ip, 443),
+            client_addr: (client_ip, 54321),
+            server_addr: (server_ip, 443),
+            method: "POST".into(),
+            uri: "/v1/chat/completions".into(),
+            version: 1,
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: Bytes::from_static(br#"{"model":"gpt-4"}"#),
+            timestamp_us: 1_700_000_000_000_000,
+        });
+        let response = Arc::new(HttpResponseData {
+            flow_key: request.flow_key.clone(),
+            client_addr: request.client_addr,
+            server_addr: request.server_addr,
+            status: 200,
+            version: 1,
+            headers: vec![("x-request-id".into(), "req_abc".into())],
+            body: Bytes::from_static(br#"{"choices":[]}"#),
+            first_byte_timestamp_us: 1_700_000_000_500_000,
+            complete_timestamp_us: 1_700_000_001_000_000,
+        });
+        let exchange = ts_protocol::HttpExchange {
+            id: "xchg-rt-1".to_string(),
+            request,
+            response,
+            sse_event_count: 0,
+            sse_data_bytes: 0,
+        };
+        backend
+            .write_exchanges(vec![exchange.clone()])
+            .await
+            .unwrap();
+        let got = backend
+            .query_http_exchange_by_id("xchg-rt-1")
+            .await
+            .unwrap()
+            .expect("round-tripped exchange");
+        assert_eq!(got.id, "xchg-rt-1");
+        assert_eq!(got.client_port, 54321);
+        assert_eq!(got.method, "POST");
+        assert_eq!(got.status, Some(200));
+        assert!(!got.is_sse);
+        assert_eq!(got.request_body.as_deref(), Some(r#"{"model":"gpt-4"}"#));
+        assert_eq!(got.response_body.as_deref(), Some(r#"{"choices":[]}"#));
+    }
+
+    #[tokio::test]
+    async fn http_exchange_sse_round_trip_response_body_none() {
+        use bytes::Bytes;
+        use std::sync::Arc;
+        use ts_protocol::model::{HttpRequestData, HttpResponseData};
+        use ts_protocol::net::FlowKey;
+        let backend = in_memory();
+        backend.init().await.unwrap();
+        let client_ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let server_ip: IpAddr = "10.0.0.2".parse().unwrap();
+        let request = Arc::new(HttpRequestData {
+            flow_key: FlowKey::new("source-sse".into(), client_ip, 1, server_ip, 443),
+            client_addr: (client_ip, 1),
+            server_addr: (server_ip, 443),
+            method: "POST".into(),
+            uri: "/v1/messages".into(),
+            version: 1,
+            headers: vec![],
+            body: Bytes::new(),
+            timestamp_us: 1,
+        });
+        let response = Arc::new(HttpResponseData {
+            flow_key: request.flow_key.clone(),
+            client_addr: request.client_addr,
+            server_addr: request.server_addr,
+            status: 200,
+            version: 1,
+            // text/event-stream content-type drives is_sse() = true, which
+            // makes `stored_response_body()` return None regardless of the
+            // parser-emitted empty `body`.
+            headers: vec![("content-type".into(), "text/event-stream".into())],
+            body: Bytes::new(),
+            first_byte_timestamp_us: 2,
+            complete_timestamp_us: 3,
+        });
+        let exchange = ts_protocol::HttpExchange {
+            id: "xchg-sse-1".to_string(),
+            request,
+            response,
+            sse_event_count: 3,
+            sse_data_bytes: 42,
+        };
+        backend.write_exchanges(vec![exchange]).await.unwrap();
+        let got = backend
+            .query_http_exchange_by_id("xchg-sse-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(got.is_sse);
+        assert!(got.response_body.is_none());
+        assert_eq!(got.sse_event_count, 3);
+        assert_eq!(got.sse_data_bytes, 42);
+    }
+
+    #[tokio::test]
+    async fn http_exchange_missing_id_returns_none() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+        let got = backend.query_http_exchange_by_id("nope").await.unwrap();
+        assert!(got.is_none());
+    }
+
+}

@@ -434,3 +434,131 @@ mod derive_tokens_estimated_tests {
         assert!(derive_tokens_estimated(Some(5), Some(2), Some(body)));
     }
 }
+
+#[cfg(test)]
+mod build_dimension_where_tests {
+    use super::*;
+
+    #[test]
+    fn test_build_dimension_where_no_filter() {
+        let f = DimensionFilter::default();
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api = '*' AND model = '*' AND server_ip = '*'"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_server_only() {
+        let f = DimensionFilter {
+            server_ips: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api = '*' AND model = '*' AND server_ip IN ('10.0.0.1')"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_wire_only() {
+        let f = DimensionFilter {
+            wire_apis: vec!["openai-chat".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api IN ('openai-chat') AND model != '*' AND server_ip = '*'"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_model_only() {
+        let f = DimensionFilter {
+            models: vec!["gpt-4".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api != '*' AND model IN ('gpt-4') AND server_ip = '*'"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_wire_and_model() {
+        let f = DimensionFilter {
+            wire_apis: vec!["openai-chat".into()],
+            models: vec!["gpt-4".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api IN ('openai-chat') AND model IN ('gpt-4') AND server_ip = '*'"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_wire_and_server() {
+        let f = DimensionFilter {
+            wire_apis: vec!["openai-chat".into()],
+            server_ips: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api IN ('openai-chat') AND model != '*' AND server_ip IN ('10.0.0.1')"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_model_and_server() {
+        let f = DimensionFilter {
+            models: vec!["gpt-4".into()],
+            server_ips: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api != '*' AND model IN ('gpt-4') AND server_ip IN ('10.0.0.1')"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_all_three() {
+        let f = DimensionFilter {
+            wire_apis: vec!["openai-chat".into()],
+            models: vec!["gpt-4".into()],
+            server_ips: vec!["10.0.0.1".into()],
+        };
+        assert_eq!(
+            build_dimension_where(&f),
+            "wire_api IN ('openai-chat') AND model IN ('gpt-4') AND server_ip IN ('10.0.0.1')"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_for_group_wire_api_no_filter() {
+        let f = DimensionFilter::default();
+        assert_eq!(
+            build_dimension_where_for_group(&f, "wire_api"),
+            "wire_api != '*' AND model != '*' AND server_ip = '*'"
+        );
+    }
+
+    #[test]
+    fn test_build_dimension_where_for_group_with_server_filter() {
+        let f = DimensionFilter {
+            server_ips: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where_for_group(&f, "wire_api"),
+            "wire_api != '*' AND model != '*' AND server_ip IN ('10.0.0.1')"
+        );
+        assert_eq!(
+            build_dimension_where_for_group(&f, "model"),
+            "wire_api != '*' AND model != '*' AND server_ip IN ('10.0.0.1')"
+        );
+    }
+
+}
