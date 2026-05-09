@@ -39,7 +39,7 @@ Same connection's packets always land on the same worker, so parsing state is lo
 
 The trade-off is honest: you give up cross-cluster client tracing, you get a single passive evidence chain that can't break the call when the observer fails, and that requires zero cooperation from the workloads being observed.
 
-## What ships in v0.1
+## What's in the box
 
 **Ingress**
 - libpcap on a live interface (BPF-filtered)
@@ -50,8 +50,9 @@ The trade-off is honest: you give up cross-cluster client tracing, you get a sin
 - OpenAI Chat Completions (`/v1/chat/completions`)
 - OpenAI Responses (`/v1/responses`)
 - Anthropic Messages (`/v1/messages`)
+- Gemini AI Studio (`generativelanguage.googleapis.com`)
 
-This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Vertex (Anthropic wire), and any OpenAI-compatible local server — vLLM, Ollama, llama.cpp's server, LM Studio, etc. Gemini's native API is not yet decoded.
+This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Vertex (Anthropic wire), Google Gemini, and any OpenAI-compatible local server — vLLM, Ollama, llama.cpp's server, LM Studio, etc.
 
 **Agent-turn reconstruction** with named profiles for **Claude CLI** (Claude Code) and **OpenAI Codex CLI**, a generic profile for everything else, plus an experimental OpenClaw profile. Turns stitch multi-call agent interactions (tool calls, follow-ups) into a single addressable unit — the screenshot above is one such turn.
 
@@ -122,10 +123,10 @@ For systemd deployment, capability options, macOS BPF setup, and uninstall, see 
 
 ## Roadmap
 
-The v0.1 surface is the foundation layer (Ops use cases). On the way:
+The current surface is the foundation layer (Ops use cases). On the way:
 
 - **Storage** — PostgreSQL and ClickHouse backends (schemas already designed)
-- **Wire APIs** — Gemini native API, more provider-specific extensions
+- **Wire APIs** — more provider-specific extensions (Bedrock variants, Vertex non-Anthropic, etc.)
 
 See [docs/mission.md](docs/mission.md) for the full ladder.
 
