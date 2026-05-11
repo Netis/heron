@@ -64,3 +64,39 @@ pub fn list_interfaces() -> Result<Vec<CaptureInterface>, pcap::Error> {
     }
     Ok(out)
 }
+
+/// Quick validation of a `pcap` capture source for the Settings save path:
+///
+/// * `interface`: must be present in `Device::list()` OR equal `"any"`
+///   (Linux pseudo-device that's always valid even though libpcap omits it
+///   from `Device::list` on some kernels).
+/// * `bpf_filter`: must compile via `pcap_compile()` against the Ethernet
+///   linktype (matches what `PcapLiveSource` would request — all real
+///   captures live and read traffic decapsulated to Ethernet).
+///
+/// The validator never opens the real interface, so it is safe to call
+/// from a non-privileged API handler thread.
+pub fn validate_pcap_source(
+    interface: &str,
+    bpf_filter: Option<&str>,
+) -> Result<(), String> {
+    if interface.is_empty() {
+        return Err("interface name is empty".to_string());
+    }
+    if interface != "any" {
+        let devices = pcap::Device::list()
+            .map_err(|e| format!("libpcap enumeration failed: {e}"))?;
+        if !devices.iter().any(|d| d.name == interface) {
+            return Err(format!(
+                "interface '{interface}' is not visible to libpcap on this host"
+            ));
+        }
+    }
+    if let Some(bpf) = bpf_filter.filter(|s| !s.trim().is_empty()) {
+        let dead = pcap::Capture::dead(pcap::Linktype::ETHERNET)
+            .map_err(|e| format!("failed to create dead pcap for BPF check: {e}"))?;
+        dead.compile(bpf, true)
+            .map_err(|e| format!("BPF compile failed: {e}"))?;
+    }
+    Ok(())
+}
