@@ -109,6 +109,8 @@ pub async fn update(
 
 fn do_self_restart() {
     use std::os::unix::process::CommandExt;
+    use std::path::PathBuf;
+
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -116,10 +118,35 @@ fn do_self_restart() {
             return;
         }
     };
+
+    // /proc/self/exe reports `/path/to/binary (deleted)` when the running
+    // binary's inode was replaced (cargo build does this on every release
+    // rebuild). std::env::current_exe() passes that suffix through verbatim,
+    // and execv() then bombs with ENOENT. Strip it — the bare path resolves
+    // to whatever's on disk now, which is exactly the new binary we want.
+    let exe = strip_deleted_suffix(exe);
+
+    if !exe.exists() {
+        tracing::error!(
+            exe = %exe.display(),
+            "self-restart target does not exist; aborting"
+        );
+        return;
+    }
+
     tracing::warn!(exe = %exe.display(), "Settings: execv'ing self");
     let err = std::process::Command::new(&exe)
         .args(std::env::args_os().skip(1))
         .exec();
     // exec() only returns on failure (otherwise the process image was replaced).
     tracing::error!(error = %err, "execv failed; process continues with previous config");
+
+    fn strip_deleted_suffix(p: PathBuf) -> PathBuf {
+        let s = p.to_string_lossy();
+        if let Some(base) = s.strip_suffix(" (deleted)") {
+            PathBuf::from(base)
+        } else {
+            p
+        }
+    }
 }
