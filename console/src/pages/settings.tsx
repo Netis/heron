@@ -233,9 +233,9 @@ function PipelineCard({
         </button>
       </div>
 
-      {/* Sources */}
+      {/* Sources — grouped by type */}
       <div className="border-b border-border px-4 py-3">
-        <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <div className="mb-3 flex items-center gap-2 text-xs font-medium text-muted-foreground">
           <span>Capture sources</span>
           <span>·</span>
           <span>{pipeline.sources.length} configured</span>
@@ -248,14 +248,15 @@ function PipelineCard({
             onSave={onSave}
             saveError={saveError}
           />
-        ) : pipeline.sources.length === 0 ? (
-          <div className="text-xs italic text-muted-foreground">no sources</div>
         ) : (
-          <ul className="flex flex-col gap-2">
-            {pipeline.sources.map((s, i) => (
-              <SourceSummary key={i} source={s} />
-            ))}
-          </ul>
+          <SourcesByType
+            sources={pipeline.sources}
+            isEditing={false}
+            interfaces={interfaces}
+            onChangeAt={() => {}}
+            onRemoveAt={() => {}}
+            onAddOfType={() => {}}
+          />
         )}
       </div>
 
@@ -281,22 +282,161 @@ function PipelineCard({
 }
 
 // ============================================================================
-// SourceSummary — read-only one-line view of a source
+// Type metadata — shared between view and edit panels
+// ============================================================================
+
+type SourceType = CaptureSource["type"]
+
+const TYPE_META: Record<
+  SourceType,
+  { icon: string; title: string; addLabel: string; emptyHint: string }
+> = {
+  pcap: {
+    icon: "📡",
+    title: "Live captures",
+    addLabel: "Add live capture",
+    emptyHint:
+      "(no live captures — packets are not being read from any local NIC)",
+  },
+  "cloud-probe": {
+    icon: "🔌",
+    title: "ZMQ receivers",
+    addLabel: "Add ZMQ receiver",
+    emptyHint:
+      "(none — receive packets streamed in from remote tokenscope probes)",
+  },
+  "pcap-file": {
+    icon: "📂",
+    title: "PCAP replay",
+    addLabel: "Add file replay",
+    emptyHint: "(none — replay packets from a saved .pcap file, for dev / forensic)",
+  },
+}
+
+// ============================================================================
+// SourcesByType — three per-type sections, used by both view and edit modes
+// ============================================================================
+
+function SourcesByType({
+  sources,
+  isEditing,
+  interfaces,
+  onChangeAt,
+  onRemoveAt,
+  onAddOfType,
+}: {
+  sources: CaptureSource[]
+  isEditing: boolean
+  interfaces: CaptureInterface[]
+  onChangeAt: (i: number, next: CaptureSource) => void
+  onRemoveAt: (i: number) => void
+  onAddOfType: (type: SourceType) => void
+}) {
+  // Group original indices by type so removal/update can address the
+  // original array without reordering.
+  const groups: Record<SourceType, number[]> = {
+    pcap: [],
+    "cloud-probe": [],
+    "pcap-file": [],
+  }
+  sources.forEach((s, i) => groups[s.type].push(i))
+  const order: SourceType[] = ["pcap", "cloud-probe", "pcap-file"]
+  return (
+    <div className="flex flex-col gap-3">
+      {order.map((type) => (
+        <SourceTypeSection
+          key={type}
+          type={type}
+          indices={groups[type]}
+          sources={sources}
+          isEditing={isEditing}
+          interfaces={interfaces}
+          onChangeAt={onChangeAt}
+          onRemoveAt={onRemoveAt}
+          onAdd={() => onAddOfType(type)}
+        />
+      ))}
+    </div>
+  )
+}
+
+function SourceTypeSection({
+  type,
+  indices,
+  sources,
+  isEditing,
+  interfaces,
+  onChangeAt,
+  onRemoveAt,
+  onAdd,
+}: {
+  type: SourceType
+  indices: number[]
+  sources: CaptureSource[]
+  isEditing: boolean
+  interfaces: CaptureInterface[]
+  onChangeAt: (i: number, next: CaptureSource) => void
+  onRemoveAt: (i: number) => void
+  onAdd: () => void
+}) {
+  const meta = TYPE_META[type]
+  const empty = indices.length === 0
+  return (
+    <div className="rounded-md border border-border/60">
+      <div className="flex items-center gap-2 border-b border-border/60 bg-muted/30 px-3 py-1.5 text-xs">
+        <span aria-hidden>{meta.icon}</span>
+        <span className="font-semibold">{meta.title}</span>
+        <span className="text-muted-foreground">· {indices.length}</span>
+        <div className="flex-1" />
+        {isEditing && (
+          <button
+            onClick={onAdd}
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 hover:bg-muted"
+          >
+            <Plus className="size-3" /> {meta.addLabel}
+          </button>
+        )}
+      </div>
+      <div className="px-3 py-2">
+        {empty ? (
+          <div className="py-1 text-xs italic text-muted-foreground">{meta.emptyHint}</div>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {indices.map((i) =>
+              isEditing ? (
+                <SourceEditorRow
+                  key={i}
+                  source={sources[i]}
+                  interfaces={interfaces}
+                  onChange={(next) => onChangeAt(i, next)}
+                  onRemove={() => onRemoveAt(i)}
+                />
+              ) : (
+                <SourceSummary key={i} source={sources[i]} />
+              ),
+            )}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// SourceSummary — read-only one-liner per source (used in view mode)
 // ============================================================================
 
 function SourceSummary({ source }: { source: CaptureSource }) {
   if (source.type === "pcap") {
-    const portsHostsSummary = describeBpf(source.bpf_filter)
     return (
       <li className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <SourceTypeChip kind="pcap" />
           <span className="font-mono text-sm">
             interface <span className="font-semibold">{source.interface}</span>
           </span>
         </div>
         <div className="mt-1 text-muted-foreground">
-          {portsHostsSummary}
+          {describeBpf(source.bpf_filter)}
           <span className="ml-3">snaplen {source.snaplen.toLocaleString()} B</span>
         </div>
       </li>
@@ -305,10 +445,7 @@ function SourceSummary({ source }: { source: CaptureSource }) {
   if (source.type === "cloud-probe") {
     return (
       <li className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <SourceTypeChip kind="cloud-probe" />
-          <span className="font-mono text-sm">listen {source.endpoint}</span>
-        </div>
+        <div className="font-mono text-sm">listen {source.endpoint}</div>
         <div className="mt-1 text-muted-foreground">
           receive queue depth {source.recv_hwm}
         </div>
@@ -317,28 +454,11 @@ function SourceSummary({ source }: { source: CaptureSource }) {
   }
   return (
     <li className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <SourceTypeChip kind="pcap-file" />
-        <span className="break-all font-mono">{source.path}</span>
-      </div>
+      <div className="break-all font-mono text-sm">{source.path}</div>
       <div className="mt-1 text-muted-foreground">
         {source.realtime ? "replay at original speed" : "replay as fast as possible"}
       </div>
     </li>
-  )
-}
-
-function SourceTypeChip({ kind }: { kind: CaptureSource["type"] }) {
-  const map: Record<CaptureSource["type"], { icon: string; label: string }> = {
-    pcap: { icon: "📡", label: "Live capture" },
-    "cloud-probe": { icon: "🔌", label: "ZMQ receiver" },
-    "pcap-file": { icon: "📂", label: "PCAP replay" },
-  }
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
-      <span>{map[kind].icon}</span>
-      <span>{map[kind].label}</span>
-    </span>
   )
 }
 
@@ -358,7 +478,7 @@ function describeBpf(bpf: string | null): string {
 }
 
 // ============================================================================
-// SourceEditor — list of editor rows + Save/Cancel
+// SourceEditor — wraps SourcesByType with local row state + Save/Cancel
 // ============================================================================
 
 function SourceEditor({
@@ -374,9 +494,7 @@ function SourceEditor({
   onSave: (sources: CaptureSource[]) => Promise<void>
   saveError: unknown
 }) {
-  const [rows, setRows] = useState<CaptureSource[]>(
-    initial.length > 0 ? initial : [defaultFor("pcap")],
-  )
+  const [rows, setRows] = useState<CaptureSource[]>(initial)
   const [saving, setSaving] = useState(false)
   const [confirming, setConfirming] = useState(false)
 
@@ -385,6 +503,10 @@ function SourceEditor({
   }
   const removeRow = (i: number) => {
     setRows((r) => r.filter((_, idx) => idx !== i))
+    setConfirming(false)
+  }
+  const addOfType = (type: SourceType) => {
+    setRows((r) => [...r, defaultFor(type)])
     setConfirming(false)
   }
 
@@ -397,29 +519,20 @@ function SourceEditor({
     }
   }
 
+  const canSave = rows.length > 0
+
   return (
     <div className="flex flex-col gap-3">
-      <ul className="flex flex-col gap-2">
-        {rows.map((s, i) => (
-          <SourceEditorRow
-            key={i}
-            source={s}
-            interfaces={interfaces}
-            onChange={(next) => updateRow(i, next)}
-            onRemove={() => removeRow(i)}
-            canRemove={rows.length > 1}
-          />
-        ))}
-      </ul>
+      <SourcesByType
+        sources={rows}
+        isEditing
+        interfaces={interfaces}
+        onChangeAt={updateRow}
+        onRemoveAt={removeRow}
+        onAddOfType={addOfType}
+      />
 
       <div className="flex flex-wrap items-center gap-2">
-        <AddSourceMenu
-          onAdd={(type) => {
-            setRows((r) => [...r, defaultFor(type)])
-            setConfirming(false)
-          }}
-          disabled={saving}
-        />
         <div className="flex-1" />
         {!confirming ? (
           <>
@@ -432,8 +545,9 @@ function SourceEditor({
             </button>
             <button
               onClick={() => setConfirming(true)}
-              disabled={saving || rows.length === 0}
+              disabled={saving || !canSave}
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              title={!canSave ? "Add at least one source before saving" : undefined}
             >
               Save…
             </button>
@@ -475,81 +589,42 @@ function SourceEditor({
   )
 }
 
-function AddSourceMenu({
-  onAdd,
-  disabled,
-}: {
-  onAdd: (type: CaptureSource["type"]) => void
-  disabled: boolean
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        disabled={disabled}
-        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
-      >
-        <Plus className="size-3.5" /> Add source
-      </button>
-      {open && (
-        <div className="absolute z-10 mt-1 flex w-64 flex-col rounded-md border border-border bg-popover p-1 shadow-md">
-          {(["pcap", "cloud-probe", "pcap-file"] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => {
-                onAdd(t)
-                setOpen(false)
-              }}
-              className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-muted"
-            >
-              <div className="font-medium">{ADD_LABEL[t]}</div>
-              <div className="text-[11px] text-muted-foreground">{ADD_HINT[t]}</div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-const ADD_LABEL: Record<CaptureSource["type"], string> = {
-  pcap: "📡 Live network interface",
-  "cloud-probe": "🔌 Remote ZMQ stream",
-  "pcap-file": "📂 PCAP file replay",
-}
-const ADD_HINT: Record<CaptureSource["type"], string> = {
-  pcap: "Capture packets from a local NIC via libpcap",
-  "cloud-probe": "Receive packets streamed by a remote tokenscope probe",
-  "pcap-file": "Replay packets from a saved .pcap file (dev / forensic)",
-}
-
 // ============================================================================
-// Counters
+// Counters — split by source-type so the live-capture and ZMQ-receiver
+// metrics don't sit jumbled in one grid. Sections with no matching source
+// in the pipeline are omitted entirely (a pipeline with only ZMQ won't
+// render dead-zero packet counters).
 // ============================================================================
 
-const COUNTER_META: Record<
-  string,
-  { label: string; hint?: string; appliesTo: ("pcap" | "cloud-probe" | "pcap-file" | "all")[] }
-> = {
-  pkts_received: { label: "Packets captured", appliesTo: ["pcap", "pcap-file"] },
-  pkts_dropped_kernel: {
+interface CounterDef {
+  key: string
+  label: string
+  hint?: string
+}
+
+const LIVE_COUNTERS: CounterDef[] = [
+  { key: "pkts_received", label: "Packets captured" },
+  {
+    key: "pkts_dropped_kernel",
     label: "Dropped — kernel ring full",
     hint: "Capture couldn't keep up; consider a tighter filter or larger snaplen ring.",
-    appliesTo: ["pcap"],
   },
-  pkts_truncated: {
+  {
+    key: "pkts_truncated",
     label: "Truncated to snaplen",
     hint: "Packet was larger than snaplen; bodies past the cutoff are missing.",
-    appliesTo: ["pcap", "pcap-file"],
   },
-  read_errors: { label: "Read errors", appliesTo: ["pcap", "pcap-file"] },
-  batches_received: { label: "Batches received", appliesTo: ["cloud-probe"] },
-  batches_dropped_zmq: {
+  { key: "read_errors", label: "Read errors" },
+]
+
+const ZMQ_COUNTERS: CounterDef[] = [
+  { key: "batches_received", label: "Batches received" },
+  {
+    key: "batches_dropped_zmq",
     label: "Batches dropped",
     hint: "ZMQ HWM exceeded; downstream stages are saturated.",
-    appliesTo: ["cloud-probe"],
   },
-}
+]
 
 function CountersGrid({
   metrics,
@@ -558,27 +633,52 @@ function CountersGrid({
   metrics: Record<string, number>
   sources: CaptureSource[]
 }) {
-  const kinds = new Set(sources.map((s) => s.type))
-  const visible = Object.entries(COUNTER_META).filter(([, m]) =>
-    m.appliesTo.some((k) => k === "all" || kinds.has(k)),
-  )
-  if (visible.length === 0) {
-    return <div className="text-xs italic text-muted-foreground">no live data yet</div>
+  const hasLive = sources.some((s) => s.type === "pcap" || s.type === "pcap-file")
+  const hasZmq = sources.some((s) => s.type === "cloud-probe")
+  if (!hasLive && !hasZmq) {
+    return (
+      <div className="text-xs italic text-muted-foreground">
+        no sources configured — nothing to count
+      </div>
+    )
   }
   return (
-    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3 md:grid-cols-4">
-      {visible.map(([key, meta]) => {
-        const v = metrics[key]
-        return (
-          <div key={key} className="flex flex-col">
-            <span className="text-muted-foreground" title={meta.hint}>
-              {meta.label}
-              {meta.hint && <span className="ml-1 text-[10px]">ⓘ</span>}
+    <div className="flex flex-col gap-3">
+      {hasLive && (
+        <CountersSubsection title="Live capture" counters={LIVE_COUNTERS} metrics={metrics} />
+      )}
+      {hasZmq && (
+        <CountersSubsection title="ZMQ receiver" counters={ZMQ_COUNTERS} metrics={metrics} />
+      )}
+    </div>
+  )
+}
+
+function CountersSubsection({
+  title,
+  counters,
+  metrics,
+}: {
+  title: string
+  counters: CounterDef[]
+  metrics: Record<string, number>
+}) {
+  return (
+    <div>
+      <div className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+        {title}
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3 md:grid-cols-4">
+        {counters.map((c) => (
+          <div key={c.key} className="flex flex-col">
+            <span className="text-muted-foreground" title={c.hint}>
+              {c.label}
+              {c.hint && <span className="ml-1 text-[10px]">ⓘ</span>}
             </span>
-            <span className="font-mono">{fmtCounter(v)}</span>
+            <span className="font-mono">{fmtCounter(metrics[c.key])}</span>
           </div>
-        )
-      })}
+        ))}
+      </div>
     </div>
   )
 }

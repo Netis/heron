@@ -10,7 +10,9 @@ const DEFAULT_CLOUD_PROBE_ENDPOINT = "tcp://0.0.0.0:5555"
 const DEFAULT_CLOUD_PROBE_HWM = 1000
 
 // ============================================================================
-// SourceEditorRow — dispatches by type
+// SourceEditorRow — dispatches by type; the type itself is fixed (no
+// in-row switcher) because the Settings page now organises sources into
+// per-type sections.
 // ============================================================================
 
 export function SourceEditorRow({
@@ -18,29 +20,24 @@ export function SourceEditorRow({
   interfaces,
   onChange,
   onRemove,
-  canRemove,
 }: {
   source: CaptureSource
   interfaces: CaptureInterface[]
   onChange: (next: CaptureSource) => void
   onRemove: () => void
-  canRemove: boolean
 }) {
   return (
     <li className="rounded-md border border-border/60 bg-background p-3">
       <div className="mb-2 flex items-center gap-2 text-xs">
-        <SourceTypeBadge type={source.type} />
-        <SourceTypeSwitcher current={source} onSwitch={onChange} />
+        <span className="text-muted-foreground">{rowHeading(source.type)}</span>
         <div className="flex-1" />
-        {canRemove && (
-          <button
-            onClick={onRemove}
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
-            title="Remove this source"
-          >
-            <Trash2 className="size-3.5" />
-          </button>
-        )}
+        <button
+          onClick={onRemove}
+          className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+          title="Remove this source"
+        >
+          <Trash2 className="size-3.5" />
+        </button>
       </div>
       {source.type === "pcap" && (
         <PcapForm source={source} interfaces={interfaces} onChange={onChange} />
@@ -55,41 +52,15 @@ export function SourceEditorRow({
   )
 }
 
-function SourceTypeBadge({ type }: { type: CaptureSource["type"] }) {
-  const meta = TYPE_META[type]
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-primary">
-      <span>{meta.icon}</span>
-      <span>{meta.label}</span>
-    </span>
-  )
-}
-
-function SourceTypeSwitcher({
-  current,
-  onSwitch,
-}: {
-  current: CaptureSource
-  onSwitch: (s: CaptureSource) => void
-}) {
-  return (
-    <select
-      value={current.type}
-      onChange={(e) => onSwitch(defaultFor(e.target.value as CaptureSource["type"]))}
-      className="rounded-md border border-border bg-background px-2 py-0.5 text-xs"
-      title="Change source type"
-    >
-      <option value="pcap">Live network interface</option>
-      <option value="cloud-probe">Remote ZMQ stream</option>
-      <option value="pcap-file">PCAP file replay</option>
-    </select>
-  )
-}
-
-const TYPE_META: Record<CaptureSource["type"], { icon: string; label: string }> = {
-  pcap: { icon: "📡", label: "Live" },
-  "cloud-probe": { icon: "🔌", label: "ZMQ" },
-  "pcap-file": { icon: "📂", label: "Replay" },
+function rowHeading(type: CaptureSource["type"]): string {
+  switch (type) {
+    case "pcap":
+      return "Live capture from local interface"
+    case "cloud-probe":
+      return "ZMQ receiver for remote probe stream"
+    case "pcap-file":
+      return "PCAP file replay"
+  }
 }
 
 export function defaultFor(type: CaptureSource["type"]): CaptureSource {
