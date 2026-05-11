@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table};
+use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
 
 use crate::config::CaptureSourceConfig;
 
