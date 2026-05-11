@@ -4,13 +4,15 @@ import {
   Loader2,
   RefreshCw,
   Cpu,
-  Network,
   HardDrive,
   Pencil,
   Plus,
-  Trash2,
   AlertCircle,
   Power,
+  Info,
+  ChevronDown,
+  ChevronRight,
+  Network,
 } from "lucide-react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useRuntimeConfig } from "@/hooks/use-runtime-config"
@@ -18,6 +20,7 @@ import { useInternalMetrics } from "@/hooks/use-internal-metrics"
 import { useCaptureInterfaces } from "@/hooks/use-capture-interfaces"
 import { useUpdateSources } from "@/hooks/use-update-sources"
 import { apiFetch, ApiError } from "@/lib/api"
+import { groupInterfaces } from "@/lib/interface-groups"
 import type {
   AppConfigShape,
   CaptureInterface,
@@ -25,13 +28,15 @@ import type {
   MetricRecord,
   PipelineShape,
 } from "@/types/api"
+import { SourceEditorRow, defaultFor } from "@/components/settings/source-editor"
 
 /**
- * Settings page — view the capture configuration the running tokenscope
- * process is using, with live per-pipeline counters, and edit the source
- * list. Saving rewrites the on-disk TOML and triggers a self-restart of
- * the tokenscope process; the page polls /api/health until the new
- * process comes back, then refetches all queries.
+ * Settings page — friendly view + edit of the capture configuration the
+ * running tokenscope process is using. Source list is structured by
+ * source type (live NIC / ZMQ receiver / PCAP replay); editor hides BPF
+ * behind a ports+hosts UI for the common case. Saving rewrites the on-
+ * disk TOML and self-restarts; the page polls runtime-config until the
+ * new process is up.
  */
 export function SettingsPage() {
   const queryClient = useQueryClient()
@@ -42,10 +47,6 @@ export function SettingsPage() {
 
   const [editing, setEditing] = useState<string | null>(null)
   const [restartState, setRestartState] = useState<"idle" | "saving" | "restarting">("idle")
-
-  // Snapshot of `loaded_at_ms` when the user triggered the restart, so we
-  // can detect when the new process has come up (its `loaded_at_ms` will
-  // be larger than this).
   const previousLoadedAtRef = useRef<number | null>(null)
 
   const isInitialLoad =
@@ -83,7 +84,6 @@ export function SettingsPage() {
     }
     setEditing(null)
     setRestartState("restarting")
-    // Wait for the new process to come up, then refresh.
     await waitForRestart(previousLoadedAtRef.current ?? 0)
     await queryClient.invalidateQueries()
     setRestartState("idle")
@@ -91,43 +91,25 @@ export function SettingsPage() {
 
   return (
     <div className="relative flex flex-col gap-4 p-4">
-      {/* ===== Header ===== */}
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card p-3">
-        <span className="text-sm font-semibold">Settings</span>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          <span>
-            version <span className="font-mono text-foreground">{config.data.version}</span>
-          </span>
-          <span className="break-all">
-            config <span className="font-mono text-foreground">{config.data.config_path}</span>
-          </span>
-        </div>
-        <button
-          onClick={() => {
-            config.refetch()
-            metrics.refetch()
-            interfaces.refetch()
-          }}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted"
-        >
-          <RefreshCw className={config.isFetching ? "size-3.5 animate-spin" : "size-3.5"} />
-          Refresh
-        </button>
-      </div>
+      <PageHeader
+        version={config.data.version}
+        configPath={config.data.config_path}
+        isFetching={config.isFetching}
+        onRefresh={() => {
+          config.refetch()
+          metrics.refetch()
+          interfaces.refetch()
+        }}
+      />
 
-      <p className="text-xs text-muted-foreground">
-        Saving a new source list rewrites{" "}
-        <span className="font-mono text-foreground">{config.data.config_path}</span> and
-        restarts tokenscope. Pipelines are recreated from scratch — in-flight captures
-        will see a brief gap.
-      </p>
-
-      {/* ===== Pipelines ===== */}
+      {/* Pipelines */}
       {pipelines.length === 0 ? (
-        <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
-          No pipelines configured. Tokenscope may be running in CLI mode
-          (--pcap-file / -i overrides the config).
-        </div>
+        <EmptyState>
+          No pipelines configured — tokenscope is running in CLI mode (started with
+          <code className="mx-1 rounded bg-muted px-1 font-mono">--pcap-file</code> or
+          <code className="mx-1 rounded bg-muted px-1 font-mono">-i</code>). Restart
+          without those flags to edit pipelines here.
+        </EmptyState>
       ) : (
         pipelines.map((p) => (
           <PipelineCard
@@ -136,9 +118,7 @@ export function SettingsPage() {
             metrics={metricsByPipeline.get(p.name) ?? {}}
             interfaces={availableInterfaces}
             isEditing={editing === p.name}
-            onEditToggle={() =>
-              setEditing((cur) => (cur === p.name ? null : p.name))
-            }
+            onEditToggle={() => setEditing((cur) => (cur === p.name ? null : p.name))}
             onSave={(sources) => onSave(p.name, sources)}
             saveError={mutate.error}
             disabled={restartState !== "idle"}
@@ -146,14 +126,65 @@ export function SettingsPage() {
         ))
       )}
 
-      {/* ===== Available interfaces ===== */}
-      <InterfacesCard
-        interfaces={availableInterfaces}
-        error={interfaces.error}
-      />
+      <InterfaceHelpExpander interfaces={availableInterfaces} />
 
-      {/* ===== Restart overlay ===== */}
       {restartState !== "idle" && <RestartOverlay state={restartState} />}
+    </div>
+  )
+}
+
+// ============================================================================
+// Header
+// ============================================================================
+
+function PageHeader({
+  version,
+  configPath,
+  isFetching,
+  onRefresh,
+}: {
+  version: string
+  configPath: string
+  isFetching: boolean
+  onRefresh: () => void
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card">
+      <div className="flex flex-wrap items-center gap-3 px-4 py-2.5">
+        <span className="text-sm font-semibold">Settings</span>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <span>
+            version <span className="font-mono text-foreground">{version}</span>
+          </span>
+          <span className="break-all">
+            config <span className="font-mono text-foreground">{configPath}</span>
+          </span>
+        </div>
+        <button
+          onClick={onRefresh}
+          className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted"
+        >
+          <RefreshCw className={isFetching ? "size-3.5 animate-spin" : "size-3.5"} />
+          Refresh
+        </button>
+      </div>
+      <div className="flex items-start gap-2 border-t border-border bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
+        <Info className="mt-0.5 size-3.5 shrink-0" />
+        <p>
+          Capture sources tell tokenscope where packets come from — a live network
+          interface, a remote ZMQ stream from a probe, or a PCAP file. Saving here
+          rewrites the config file and restarts the process; capture pauses for
+          about 2–3 seconds while the new pipeline comes up.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function EmptyState({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
+      {children}
     </div>
   )
 }
@@ -185,10 +216,11 @@ function PipelineCard({
     <div className="rounded-lg border border-border bg-card">
       <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
         <Cpu className="size-4 text-muted-foreground" />
-        <span className="text-sm font-semibold">{pipeline.name}</span>
+        <span className="text-sm font-semibold">Pipeline · {pipeline.name}</span>
         {pipeline.dispatcher_count !== undefined && (
           <span className="ml-2 text-xs text-muted-foreground">
-            {pipeline.dispatcher_count} dispatcher · {pipeline.flow_shard_count ?? "?"} flow shards
+            {pipeline.dispatcher_count} dispatcher · {pipeline.flow_shard_count ?? "?"} flow
+            shards
           </span>
         )}
         <button
@@ -203,7 +235,11 @@ function PipelineCard({
 
       {/* Sources */}
       <div className="border-b border-border px-4 py-3">
-        <div className="mb-2 text-xs font-medium text-muted-foreground">Sources</div>
+        <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+          <span>Capture sources</span>
+          <span>·</span>
+          <span>{pipeline.sources.length} configured</span>
+        </div>
         {isEditing ? (
           <SourceEditor
             initial={pipeline.sources}
@@ -217,113 +253,64 @@ function PipelineCard({
         ) : (
           <ul className="flex flex-col gap-2">
             {pipeline.sources.map((s, i) => (
-              <SourceRow key={i} source={s} />
+              <SourceSummary key={i} source={s} />
             ))}
           </ul>
         )}
       </div>
 
-      {/* Live counters — capture stage */}
+      {/* Live counters */}
       <div className="border-b border-border px-4 py-3">
-        <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-          <Network className="size-3.5" /> Live capture counters
+        <div className="mb-2 text-xs font-medium text-muted-foreground">
+          Activity (live)
         </div>
-        <CountersGrid
-          metrics={metrics}
-          keys={[
-            "pkts_received",
-            "pkts_dropped_kernel",
-            "pkts_truncated",
-            "read_errors",
-            "heartbeats_emitted",
-            "batches_received",
-            "batches_dropped_zmq",
-          ]}
-        />
+        <CountersGrid metrics={metrics} sources={pipeline.sources} />
       </div>
 
       {/* pcap_dump */}
       {pipeline.pcap_dump && (
-        <div className="px-4 py-3">
-          <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <HardDrive className="size-3.5" /> PCAP dump
-          </div>
-          {pipeline.pcap_dump.enabled ? (
-            <div className="grid grid-cols-1 gap-1 text-xs sm:grid-cols-2">
-              <KV k="dir" v={pipeline.pcap_dump.dir} mono />
-              <KV k="compression" v={pipeline.pcap_dump.compression} />
-              {pipeline.pcap_dump.retention && (
-                <>
-                  <KV
-                    k="retention"
-                    v={pipeline.pcap_dump.retention.enabled ? "on" : "off"}
-                  />
-                  <KV
-                    k="max age"
-                    v={fmtHours(pipeline.pcap_dump.retention.max_age_hours)}
-                  />
-                  <KV
-                    k="max size"
-                    v={fmtMiB(pipeline.pcap_dump.retention.max_size_mb)}
-                  />
-                </>
-              )}
-              <KV
-                k="files deleted"
-                v={fmtCounter(metrics["dump_retention_files_deleted"])}
-              />
-              <KV
-                k="bytes deleted"
-                v={fmtBytes(metrics["dump_retention_bytes_deleted"])}
-              />
-              <KV k="dump errors" v={fmtCounter(metrics["dump_errors"])} />
-            </div>
-          ) : (
-            <span className="text-xs italic text-muted-foreground">disabled</span>
-          )}
-        </div>
+        <PcapDumpSection
+          dump={pipeline.pcap_dump}
+          retentionFilesDeleted={metrics["dump_retention_files_deleted"]}
+          retentionBytesDeleted={metrics["dump_retention_bytes_deleted"]}
+          dumpErrors={metrics["dump_errors"]}
+        />
       )}
     </div>
   )
 }
 
-function SourceRow({ source }: { source: CaptureSource }) {
+// ============================================================================
+// SourceSummary — read-only one-line view of a source
+// ============================================================================
+
+function SourceSummary({ source }: { source: CaptureSource }) {
   if (source.type === "pcap") {
+    const portsHostsSummary = describeBpf(source.bpf_filter)
     return (
       <li className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] uppercase text-primary">
-            pcap
+          <SourceTypeChip kind="pcap" />
+          <span className="font-mono text-sm">
+            interface <span className="font-semibold">{source.interface}</span>
           </span>
-          <span className="font-mono text-sm">{source.interface}</span>
-          {source.source_id && source.source_id !== source.interface && (
-            <span className="text-muted-foreground">
-              (id <span className="font-mono">{source.source_id}</span>)
-            </span>
-          )}
         </div>
-        <div className="mt-1 grid grid-cols-1 gap-x-3 gap-y-0.5 text-muted-foreground sm:grid-cols-2">
-          <KV
-            k="BPF"
-            v={source.bpf_filter && source.bpf_filter !== "" ? source.bpf_filter : "(none — all TCP)"}
-            mono
-          />
-          <KV k="snaplen" v={`${source.snaplen.toLocaleString()} B`} />
+        <div className="mt-1 text-muted-foreground">
+          {portsHostsSummary}
+          <span className="ml-3">snaplen {source.snaplen.toLocaleString()} B</span>
         </div>
       </li>
     )
   }
-  if (source.type === "pcap-file") {
+  if (source.type === "cloud-probe") {
     return (
       <li className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] uppercase text-primary">
-            pcap-file
-          </span>
-          <span className="break-all font-mono">{source.path}</span>
-          <span className="text-muted-foreground">
-            ({source.realtime ? "realtime replay" : "as-fast-as-possible"})
-          </span>
+          <SourceTypeChip kind="cloud-probe" />
+          <span className="font-mono text-sm">listen {source.endpoint}</span>
+        </div>
+        <div className="mt-1 text-muted-foreground">
+          receive queue depth {source.recv_hwm}
         </div>
       </li>
     )
@@ -331,21 +318,48 @@ function SourceRow({ source }: { source: CaptureSource }) {
   return (
     <li className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] uppercase text-primary">
-          cloud-probe
-        </span>
-        <span className="font-mono">{source.endpoint}</span>
-        <span className="text-muted-foreground">recv_hwm={source.recv_hwm}</span>
+        <SourceTypeChip kind="pcap-file" />
+        <span className="break-all font-mono">{source.path}</span>
+      </div>
+      <div className="mt-1 text-muted-foreground">
+        {source.realtime ? "replay at original speed" : "replay as fast as possible"}
       </div>
     </li>
   )
 }
 
-// ============================================================================
-// SourceEditor
-// ============================================================================
+function SourceTypeChip({ kind }: { kind: CaptureSource["type"] }) {
+  const map: Record<CaptureSource["type"], { icon: string; label: string }> = {
+    pcap: { icon: "📡", label: "Live capture" },
+    "cloud-probe": { icon: "🔌", label: "ZMQ receiver" },
+    "pcap-file": { icon: "📂", label: "PCAP replay" },
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+      <span>{map[kind].icon}</span>
+      <span>{map[kind].label}</span>
+    </span>
+  )
+}
 
-const DEFAULT_SNAPLEN = 262_144
+function describeBpf(bpf: string | null): string {
+  if (!bpf || bpf.trim() === "") return "capturing all TCP traffic"
+  // Heuristic plain-English description for the common cases. Anything
+  // exotic falls back to the raw filter expression.
+  const ports = Array.from(bpf.matchAll(/(?:tcp\s+)?port\s+(\d{1,5})/gi)).map((m) => m[1])
+  const hosts = Array.from(bpf.matchAll(/host\s+(\S+)/gi)).map((m) => m[1])
+  const parts: string[] = []
+  if (ports.length > 0) parts.push(`port${ports.length > 1 ? "s" : ""} ${ports.join(", ")}`)
+  if (hosts.length > 0) parts.push(`host${hosts.length > 1 ? "s" : ""} ${hosts.join(", ")}`)
+  if (parts.length === 0) {
+    return `filter: ${bpf}`
+  }
+  return `${parts.join(" · ")}`
+}
+
+// ============================================================================
+// SourceEditor — list of editor rows + Save/Cancel
+// ============================================================================
 
 function SourceEditor({
   initial,
@@ -360,18 +374,19 @@ function SourceEditor({
   onSave: (sources: CaptureSource[]) => Promise<void>
   saveError: unknown
 }) {
-  const [rows, setRows] = useState<CaptureSource[]>(initial.length ? initial : [defaultPcap()])
+  const [rows, setRows] = useState<CaptureSource[]>(
+    initial.length > 0 ? initial : [defaultFor("pcap")],
+  )
   const [saving, setSaving] = useState(false)
+  const [confirming, setConfirming] = useState(false)
 
-  const updateRow = (i: number, patch: Partial<CaptureSource>) => {
-    setRows((r) =>
-      r.map((row, idx) => (idx === i ? ({ ...row, ...patch } as CaptureSource) : row)),
-    )
+  const updateRow = (i: number, next: CaptureSource) => {
+    setRows((r) => r.map((row, idx) => (idx === i ? next : row)))
   }
   const removeRow = (i: number) => {
     setRows((r) => r.filter((_, idx) => idx !== i))
+    setConfirming(false)
   }
-  const addPcap = () => setRows((r) => [...r, defaultPcap()])
 
   const submit = async () => {
     setSaving(true)
@@ -382,62 +397,70 @@ function SourceEditor({
     }
   }
 
-  // Only pcap rows are editable inline. Other rows (pcap-file, cloud-probe)
-  // are shown read-only to preserve them on save.
   return (
     <div className="flex flex-col gap-3">
       <ul className="flex flex-col gap-2">
-        {rows.map((s, i) =>
-          s.type === "pcap" ? (
-            <PcapEditorRow
-              key={i}
-              source={s}
-              interfaces={interfaces}
-              onChange={(p) => updateRow(i, p)}
-              onRemove={() => removeRow(i)}
-              canRemove={rows.length > 1}
-            />
-          ) : (
-            <li
-              key={i}
-              className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
-            >
-              <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
-              <div className="flex-1">
-                <SourceRow source={s} />
-                <div className="mt-1 italic">
-                  Non-pcap sources stay as-is; edit via the TOML file directly.
-                </div>
-              </div>
-            </li>
-          ),
-        )}
+        {rows.map((s, i) => (
+          <SourceEditorRow
+            key={i}
+            source={s}
+            interfaces={interfaces}
+            onChange={(next) => updateRow(i, next)}
+            onRemove={() => removeRow(i)}
+            canRemove={rows.length > 1}
+          />
+        ))}
       </ul>
 
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          onClick={addPcap}
+        <AddSourceMenu
+          onAdd={(type) => {
+            setRows((r) => [...r, defaultFor(type)])
+            setConfirming(false)
+          }}
           disabled={saving}
-          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
-        >
-          <Plus className="size-3.5" /> Add pcap source
-        </button>
+        />
         <div className="flex-1" />
-        <button
-          onClick={onCancel}
-          disabled={saving}
-          className="rounded-md border border-border bg-background px-3 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={submit}
-          disabled={saving || rows.filter((r) => r.type === "pcap").length === 0}
-          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          {saving && <Loader2 className="size-3.5 animate-spin" />}
-          Save &amp; restart
-        </button>
+        {!confirming ? (
+          <>
+            <button
+              onClick={onCancel}
+              disabled={saving}
+              className="rounded-md border border-border bg-background px-3 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => setConfirming(true)}
+              disabled={saving || rows.length === 0}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              Save…
+            </button>
+          </>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs">
+            <AlertCircle className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+            <span>
+              Capture will pause for ~2–3 s while tokenscope restarts. Continue?
+            </span>
+            <button
+              onClick={() => setConfirming(false)}
+              disabled={saving}
+              className="rounded-md border border-border bg-background px-2 py-0.5 hover:bg-muted disabled:opacity-50"
+            >
+              No
+            </button>
+            <button
+              onClick={submit}
+              disabled={saving}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-0.5 font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {saving && <Loader2 className="size-3.5 animate-spin" />}
+              Yes, save & restart
+            </button>
+          </div>
+        )}
       </div>
 
       {saveError ? (
@@ -452,135 +475,229 @@ function SourceEditor({
   )
 }
 
-function PcapEditorRow({
-  source,
-  interfaces,
-  onChange,
-  onRemove,
-  canRemove,
+function AddSourceMenu({
+  onAdd,
+  disabled,
 }: {
-  source: Extract<CaptureSource, { type: "pcap" }>
-  interfaces: CaptureInterface[]
-  onChange: (patch: Partial<Extract<CaptureSource, { type: "pcap" }>>) => void
-  onRemove: () => void
-  canRemove: boolean
+  onAdd: (type: CaptureSource["type"]) => void
+  disabled: boolean
 }) {
+  const [open, setOpen] = useState(false)
   return (
-    <li className="rounded-md border border-border/60 bg-background px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] uppercase text-primary">
-          pcap
-        </span>
-        <label className="inline-flex items-center gap-1.5">
-          <span className="text-muted-foreground">interface</span>
-          <select
-            value={source.interface}
-            onChange={(e) => onChange({ interface: e.target.value })}
-            className="rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
-          >
-            {/* Make sure the current interface is selectable even if it
-                isn't in `interfaces` (e.g., enumeration failed). */}
-            {!interfaces.some((i) => i.name === source.interface) && (
-              <option value={source.interface}>{source.interface} (current)</option>
-            )}
-            {interfaces.map((i) => (
-              <option key={i.name} value={i.name}>
-                {i.name}
-                {i.addresses.length > 0 ? `  ·  ${i.addresses[0]}` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="inline-flex items-center gap-1.5">
-          <span className="text-muted-foreground">snaplen</span>
-          <input
-            type="number"
-            min={64}
-            max={1 << 20}
-            value={source.snaplen}
-            onChange={(e) =>
-              onChange({ snaplen: Number(e.target.value) || DEFAULT_SNAPLEN })
-            }
-            className="w-24 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
-          />
-        </label>
-        <div className="flex-1" />
-        {canRemove && (
-          <button
-            onClick={onRemove}
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
-            title="Remove this source"
-          >
-            <Trash2 className="size-3.5" />
-          </button>
-        )}
-      </div>
-      <label className="mt-2 flex items-center gap-2 text-xs">
-        <span className="text-muted-foreground">BPF</span>
-        <input
-          type="text"
-          value={source.bpf_filter ?? ""}
-          placeholder="(empty = all TCP)"
-          onChange={(e) =>
-            onChange({ bpf_filter: e.target.value === "" ? null : e.target.value })
-          }
-          className="flex-1 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
-        />
-      </label>
-    </li>
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+      >
+        <Plus className="size-3.5" /> Add source
+      </button>
+      {open && (
+        <div className="absolute z-10 mt-1 flex w-64 flex-col rounded-md border border-border bg-popover p-1 shadow-md">
+          {(["pcap", "cloud-probe", "pcap-file"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => {
+                onAdd(t)
+                setOpen(false)
+              }}
+              className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-muted"
+            >
+              <div className="font-medium">{ADD_LABEL[t]}</div>
+              <div className="text-[11px] text-muted-foreground">{ADD_HINT[t]}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+const ADD_LABEL: Record<CaptureSource["type"], string> = {
+  pcap: "📡 Live network interface",
+  "cloud-probe": "🔌 Remote ZMQ stream",
+  "pcap-file": "📂 PCAP file replay",
+}
+const ADD_HINT: Record<CaptureSource["type"], string> = {
+  pcap: "Capture packets from a local NIC via libpcap",
+  "cloud-probe": "Receive packets streamed by a remote tokenscope probe",
+  "pcap-file": "Replay packets from a saved .pcap file (dev / forensic)",
+}
+
+// ============================================================================
+// Counters
+// ============================================================================
+
+const COUNTER_META: Record<
+  string,
+  { label: string; hint?: string; appliesTo: ("pcap" | "cloud-probe" | "pcap-file" | "all")[] }
+> = {
+  pkts_received: { label: "Packets captured", appliesTo: ["pcap", "pcap-file"] },
+  pkts_dropped_kernel: {
+    label: "Dropped — kernel ring full",
+    hint: "Capture couldn't keep up; consider a tighter filter or larger snaplen ring.",
+    appliesTo: ["pcap"],
+  },
+  pkts_truncated: {
+    label: "Truncated to snaplen",
+    hint: "Packet was larger than snaplen; bodies past the cutoff are missing.",
+    appliesTo: ["pcap", "pcap-file"],
+  },
+  read_errors: { label: "Read errors", appliesTo: ["pcap", "pcap-file"] },
+  batches_received: { label: "Batches received", appliesTo: ["cloud-probe"] },
+  batches_dropped_zmq: {
+    label: "Batches dropped",
+    hint: "ZMQ HWM exceeded; downstream stages are saturated.",
+    appliesTo: ["cloud-probe"],
+  },
+}
+
+function CountersGrid({
+  metrics,
+  sources,
+}: {
+  metrics: Record<string, number>
+  sources: CaptureSource[]
+}) {
+  const kinds = new Set(sources.map((s) => s.type))
+  const visible = Object.entries(COUNTER_META).filter(([, m]) =>
+    m.appliesTo.some((k) => k === "all" || kinds.has(k)),
+  )
+  if (visible.length === 0) {
+    return <div className="text-xs italic text-muted-foreground">no live data yet</div>
+  }
+  return (
+    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3 md:grid-cols-4">
+      {visible.map(([key, meta]) => {
+        const v = metrics[key]
+        return (
+          <div key={key} className="flex flex-col">
+            <span className="text-muted-foreground" title={meta.hint}>
+              {meta.label}
+              {meta.hint && <span className="ml-1 text-[10px]">ⓘ</span>}
+            </span>
+            <span className="font-mono">{fmtCounter(v)}</span>
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
 // ============================================================================
-// InterfacesCard (read-only)
+// PcapDumpSection
 // ============================================================================
 
-function InterfacesCard({
-  interfaces,
-  error,
+function PcapDumpSection({
+  dump,
+  retentionFilesDeleted,
+  retentionBytesDeleted,
+  dumpErrors,
 }: {
-  interfaces: CaptureInterface[]
-  error: unknown
+  dump: NonNullable<PipelineShape["pcap_dump"]>
+  retentionFilesDeleted: number | undefined
+  retentionBytesDeleted: number | undefined
+  dumpErrors: number | undefined
 }) {
   return (
-    <div className="rounded-lg border border-border bg-card">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-        <Network className="size-4 text-muted-foreground" />
-        <span className="text-sm font-semibold">Available interfaces</span>
-        <span className="ml-auto text-xs text-muted-foreground">
-          enumerated by libpcap on this host
-        </span>
+    <div className="px-4 py-3">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <HardDrive className="size-3.5" /> PCAP dump
       </div>
-      {error ? (
-        <div className="px-4 py-3 text-sm text-destructive">{errorMessage(error)}</div>
-      ) : interfaces.length === 0 ? (
-        <div className="px-4 py-3 text-sm text-muted-foreground">no interfaces visible</div>
+      {dump.enabled ? (
+        <div className="grid grid-cols-1 gap-1 text-xs sm:grid-cols-2">
+          <KV k="Directory" v={dump.dir} mono />
+          <KV k="Compression" v={dump.compression} />
+          {dump.retention && (
+            <>
+              <KV k="Retention" v={dump.retention.enabled ? "on" : "off"} />
+              <KV k="Max age" v={fmtHours(dump.retention.max_age_hours)} />
+              <KV k="Max size" v={fmtMiB(dump.retention.max_size_mb)} />
+            </>
+          )}
+          <KV k="Files reclaimed" v={fmtCounter(retentionFilesDeleted)} />
+          <KV k="Bytes reclaimed" v={fmtBytes(retentionBytesDeleted)} />
+          <KV k="Write errors" v={fmtCounter(dumpErrors)} />
+        </div>
       ) : (
-        <table className="w-full text-xs">
-          <thead className="bg-muted/30 text-muted-foreground">
-            <tr>
-              <th className="px-4 py-2 text-left font-medium">name</th>
-              <th className="px-4 py-2 text-left font-medium">addresses</th>
-              <th className="px-4 py-2 text-left font-medium">flags</th>
-              <th className="px-4 py-2 text-left font-medium">description</th>
-            </tr>
-          </thead>
-          <tbody>
-            {interfaces.map((i) => (
-              <tr key={i.name} className="border-t border-border/60">
-                <td className="px-4 py-1.5 font-mono">{i.name}</td>
-                <td className="px-4 py-1.5 font-mono text-muted-foreground">
-                  {i.addresses.length > 0 ? i.addresses.join(", ") : "—"}
-                </td>
-                <td className="px-4 py-1.5">
-                  <FlagRow iface={i} />
-                </td>
-                <td className="px-4 py-1.5 text-muted-foreground">{i.description ?? "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <span className="text-xs italic text-muted-foreground">disabled</span>
       )}
+    </div>
+  )
+}
+
+// ============================================================================
+// InterfaceHelpExpander — replaces the dumping all-interfaces table
+// ============================================================================
+
+function InterfaceHelpExpander({ interfaces }: { interfaces: CaptureInterface[] }) {
+  const [open, setOpen] = useState(false)
+  if (interfaces.length === 0) return null
+  const groups = groupInterfaces(interfaces)
+  return (
+    <div className="rounded-lg border border-border bg-card">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-4 py-2.5 text-left"
+      >
+        {open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+        <Network className="size-4 text-muted-foreground" />
+        <span className="text-sm font-semibold">Help me pick an interface</span>
+        <span className="ml-auto text-xs text-muted-foreground">
+          {groups.recommended.length} recommended · {groups.virtual.length} virtual
+        </span>
+      </button>
+      {open && (
+        <div className="border-t border-border px-4 py-3 text-xs">
+          <InterfaceTable interfaces={groups.recommended} title="Recommended" />
+          {groups.virtual.length > 0 && (
+            <details className="mt-3">
+              <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                Virtual interfaces ({groups.virtual.length}) — container veths,
+                libvirt taps, etc.
+              </summary>
+              <div className="mt-2">
+                <InterfaceTable interfaces={groups.virtual} />
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function InterfaceTable({
+  interfaces,
+  title,
+}: {
+  interfaces: CaptureInterface[]
+  title?: string
+}) {
+  return (
+    <div>
+      {title && <div className="mb-1 font-medium">{title}</div>}
+      <table className="w-full">
+        <thead className="text-muted-foreground">
+          <tr>
+            <th className="py-1 text-left font-medium">name</th>
+            <th className="py-1 text-left font-medium">addresses</th>
+            <th className="py-1 text-left font-medium">flags</th>
+          </tr>
+        </thead>
+        <tbody>
+          {interfaces.map((i) => (
+            <tr key={i.name} className="border-t border-border/60">
+              <td className="py-1 font-mono">{i.name}</td>
+              <td className="py-1 font-mono text-muted-foreground">
+                {i.addresses.length > 0 ? i.addresses.join(", ") : "—"}
+              </td>
+              <td className="py-1">
+                <FlagRow iface={i} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -609,7 +726,7 @@ function FlagRow({ iface }: { iface: CaptureInterface }) {
 }
 
 // ============================================================================
-// Restart overlay + helpers
+// Restart overlay + polling
 // ============================================================================
 
 function RestartOverlay({ state }: { state: "saving" | "restarting" }) {
@@ -620,9 +737,7 @@ function RestartOverlay({ state }: { state: "saving" | "restarting" }) {
           <>
             <Loader2 className="size-8 animate-spin text-primary" />
             <div className="text-sm font-medium">Saving configuration…</div>
-            <div className="text-xs text-muted-foreground">
-              Validating and writing TOML
-            </div>
+            <div className="text-xs text-muted-foreground">Validating and writing TOML</div>
           </>
         ) : (
           <>
@@ -638,52 +753,22 @@ function RestartOverlay({ state }: { state: "saving" | "restarting" }) {
   )
 }
 
-/**
- * Poll /api/health until the running process is the *new* one (its
- * loaded_at_ms is greater than what we had before the save), capped at
- * 60 attempts × 1s = 60s in case execv() failed and old process keeps
- * serving.
- */
 async function waitForRestart(prevLoadedAtMs: number): Promise<void> {
-  // Give the server its scheduled 500ms restart delay plus a touch more
-  // before the first probe — earlier probes will all succeed against the
-  // old process and add noise.
   await new Promise((r) => setTimeout(r, 1200))
-
   for (let i = 0; i < 60; i++) {
     try {
       const rt = await apiFetch<{ loaded_at_ms: number }>("/api/runtime-config")
       if (rt.loaded_at_ms > prevLoadedAtMs) return
     } catch {
-      // socket-closed during exec is expected — swallow and retry.
+      // expected during exec
     }
     await new Promise((r) => setTimeout(r, 1000))
   }
-  // Fall through silently. The page-level invalidate will still refresh
-  // whatever state we can reach.
 }
 
-function CountersGrid({
-  metrics,
-  keys,
-}: {
-  metrics: Record<string, number>
-  keys: string[]
-}) {
-  return (
-    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3 md:grid-cols-4">
-      {keys.map((k) => {
-        const v = metrics[k]
-        return (
-          <span key={k} className="inline-flex flex-col">
-            <span className="text-muted-foreground">{k}</span>
-            <span className="font-mono">{fmtCounter(v)}</span>
-          </span>
-        )
-      })}
-    </div>
-  )
-}
+// ============================================================================
+// Helpers
+// ============================================================================
 
 function KV({ k, v, mono = false }: { k: string; v: ReactNode; mono?: boolean }) {
   return (
@@ -704,16 +789,6 @@ function buildMetricIndex(
     out.set(p.name, byName)
   }
   return out
-}
-
-function defaultPcap(): CaptureSource {
-  return {
-    type: "pcap",
-    interface: "any",
-    bpf_filter: null,
-    snaplen: DEFAULT_SNAPLEN,
-    source_id: null,
-  }
 }
 
 function errorMessage(e: unknown): string {
@@ -746,4 +821,3 @@ function fmtBytes(n: number | undefined): string {
   if (n >= 1 << 10) return `${(n / (1 << 10)).toFixed(2)} KiB`
   return `${n} B`
 }
-
