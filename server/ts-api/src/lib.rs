@@ -137,6 +137,11 @@ pub fn router(
         )
         .with_state(agent_turns_state);
 
+    let capture_routes = Router::new().route(
+        "/api/capture/interfaces",
+        get(routes::capture_interfaces::interfaces),
+    );
+
     Router::new()
         .route("/api/filters/wire-apis", get(routes::filters::wire_apis))
         .route("/api/filters/models", get(routes::filters::models))
@@ -174,5 +179,6 @@ pub fn router(
         .merge(health_routes)
         .merge(pcap_extract_routes)
         .merge(agent_turns_routes)
+        .merge(capture_routes)
         .layer(CorsLayer::permissive())
 }
