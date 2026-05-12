@@ -189,23 +189,31 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         // outcome instead of swallowing it silently.
         //
         // Also: ttft_stream_* / ttft_nonstream_* columns added later.
-        // `ADD COLUMN IF NOT EXISTS` is also a no-op on fresh schemas.
+        // DuckDB rejects `ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT 0`
+        // ("Adding columns with constraints not yet supported"). The
+        // workaround: ADD COLUMN nullable, then UPDATE to backfill 0 on
+        // pre-existing rows. New writes via the appender always supply a
+        // value. Reads into u64 / f64 are safe after the UPDATE step.
         for stmt in [
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_complete_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_length_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_tool_use_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_error_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_cancelled_count;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_sum DOUBLE NOT NULL DEFAULT 0;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_count UBIGINT NOT NULL DEFAULT 0;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_sum DOUBLE;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_count UBIGINT;",
             "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_p50 DOUBLE;",
             "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_p95 DOUBLE;",
             "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_p99 DOUBLE;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_sum DOUBLE NOT NULL DEFAULT 0;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_count UBIGINT NOT NULL DEFAULT 0;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_sum DOUBLE;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_count UBIGINT;",
             "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_p50 DOUBLE;",
             "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_p95 DOUBLE;",
             "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_p99 DOUBLE;",
+            "UPDATE llm_metrics SET ttft_stream_sum = 0 WHERE ttft_stream_sum IS NULL;",
+            "UPDATE llm_metrics SET ttft_stream_count = 0 WHERE ttft_stream_count IS NULL;",
+            "UPDATE llm_metrics SET ttft_nonstream_sum = 0 WHERE ttft_nonstream_sum IS NULL;",
+            "UPDATE llm_metrics SET ttft_nonstream_count = 0 WHERE ttft_nonstream_count IS NULL;",
         ] {
             match conn.execute_batch(stmt) {
                 Ok(()) => tracing::debug!(
