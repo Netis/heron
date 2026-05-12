@@ -68,6 +68,16 @@ CREATE TABLE IF NOT EXISTS llm_metrics (
     ttft_p50            DOUBLE,
     ttft_p95            DOUBLE,
     ttft_p99            DOUBLE,
+    ttft_stream_sum     DOUBLE NOT NULL DEFAULT 0,
+    ttft_stream_count   UBIGINT NOT NULL DEFAULT 0,
+    ttft_stream_p50     DOUBLE,
+    ttft_stream_p95     DOUBLE,
+    ttft_stream_p99     DOUBLE,
+    ttft_nonstream_sum   DOUBLE NOT NULL DEFAULT 0,
+    ttft_nonstream_count UBIGINT NOT NULL DEFAULT 0,
+    ttft_nonstream_p50   DOUBLE,
+    ttft_nonstream_p95   DOUBLE,
+    ttft_nonstream_p99   DOUBLE,
     e2e_sum             DOUBLE NOT NULL,
     e2e_count           UBIGINT NOT NULL,
     e2e_p50             DOUBLE,
@@ -177,12 +187,25 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         // is a no-op on a fresh schema. Run each statement on its own so
         // a failure on one column does not abort the rest, and log the
         // outcome instead of swallowing it silently.
+        //
+        // Also: ttft_stream_* / ttft_nonstream_* columns added later.
+        // `ADD COLUMN IF NOT EXISTS` is also a no-op on fresh schemas.
         for stmt in [
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_complete_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_length_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_tool_use_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_error_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_cancelled_count;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_sum DOUBLE NOT NULL DEFAULT 0;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_count UBIGINT NOT NULL DEFAULT 0;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_p50 DOUBLE;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_p95 DOUBLE;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_p99 DOUBLE;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_sum DOUBLE NOT NULL DEFAULT 0;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_count UBIGINT NOT NULL DEFAULT 0;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_p50 DOUBLE;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_p95 DOUBLE;",
+            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_p99 DOUBLE;",
         ] {
             match conn.execute_batch(stmt) {
                 Ok(()) => tracing::debug!(
