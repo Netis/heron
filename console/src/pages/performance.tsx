@@ -2,18 +2,15 @@ import { useTimeseries } from "@/hooks/use-metrics"
 import { formatMs, formatNumber } from "@/lib/format"
 import { TimeseriesLineChart } from "@/components/charts/timeseries-line-chart"
 
-// Both streaming and non-streaming TTFT in one chart. Color encodes
-// percentile (cool=p50, warm=p99); line style encodes stream (solid)
-// vs non-stream (dashed). Six lines is the upper bound of what stays
-// readable; if we ever add per-model split here, this becomes a
-// separated chart again.
+// Stream-only TTFT — non-streaming TTFT collapses to ~e2e because
+// servers buffer the full response, so showing it here is just
+// duplicated e2e curves. The non-streaming TTFT value still appears on
+// individual call rows and in the call detail panel for per-call
+// inspection.
 const TTFT_SERIES = [
-  { key: "ttft_stream_p50", label: "stream p50", color: "#f59e0b" },
-  { key: "ttft_stream_p95", label: "stream p95", color: "#ef4444" },
-  { key: "ttft_stream_p99", label: "stream p99", color: "#dc2626" },
-  { key: "ttft_nonstream_p50", label: "non-stream p50", color: "#f59e0b", dash: "5 3" },
-  { key: "ttft_nonstream_p95", label: "non-stream p95", color: "#ef4444", dash: "5 3" },
-  { key: "ttft_nonstream_p99", label: "non-stream p99", color: "#dc2626", dash: "5 3" },
+  { key: "ttft_stream_p50", label: "p50", color: "#f59e0b" },
+  { key: "ttft_stream_p95", label: "p95", color: "#ef4444" },
+  { key: "ttft_stream_p99", label: "p99", color: "#dc2626", dash: "5 3" },
 ]
 
 const E2E_SERIES = [
@@ -69,8 +66,7 @@ function ChartCard({
 
 export function PerformancePage() {
   const { data: ttftData } = useTimeseries(
-    "ttft_stream_p50,ttft_stream_p95,ttft_stream_p99," +
-      "ttft_nonstream_p50,ttft_nonstream_p95,ttft_nonstream_p99",
+    "ttft_stream_p50,ttft_stream_p95,ttft_stream_p99",
   )
   const { data: e2eData } = useTimeseries("e2e_p50,e2e_p95,e2e_p99")
   const { data: tpotData } = useTimeseries("tpot_p50,tpot_p95")
@@ -83,8 +79,8 @@ export function PerformancePage() {
       {/* Top row: TTFT (stream + non-stream overlaid) + E2E */}
       <div className="grid grid-cols-2 gap-4">
         <ChartCard
-          title="TTFT Distribution"
-          subtitle="Solid = streaming (first generated token); dashed = non-streaming (first response byte, ≈ E2E)"
+          title="Stream TTFT Distribution"
+          subtitle="Streaming responses only (true time to first token). Non-streaming TTFT collapses to e2e — see E2E chart."
         >
           <TimeseriesLineChart
             data={ttftData ?? null}

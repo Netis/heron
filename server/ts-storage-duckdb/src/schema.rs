@@ -242,11 +242,9 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         // llm_metrics is empty but llm_calls has rows. Catches: (1)
         // operators who restored a calls.duckdb without the rollup, and
         // (2) the post-rebuild state above where we just dropped the
-        // table. tpot has no raw column on llm_calls (it's a derived
-        // per-call rate the live aggregator computes from response /
-        // complete times + output_tokens); skipping it here means tpot
-        // percentiles on backfilled rows render empty until new traffic
-        // adds to the rollup. Acceptable.
+        // table. TPOT is reconstructed per-call (complete_time -
+        // response_time) / output_tokens; active_calls_* can't be
+        // reconstructed (live concurrency sampling) and stays 0.
         if rollup_empty_but_calls_present(&conn) {
             tracing::info!(
                 "llm_metrics is empty but llm_calls has rows — back-filling rollup history"
@@ -317,17 +315,17 @@ fn rollup_empty_but_calls_present(conn: &duckdb::Connection) -> bool {
 }
 
 /// Build the SQL that re-aggregates llm_calls into llm_metrics at one
-/// granularity. Used by the rebuild path to back-fill rollup history
-/// after a table-recreate; structurally mirrors what the in-process
-/// `WindowBucket` does live, with two notable simplifications:
+/// granularity. Mirrors `WindowBucket::on_call_complete`. One
+/// simplification:
 ///
-/// * `active_calls_*` come out as 0 — concurrency is sampled live, not
-///   reconstructible from finished calls.
-/// * `tpot_*` come out as 0/NULL — tpot needs per-call (complete - response)
-///   / output_tokens which we don't pre-store on llm_calls.
+/// * `active_calls_*` come out as 0 — concurrency is sampled live and
+///   isn't reconstructible from finished calls.
 ///
-/// Percentiles use DuckDB's `approx_quantile` (t-digest-like) rather than
-/// our streaming digest; ~1-2% off on tails but fine for chart rendering.
+/// TPOT is computed per-call from `(complete_time - response_time) /
+/// output_tokens` (streaming responses only), matching the live
+/// aggregator. Percentiles use DuckDB's `approx_quantile` (t-digest-like)
+/// rather than our streaming digest; ~1-2% off on tails but fine for
+/// chart rendering.
 fn backfill_sql(granularity_label: &str, time_bucket_interval: &str) -> String {
     // The live aggregator emits four tiered dimension rows per bucket
     // (see `dimension_keys()` in ts-metrics::aggregator): the specific
@@ -382,11 +380,33 @@ fn backfill_sql(granularity_label: &str, time_bucket_interval: &str) -> String {
             approx_quantile(e2e_latency_ms, 0.5),
             approx_quantile(e2e_latency_ms, 0.95),
             approx_quantile(e2e_latency_ms, 0.99),
-            0 AS tpot_sum,
-            CAST(0 AS UBIGINT) AS tpot_count,
-            NULL AS tpot_p50,
-            NULL AS tpot_p95,
-            NULL AS tpot_p99
+            -- tpot = (complete - response) ms per output token, streaming only.
+            -- Mirrors WindowBucket::on_call_complete. NULLIF guards against
+            -- divide-by-zero on calls with output_tokens=0 (rare keep-alive).
+            COALESCE(SUM(CASE WHEN is_stream
+                AND response_time IS NOT NULL AND complete_time IS NOT NULL
+                AND output_tokens IS NOT NULL AND output_tokens > 0
+                THEN (EPOCH_US(complete_time) - EPOCH_US(response_time))
+                     / 1000.0 / output_tokens END), 0) AS tpot_sum,
+            CAST(COUNT(CASE WHEN is_stream
+                AND response_time IS NOT NULL AND complete_time IS NOT NULL
+                AND output_tokens IS NOT NULL AND output_tokens > 0
+                THEN 1 END) AS UBIGINT) AS tpot_count,
+            approx_quantile(CASE WHEN is_stream
+                AND response_time IS NOT NULL AND complete_time IS NOT NULL
+                AND output_tokens IS NOT NULL AND output_tokens > 0
+                THEN (EPOCH_US(complete_time) - EPOCH_US(response_time))
+                     / 1000.0 / output_tokens END, 0.5),
+            approx_quantile(CASE WHEN is_stream
+                AND response_time IS NOT NULL AND complete_time IS NOT NULL
+                AND output_tokens IS NOT NULL AND output_tokens > 0
+                THEN (EPOCH_US(complete_time) - EPOCH_US(response_time))
+                     / 1000.0 / output_tokens END, 0.95),
+            approx_quantile(CASE WHEN is_stream
+                AND response_time IS NOT NULL AND complete_time IS NOT NULL
+                AND output_tokens IS NOT NULL AND output_tokens > 0
+                THEN (EPOCH_US(complete_time) - EPOCH_US(response_time))
+                     / 1000.0 / output_tokens END, 0.99)
         FROM llm_calls
         GROUP BY
             time_bucket({time_bucket_interval}, request_time),
