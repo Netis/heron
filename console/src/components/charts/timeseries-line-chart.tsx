@@ -28,31 +28,20 @@ interface Props {
 }
 
 /**
- * Pick an X-axis tick formatter based on the total span being plotted.
+ * Pick a *short* X-axis tick formatter based on the plotted span. Tick
+ * labels must stay narrow because the chart container is often only
+ * 300-400 px wide; the precise datetime lives in the hover tooltip
+ * (`labelFormatter` below), not on the axis itself.
  *
- * - < 24 h          : `HH:mm`                       (same as before)
- * - 24 h ‒ 14 d     : `MM-DD HH:mm`                 (date prevents
- *                                                    cycling labels)
- * - > 14 d          : `MM-DD`                       (single date stamp;
- *                                                    one bucket = ≥ 1 h
- *                                                    so intra-day detail
- *                                                    is noise)
- *
- * Without this, a 7-day window with `HH:mm` looks like ~48 h because
- * the axis cycles 00:00 → 23:59 every day and recharts collapses the
- * repeating labels.
+ *   < 24 h    : `HH:mm`     (intra-day buckets, time is what matters)
+ *   ≥ 24 h    : `MM-DD`     (one tick per day; granularity is 1h+, so
+ *                            intra-day detail on the axis is noise)
  */
 function pickAxisFormatter(spanSec: number): (epoch: number) => string {
   if (spanSec < 86400) {
     return (epoch) => {
       const d = new Date(epoch * 1000)
       return `${pad(d.getHours())}:${pad(d.getMinutes())}`
-    }
-  }
-  if (spanSec <= 14 * 86400) {
-    return (epoch) => {
-      const d = new Date(epoch * 1000)
-      return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
     }
   }
   return (epoch) => {
