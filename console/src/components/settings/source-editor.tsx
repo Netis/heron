@@ -9,6 +9,25 @@ const DEFAULT_SNAPLEN = 262_144
 const DEFAULT_CLOUD_PROBE_ENDPOINT = "tcp://0.0.0.0:5555"
 const DEFAULT_CLOUD_PROBE_HWM = 1000
 
+/**
+ * Default BPF for a newly-added live-capture source: the common ports
+ * that LLM serving stacks listen on, so out-of-the-box capture sees
+ * traffic without the user having to know BPF syntax. Users can edit
+ * via the structured ports/hosts panel or switch to raw BPF.
+ *
+ *   1234   LM Studio
+ *   4000   LiteLLM proxy default
+ *   4200   LiteLLM alt (in active use here)
+ *   8000   vLLM default
+ *   8001   vLLM alt / multi-instance
+ *   8080   common HTTP backend (vLLM, OpenAI-compatible servers)
+ *   9000   generic alt; SGLang served on this in our internal setup
+ *   11434  Ollama default
+ *   30000  SGLang default
+ */
+const DEFAULT_LLM_PORTS = [1234, 4000, 4200, 8000, 8001, 8080, 9000, 11434, 30000]
+const DEFAULT_LLM_PORTS_BPF = DEFAULT_LLM_PORTS.map((p) => `tcp port ${p}`).join(" or ")
+
 // ============================================================================
 // SourceEditorRow — dispatches by type; the type itself is fixed (no
 // in-row switcher) because the Settings page now organises sources into
@@ -68,7 +87,7 @@ export function defaultFor(type: CaptureSource["type"]): CaptureSource {
     return {
       type: "pcap",
       interface: "any",
-      bpf_filter: null,
+      bpf_filter: DEFAULT_LLM_PORTS_BPF,
       snaplen: DEFAULT_SNAPLEN,
       source_id: null,
     }
