@@ -187,33 +187,12 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         // is a no-op on a fresh schema. Run each statement on its own so
         // a failure on one column does not abort the rest, and log the
         // outcome instead of swallowing it silently.
-        //
-        // Also: ttft_stream_* / ttft_nonstream_* columns added later.
-        // DuckDB rejects `ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT 0`
-        // ("Adding columns with constraints not yet supported"). The
-        // workaround: ADD COLUMN nullable, then UPDATE to backfill 0 on
-        // pre-existing rows. New writes via the appender always supply a
-        // value. Reads into u64 / f64 are safe after the UPDATE step.
         for stmt in [
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_complete_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_length_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_tool_use_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_error_count;",
             "ALTER TABLE llm_metrics DROP COLUMN IF EXISTS finish_cancelled_count;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_sum DOUBLE;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_count UBIGINT;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_p50 DOUBLE;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_p95 DOUBLE;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_stream_p99 DOUBLE;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_sum DOUBLE;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_count UBIGINT;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_p50 DOUBLE;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_p95 DOUBLE;",
-            "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS ttft_nonstream_p99 DOUBLE;",
-            "UPDATE llm_metrics SET ttft_stream_sum = 0 WHERE ttft_stream_sum IS NULL;",
-            "UPDATE llm_metrics SET ttft_stream_count = 0 WHERE ttft_stream_count IS NULL;",
-            "UPDATE llm_metrics SET ttft_nonstream_sum = 0 WHERE ttft_nonstream_sum IS NULL;",
-            "UPDATE llm_metrics SET ttft_nonstream_count = 0 WHERE ttft_nonstream_count IS NULL;",
         ] {
             match conn.execute_batch(stmt) {
                 Ok(()) => tracing::debug!(
@@ -225,6 +204,39 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
                     sql = stmt,
                     "phase4 migration: drop finish_* column failed (non-fatal — fresh DB or unsupported DuckDB version)"
                 ),
+            }
+        }
+
+        // ttft_stream_* / ttft_nonstream_* migration: the appender writes
+        // values by POSITION, not name. `ALTER TABLE ADD COLUMN` always
+        // appends to the end; that puts the new columns AFTER e2e_* and
+        // tpot_*, while the Rust struct (and CREATE TABLE) places them
+        // immediately after `ttft_p99`. So positional writes from new
+        // code into an ALTER-migrated table corrupt e2e + tpot columns.
+        //
+        // Detection: look at column order via duckdb_columns(). If
+        // `ttft_stream_sum` does not sit directly after `ttft_p99`, the
+        // table is in the broken legacy layout — rebuild it with the
+        // canonical order. Old rollup data is lost (llm_calls is intact,
+        // and the rollup repopulates from new traffic); the alternative
+        // is a stat-by-stat preserve-and-rewrite which is more invasive
+        // and not worth the few hours of corrupted rollups it would save.
+        if needs_canonical_rebuild(&conn) {
+            tracing::warn!(
+                "llm_metrics columns out of canonical order \
+                 (ALTER ADD COLUMN appended at end); rebuilding table — \
+                 rollup history will be cleared but llm_calls is intact \
+                 and the rollups repopulate from new traffic"
+            );
+            for stmt in [
+                "DROP TABLE IF EXISTS llm_metrics;",
+                CREATE_LLM_METRICS,
+            ] {
+                conn.execute_batch(stmt).map_err(|e| {
+                    AppError::Storage(format!(
+                        "llm_metrics canonical rebuild failed: {e} (sql: {stmt})"
+                    ))
+                })?;
             }
         }
 
@@ -253,6 +265,52 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
     })
     .await
     .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+}
+
+/// Returns true when llm_metrics needs to be dropped and re-created.
+/// Trigger: the new `ttft_stream_sum` column does not sit immediately
+/// after `ttft_p99` (which is where the canonical CREATE TABLE places
+/// it). That state happens after a previous `ALTER TABLE ADD COLUMN`
+/// migration appended the new columns to the end of the table — wrong
+/// for our positional-appender writer.
+///
+/// Returns false when the canonical order is already in place, OR when
+/// the new columns are absent entirely (which also can't happen after
+/// CREATE_LLM_METRICS just ran — kept for safety in case schema parsing
+/// regresses).
+fn needs_canonical_rebuild(conn: &duckdb::Connection) -> bool {
+    // duckdb_columns() ordered by ordinal. column_index is 0-based.
+    let sql = "SELECT column_name FROM duckdb_columns() \
+               WHERE table_name = 'llm_metrics' \
+               ORDER BY column_index";
+    let names: Vec<String> = match conn.prepare(sql) {
+        Ok(mut stmt) => match stmt.query_map([], |row| row.get::<_, String>(0)) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read llm_metrics column order; skipping rebuild check");
+                return false;
+            }
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "could not prepare column-order query; skipping rebuild check");
+            return false;
+        }
+    };
+    if names.is_empty() {
+        return false; // table absent — CREATE handled it
+    }
+    let p99_idx = names.iter().position(|c| c == "ttft_p99");
+    let stream_sum_idx = names.iter().position(|c| c == "ttft_stream_sum");
+    match (p99_idx, stream_sum_idx) {
+        (Some(p), Some(s)) => s != p + 1,
+        // p99 present but stream_sum absent → an upgrade from a pre-split
+        // schema that somehow didn't get ALTER'd. Rebuild to be safe.
+        (Some(_), None) => true,
+        // p99 absent → schema is from before TTFT existed; super unlikely
+        // in practice (every shipped version has it). CREATE will have
+        // re-made the table from scratch already.
+        _ => false,
+    }
 }
 
 #[cfg(test)]
