@@ -80,7 +80,27 @@ function CellValue({ item, column }: { item: LlmCallListItem; column: SortKey })
     case "finish_reason":
       return <FinishBadge reason={item.finish_reason} />
     case "ttft_ms":
-      return <span className="tabular-nums">{formatMs(item.ttft_ms)}</span>
+      if (item.ttft_ms == null) {
+        return <span className="tabular-nums text-muted-foreground">—</span>
+      }
+      // For non-streaming, the value is "time to first response byte"
+      // (≈ E2E). Italicise + dim it so users can tell the cell apart
+      // from a true streaming TTFT at a glance without an extra column.
+      return item.is_stream ? (
+        <span
+          className="tabular-nums"
+          title="Time to first generated token (streaming)"
+        >
+          {formatMs(item.ttft_ms)}
+        </span>
+      ) : (
+        <span
+          className="tabular-nums italic text-muted-foreground"
+          title="Non-streaming: time to first response byte (≈ E2E — server buffers the full body before sending)"
+        >
+          {formatMs(item.ttft_ms)}
+        </span>
+      )
     case "e2e_latency_ms":
       return <span className="tabular-nums">{formatMs(item.e2e_latency_ms)}</span>
     case "input_tokens":

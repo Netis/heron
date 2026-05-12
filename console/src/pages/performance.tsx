@@ -2,10 +2,16 @@ import { useTimeseries } from "@/hooks/use-metrics"
 import { formatMs, formatNumber } from "@/lib/format"
 import { TimeseriesLineChart } from "@/components/charts/timeseries-line-chart"
 
-const TTFT_SERIES = [
-  { key: "ttft_p50", label: "p50", color: "#f59e0b" },
-  { key: "ttft_p95", label: "p95", color: "#ef4444" },
-  { key: "ttft_p99", label: "p99", color: "#dc2626", dash: "5 3" },
+const TTFT_STREAM_SERIES = [
+  { key: "ttft_stream_p50", label: "p50", color: "#f59e0b" },
+  { key: "ttft_stream_p95", label: "p95", color: "#ef4444" },
+  { key: "ttft_stream_p99", label: "p99", color: "#dc2626", dash: "5 3" },
+]
+
+const TTFT_NONSTREAM_SERIES = [
+  { key: "ttft_nonstream_p50", label: "p50", color: "#f59e0b" },
+  { key: "ttft_nonstream_p95", label: "p95", color: "#ef4444" },
+  { key: "ttft_nonstream_p99", label: "p99", color: "#dc2626", dash: "5 3" },
 ]
 
 const E2E_SERIES = [
@@ -38,17 +44,34 @@ function formatActiveCalls(v: number): string {
   return v.toFixed(1)
 }
 
-function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+function ChartCard({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string
+  subtitle?: string
+  children: React.ReactNode
+}) {
   return (
     <div className="rounded-lg border border-border bg-card p-4">
-      <h3 className="mb-3 text-sm font-medium">{title}</h3>
+      <h3 className="text-sm font-medium">{title}</h3>
+      {subtitle && (
+        <p className="mb-3 text-xs text-muted-foreground">{subtitle}</p>
+      )}
+      {!subtitle && <div className="mb-3" />}
       {children}
     </div>
   )
 }
 
 export function PerformancePage() {
-  const { data: ttftData } = useTimeseries("ttft_p50,ttft_p95,ttft_p99")
+  const { data: ttftStreamData } = useTimeseries(
+    "ttft_stream_p50,ttft_stream_p95,ttft_stream_p99",
+  )
+  const { data: ttftNonstreamData } = useTimeseries(
+    "ttft_nonstream_p50,ttft_nonstream_p95,ttft_nonstream_p99",
+  )
   const { data: e2eData } = useTimeseries("e2e_p50,e2e_p95,e2e_p99")
   const { data: tpotData } = useTimeseries("tpot_p50,tpot_p95")
   const { data: activeCallsData } = useTimeseries("active_calls_avg,active_calls_max")
@@ -57,18 +80,39 @@ export function PerformancePage() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      {/* Top row */}
+      {/* TTFT row — split by streaming/non-streaming because the two
+          distributions measure different things: streaming TTFT is the
+          true 'first token' wire latency, non-streaming TTFT is 'first
+          response byte' (≈ e2e on most servers). Showing them in one
+          chart conflated server-generation time with token-streaming time. */}
       <div className="grid grid-cols-2 gap-4">
-        <ChartCard title="TTFT Distribution">
-          <TimeseriesLineChart data={ttftData ?? null} series={TTFT_SERIES} yFormatter={formatMs} />
+        <ChartCard
+          title="TTFT — Streaming"
+          subtitle="Time to first generated token (streaming responses only)"
+        >
+          <TimeseriesLineChart
+            data={ttftStreamData ?? null}
+            series={TTFT_STREAM_SERIES}
+            yFormatter={formatMs}
+          />
         </ChartCard>
-        <ChartCard title="E2E Latency Distribution">
-          <TimeseriesLineChart data={e2eData ?? null} series={E2E_SERIES} yFormatter={formatMs} />
+        <ChartCard
+          title="TTFT — Non-streaming"
+          subtitle="Time to first response byte (≈ E2E on buffered responses)"
+        >
+          <TimeseriesLineChart
+            data={ttftNonstreamData ?? null}
+            series={TTFT_NONSTREAM_SERIES}
+            yFormatter={formatMs}
+          />
         </ChartCard>
       </div>
 
-      {/* Middle row */}
+      {/* E2E + TPOT row */}
       <div className="grid grid-cols-2 gap-4">
+        <ChartCard title="E2E Latency Distribution">
+          <TimeseriesLineChart data={e2eData ?? null} series={E2E_SERIES} yFormatter={formatMs} />
+        </ChartCard>
         <ChartCard title="TPOT (Time Per Output Token)">
           <TimeseriesLineChart
             data={tpotData ?? null}
@@ -76,6 +120,10 @@ export function PerformancePage() {
             yFormatter={formatMs}
           />
         </ChartCard>
+      </div>
+
+      {/* Active calls + Cache tokens row */}
+      <div className="grid grid-cols-2 gap-4">
         <ChartCard title="Active Calls">
           <TimeseriesLineChart
             data={activeCallsData ?? null}
@@ -84,10 +132,6 @@ export function PerformancePage() {
             variant="area"
           />
         </ChartCard>
-      </div>
-
-      {/* Bottom row */}
-      <div className="grid grid-cols-2 gap-4">
         <ChartCard title="Cache Token Usage">
           <TimeseriesLineChart
             data={cacheTokenData ?? null}
@@ -96,6 +140,11 @@ export function PerformancePage() {
             variant="area"
           />
         </ChartCard>
+      </div>
+
+      {/* Token averages row */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="hidden md:block" />
         <ChartCard title="Token Averages">
           <TimeseriesLineChart
             data={tokenAvgData ?? null}
