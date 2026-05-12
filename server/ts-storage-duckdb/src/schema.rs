@@ -329,13 +329,23 @@ fn rollup_empty_but_calls_present(conn: &duckdb::Connection) -> bool {
 /// Percentiles use DuckDB's `approx_quantile` (t-digest-like) rather than
 /// our streaming digest; ~1-2% off on tails but fine for chart rendering.
 fn backfill_sql(granularity_label: &str, time_bucket_interval: &str) -> String {
+    // The live aggregator emits four tiered dimension rows per bucket
+    // (see `dimension_keys()` in ts-metrics::aggregator): the specific
+    // (wire, model, server_ip) tuple plus wildcard ('*') roll-ups so the
+    // dashboard's default queries (no filter → `wire_api = '*' AND
+    // model = '*' AND server_ip = '*'`) hit a single pre-aggregated row.
+    // Backfill must produce the same shape via GROUPING SETS, with
+    // COALESCE turning NULL group-keys into the '*' wildcard the
+    // dim-where clauses look for.
     format!(
         "INSERT INTO llm_metrics
         SELECT
             time_bucket({time_bucket_interval}, request_time) AS timestamp,
             source_id,
             '{granularity_label}' AS granularity,
-            wire_api, model, server_ip,
+            COALESCE(wire_api,  '*') AS wire_api,
+            COALESCE(model,     '*') AS model,
+            COALESCE(server_ip, '*') AS server_ip,
             COUNT(*) AS call_count,
             CAST(SUM(CASE WHEN is_stream THEN 1 ELSE 0 END) AS UBIGINT) AS stream_count,
             CAST(SUM(CASE WHEN NOT is_stream THEN 1 ELSE 0 END) AS UBIGINT) AS non_stream_count,
@@ -378,7 +388,15 @@ fn backfill_sql(granularity_label: &str, time_bucket_interval: &str) -> String {
             NULL AS tpot_p95,
             NULL AS tpot_p99
         FROM llm_calls
-        GROUP BY timestamp, source_id, wire_api, model, server_ip",
+        GROUP BY
+            time_bucket({time_bucket_interval}, request_time),
+            source_id,
+            GROUPING SETS (
+                (wire_api, model, server_ip),
+                (wire_api, model),
+                (server_ip),
+                ()
+            )",
     )
 }
 
