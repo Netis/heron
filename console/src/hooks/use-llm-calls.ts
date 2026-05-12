@@ -14,6 +14,8 @@ interface UseLlmCallsParams {
   finishReason?: string
   clientIp?: string
   requestPath?: string
+  /** Stream-mode filter: "stream", "non-stream", or undefined for all. */
+  isStream?: string
 }
 
 export function useLlmCalls({
@@ -25,6 +27,7 @@ export function useLlmCalls({
   finishReason,
   clientIp,
   requestPath,
+  isStream,
 }: UseLlmCallsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
@@ -34,7 +37,7 @@ export function useLlmCalls({
     queryKey: ["llm-calls", {
       start, end, page, pageSize, sortBy, sortOrder,
       ...fp,
-      statusCode, finishReason, clientIp, requestPath,
+      statusCode, finishReason, clientIp, requestPath, isStream,
     }],
     queryFn: () =>
       apiFetch<LlmCallsPage>("/api/llm-calls", {
@@ -49,6 +52,7 @@ export function useLlmCalls({
         finish_reason: finishReason || undefined,
         client_ip: clientIp || undefined,
         request_path: requestPath || undefined,
+        is_stream: isStream || undefined,
       }),
     placeholderData: (prev) => prev,
   })
