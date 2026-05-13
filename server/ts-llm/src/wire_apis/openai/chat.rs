@@ -157,6 +157,17 @@ fn extract_sse(events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
     let mut model: Option<String> = None;
     let mut finish_reason: Option<String> = None;
     let mut content = String::new();
+    // Reasoning trace channels. Most reasoning-capable backends emit one of:
+    //   * `delta.reasoning_content` — DeepSeek-R1, Qwen3, Qwen3.5/3.6 with
+    //     `--reasoning-parser qwen3` on vLLM ≤ 0.16, SGLang.
+    //   * `delta.reasoning`         — vLLM ≥ 0.17 (field rename), some GLM
+    //     deployments.
+    // We accumulate them into separate buffers and emit both into the
+    // synthetic final message so `collect_chat_assistant_text` /
+    // `estimate_output_tokens` / the console renderer all see what the
+    // model actually sent.
+    let mut reasoning_content = String::new();
+    let mut reasoning = String::new();
     let mut tool_calls: BTreeMap<u64, (String, String, String)> = BTreeMap::new();
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
@@ -192,6 +203,12 @@ fn extract_sse(events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
             if let Some(delta) = choice.get("delta") {
                 if let Some(c) = delta.get("content").and_then(|v| v.as_str()) {
                     content.push_str(c);
+                }
+                if let Some(r) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
+                    reasoning_content.push_str(r);
+                }
+                if let Some(r) = delta.get("reasoning").and_then(|v| v.as_str()) {
+                    reasoning.push_str(r);
                 }
                 if let Some(tcs) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                     for tc in tcs {
@@ -243,6 +260,8 @@ fn extract_sse(events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
         Some(build_synthetic_body(
             model.as_deref(),
             &content,
+            &reasoning_content,
+            &reasoning,
             tool_calls,
             finish_reason.as_deref(),
             input_tokens,
@@ -279,6 +298,8 @@ fn extract_sse(events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
 fn build_synthetic_body(
     model: Option<&str>,
     content: &str,
+    reasoning_content: &str,
+    reasoning: &str,
     tool_calls: BTreeMap<u64, (String, String, String)>,
     finish_reason: Option<&str>,
     input_tokens: Option<u32>,
@@ -289,6 +310,16 @@ fn build_synthetic_body(
     let mut message = json!({ "role": "assistant" });
     if !content.is_empty() {
         message["content"] = Value::String(content.to_string());
+    }
+    // Preserve both reasoning channels separately. Some backends emit one,
+    // some the other, a few echo both with identical text; `token_estimator`
+    // already dedupes when both are present, and the console renderer keys
+    // off `reasoning_content` first.
+    if !reasoning_content.is_empty() {
+        message["reasoning_content"] = Value::String(reasoning_content.to_string());
+    }
+    if !reasoning.is_empty() {
+        message["reasoning"] = Value::String(reasoning.to_string());
     }
     if !tool_calls.is_empty() {
         let tc_array: Vec<Value> = tool_calls
@@ -670,6 +701,115 @@ mod tests {
         assert_eq!(v["model"], "gpt-4");
         assert_eq!(v["choices"][0]["message"]["content"], "Hello world");
         assert_eq!(v["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[test]
+    fn synthetic_body_captures_streamed_reasoning_content() {
+        // DeepSeek-R1 / Qwen3 native shape: reasoning trace arrives in
+        // `delta.reasoning_content`, then the final answer in `delta.content`.
+        let events = vec![
+            make_sse(
+                "",
+                r#"{"model":"qwen3","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me think"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"qwen3","choices":[{"index":0,"delta":{"reasoning_content":" about this..."}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"qwen3","choices":[{"index":0,"delta":{"content":"42"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"qwen3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            ),
+        ];
+        let (info, _body) = extract_sse(&events);
+        let body = info.response_body.expect("response_body");
+        let v: Value = serde_json::from_str(&body).unwrap();
+        let msg = &v["choices"][0]["message"];
+        assert_eq!(msg["content"], "42");
+        assert_eq!(msg["reasoning_content"], "Let me think about this...");
+        assert!(msg.get("reasoning").is_none(), "should not invent a reasoning field");
+    }
+
+    #[test]
+    fn synthetic_body_captures_streamed_reasoning_alias() {
+        // vLLM ≥ 0.17 renamed the streaming field to `delta.reasoning`.
+        let events = vec![
+            make_sse(
+                "",
+                r#"{"model":"glm-5","choices":[{"index":0,"delta":{"role":"assistant","reasoning":"step one,"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"glm-5","choices":[{"index":0,"delta":{"reasoning":" step two"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"glm-5","choices":[{"index":0,"delta":{"content":"done"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"glm-5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            ),
+        ];
+        let (info, _body) = extract_sse(&events);
+        let body = info.response_body.expect("response_body");
+        let v: Value = serde_json::from_str(&body).unwrap();
+        let msg = &v["choices"][0]["message"];
+        assert_eq!(msg["content"], "done");
+        assert_eq!(msg["reasoning"], "step one, step two");
+        assert!(msg.get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn synthetic_body_streamed_reasoning_inflates_output_tokens() {
+        // Without server-reported usage, estimate_output_tokens walks the
+        // synthetic message — it must see reasoning_content, otherwise the
+        // total_output_tokens metric undercounts reasoning models.
+        use crate::token_estimator::TokenEstimator;
+        struct CharLen;
+        impl TokenEstimator for CharLen {
+            fn count_text(&self, s: &str) -> u32 { s.chars().count() as u32 }
+        }
+        let events_with = vec![
+            make_sse(
+                "",
+                r#"{"model":"qwen3","choices":[{"index":0,"delta":{"reasoning_content":"abcdefghij"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"qwen3","choices":[{"index":0,"delta":{"content":"42"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"qwen3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            ),
+        ];
+        let (info_with, _) = extract_sse(&events_with);
+        let v_with: Value = serde_json::from_str(&info_with.response_body.unwrap()).unwrap();
+        let with_n = estimate_output_tokens(&v_with, &CharLen);
+
+        let events_without = vec![
+            make_sse(
+                "",
+                r#"{"model":"qwen3","choices":[{"index":0,"delta":{"content":"42"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"model":"qwen3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            ),
+        ];
+        let (info_without, _) = extract_sse(&events_without);
+        let v_without: Value = serde_json::from_str(&info_without.response_body.unwrap()).unwrap();
+        let plain_n = estimate_output_tokens(&v_without, &CharLen);
+
+        assert!(
+            with_n > plain_n,
+            "streamed reasoning_content must inflate output tokens (with={with_n} plain={plain_n})"
+        );
     }
 
     #[test]
