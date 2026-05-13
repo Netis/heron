@@ -20,6 +20,7 @@ fn test_metrics_context() -> ApiMetricsContext {
     ApiMetricsContext {
         pipelines: vec![],
         global: sys.start(),
+        history: None,
     }
 }
 

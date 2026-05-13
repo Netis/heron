@@ -36,8 +36,12 @@ pub fn spawn_turn_stage(
     );
 
     // Per-shard gauges updated after every tracker mutation. The probe sums
-    // across shards to report total in-flight turns; max would hide shards
-    // with many open sessions behind a single dominant shard.
+    // across shards to report `turn_calls_buffered` — total in-flight LLM
+    // calls sitting in per-session turn buffers waiting to be grouped into
+    // a finalized turn. NOTE: this counts CALLS, not open turns; a single
+    // conversation with N concurrent calls contributes N. For the "open
+    // agent turns" signal the dashboard uses, see `agent_turns_open`
+    // (registered on the global svc against ActiveTurnRegistry).
     let active_gauges: Vec<Arc<AtomicU64>> = (0..shard_rxs.len())
         .map(|_| Arc::new(AtomicU64::new(0)))
         .collect();
