@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
+import { useToolbarStore } from "@/stores/toolbar"
 
 interface FilterValuesData {
   values: string[]
@@ -37,6 +38,23 @@ export function useModelNames(opts?: Options) {
 
 export function useServerIps(opts?: Options) {
   return useFilterValues("/api/filters/server-ips", opts)
+}
+
+/**
+ * Distinct `agent_kind` values observed in agent_turns inside the
+ * toolbar's current time range. Drives the agent-sessions / agent-turns
+ * filter dropdowns so options stay in sync with what was captured.
+ */
+export function useAgentKinds(opts?: Options) {
+  const start = useToolbarStore((s) => s.start)
+  const end = useToolbarStore((s) => s.end)
+  return useQuery({
+    queryKey: ["filter-values", "/api/filters/agent-kinds", start, end],
+    queryFn: () =>
+      apiFetch<FilterValuesData>("/api/filters/agent-kinds", { start, end }),
+    staleTime: 30_000,
+    enabled: opts?.enabled ?? true,
+  })
 }
 
 /**
