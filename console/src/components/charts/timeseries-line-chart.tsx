@@ -11,6 +11,7 @@ import {
   Legend,
 } from "recharts"
 import type { TimeseriesData } from "@/types/api"
+import { formatAxisTime } from "@/lib/format"
 
 interface SeriesConfig {
   key: string
@@ -25,11 +26,6 @@ interface Props {
   yFormatter: (value: number) => string
   height?: number
   variant?: "line" | "area"
-}
-
-function formatAxisTime(epoch: number): string {
-  const d = new Date(epoch * 1000)
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
 }
 
 export function TimeseriesLineChart({
@@ -57,6 +53,13 @@ export function TimeseriesLineChart({
     }
     return point
   })
+  // Span of the visible data window — drives axis tick density (HH:MM
+  // vs MM-DD HH:MM vs MM-DD). Falls back to 0 (sub-day format) for
+  // single-point series.
+  const spanSec =
+    data.timestamps.length > 1
+      ? data.timestamps[data.timestamps.length - 1] - data.timestamps[0]
+      : 0
 
   const ChartComponent = variant === "area" ? AreaChart : LineChart
 
@@ -66,7 +69,7 @@ export function TimeseriesLineChart({
         <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
         <XAxis
           dataKey="time"
-          tickFormatter={formatAxisTime}
+          tickFormatter={(v: number) => formatAxisTime(v, spanSec)}
           className="text-[11px] fill-muted-foreground"
           tickLine={false}
           axisLine={false}
