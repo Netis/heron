@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react"
+import { useCallback, useMemo } from "react"
 import { ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Loader2, Filter } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useLlmCalls } from "@/hooks/use-llm-calls"
@@ -145,8 +145,7 @@ export function LlmCallsPage() {
       .map(([label, options]) => ({ label, options: [...options].sort() }))
   }, [finishReasonsData])
 
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [selectedIndex, setSelectedIndex] = useState(-1)
+  const [selectedId, setSelectedId] = useSearchParamState("selected", "")
 
   const { data, isLoading, isError, error } = useLlmCalls({
     page,
@@ -179,26 +178,33 @@ export function LlmCallsPage() {
     [sortBy, sortOrder, setSortBy, setSortOrder, setPageStr],
   )
 
-  const handleRowClick = useCallback((id: string, index: number) => {
-    setSelectedId(id)
-    setSelectedIndex(index)
-  }, [])
+  // Index derived from id so the selection survives URL paste / refresh:
+  // we own only one source of truth (the URL), and prev/next still works
+  // as long as the selected id is on the current page.
+  const selectedIndex = selectedId
+    ? items.findIndex((i) => i.id === selectedId)
+    : -1
+
+  const handleRowClick = useCallback(
+    (id: string, _index: number) => {
+      setSelectedId(id)
+    },
+    [setSelectedId],
+  )
 
   const handleNavigate = useCallback(
     (direction: "prev" | "next") => {
       const newIndex = direction === "prev" ? selectedIndex - 1 : selectedIndex + 1
       if (newIndex >= 0 && newIndex < items.length) {
-        setSelectedIndex(newIndex)
         setSelectedId(items[newIndex].id)
       }
     },
-    [selectedIndex, items],
+    [selectedIndex, items, setSelectedId],
   )
 
   const handleClose = useCallback(() => {
-    setSelectedId(null)
-    setSelectedIndex(-1)
-  }, [])
+    setSelectedId("")
+  }, [setSelectedId])
 
   return (
     <div className="relative flex h-full flex-col">
