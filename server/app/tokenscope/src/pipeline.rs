@@ -511,7 +511,7 @@ impl Pipeline {
             turns_rx,
             metrics_out_rx,
             http_exchanges_rx,
-            storage,
+            storage.clone(),
             storage_metrics,
         );
         stage_handles.push((
@@ -521,6 +521,22 @@ impl Pipeline {
                 pipeline: None,
             },
             sink_handle,
+        ));
+
+        // Pair-detection sweeper — scans recently-finalized turns for
+        // llmproxy duplicates (real haproxy hops + multi-interface
+        // double-capture) and folds them by writing pair annotations
+        // back to `agent_turns.metadata`. Runs forever, owns its own
+        // Arc<dyn StorageBackend>.
+        let pair_sweeper_handle =
+            ts_storage::spawn_pair_sweeper(ts_storage::PairSweeperConfig::default(), storage);
+        stage_handles.push((
+            StageTask {
+                stage: "pair_sweeper",
+                shard: None,
+                pipeline: None,
+            },
+            pair_sweeper_handle,
         ));
 
         Pipeline {

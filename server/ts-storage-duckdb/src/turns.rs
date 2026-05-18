@@ -9,6 +9,7 @@ use crate::util::{
     extract_full_text, parse_json_string_list, us_to_timestamp, ExtractKind,
 };
 use crate::DuckDbBackend;
+use ts_turn::PairCandidate;
 
 struct PreparedTurn {
     turn_id: String,
@@ -477,6 +478,154 @@ impl DuckDbBackend {
                 call_ids,
                 metadata,
             }))
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    /// Light projection of `agent_turns` rows for pair-detection. Skips
+    /// rows whose `metadata` already encodes a `proxy.role`.
+    pub(crate) async fn query_pair_candidates(
+        &self,
+        start_us: i64,
+        end_us: i64,
+    ) -> Result<Vec<PairCandidate>> {
+        let conn = self.read_pool.acquire().await?;
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(start_us);
+            let end_ts = us_to_timestamp(end_us);
+            // metadata is stored as VARCHAR holding a JSON document.
+            // `json_extract_string(metadata, '$.proxy.role')` returns the
+            // string at that path, or NULL if absent. Filtering out rows
+            // that already carry a role keeps repeat-sweeps idempotent.
+            let sql = "
+                SELECT turn_id, session_id, agent_kind, wire_api,
+                       epoch_ms(start_time) * 1000 AS start_us,
+                       epoch_ms(end_time) * 1000 AS end_us,
+                       call_count,
+                       total_input_tokens, total_output_tokens,
+                       final_finish_reason,
+                       models_used,
+                       client_ip, server_ip
+                  FROM agent_turns
+                 WHERE start_time >= ?
+                   AND start_time <  ?
+                   AND (metadata IS NULL
+                        OR json_extract_string(metadata, '$.proxy.role') IS NULL)
+                 ORDER BY start_time ASC
+            ";
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| AppError::Storage(format!("prepare pair candidates: {e}")))?;
+            let mut rows = stmt
+                .query(duckdb::params![start_ts, end_ts])
+                .map_err(|e| AppError::Storage(format!("query pair candidates: {e}")))?;
+            let mut out = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                let models_raw: Option<String> = row
+                    .get(10)
+                    .map_err(|e| AppError::Storage(format!("read models: {e}")))?;
+                let models = parse_json_string_list(models_raw.as_deref());
+                let primary_model = models.first().cloned();
+                let client_ip: String = row
+                    .get(11)
+                    .map_err(|e| AppError::Storage(format!("read client_ip: {e}")))?;
+                let server_ip: String = row
+                    .get(12)
+                    .map_err(|e| AppError::Storage(format!("read server_ip: {e}")))?;
+                out.push(PairCandidate {
+                    turn_id: row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read turn_id: {e}")))?,
+                    session_id: row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read session_id: {e}")))?,
+                    agent_kind: row
+                        .get(2)
+                        .map_err(|e| AppError::Storage(format!("read agent_kind: {e}")))?,
+                    wire_api: row
+                        .get(3)
+                        .map_err(|e| AppError::Storage(format!("read wire_api: {e}")))?,
+                    start_time_us: row
+                        .get(4)
+                        .map_err(|e| AppError::Storage(format!("read start_us: {e}")))?,
+                    end_time_us: row
+                        .get(5)
+                        .map_err(|e| AppError::Storage(format!("read end_us: {e}")))?,
+                    call_count: row
+                        .get(6)
+                        .map_err(|e| AppError::Storage(format!("read call_count: {e}")))?,
+                    total_input_tokens: row
+                        .get(7)
+                        .map_err(|e| AppError::Storage(format!("read in_tok: {e}")))?,
+                    total_output_tokens: row
+                        .get(8)
+                        .map_err(|e| AppError::Storage(format!("read out_tok: {e}")))?,
+                    final_finish_reason: row
+                        .get::<_, Option<String>>(9)
+                        .map_err(|e| AppError::Storage(format!("read finish: {e}")))?,
+                    primary_model,
+                    network_view: format!("{}->{}", client_ip, server_ip),
+                });
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    /// Read-modify-write `agent_turns.metadata` on a single row: merge
+    /// `patch` (shallow, top-level key replacement) into the existing
+    /// JSON object. No-op if `turn_id` doesn't exist — the sweeper may
+    /// race finalization and a target turn can be momentarily absent.
+    pub(crate) async fn update_turn_metadata(
+        &self,
+        turn_id: &str,
+        patch: serde_json::Value,
+    ) -> Result<()> {
+        let conn = self.write_turns_conn.clone();
+        let turn_id = turn_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| AppError::Storage(format!("failed to lock writer: {e}")))?;
+            let existing: Option<Option<String>> = conn
+                .query_row(
+                    "SELECT metadata FROM agent_turns WHERE turn_id = ?",
+                    duckdb::params![turn_id],
+                    |r| r.get(0),
+                )
+                .ok();
+            let merged = match existing {
+                Some(Some(text)) => {
+                    let mut base = serde_json::from_str::<serde_json::Value>(&text)
+                        .ok()
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    if !base.is_object() {
+                        base = serde_json::json!({});
+                    }
+                    if let (Some(obj), Some(patch_obj)) =
+                        (base.as_object_mut(), patch.as_object())
+                    {
+                        for (k, v) in patch_obj {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                    base
+                }
+                Some(None) => patch,
+                None => return Ok(()), // turn not present yet — drop silently
+            };
+            let merged_str = merged.to_string();
+            conn.execute(
+                "UPDATE agent_turns SET metadata = ? WHERE turn_id = ?",
+                duckdb::params![merged_str, turn_id],
+            )
+            .map_err(|e| AppError::Storage(format!("update turn metadata: {e}")))?;
+            Ok(())
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
@@ -1202,5 +1351,100 @@ mod tests {
             Some(full_asst.as_str()),
             "final_answer should be full text, not truncated preview"
         );
+    }
+
+    #[tokio::test]
+    async fn query_pair_candidates_returns_only_unpaired() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+        let base = 1_700_000_000_000_000_i64;
+        let t1 = sample_turn(
+            "t1",
+            "s1",
+            wa::ANTHROPIC,
+            vec!["claude"],
+            base,
+            1000,
+            1,
+            vec!["c1"],
+            TurnStatus::Complete,
+        );
+        let mut t2 = sample_turn(
+            "t2",
+            "s1",
+            wa::ANTHROPIC,
+            vec!["claude"],
+            base + 1000,
+            1000,
+            1,
+            vec!["c2"],
+            TurnStatus::Complete,
+        );
+        // t2 already paired — sweeper should skip it.
+        t2.metadata = serde_json::json!({
+            "proxy": {
+                "role": "proxy_in",
+                "pair_id": "p-existing",
+                "peer_turn_id": "tX",
+            }
+        });
+        backend.write_turns(vec![t1, t2]).await.unwrap();
+
+        let cands = backend
+            .query_pair_candidates(base - 1, base + 2_000_000_000)
+            .await
+            .unwrap();
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].turn_id, "t1");
+        assert_eq!(cands[0].session_id, "s1");
+        assert_eq!(cands[0].network_view, "127.0.0.1->127.0.0.1");
+        assert_eq!(cands[0].total_input_tokens, 100);
+    }
+
+    #[tokio::test]
+    async fn update_turn_metadata_merges_into_existing_object() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+        let mut turn = sample_turn(
+            "tA",
+            "sA",
+            wa::ANTHROPIC,
+            vec!["claude"],
+            1_700_000_000_000_000,
+            1500,
+            1,
+            vec!["c1"],
+            TurnStatus::Complete,
+        );
+        // Pre-existing metadata key — must survive the patch.
+        turn.metadata = serde_json::json!({"unrelated": "preserve_me"});
+        backend.write_turns(vec![turn]).await.unwrap();
+
+        let patch = serde_json::json!({
+            "proxy": {
+                "role": "proxy_in",
+                "pair_id": "p-1",
+                "peer_turn_id": "tB",
+            }
+        });
+        backend.update_turn_metadata("tA", patch).await.unwrap();
+
+        let detail = backend.query_turn_by_id("tA").await.unwrap().unwrap();
+        let meta = detail.metadata.expect("metadata json");
+        assert_eq!(meta.get("unrelated"), Some(&serde_json::Value::String("preserve_me".into())));
+        assert_eq!(meta["proxy"]["role"], "proxy_in");
+        assert_eq!(meta["proxy"]["peer_turn_id"], "tB");
+    }
+
+    #[tokio::test]
+    async fn update_turn_metadata_is_noop_when_turn_absent() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+        // No turn written; update must succeed silently.
+        let patch = serde_json::json!({"proxy": {"role": "proxy_in"}});
+        backend
+            .update_turn_metadata("never-existed", patch)
+            .await
+            .expect("noop on missing row");
     }
 }
