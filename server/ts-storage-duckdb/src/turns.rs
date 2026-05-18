@@ -11,27 +11,40 @@ use crate::util::{
 use crate::DuckDbBackend;
 use ts_turn::PairCandidate;
 
-/// Read `metadata.proxy.role` and `metadata.proxy.peer_turn_id` out of a
-/// row's stored JSON. Returns `(None, None)` for direct turns
-/// (no metadata, malformed metadata, or proxy block absent). Centralized
+/// Read `metadata.proxy.{role, peer_turn_id, peer_turn_ids}` out of a
+/// row's stored JSON. Returns all-`None` for direct turns (no
+/// metadata, malformed metadata, or proxy block absent). Centralized
 /// so the same parsing rule serves the list and detail handlers.
-fn extract_proxy_fields(metadata_raw: Option<String>) -> (Option<String>, Option<String>) {
+///
+/// `peer_turn_ids` is the full sibling list (empty Vec when present
+/// but actually empty). For groups of size 2 this contains one
+/// element; for the haproxy 3-leg case, two.
+fn extract_proxy_fields(
+    metadata_raw: Option<String>,
+) -> (Option<String>, Option<String>, Option<Vec<String>>) {
     let Some(text) = metadata_raw else {
-        return (None, None);
+        return (None, None, None);
     };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return (None, None);
+        return (None, None, None);
     };
     let proxy = v.get("proxy");
     let role = proxy
         .and_then(|p| p.get("role"))
         .and_then(|r| r.as_str())
         .map(String::from);
-    let peer = proxy
+    let peer_id = proxy
         .and_then(|p| p.get("peer_turn_id"))
         .and_then(|r| r.as_str())
         .map(String::from);
-    (role, peer)
+    let peer_ids = proxy.and_then(|p| p.get("peer_turn_ids")).and_then(|a| {
+        a.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect::<Vec<_>>()
+        })
+    });
+    (role, peer_id, peer_ids)
 }
 
 struct PreparedTurn {
@@ -300,7 +313,8 @@ impl DuckDbBackend {
                 let metadata_raw: Option<String> = row
                     .get(18)
                     .map_err(|e| AppError::Storage(format!("read metadata: {e}")))?;
-                let (proxy_role, proxy_peer_turn_id) = extract_proxy_fields(metadata_raw);
+                let (proxy_role, proxy_peer_turn_id, proxy_peer_turn_ids) =
+                    extract_proxy_fields(metadata_raw);
                 items.push(TurnListItem {
                     turn_id: row
                         .get(0)
@@ -357,6 +371,7 @@ impl DuckDbBackend {
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     proxy_role,
                     proxy_peer_turn_id,
+                    proxy_peer_turn_ids,
                 });
             }
 

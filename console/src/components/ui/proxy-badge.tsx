@@ -21,7 +21,12 @@ export function ProxyBadge({ item }: { item: AgentTurnListItem }) {
   const role = item.proxy_role
   const isPrimary = role === "proxy_in" || role === "mirror_primary"
   const Icon = isPrimary ? ArrowLeftRight : Copy
-  const label =
+  // Group size = self + every peer. For the haproxy 3-leg case the
+  // canonical row reads "via proxy (+2 hops)"; the 2-leg case stays
+  // "via proxy".
+  const peerCount = item.proxy_peer_turn_ids?.length
+    ?? (item.proxy_peer_turn_id ? 1 : 0)
+  const baseLabel =
     role === "proxy_in"
       ? "via proxy"
       : role === "proxy_out"
@@ -29,10 +34,11 @@ export function ProxyBadge({ item }: { item: AgentTurnListItem }) {
         : role === "mirror_primary"
           ? "mirrored"
           : "mirror copy"
-  const peer = item.proxy_peer_turn_id
-  const title = peer
-    ? `${label} — peer turn ${peer}`
-    : label
+  const label = peerCount > 1 ? `${baseLabel} (+${peerCount} hops)` : baseLabel
+  const peers = item.proxy_peer_turn_ids ?? (item.proxy_peer_turn_id ? [item.proxy_peer_turn_id] : [])
+  const title = peers.length > 0
+    ? `${baseLabel} — peer turn${peers.length > 1 ? "s" : ""}:\n${peers.join("\n")}`
+    : baseLabel
   return (
     <span
       title={title}

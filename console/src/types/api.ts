@@ -112,9 +112,13 @@ export interface AgentTurnListItem {
    * are hidden by default and only returned when the API is asked with
    * `include_proxy_hops=true`. Absent on direct (non-proxied) turns. */
   proxy_role?: "proxy_in" | "proxy_out" | "mirror_primary" | "mirror_secondary"
-  /** `turn_id` of the matched peer leg. Click-through navigation target
-   * for the proxy badge. */
+  /** `turn_id` of the first matched peer leg (for backward compat).
+   * For groups of >2 turns (haproxy 3-leg case), read
+   * `proxy_peer_turn_ids` for the full list. */
   proxy_peer_turn_id?: string
+  /** Every other member of this turn's proxy group, sorted lex. The
+   * haproxy 3-leg case shows 2 peers here (br0 mirror + upstream hop). */
+  proxy_peer_turn_ids?: string[]
 }
 
 export interface AgentTurnDetail {

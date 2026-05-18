@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use tokio::task::JoinHandle;
 
-use ts_turn::proxy_pair::pair_all;
+use ts_turn::proxy_pair::group_all;
 
 use crate::StorageBackend;
 
@@ -96,28 +96,37 @@ pub async fn sweep_once(
     let start_us = now_us - (lookback.as_micros() as i64);
     let candidates = storage.query_pair_candidates(start_us, now_us).await?;
     let candidates_scanned = candidates.len();
-    let pairs = pair_all(&candidates);
-    let pairs_assigned = pairs.len();
-    for p in pairs {
-        let primary_meta = p.metadata_for(&p.primary.turn_id).expect("primary patch");
-        let secondary_meta = p.metadata_for(&p.secondary.turn_id).expect("secondary patch");
-        storage
-            .update_turn_metadata(&p.primary.turn_id, primary_meta)
-            .await?;
-        storage
-            .update_turn_metadata(&p.secondary.turn_id, secondary_meta)
-            .await?;
+    let groups = group_all(&candidates);
+    let groups_assigned = groups.len();
+    let mut turns_tagged = 0usize;
+    for g in groups {
+        for member in &g.members {
+            let patch = g
+                .metadata_for(&member.turn_id)
+                .expect("member belongs to group it came from");
+            storage
+                .update_turn_metadata(&member.turn_id, patch)
+                .await?;
+            turns_tagged += 1;
+        }
     }
     Ok(SweepStats {
         candidates_scanned,
-        pairs_assigned,
+        pairs_assigned: groups_assigned,
+        turns_tagged,
     })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepStats {
     pub candidates_scanned: usize,
+    /// Number of distinct logical-call groups (each containing 2+
+    /// turns). Reads as "how many duplicates folded".
     pub pairs_assigned: usize,
+    /// Total per-turn metadata writes (one per group member). Useful
+    /// for distinguishing "1 fat 3-leg group" from "3 mirror pairs"
+    /// in metrics.
+    pub turns_tagged: usize,
 }
 
 #[cfg(test)]
@@ -328,16 +337,55 @@ mod tests {
         let stub = stub_inner.clone() as Arc<dyn StorageBackend>;
         let stats = sweep_once(&stub, Duration::from_secs(3600)).await.unwrap();
         assert_eq!(stats.pairs_assigned, 1);
+        assert_eq!(stats.turns_tagged, 2);
         let updates = stub_inner.updates.lock().unwrap();
         let outer_patch = updates.get("outer").expect("outer patched");
         let inner_patch = updates.get("inner").expect("inner patched");
         assert_eq!(outer_patch["proxy"]["role"], "proxy_in");
         assert_eq!(inner_patch["proxy"]["role"], "proxy_out");
-        // pair_id is shared between the two patches.
+        // pair_id is shared between members of the same group.
         assert_eq!(outer_patch["proxy"]["pair_id"], inner_patch["proxy"]["pair_id"]);
-        // peer_turn_id cross-references.
+        // peer_turn_ids cross-references (legacy peer_turn_id matches first peer).
         assert_eq!(outer_patch["proxy"]["peer_turn_id"], "inner");
         assert_eq!(inner_patch["proxy"]["peer_turn_id"], "outer");
+        // peer_turn_ids is an array with the right peer for each member.
+        assert_eq!(outer_patch["proxy"]["peer_turn_ids"], serde_json::json!(["inner"]));
+        assert_eq!(inner_patch["proxy"]["peer_turn_ids"], serde_json::json!(["outer"]));
+    }
+
+    #[tokio::test]
+    async fn sweep_once_folds_three_leg_haproxy_topology() {
+        // The user's actual production scenario: br0 + docker0 mirror
+        // pair PLUS the real upstream forward leg, all under the same
+        // session. All three must wind up in one group so the default
+        // list shows ONE row.
+        let stub_inner = Arc::new(StubStorage {
+            candidates: vec![
+                cand("a_br0", "S", 1_000_000, 3_000_000, "172.16.103.100->172.16.103.81"),
+                cand("b_dock0", "S", 1_000_000, 3_000_000, "172.16.103.100->172.17.0.9"),
+                cand("c_hop", "S", 1_002_000, 2_999_000, "172.17.0.1->172.17.0.4"),
+            ],
+            updates: StdMutex::new(HashMap::new()),
+        });
+        let stub = stub_inner.clone() as Arc<dyn StorageBackend>;
+        let stats = sweep_once(&stub, Duration::from_secs(3600)).await.unwrap();
+        assert_eq!(stats.pairs_assigned, 1, "all three legs are one logical call");
+        assert_eq!(stats.turns_tagged, 3);
+        let updates = stub_inner.updates.lock().unwrap();
+        let a = updates.get("a_br0").expect("a_br0 patched");
+        let b = updates.get("b_dock0").expect("b_dock0 patched");
+        let c = updates.get("c_hop").expect("c_hop patched");
+        // Canonical (widest span, lex tiebreak) is a_br0.
+        assert_eq!(a["proxy"]["role"], "proxy_in");
+        assert_eq!(b["proxy"]["role"], "mirror_secondary");
+        assert_eq!(c["proxy"]["role"], "proxy_out");
+        // All three share the same group/pair id.
+        assert_eq!(a["proxy"]["pair_id"], b["proxy"]["pair_id"]);
+        assert_eq!(a["proxy"]["pair_id"], c["proxy"]["pair_id"]);
+        // Peer lists exclude self and are sorted lex.
+        assert_eq!(a["proxy"]["peer_turn_ids"], serde_json::json!(["b_dock0", "c_hop"]));
+        assert_eq!(b["proxy"]["peer_turn_ids"], serde_json::json!(["a_br0", "c_hop"]));
+        assert_eq!(c["proxy"]["peer_turn_ids"], serde_json::json!(["a_br0", "b_dock0"]));
     }
 
     #[tokio::test]

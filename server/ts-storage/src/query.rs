@@ -252,9 +252,18 @@ pub struct TurnListItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_role: Option<String>,
     /// `turn_id` of the matched peer leg, for navigation. Absent when
-    /// `proxy_role` is absent.
+    /// `proxy_role` is absent. For groups of >2 turns (the haproxy
+    /// 3-leg case) this surfaces only the first peer for backward
+    /// compatibility — clients should read `proxy_peer_turn_ids` to
+    /// see the full set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_peer_turn_id: Option<String>,
+    /// Every other member of this turn's proxy group (excludes self),
+    /// sorted lex. Empty/absent on direct turns. Two-member groups
+    /// have one entry here; three-member groups (haproxy_glm5: host
+    /// view + docker view + upstream hop) have two.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_peer_turn_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -172,6 +172,7 @@ fn agent_turn_to_list_item(t: &AgentTurn) -> TurnListItem {
         final_answer_preview: t.final_answer_preview.clone(),
         proxy_role: None,
         proxy_peer_turn_id: None,
+        proxy_peer_turn_ids: None,
     }
 }
 
