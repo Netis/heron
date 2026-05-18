@@ -33,6 +33,11 @@ pub struct TurnsParams {
     pub page: u32,
     #[serde(default = "default_page_size")]
     pub page_size: u32,
+    /// When true, return turns the pair sweeper has hidden (proxy_out /
+    /// mirror_secondary). Default false — the list folds duplicates by
+    /// default so the user sees one row per logical call.
+    #[serde(default)]
+    pub include_proxy_hops: bool,
 }
 
 fn default_turns_sort_by() -> String {
@@ -64,6 +69,7 @@ pub async fn list(
         sort_order: params.sort_order,
         page: params.page,
         page_size,
+        include_proxy_hops: params.include_proxy_hops,
     };
 
     let mut page = ctx.storage.query_turns(&query).await?;
@@ -139,6 +145,10 @@ fn collect_in_progress(ctx: &ApiAgentTurnsContext, query: &TurnsQuery) -> Vec<Tu
 }
 
 /// Convert a tracker-side `AgentTurn` to the API list response shape.
+/// In-progress turns never have a pair annotation yet — the sweeper
+/// only inspects finalized rows in the DB — so `proxy_role` /
+/// `proxy_peer_turn_id` are always `None` here. Once the turn
+/// finalizes and the sweeper sees it, the DB row carries the role.
 fn agent_turn_to_list_item(t: &AgentTurn) -> TurnListItem {
     TurnListItem {
         turn_id: t.turn_id.clone(),
@@ -160,6 +170,8 @@ fn agent_turn_to_list_item(t: &AgentTurn) -> TurnListItem {
         final_finish_reason: t.final_finish_reason.clone(),
         user_input_preview: t.user_input_preview.clone(),
         final_answer_preview: t.final_answer_preview.clone(),
+        proxy_role: None,
+        proxy_peer_turn_id: None,
     }
 }
 

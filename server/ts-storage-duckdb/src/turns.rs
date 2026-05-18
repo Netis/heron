@@ -11,6 +11,29 @@ use crate::util::{
 use crate::DuckDbBackend;
 use ts_turn::PairCandidate;
 
+/// Read `metadata.proxy.role` and `metadata.proxy.peer_turn_id` out of a
+/// row's stored JSON. Returns `(None, None)` for direct turns
+/// (no metadata, malformed metadata, or proxy block absent). Centralized
+/// so the same parsing rule serves the list and detail handlers.
+fn extract_proxy_fields(metadata_raw: Option<String>) -> (Option<String>, Option<String>) {
+    let Some(text) = metadata_raw else {
+        return (None, None);
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return (None, None);
+    };
+    let proxy = v.get("proxy");
+    let role = proxy
+        .and_then(|p| p.get("role"))
+        .and_then(|r| r.as_str())
+        .map(String::from);
+    let peer = proxy
+        .and_then(|p| p.get("peer_turn_id"))
+        .and_then(|r| r.as_str())
+        .map(String::from);
+    (role, peer)
+}
+
 struct PreparedTurn {
     turn_id: String,
     source_id: String,
@@ -216,6 +239,20 @@ impl DuckDbBackend {
                     .collect();
                 where_parts.push(format!("server_ip IN ({})", list.join(", ")));
             }
+            if !query.include_proxy_hops {
+                // Default list view: hide the hop the sweeper marked as
+                // hidden (proxy_out + mirror_secondary). proxy_in /
+                // mirror_primary stay visible. Direct turns (no
+                // metadata.proxy.role) also stay visible because
+                // json_extract_string returns NULL and NULL NOT IN (...)
+                // is NULL → the IS NULL branch keeps them.
+                where_parts.push(
+                    "(json_extract_string(metadata, '$.proxy.role') IS NULL \
+                       OR json_extract_string(metadata, '$.proxy.role') \
+                          NOT IN ('proxy_out', 'mirror_secondary'))"
+                        .to_string(),
+                );
+            }
 
             let where_sql = where_parts.join(" AND ");
             let sort_by = &query.sort_by;
@@ -236,7 +273,7 @@ impl DuckDbBackend {
                  wire_api, agent_kind, models_used, call_count, \
                  total_input_tokens, total_output_tokens, status, \
                  final_finish_reason, user_input_preview, final_answer_preview, \
-                 client_ip, server_ip \
+                 client_ip, server_ip, metadata \
                  FROM agent_turns WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
@@ -260,6 +297,10 @@ impl DuckDbBackend {
                     .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
                 let models_used = parse_json_string_list(models_used_raw.as_deref());
                 let primary_model = models_used.first().cloned();
+                let metadata_raw: Option<String> = row
+                    .get(18)
+                    .map_err(|e| AppError::Storage(format!("read metadata: {e}")))?;
+                let (proxy_role, proxy_peer_turn_id) = extract_proxy_fields(metadata_raw);
                 items.push(TurnListItem {
                     turn_id: row
                         .get(0)
@@ -314,6 +355,8 @@ impl DuckDbBackend {
                     final_answer_preview: row
                         .get::<_, Option<String>>(15)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    proxy_role,
+                    proxy_peer_turn_id,
                 });
             }
 
@@ -748,6 +791,7 @@ mod tests {
             sort_order: "desc".into(),
             page: 1,
             page_size: 50,
+            include_proxy_hops: false,
         }
     }
 
@@ -1434,6 +1478,85 @@ mod tests {
         assert_eq!(meta.get("unrelated"), Some(&serde_json::Value::String("preserve_me".into())));
         assert_eq!(meta["proxy"]["role"], "proxy_in");
         assert_eq!(meta["proxy"]["peer_turn_id"], "tB");
+    }
+
+    #[tokio::test]
+    async fn query_turns_hides_proxy_hops_by_default_and_surfaces_them_with_flag() {
+        let backend = DuckDbBackend::open(":memory:").unwrap();
+        backend.init().await.unwrap();
+        let base = 1_700_000_000_000_000_i64;
+        // proxy_in (visible by default) + proxy_out (hidden by default)
+        // + a direct turn (always visible).
+        let mut t_in = sample_turn(
+            "t_in",
+            "s",
+            wa::ANTHROPIC,
+            vec!["claude"],
+            base,
+            1500,
+            1,
+            vec!["c_in"],
+            TurnStatus::Complete,
+        );
+        t_in.metadata = serde_json::json!({
+            "proxy": {"role": "proxy_in", "pair_id": "p1", "peer_turn_id": "t_out"}
+        });
+        let mut t_out = sample_turn(
+            "t_out",
+            "s",
+            wa::ANTHROPIC,
+            vec!["claude"],
+            base + 2_000,
+            1500,
+            1,
+            vec!["c_out"],
+            TurnStatus::Complete,
+        );
+        t_out.metadata = serde_json::json!({
+            "proxy": {"role": "proxy_out", "pair_id": "p1", "peer_turn_id": "t_in"}
+        });
+        let t_direct = sample_turn(
+            "t_direct",
+            "s2",
+            wa::ANTHROPIC,
+            vec!["claude"],
+            base + 10_000_000,
+            1500,
+            1,
+            vec!["c_d"],
+            TurnStatus::Complete,
+        );
+        backend
+            .write_turns(vec![t_in.clone(), t_out.clone(), t_direct.clone()])
+            .await
+            .unwrap();
+
+        // Default — proxy_out must be hidden.
+        let mut q = base_turns_query();
+        q.time_range.start_us = base - 1;
+        q.time_range.end_us = base + 1_000_000_000;
+        q.include_proxy_hops = false;
+        let page = backend.query_turns(&q).await.unwrap();
+        let ids: Vec<String> = page.items.iter().map(|i| i.turn_id.clone()).collect();
+        assert!(ids.contains(&"t_in".to_string()));
+        assert!(ids.contains(&"t_direct".to_string()));
+        assert!(!ids.contains(&"t_out".to_string()), "proxy_out must be hidden by default");
+        assert_eq!(page.total, 2);
+        // proxy_in row carries the role + peer_turn_id fields.
+        let in_item = page.items.iter().find(|i| i.turn_id == "t_in").unwrap();
+        assert_eq!(in_item.proxy_role.as_deref(), Some("proxy_in"));
+        assert_eq!(in_item.proxy_peer_turn_id.as_deref(), Some("t_out"));
+        // Direct row has no proxy fields.
+        let d_item = page.items.iter().find(|i| i.turn_id == "t_direct").unwrap();
+        assert_eq!(d_item.proxy_role, None);
+        assert_eq!(d_item.proxy_peer_turn_id, None);
+
+        // Flag flipped — every row is returned including proxy_out.
+        q.include_proxy_hops = true;
+        let page = backend.query_turns(&q).await.unwrap();
+        let ids: Vec<String> = page.items.iter().map(|i| i.turn_id.clone()).collect();
+        assert!(ids.contains(&"t_out".to_string()));
+        assert_eq!(page.total, 3);
     }
 
     #[tokio::test]

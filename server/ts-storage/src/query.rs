@@ -216,6 +216,12 @@ pub struct TurnsQuery {
     pub sort_order: String,
     pub page: u32,
     pub page_size: u32,
+    /// When `false` (default), hide turns the pair sweeper has marked as
+    /// `proxy_out` or `mirror_secondary`. The folded leg is still
+    /// reachable by `turn_id` lookup. When `true`, return every row,
+    /// useful for diagnostics or for users who want to see the raw
+    /// captured topology.
+    pub include_proxy_hops: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -239,6 +245,16 @@ pub struct TurnListItem {
     pub final_finish_reason: Option<String>,
     pub user_input_preview: Option<String>,
     pub final_answer_preview: Option<String>,
+    /// `"proxy_in"` / `"proxy_out"` / `"mirror_primary"` /
+    /// `"mirror_secondary"` when the pair sweeper has classified this
+    /// turn. Absent on direct (un-proxied) turns and on turns the
+    /// sweeper hasn't reached yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_role: Option<String>,
+    /// `turn_id` of the matched peer leg, for navigation. Absent when
+    /// `proxy_role` is absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_peer_turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
