@@ -15,9 +15,12 @@ interface UseAgentTurnsParams {
   agentKind?: string
   /** CSV of client IPs e.g. "10.0.0.1,10.0.0.2" */
   clientIp?: string
+  /** When true, return turns the pair sweeper marked hidden
+   * (`proxy_out` / `mirror_secondary`). Default false. */
+  includeProxyHops?: boolean
 }
 
-export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agentKind, clientIp }: UseAgentTurnsParams) {
+export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agentKind, clientIp, includeProxyHops }: UseAgentTurnsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
   const { params: fp } = useSupportedFilterParams()
@@ -26,7 +29,7 @@ export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agent
     queryKey: ["agent-turns", {
       start, end, page, pageSize, sortBy, sortOrder,
       ...fp,
-      status, agentKind, clientIp,
+      status, agentKind, clientIp, includeProxyHops,
     }],
     queryFn: () =>
       apiFetch<AgentTurnsPage>("/api/agent-turns", {
@@ -40,6 +43,7 @@ export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agent
         status: status || undefined,
         agent_kind: agentKind || undefined,
         client_ip: clientIp || undefined,
+        include_proxy_hops: includeProxyHops ? "true" : undefined,
       }),
     placeholderData: (prev) => prev,
   })

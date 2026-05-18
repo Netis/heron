@@ -106,6 +106,15 @@ export interface AgentTurnListItem {
   final_finish_reason: string | null
   user_input_preview: string | null
   final_answer_preview: string | null
+  /** Set by the backend pair sweeper when this turn is one leg of a
+   * llmproxy duplicate pair. `"proxy_in"` / `"mirror_primary"` legs are
+   * the canonical (visible) members; `"proxy_out"` / `"mirror_secondary"`
+   * are hidden by default and only returned when the API is asked with
+   * `include_proxy_hops=true`. Absent on direct (non-proxied) turns. */
+  proxy_role?: "proxy_in" | "proxy_out" | "mirror_primary" | "mirror_secondary"
+  /** `turn_id` of the matched peer leg. Click-through navigation target
+   * for the proxy badge. */
+  proxy_peer_turn_id?: string
 }
 
 export interface AgentTurnDetail {
