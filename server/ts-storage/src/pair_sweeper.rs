@@ -54,7 +54,13 @@ impl Default for PairSweeperConfig {
     fn default() -> Self {
         Self {
             interval: Duration::from_secs(2),
-            lookback: Duration::from_secs(300),
+            // 30min — wide enough to catch a turn whose peer arrives
+            // anomalously late (slow proxy + slow flush), but short
+            // enough that the sweeper's repeat work per tick stays
+            // bounded. The metadata.proxy.role IS NULL filter on the
+            // query keeps already-paired turns out of every sweep so
+            // there's no fan-out from past pairs.
+            lookback: Duration::from_secs(1800),
         }
     }
 }
