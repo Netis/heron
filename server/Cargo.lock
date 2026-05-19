@@ -2988,6 +2988,7 @@ dependencies = [
  "ts-metrics",
  "ts-pcap-extract",
  "ts-protocol",
+ "ts-proxy",
  "ts-storage",
  "ts-storage-duckdb",
  "ts-turn",

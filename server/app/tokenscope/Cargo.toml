@@ -19,6 +19,7 @@ ts-storage-duckdb.workspace = true
 ts-turn.workspace = true
 ts-api.workspace = true
 ts-pcap-extract.workspace = true
+ts-proxy.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

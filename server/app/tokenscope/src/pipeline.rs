@@ -95,6 +95,15 @@ pub struct Pipeline {
     /// The capture sources for each pipeline, matching `pipeline_txs` order.
     pub pipeline_sources: Vec<Vec<CaptureSourceConfig>>,
     pub stage_handles: Vec<(StageTask, JoinHandle<()>)>,
+    /// Cloned joiner-event sender from the *first* pipeline, used by the
+    /// optional built-in MITM proxy to inject pre-paired
+    /// `HttpJoinerEvent::Exchange` into the storage path (bypassing
+    /// TCP reassembly + HTTP joining, since the proxy already has fully
+    /// formed exchanges). `None` if no pipelines are configured.
+    /// Down-the-road this could become per-pipeline if anyone wants to
+    /// route proxy traffic to a specific pipeline; today there's no
+    /// configurable seam for that.
+    pub proxy_joiner_tx: Option<mpsc::Sender<HttpJoinerEvent>>,
 }
 
 impl Pipeline {
@@ -208,6 +217,7 @@ impl Pipeline {
             Vec::with_capacity(pipeline_defs.len());
         let mut pipeline_sources: Vec<Vec<CaptureSourceConfig>> =
             Vec::with_capacity(pipeline_defs.len());
+        let mut proxy_joiner_tx: Option<mpsc::Sender<HttpJoinerEvent>> = None;
 
         // ---- Per-pipeline sub-pipelines ----
         // Each iteration builds an isolated dispatcher → protocol → llm →
@@ -250,6 +260,15 @@ impl Pipeline {
                 make_shard_channels::<HttpJoinerEvent>(flow_shards, q.http_joiner_events);
             let joiner_event_weaks: Vec<WeakSender<HttpJoinerEvent>> =
                 joiner_event_txs.iter().map(|tx| tx.downgrade()).collect();
+            // Stash the first pipeline's first joiner sender for the
+            // optional built-in proxy. We pick "first pipeline, first
+            // shard" deterministically — there's no useful sharding
+            // signal at the proxy edge (everything's the same source).
+            if proxy_joiner_tx.is_none() {
+                if let Some(first) = joiner_event_txs.first() {
+                    proxy_joiner_tx = Some(first.clone());
+                }
+            }
             let (turn_shard_txs, turn_shard_rxs) =
                 make_shard_channels::<TurnShardInput>(turn_shards, q.agent_calls);
             let turn_shard_weaks: Vec<WeakSender<TurnShardInput>> =
@@ -543,6 +562,7 @@ impl Pipeline {
             pipeline_txs,
             pipeline_sources,
             stage_handles,
+            proxy_joiner_tx,
         }
     }
 

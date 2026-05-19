@@ -522,6 +522,7 @@ async fn run_pipeline(cli: Cli) {
             pipeline_txs,
             pipeline_sources,
             stage_handles,
+            proxy_joiner_tx,
         } = Pipeline::build(
             &effective_pipelines,
             &ts_storage::StorageSinkConfig {
@@ -636,6 +637,48 @@ async fn run_pipeline(cli: Cli) {
                 }))
             }
             None => None,
+        };
+
+        // Built-in MITM forward proxy — optional, off by default.
+        // Hooks into the same storage path as sniffed traffic by
+        // injecting `HttpJoinerEvent::Exchange` directly into the first
+        // pipeline's joiner channel. The proxy task itself runs until
+        // the listener errors out hard; graceful shutdown piggybacks on
+        // process exit (no flush-state to drain).
+        let _proxy_task = if config.proxy.enabled {
+            match proxy_joiner_tx.clone() {
+                Some(joiner_tx) => {
+                    let proxy_config = config.proxy.clone();
+                    let deps = ts_proxy::ProxyDeps {
+                        joiner_event_tx: Some(joiner_tx),
+                        upstream: ts_proxy::UpstreamClient::with_webpki_roots(),
+                    };
+                    match ts_proxy::spawn_proxy(proxy_config.clone(), deps).await {
+                        Ok((handle, bound)) => {
+                            tracing::info!(
+                                "MITM proxy listening on {} (ca_dir = {}, redact = {:?})",
+                                bound,
+                                proxy_config.ca_dir,
+                                proxy_config.redact_api_keys
+                            );
+                            Some(handle)
+                        }
+                        Err(e) => {
+                            tracing::error!("failed to start MITM proxy: {e}");
+                            None
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        "proxy.enabled = true but no pipelines configured — \
+                         captured exchanges would have nowhere to land; not starting proxy"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
         };
 
         // Spawn capture sources — each pipeline may have N sources that
