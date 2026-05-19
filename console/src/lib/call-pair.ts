@@ -53,6 +53,14 @@ function contentKey(c: AgentTurnCallItem): string {
   // Joined string is the cheapest stable hash for HashMap-like
   // bucketing in JS. Token nulls and finish nulls intentionally
   // stringify to "null" so two equally-tokenless calls still cluster.
+  //
+  // `request_path` is intentionally NOT in the key: proxies routinely
+  // rewrite the URL prefix (e.g. client sends `/v1/chat/completions`
+  // to LiteLLM, LiteLLM forwards the path as `/chat/completions` to
+  // the upstream — or vice versa depending on which SDK the client
+  // uses). Including the path drops the pair rate to ~0 in practice.
+  // Tokens + model + finish are sufficient content equivalence —
+  // matches the backend `proxy_pair::group_all` rule.
   return [
     c.wire_api,
     c.model,
@@ -61,7 +69,6 @@ function contentKey(c: AgentTurnCallItem): string {
     c.finish_reason ?? "null",
     c.input_tokens ?? "null",
     c.output_tokens ?? "null",
-    c.request_path,
   ].join("\x1f")
 }
 

@@ -151,6 +151,28 @@ describe("groupCalls", () => {
     expect(g.hopCount).toBe(2)
   })
 
+  it("pairs even when request_path differs (proxy URL rewrite)", () => {
+    // Real-world LiteLLM case from wuneng: client SDK sends
+    // /v1/chat/completions to LiteLLM (port 4000), LiteLLM forwards
+    // bare /chat/completions to the upstream (port 9008). Same call,
+    // different captured paths.
+    const c1 = call({
+      id: "client", sequence: 1, request_time: 1779167694777,
+      complete_time: 1779167694777 + 1701, e2e_latency_ms: 1701,
+      client_port: 60590, server_port: 4000,
+      request_path: "/chat/completions",
+    })
+    const c2 = call({
+      id: "upstream", sequence: 2, request_time: 1779167694825,
+      complete_time: 1779167694825 + 1645, e2e_latency_ms: 1645,
+      client_port: 58950, server_port: 9008,
+      request_path: "/v1/chat/completions",
+    })
+    const g = groupCalls([c1, c2])
+    expect(g.visible).toHaveLength(1)
+    expect(g.hopCount).toBe(1)
+  })
+
   it("preserves call order in the visible list", () => {
     const c1 = call({ id: "first", sequence: 1, request_time: 0, client_port: 1000, server_port: 4000 })
     const c2 = call({ id: "first-hop", sequence: 2, request_time: 50, client_port: 2000, server_port: 9008 })
