@@ -100,8 +100,25 @@ async fn forward_and_capture(
             r
         }
         Err(e) => {
-            warn!(target: "ts_proxy::forward", host = %ctx.host, error = %e, "upstream send failed");
-            return Err(ForwardError::Upstream(e.to_string()));
+            // hyper-util's `Error::Connect` is opaque (just "client error
+            // (Connect)") — its real cause sits in the .source() chain.
+            // Surface the whole chain so misconfigured trust stores,
+            // TLS handshake failures, and DNS errors are diagnosable
+            // from logs alone.
+            let chain: Vec<String> = std::iter::successors(
+                Some(&e as &(dyn std::error::Error + 'static)),
+                |err| err.source(),
+            )
+            .map(|err| err.to_string())
+            .collect();
+            warn!(
+                target: "ts_proxy::forward",
+                host = %ctx.host,
+                error = %e,
+                chain = ?chain,
+                "upstream send failed"
+            );
+            return Err(ForwardError::Upstream(chain.join(": ")));
         }
     };
 
