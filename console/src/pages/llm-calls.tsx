@@ -80,7 +80,27 @@ function CellValue({ item, column }: { item: LlmCallListItem; column: SortKey })
     case "finish_reason":
       return <FinishBadge reason={item.finish_reason} />
     case "ttft_ms":
-      return <span className="tabular-nums">{formatMs(item.ttft_ms)}</span>
+      if (item.ttft_ms == null) {
+        return <span className="tabular-nums text-muted-foreground">—</span>
+      }
+      // For non-streaming, the value is "time to first response byte"
+      // (≈ E2E). Italicise + dim it so users can tell the cell apart
+      // from a true streaming TTFT at a glance without an extra column.
+      return item.is_stream ? (
+        <span
+          className="tabular-nums"
+          title="Time to first generated token (streaming)"
+        >
+          {formatMs(item.ttft_ms)}
+        </span>
+      ) : (
+        <span
+          className="tabular-nums italic text-muted-foreground"
+          title="Non-streaming: time to first response byte (≈ E2E — server buffers the full body before sending)"
+        >
+          {formatMs(item.ttft_ms)}
+        </span>
+      )
     case "e2e_latency_ms":
       return <span className="tabular-nums">{formatMs(item.e2e_latency_ms)}</span>
     case "input_tokens":
@@ -118,6 +138,7 @@ export function LlmCallsPage() {
   const [finishStr, setFinishStr] = useSearchParamState("finish", "")
   const [clientIpStr, setClientIpStr] = useSearchParamState("client_ip", "")
   const [pathStr, setPathStr] = useSearchParamState("path", "")
+  const [streamStr, setStreamStr] = useSearchParamState("is_stream", "")
 
   const page = Number(pageStr) || 1
   const pageSize = Number(pageSizeStr) || 50
@@ -148,6 +169,10 @@ export function LlmCallsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedIndex, setSelectedIndex] = useState(-1)
 
+  // Stream filter accepts "stream" / "non-stream" / "" (= all).
+  const streamFilter =
+    streamStr === "stream" || streamStr === "non-stream" ? streamStr : ""
+
   const { data, isLoading, isError, error } = useLlmCalls({
     page,
     pageSize,
@@ -157,6 +182,7 @@ export function LlmCallsPage() {
     finishReason: finishQuery,
     clientIp: clientIpStr || undefined,
     requestPath: pathStr || undefined,
+    isStream: streamFilter || undefined,
   })
 
   const items = data?.items ?? []
@@ -230,6 +256,19 @@ export function LlmCallsPage() {
           placeholder="Path contains…"
           className="w-[220px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
         />
+        <select
+          value={streamFilter}
+          onChange={(e) => {
+            setStreamStr(e.target.value)
+            setPageStr("1")
+          }}
+          className="rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs focus:border-foreground/20 focus:outline-none"
+          title="Stream mode"
+        >
+          <option value="">All (stream + batch)</option>
+          <option value="stream">Streaming only</option>
+          <option value="non-stream">Non-streaming only</option>
+        </select>
       </div>
 
       {/* Table */}

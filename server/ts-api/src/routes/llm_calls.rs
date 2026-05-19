@@ -29,6 +29,10 @@ pub struct CallsParams {
     /// Substring match against `request_path` (case-sensitive, `LIKE '%…%'`).
     #[serde(default)]
     pub request_path: Option<String>,
+    /// Stream-mode filter. `"stream"` / `"non-stream"` narrows the result;
+    /// unset (or `"all"`) keeps every row.
+    #[serde(default)]
+    pub is_stream: Option<String>,
     #[serde(default = "default_calls_sort_by")]
     pub sort_by: String,
     #[serde(default = "default_calls_sort_order")]
@@ -65,6 +69,17 @@ pub async fn list(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let is_stream = match params.is_stream.as_deref() {
+        None | Some("") | Some("all") => None,
+        Some("stream") | Some("true") | Some("1") => Some(true),
+        Some("non-stream") | Some("nonstream") | Some("false") | Some("0") => Some(false),
+        Some(other) => {
+            return Err(ApiError::InvalidParam(format!(
+                "is_stream must be one of: stream, non-stream, all (got '{other}')"
+            )));
+        }
+    };
+
     let query = CallsQuery {
         time_range: to_time_range(params.start, params.end),
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
@@ -72,6 +87,7 @@ pub async fn list(
         finish_reasons: parse_csv(&params.finish_reason),
         client_ips: parse_csv(&params.client_ip),
         request_path_contains: params.request_path.filter(|s| !s.is_empty()),
+        is_stream,
         sort_by: params.sort_by,
         sort_order: params.sort_order,
         page: params.page,
