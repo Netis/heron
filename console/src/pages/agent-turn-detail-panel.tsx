@@ -75,7 +75,11 @@ function TurnDetailView({
         />
       </div>
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-4">
-        {proxyRole && (
+        {/* Tab bar shows whenever there's ANY pairing — backend
+            turn-level (proxyRole) OR client-side in-turn fold
+            (hopCount > 0). The Proxy view tab renders different
+            content for each case (see ProxyViewTab). */}
+        {(proxyRole || hopCount > 0) && (
           <>
             <TabButton active={tab === "calls"} onClick={() => setTab("calls")}>
               Calls
@@ -107,8 +111,13 @@ function TurnDetailView({
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {tab === "proxy" && proxyRole ? (
-          <ProxyViewTab turnId={turn.turn_id} />
+        {tab === "proxy" && (proxyRole || hopCount > 0) ? (
+          <ProxyViewTab
+            turnId={turn.turn_id}
+            hasBackendPair={Boolean(proxyRole)}
+            canonicalCalls={renderedCalls}
+            hopsByCanonical={hopsByCanonical}
+          />
         ) : (
           <div className="flex flex-col gap-3 p-4">
             {loadingCalls && calls.length === 0 ? (
@@ -262,8 +271,16 @@ export function AgentTurnDetailPanel({ id, onClose }: Props) {
           </div>
         ) : (
           <div className="flex flex-1 overflow-hidden">
-            {/* Left panel — Gantt nav, filtered by the same fold rule */}
-            <GanttNav turn={turn} calls={renderedCalls} activeSequence={activeSeq} onSelect={handleSelect} />
+            {/* Left panel — Gantt nav, filtered by the same fold rule.
+                hopsByCanonical lights up a "+N hops" overlay on bars
+                whose duplicates are currently folded. */}
+            <GanttNav
+              turn={turn}
+              calls={renderedCalls}
+              activeSequence={activeSeq}
+              onSelect={handleSelect}
+              hopsByCanonical={foldHops ? callGrouping.hopsByCanonical : undefined}
+            />
 
             {/* Right panel */}
             <section className="flex flex-1 flex-col overflow-hidden">

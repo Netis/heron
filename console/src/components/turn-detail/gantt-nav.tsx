@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { ArrowLeftRight, Copy } from "lucide-react"
+import { ArrowLeftRight, Copy, Layers } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatDuration, formatMs } from "@/lib/format"
 import { classifyType } from "@/lib/wire-apis/dispatch"
@@ -13,6 +13,11 @@ interface Props {
   calls: AgentTurnCallItem[]
   activeSequence: number | null
   onSelect: (sequence: number) => void
+  /** When the parent panel folds call-level proxy duplicates, this map
+   * tells GanttNav which canonical call ids carry hidden hops so it
+   * can stack a small "+N" indicator on those bars. Empty map (default)
+   * keeps the timeline a flat per-call view. */
+  hopsByCanonical?: Map<string, AgentTurnCallItem[]>
 }
 
 const SLOW_THRESHOLD_MS = 10_000
@@ -73,7 +78,7 @@ function MultiLegBadge({
   )
 }
 
-export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
+export function GanttNav({ turn, calls, activeSequence, onSelect, hopsByCanonical }: Props) {
   const { minStart, total } = useMemo(() => {
     if (calls.length === 0) return { minStart: turn.start_time, total: turn.duration_ms || 1 }
     const min = Math.min(...calls.map((c) => c.request_time))
@@ -105,15 +110,20 @@ export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
             const offset = ((c.request_time - minStart) / total) * 100
             const width = Math.max(((end - c.request_time) / total) * 100, 0.5)
             const speed = classifySpeed(c)
+            const hops = hopsByCanonical?.get(c.id) ?? []
             return (
               <button
                 key={c.id}
                 onClick={() => onSelect(c.sequence)}
+                title={hops.length > 0
+                  ? `Folded ${hops.length} proxy-duplicate leg(s) under this call`
+                  : undefined}
                 className={cn(
                   "grid w-full grid-cols-[16px_16px_1fr_36px] items-center gap-1 rounded px-1 py-1 text-left text-[10px]",
                   activeSequence === c.sequence ? "bg-blue-50 dark:bg-blue-950/40" : "hover:bg-muted/60",
                   (speed === "slow" || speed === "warn") && "border-l-2 border-amber-500/70",
                   speed === "error" && "border-l-2 border-red-500/70",
+                  hops.length > 0 && speed === "normal" && "border-l-2 border-blue-500/70",
                 )}
               >
                 <span className="tabular-nums text-muted-foreground">{c.sequence}</span>
@@ -128,6 +138,17 @@ export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
                     )}
                     style={{ left: `${offset}%`, width: `${width}%`, minWidth: "2px" }}
                   />
+                  {/* Folded-hop overlay: a thin underline-style bar
+                      directly below the main bar, indicating one or
+                      more captured peers were folded into this leg.
+                      Width matches the main bar so the eye reads it
+                      as a "shadow" of the same call. */}
+                  {hops.length > 0 && (
+                    <div
+                      className="absolute -bottom-1 h-0.5 rounded bg-blue-500/60"
+                      style={{ left: `${offset}%`, width: `${width}%`, minWidth: "2px" }}
+                    />
+                  )}
                 </div>
                 <span className={cn(
                   "text-right tabular-nums",
@@ -135,6 +156,11 @@ export function GanttNav({ turn, calls, activeSequence, onSelect }: Props) {
                   speed === "error" && "text-red-600",
                   speed === "normal" && "text-muted-foreground",
                 )}>
+                  {hops.length > 0 && (
+                    <span className="mr-1 inline-flex items-center text-blue-500" title={`+${hops.length} folded hop(s)`}>
+                      <Layers className="size-2.5" />
+                    </span>
+                  )}
                   {formatMs(c.e2e_latency_ms)}
                 </span>
               </button>

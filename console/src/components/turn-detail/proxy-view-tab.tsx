@@ -29,14 +29,39 @@ import { Loader2, ArrowRightLeft, ArrowDownToLine, ArrowUpFromLine } from "lucid
 import { cn } from "@/lib/utils"
 import { formatMs } from "@/lib/format"
 import { useAgentTurnProxyView } from "@/hooks/use-agent-turns"
-import type { HeaderDiffEntry, ProxyViewMember } from "@/types/api"
+import { InTurnProxyView } from "./in-turn-proxy-view"
+import type { AgentTurnCallItem, HeaderDiffEntry, ProxyViewMember } from "@/types/api"
 
 interface Props {
   turnId: string
+  /** Whether the backend marked the turn itself as part of a proxy
+   * group. When false, we skip the /proxy-view fetch and render the
+   * client-side in-turn fallback (per-call pairings). */
+  hasBackendPair: boolean
+  /** Visible (canonical) calls in render order, used for the in-turn
+   * fallback. */
+  canonicalCalls?: AgentTurnCallItem[]
+  /** Map from canonical call id → its folded hops. Empty / undefined
+   * disables the in-turn fallback. */
+  hopsByCanonical?: Map<string, AgentTurnCallItem[]>
 }
 
-export function ProxyViewTab({ turnId }: Props) {
-  const { data, isLoading, isError, error } = useAgentTurnProxyView(turnId)
+export function ProxyViewTab({ turnId, hasBackendPair, canonicalCalls, hopsByCanonical }: Props) {
+  // The hook always runs (React doesn't allow conditional hooks). We
+  // only show its result when the turn actually has a backend pair —
+  // otherwise we render the in-turn fallback built from the client-side
+  // call grouping. The hook itself returns enabled:false when there's
+  // no backend pair, so no wasted /proxy-view fetch.
+  const { data, isLoading, isError, error } = useAgentTurnProxyView(turnId, hasBackendPair)
+
+  if (!hasBackendPair) {
+    return (
+      <InTurnProxyView
+        hopsByCanonical={hopsByCanonical ?? new Map()}
+        canonicals={canonicalCalls ?? []}
+      />
+    )
+  }
 
   if (isLoading) {
     return (
