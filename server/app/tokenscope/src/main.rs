@@ -732,6 +732,16 @@ async fn run_pipeline(cli: Cli) {
         // returns when every stage's upstream sender drops) and fall through
         // to the post-drain park below, so the API/console stays available
         // for inspection. `--exit-after-drain` short-circuits the park.
+        //
+        // When the built-in proxy is enabled it acts as a long-running
+        // input — even after sniffed sources finish, the proxy keeps
+        // injecting `HttpJoinerEvent::Exchange` records. Treat its
+        // presence as "ingest is still live" and *don't* race on the
+        // capture-tasks-finished arm; otherwise a proxy-only config
+        // drains immediately (no sources to begin with), force-shuts
+        // the pipeline, and the proxy's later captures land on closed
+        // channels.
+        let proxy_keeps_pipeline_alive = config.proxy.enabled;
         let mut supervisor = tokio::spawn(Pipeline::supervise(stage_handles));
         tokio::select! {
             sig = wait_shutdown_signal() => {
@@ -739,7 +749,11 @@ async fn run_pipeline(cli: Cli) {
                 cancel.cancel();
             }
             _ = async {
-                while capture_tasks.join_next().await.is_some() {}
+                if proxy_keeps_pipeline_alive {
+                    std::future::pending::<()>().await;
+                } else {
+                    while capture_tasks.join_next().await.is_some() {}
+                }
             } => {
                 tracing::info!("all capture sources finished");
             }
