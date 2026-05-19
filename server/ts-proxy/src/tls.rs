@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use thiserror::Error;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use tokio_rustls::rustls::server::{ClientHello, ResolvesServerCert};
 use tokio_rustls::rustls::sign::CertifiedKey;
+use tracing::warn;
 
 const LEAF_CACHE_CAPACITY: usize = 1024;
 
@@ -114,6 +116,40 @@ fn build_leaf_params(sni: &str) -> Result<CertificateParams, rcgen::Error> {
     params.not_after = now + time::Duration::days(365);
 
     Ok(params)
+}
+
+/// Bridges rustls' per-handshake cert lookup into our `LeafCertStore`.
+/// rustls calls `resolve` once per TLS handshake with the parsed
+/// ClientHello; we read the SNI and either return a cached cert or
+/// mint one on the spot. A handshake without SNI (rare today) gets
+/// `None`, which rustls translates into a TLS alert.
+pub struct SniResolver {
+    store: Arc<LeafCertStore>,
+}
+
+impl SniResolver {
+    pub fn new(store: Arc<LeafCertStore>) -> Self {
+        Self { store }
+    }
+}
+
+impl std::fmt::Debug for SniResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SniResolver").finish()
+    }
+}
+
+impl ResolvesServerCert for SniResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        let sni = client_hello.server_name()?;
+        match self.store.get(sni) {
+            Ok(ck) => Some(ck),
+            Err(e) => {
+                warn!(target: "ts_proxy::tls", sni = %sni, error = %e, "leaf mint failed");
+                None
+            }
+        }
+    }
 }
 
 fn validate_sni(sni: &str) -> Result<(), LeafCertError> {
