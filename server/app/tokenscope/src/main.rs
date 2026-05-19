@@ -15,7 +15,9 @@ use tokio_util::sync::CancellationToken;
 use ts_common::config::{
     config_search_paths, discover_config_path, AppConfig, CaptureSourceConfig, PipelineDef,
 };
-use ts_common::internal_metrics::{Metric, MetricsReporter, MetricsSystem};
+use ts_common::internal_metrics::{
+    AggregateHistory, HistoryRecorder, Metric, MetricsReporter, MetricsSystem,
+};
 use tokenscope::create_backend;
 
 mod cmd;
@@ -517,6 +519,20 @@ async fn run_pipeline(cli: Cli) {
         // finalized ones without DB write amplification.
         let active_turns = ts_turn::new_active_turn_registry();
 
+        // Process-wide gauge for the dashboard "Active Agent Turns" chart:
+        // size of the in-progress turn registry at sample time. Registered on
+        // the global svc (not per-pipeline) because the registry is shared —
+        // a per-pipeline probe would multiply the reading by N pipelines.
+        {
+            let registry_for_probe = active_turns.clone();
+            shared_metrics.register_queue_probe(Metric::TurnRegistryActive, move || {
+                registry_for_probe
+                    .read()
+                    .map(|m| m.len() as u64)
+                    .unwrap_or(0)
+            });
+        }
+
         let Pipeline {
             pipeline_txs,
             pipeline_sources,
@@ -586,6 +602,38 @@ async fn run_pipeline(cli: Cli) {
             })
         };
 
+        // In-memory time-series ring for the "active" gauges shown on the
+        // dashboard (Active TCP Connections / Active Agent Sessions). The
+        // recorder samples every per-pipeline svc + the global svc once per
+        // `interval_secs` and pushes one summed frame. Ring sized for ~24h
+        // of retention at the configured interval (clamped >=1).
+        let (history_ctx, history_recorder_handle) = if reporter_enabled {
+            let interval_secs = config.internal_metrics.interval_secs.max(1);
+            let capacity = ((24 * 3600) / interval_secs as usize).max(1);
+            let history = AggregateHistory::new(
+                vec![Metric::FlowsActive, Metric::TurnRegistryActive],
+                capacity,
+            );
+            let mut svcs: Vec<_> = api_pipeline_metrics
+                .iter()
+                .map(|(_, svc)| svc.clone())
+                .collect();
+            svcs.push(api_global_metrics.clone());
+            let handle = HistoryRecorder::start(
+                svcs,
+                history.clone(),
+                Duration::from_secs(interval_secs),
+            );
+            tracing::info!(
+                "internal metrics history recorder started (interval={}s, capacity={})",
+                interval_secs,
+                capacity
+            );
+            (Some(history), Some(handle))
+        } else {
+            (None, None)
+        };
+
         // Now that every per-pipeline + global `MetricsSvc` exists, spawn the
         // API server with a fully populated `ApiMetricsContext`. We assign to
         // the previously-declared `mut api_handle` (no `let`) so the shutdown
@@ -603,6 +651,7 @@ async fn run_pipeline(cli: Cli) {
                 let api_metrics = ts_api::ApiMetricsContext {
                     pipelines: api_pipeline_metrics,
                     global: api_global_metrics.clone(),
+                    history: history_ctx.clone(),
                 };
                 let api_runtime_config = runtime_config_ctx.clone();
                 let api_health = ts_api::ApiHealthContext {
@@ -769,6 +818,10 @@ async fn run_pipeline(cli: Cli) {
             let _ = handle.stop_tx.send(());
             let _ = handle.join.await;
         }
+        if let Some(handle) = history_recorder_handle {
+            let _ = handle.stop_tx.send(());
+            let _ = handle.join.await;
+        }
 
         // Park on a shutdown signal so the API/console stays available for
         // post-drain inspection — unless the user opted into batch mode with
@@ -811,6 +864,7 @@ async fn run_pipeline(cli: Cli) {
                     let api_metrics = ts_api::ApiMetricsContext {
                         pipelines: Vec::new(),
                         global: empty_global,
+                        history: None,
                     };
                     let api_runtime_config = runtime_config_ctx.clone();
                     let api_health = ts_api::ApiHealthContext {

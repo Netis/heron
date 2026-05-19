@@ -350,6 +350,29 @@ export interface InternalMetricsResponse {
 }
 
 // ============================================================================
+// /api/internal-metrics/series
+// ============================================================================
+
+/** One point in an internal-metrics time series. `t` is unix epoch ms. */
+export interface InternalSeriesPoint {
+  t: number
+  v: number
+}
+
+/** One series in the response — typically one per requested metric. */
+export interface InternalSeriesEntry {
+  name: string
+  group: MetricGroup
+  points: InternalSeriesPoint[]
+}
+
+export interface InternalMetricsSeriesResponse {
+  /** Server wall-clock at response time, unix epoch ms. */
+  ts: number
+  series: InternalSeriesEntry[]
+}
+
+// ============================================================================
 // /api/runtime-config
 // ============================================================================
 
