@@ -9,8 +9,10 @@
 //!    `serve_connection`, this time dispatching to `forward.rs` which
 //!    parses the inner request, classifies it, and proxies it upstream.
 
+use crate::forward::box_full;
 use crate::state::{ProxyState, TunnelContext};
 use crate::tls::TunnelSniResolver;
+use crate::ResponseBody;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::service::service_fn;
@@ -81,20 +83,20 @@ fn build_server_config(state: Arc<ProxyState>, fallback_host: String) -> ServerC
 
 /// Builder for the empty `200 OK` response we send back to the client
 /// in answer to a CONNECT request, signaling that the tunnel is up.
-pub fn connect_response_ok() -> Response<Full<Bytes>> {
+pub fn connect_response_ok() -> Response<ResponseBody> {
     Response::builder()
         .status(200)
-        .body(Full::new(Bytes::new()))
+        .body(box_full(Full::new(Bytes::new())))
         .expect("static response")
 }
 
 /// Builder for the simple JSON error response used when CONNECT
 /// targets a host we can't proxy (e.g. malformed authority).
-pub fn connect_response_bad_request(reason: &str) -> Response<Full<Bytes>> {
+pub fn connect_response_bad_request(reason: &str) -> Response<ResponseBody> {
     let body = format!("{{\"error\":\"tokenscope proxy: {reason}\"}}");
     Response::builder()
         .status(400)
         .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(body)))
+        .body(box_full(Full::new(Bytes::from(body))))
         .expect("static response")
 }

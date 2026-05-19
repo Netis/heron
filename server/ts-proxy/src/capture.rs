@@ -149,7 +149,11 @@ pub fn parse_sse_chunk(
 /// if the joiner channel is closed or full we drop the event and log,
 /// rather than backpressure the client response (we've already sent
 /// the response bytes by this point in the proxy's forward path).
-pub async fn submit_exchange(
+///
+/// Synchronous on purpose — `try_send` is non-blocking, and the
+/// streaming-body finalizer needs to call this from `Drop` / sync
+/// `poll_frame` paths where `.await` isn't available.
+pub fn submit_exchange(
     tx: &tokio::sync::mpsc::Sender<HttpJoinerEvent>,
     request: HttpRequestData,
     response: HttpResponseData,

@@ -18,6 +18,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 hyper-rustls.workspace = true
 http.workspace = true
+http-body.workspace = true
 http-body-util.workspace = true
 webpki-roots.workspace = true
 rustls-native-certs.workspace = true
@@ -36,6 +37,7 @@ time.workspace = true
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tokio-stream = "0.1"
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 tokio-rustls = { workspace = true }

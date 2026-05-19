@@ -12,6 +12,7 @@
 //!
 //! See `docs/design/builtin-mitm-proxy.md` for the architecture diagram.
 
+pub mod body;
 pub mod ca;
 pub mod capture;
 pub mod forward;
@@ -21,6 +22,19 @@ pub mod state;
 pub mod tls;
 pub mod tunnel;
 pub mod upstream;
+
+/// Canonical response-body type used everywhere the proxy hands a
+/// response back to hyper. `UnsyncBoxBody<Bytes, hyper::Error>` lets
+/// the streaming path (`CapturingBody`, whose finalizer is a
+/// `FnOnce(Bytes) + Send` and therefore *not* `Sync`) and the
+/// buffered path (`Full<Bytes>`, with `Error = Infallible` mapped via
+/// `match never {}`) flow through the same service signature.
+///
+/// `Sync` isn't required — each `Response` is consumed by a single
+/// per-connection task on the hyper side — so using `UnsyncBoxBody`
+/// (vs `BoxBody`) is a strict bound relaxation, not a constraint.
+pub type ResponseBody =
+    http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, hyper::Error>;
 
 pub use ca::{load_or_generate_ca, CaError, CaMaterial};
 pub use redact::redact_headers;

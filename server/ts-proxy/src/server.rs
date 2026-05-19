@@ -10,12 +10,13 @@
 //!   For MVP we just reject these with 501; the focus is HTTPS capture,
 //!   and plain-HTTP LLM endpoints are already sniffable upstream.
 
+use crate::forward::box_full;
 use crate::state::{ProxyDeps, ProxyState, TunnelContext};
 use crate::tls::LeafCertStore;
 use crate::tunnel::{
     connect_response_bad_request, connect_response_ok, terminate_and_serve,
 };
-use crate::{load_or_generate_ca, ProxyConfig};
+use crate::{load_or_generate_ca, ProxyConfig, ResponseBody};
 use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
 use hyper::service::service_fn;
@@ -138,7 +139,7 @@ async fn route_top_level(
     req: Request<Incoming>,
     state: Arc<ProxyState>,
     peer: SocketAddr,
-) -> Result<Response<Full<Bytes>>, Infallible> {
+) -> Result<Response<ResponseBody>, Infallible> {
     if req.method() == Method::CONNECT {
         return Ok(handle_connect(req, state, peer).await);
     }
@@ -149,7 +150,7 @@ fn handle_connect(
     req: Request<Incoming>,
     state: Arc<ProxyState>,
     peer: SocketAddr,
-) -> impl std::future::Future<Output = Response<Full<Bytes>>> + Send {
+) -> impl std::future::Future<Output = Response<ResponseBody>> + Send {
     async move {
         let authority = match req.uri().authority().cloned() {
             Some(a) => a,
@@ -188,7 +189,7 @@ fn handle_connect(
     }
 }
 
-async fn handle_plain_http(req: Request<Incoming>) -> Response<Full<Bytes>> {
+async fn handle_plain_http(req: Request<Incoming>) -> Response<ResponseBody> {
     // For MVP we don't handle absolute-form plain HTTP through the
     // proxy. Most LLM endpoints are HTTPS, and the existing sniffer
     // already captures cleartext HTTP at the NIC layer. Returning 501
@@ -201,6 +202,6 @@ async fn handle_plain_http(req: Request<Incoming>) -> Response<Full<Bytes>> {
     Response::builder()
         .status(501)
         .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(body)))
+        .body(box_full(Full::new(Bytes::from(body))))
         .expect("static response")
 }

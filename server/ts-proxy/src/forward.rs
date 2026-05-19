@@ -6,27 +6,27 @@
 //! 2. Build an `HttpRequestData` and run `WireApiRegistry::detect`.
 //!    If it doesn't match any wire API and `allow_passthrough = false`,
 //!    return 403 immediately and skip forwarding.
-//! 3. Forward upstream over `UpstreamClient`. The Host header and URI
-//!    are rewritten to the CONNECT authority.
-//! 4. Collect the upstream response body, build an `HttpResponseData`
-//!    (and SSE events if the response was `text/event-stream`), then
-//!    fire-and-forget submit the `HttpJoinerEvent::Exchange` to the
-//!    capture sink.
+//! 3. Forward upstream over `UpstreamClient`.
+//! 4. Branch on `Content-Type: text/event-stream`:
+//!    - **SSE**: wrap the upstream body in `CapturingBody` and hand it
+//!      to the client *immediately* — every frame flushes to the
+//!      client as it arrives upstream, matching direct-connection
+//!      TTFT. The capture event is submitted on stream end (or client
+//!      tear-down) via the `Finalizer` callback.
+//!    - **non-SSE**: buffer fully (LLM bodies are small) and submit
+//!      capture before returning.
 //! 5. Return the response to the inner-HTTP client.
-//!
-//! v1 buffers all bodies (including SSE) — adequate for proving the
-//! capture path end-to-end, but adds latency for streaming clients.
-//! A follow-up will replace SSE with a tee'd `BoxBody` so TTFT
-//! mirrors a direct connection.
 
+use crate::body::CapturingBody;
 use crate::capture::{
     make_flow_key, make_request_data, make_response_data, parse_sse_chunk, submit_exchange,
 };
 use crate::redact::redact_headers;
 use crate::state::{ProxyState, TunnelContext};
+use crate::ResponseBody;
 use bytes::Bytes;
 use http::HeaderName;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, Uri};
 use std::convert::Infallible;
@@ -35,14 +35,11 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 use ts_llm::ParsedJson;
 
-/// `Content-Length` cap honored by the body collector. Beyond this we
-/// reject up front to keep memory usage bounded — matches the
-/// joiner-side cap from `ProxyConfig::max_body_bytes`.
 pub async fn handle_inner_request(
     req: Request<Incoming>,
     ctx: TunnelContext,
     state: Arc<ProxyState>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
+) -> Result<Response<ResponseBody>, Infallible> {
     let started_us = now_us();
     match forward_and_capture(req, ctx, state, started_us).await {
         Ok(resp) => Ok(resp),
@@ -55,12 +52,13 @@ async fn forward_and_capture(
     ctx: TunnelContext,
     state: Arc<ProxyState>,
     started_us: i64,
-) -> Result<Response<Full<Bytes>>, ForwardError> {
+) -> Result<Response<ResponseBody>, ForwardError> {
     let max_body = state.config.max_body_bytes;
     let (req_parts, req_body) = req.into_parts();
     let req_body_bytes = collect_capped(req_body, max_body).await?;
 
-    let captured_request = build_captured_request(&req_parts, &req_body_bytes, &ctx, &state, started_us);
+    let captured_request =
+        build_captured_request(&req_parts, &req_body_bytes, &ctx, &state, started_us);
 
     let detection = state
         .registry
@@ -79,10 +77,6 @@ async fn forward_and_capture(
 
     drop(detection); // releases the &registry borrow; we keep wire_api_name only
 
-    // Build the upstream URI from the CONNECT authority + the inner
-    // request's path-and-query. Inner clients send origin-form URIs
-    // (just `/v1/...`) because they think they're talking to the
-    // origin server directly, so we have to reattach scheme + host.
     let upstream_uri = build_upstream_uri(&ctx, &req_parts.uri)?;
     let upstream_req = build_upstream_request(&req_parts, req_body_bytes.clone(), &upstream_uri)?;
 
@@ -100,11 +94,6 @@ async fn forward_and_capture(
             r
         }
         Err(e) => {
-            // hyper-util's `Error::Connect` is opaque (just "client error
-            // (Connect)") — its real cause sits in the .source() chain.
-            // Surface the whole chain so misconfigured trust stores,
-            // TLS handshake failures, and DNS errors are diagnosable
-            // from logs alone.
             let chain: Vec<String> = std::iter::successors(
                 Some(&e as &(dyn std::error::Error + 'static)),
                 |err| err.source(),
@@ -123,11 +112,6 @@ async fn forward_and_capture(
     };
 
     let (resp_parts, resp_body) = upstream_resp.into_parts();
-    let resp_body_bytes = collect_capped(resp_body, max_body).await?;
-    let complete_us = now_us();
-
-    // Build the captured response. SSE bodies are not persisted —
-    // the existing joiner contract is `body = Bytes::new()` for SSE.
     let is_sse = resp_parts
         .headers
         .get("content-type")
@@ -135,38 +119,131 @@ async fn forward_and_capture(
         .map(|ct| ct.starts_with("text/event-stream"))
         .unwrap_or(false);
 
+    if is_sse {
+        Ok(forward_streaming_sse(
+            resp_parts,
+            resp_body,
+            captured_request,
+            ctx,
+            state,
+            first_byte_us,
+            max_body,
+        ))
+    } else {
+        forward_buffered(
+            resp_parts,
+            resp_body,
+            captured_request,
+            ctx,
+            state,
+            first_byte_us,
+            max_body,
+        )
+        .await
+    }
+}
+
+/// Non-streaming path: fully buffer the upstream response, submit the
+/// capture, then return a `Full<Bytes>`-bodied response to the client.
+/// Matches the behavior of the original v1 forwarder.
+async fn forward_buffered(
+    resp_parts: http::response::Parts,
+    resp_body: Incoming,
+    captured_request: ts_protocol::model::HttpRequestData,
+    ctx: TunnelContext,
+    state: Arc<ProxyState>,
+    first_byte_us: i64,
+    max_body: usize,
+) -> Result<Response<ResponseBody>, ForwardError> {
+    let resp_body_bytes = collect_capped(resp_body, max_body).await?;
+    let complete_us = now_us();
+
     let captured_response = build_captured_response(
         &resp_parts,
-        if is_sse {
-            Bytes::new()
-        } else {
-            resp_body_bytes.clone()
-        },
+        resp_body_bytes.clone(),
         &captured_request,
         first_byte_us,
         complete_us,
     );
 
-    let sse_events = if is_sse {
-        let raw = std::str::from_utf8(&resp_body_bytes).unwrap_or("");
-        parse_sse_chunk(
-            &captured_response.flow_key,
-            client_socket(&ctx),
-            upstream_socket(&ctx),
-            raw,
-            first_byte_us,
-        )
-    } else {
-        Vec::new()
-    };
-
     if let Some(tx) = state.deps.joiner_event_tx.as_ref() {
-        submit_exchange(tx, captured_request, captured_response, sse_events).await;
+        submit_exchange(tx, captured_request, captured_response, Vec::new());
     } else {
         debug!(target: "ts_proxy::forward", host = %ctx.host, "no joiner sink configured; capture dropped");
     }
 
-    Ok(rebuild_client_response(resp_parts, resp_body_bytes))
+    Ok(rebuild_client_response(
+        resp_parts,
+        box_full(Full::new(resp_body_bytes)),
+    ))
+}
+
+/// Streaming path: hand a `CapturingBody`-wrapped upstream stream
+/// straight back to the client. Each upstream frame mirrors into a
+/// capture buffer; when the stream ends (or the client disconnects),
+/// the finalizer builds the captured exchange + parses SSE events
+/// from the accumulated bytes and submits it to the joiner channel.
+fn forward_streaming_sse(
+    resp_parts: http::response::Parts,
+    resp_body: Incoming,
+    captured_request: ts_protocol::model::HttpRequestData,
+    ctx: TunnelContext,
+    state: Arc<ProxyState>,
+    first_byte_us: i64,
+    max_body: usize,
+) -> Response<ResponseBody> {
+    // Snapshot everything the finalize closure needs as owned values
+    // — `Parts` itself isn't Clone, and the closure outlives this fn.
+    let status = resp_parts.status.as_u16();
+    let version_minor = match resp_parts.version {
+        http::Version::HTTP_10 => 0,
+        _ => 1,
+    };
+    let resp_headers_for_capture: Vec<(String, String)> = resp_parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+    let client_addr = client_socket(&ctx);
+    let upstream_addr = upstream_socket(&ctx);
+    let flow_key = captured_request.flow_key.clone();
+    let joiner_tx = state.deps.joiner_event_tx.clone();
+    let host_for_log = ctx.host.clone();
+
+    // The finalizer fires once per stream — either from the EOF arm of
+    // `CapturingBody::poll_frame` (clean end), or its `Drop` impl
+    // (client disconnected mid-stream). Either way: build the captured
+    // response (body is empty per joiner SSE contract), parse the SSE
+    // event stream from the accumulator, submit to the pipeline.
+    let finalize: crate::body::Finalizer = Box::new(move |body_bytes: Bytes| {
+        let complete_us = now_us();
+        let captured_response = make_response_data(
+            flow_key.clone(),
+            client_addr,
+            upstream_addr,
+            status,
+            version_minor,
+            resp_headers_for_capture.clone(),
+            Bytes::new(),
+            first_byte_us,
+            complete_us,
+        );
+        let raw = std::str::from_utf8(&body_bytes).unwrap_or("");
+        let sse_events =
+            parse_sse_chunk(&flow_key, client_addr, upstream_addr, raw, first_byte_us);
+        if let Some(tx) = joiner_tx.as_ref() {
+            submit_exchange(tx, captured_request.clone(), captured_response, sse_events);
+        } else {
+            debug!(
+                target: "ts_proxy::forward",
+                host = %host_for_log,
+                "no joiner sink configured; SSE capture dropped"
+            );
+        }
+    });
+
+    let capturing = CapturingBody::new(resp_body, max_body, finalize);
+    rebuild_client_response(resp_parts, capturing.boxed_unsync())
 }
 
 /// Read a body up to `max` bytes, then either yield it or fail with
@@ -178,7 +255,6 @@ where
     B: hyper::body::Body<Data = Bytes> + Unpin,
     B::Error: std::fmt::Display,
 {
-    use http_body_util::BodyExt;
     let mut body = body;
     let mut buf: Vec<u8> = Vec::new();
     while let Some(frame) = body.frame().await {
@@ -282,11 +358,6 @@ fn build_upstream_request(
         .method(req_parts.method.clone())
         .uri(upstream_uri.clone());
 
-    // Forward all headers verbatim except hop-by-hop ones (which would
-    // confuse upstream if we relayed them). Host header gets rewritten
-    // to the upstream authority — the client's Host points at the
-    // origin behind the proxy (same thing for a CONNECT-targeted SDK,
-    // but we re-set for safety).
     let hop_by_hop: &[HeaderName] = &[
         http::header::CONNECTION,
         http::header::PROXY_AUTHENTICATE,
@@ -322,19 +393,20 @@ fn build_upstream_request(
         .map_err(|e| ForwardError::Upstream(format!("build upstream request: {e}")))
 }
 
+/// Forward the upstream response back to the client. Strips hop-by-hop
+/// response headers per RFC 7230 §6.1 — most matter only for chunked
+/// transport, but stripping them keeps strict clients (e.g. nodejs http
+/// parsers) happy when the body is re-framed.
 fn rebuild_client_response(
     resp_parts: http::response::Parts,
-    body: Bytes,
-) -> Response<Full<Bytes>> {
-    // Skip hop-by-hop response headers per RFC 7230 §6.1. Most
-    // matter only for chunked transport, but stripping them keeps
-    // strict clients (e.g. nodejs http parsers) happy when we
-    // re-frame with Content-Length.
+    body: ResponseBody,
+) -> Response<ResponseBody> {
     let strip: &[HeaderName] = &[
         http::header::CONNECTION,
         http::header::TRANSFER_ENCODING,
         http::header::TRAILER,
         http::header::UPGRADE,
+        http::header::CONTENT_LENGTH,
     ];
     let mut builder = Response::builder()
         .status(resp_parts.status)
@@ -348,13 +420,26 @@ fn rebuild_client_response(
         }
     }
     builder
-        .body(Full::new(body))
-        .unwrap_or_else(|_| {
-            Response::builder()
-                .status(502)
-                .body(Full::new(Bytes::from_static(b"tokenscope: response rebuild failed")))
-                .expect("static")
-        })
+        .body(body)
+        .unwrap_or_else(|_| make_static_502_response())
+}
+
+fn make_static_502_response() -> Response<ResponseBody> {
+    Response::builder()
+        .status(502)
+        .body(box_full(Full::new(Bytes::from_static(
+            b"tokenscope: response rebuild failed",
+        ))))
+        .expect("static")
+}
+
+/// `Full<Bytes>` has `Error = Infallible`. The proxy response type
+/// uses `hyper::Error` so streaming and buffered paths share one body
+/// type. Map the never-type → never to satisfy the converter; the
+/// `match` arm is uninhabited so the compiler proves no runtime cost.
+pub(crate) fn box_full(body: Full<Bytes>) -> ResponseBody {
+    body.map_err(|never: std::convert::Infallible| match never {})
+        .boxed_unsync()
 }
 
 fn client_socket(ctx: &TunnelContext) -> SocketAddr {
@@ -362,11 +447,6 @@ fn client_socket(ctx: &TunnelContext) -> SocketAddr {
 }
 
 fn upstream_socket(ctx: &TunnelContext) -> SocketAddr {
-    // We don't have a real resolved IP for the upstream — `capture.rs`
-    // uses LOCALHOST as a stand-in. For now just synthesize one from
-    // the host string when it parses as an IP, falling back to
-    // 0.0.0.0:port otherwise. The displayed value is purely for the
-    // UI; transport semantics don't depend on it.
     let ip = ctx
         .host
         .parse()
@@ -385,7 +465,7 @@ enum ForwardError {
 }
 
 impl ForwardError {
-    fn into_response(self) -> Response<Full<Bytes>> {
+    fn into_response(self) -> Response<ResponseBody> {
         match self {
             ForwardError::NotAnLlmRequest => json_response(
                 403,
@@ -408,12 +488,12 @@ impl ForwardError {
     }
 }
 
-fn json_response(status: u16, body: &str) -> Response<Full<Bytes>> {
+fn json_response(status: u16, body: &str) -> Response<ResponseBody> {
     Response::builder()
         .status(status)
         .header("content-type", "application/json")
         .header("server", "tokenscope-proxy/0.2")
-        .body(Full::new(Bytes::copy_from_slice(body.as_bytes())))
+        .body(box_full(Full::new(Bytes::copy_from_slice(body.as_bytes()))))
         .expect("static response")
 }
 
