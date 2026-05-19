@@ -20,6 +20,7 @@ hyper-rustls.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 webpki-roots.workspace = true
+rustls-native-certs.workspace = true
 
 bytes.workspace = true
 serde.workspace = true

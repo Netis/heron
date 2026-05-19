@@ -29,10 +29,34 @@ pub struct UpstreamClient {
 }
 
 impl UpstreamClient {
-    /// Production default: Mozilla CA bundle via `webpki-roots`.
+    /// Production default: Mozilla CA bundle via `webpki-roots`, plus
+    /// the host OS trust store via `rustls-native-certs`. The OS roots
+    /// are what make internal-CA-signed LLM endpoints (corporate
+    /// LiteLLM proxies, on-prem GLM/Qwen deployments) reachable — bare
+    /// webpki-roots only trusts publicly-trusted Mozilla anchors.
     pub fn with_webpki_roots() -> Self {
         let mut roots = RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        // Best-effort: a host with no usable cert store still works for
+        // any endpoint whose chain validates under Mozilla anchors.
+        match rustls_native_certs::load_native_certs() {
+            certs if !certs.certs.is_empty() => {
+                let (added, _ignored) = roots.add_parsable_certificates(certs.certs);
+                tracing::debug!(
+                    target: "ts_proxy::upstream",
+                    added,
+                    errors = certs.errors.len(),
+                    "loaded native trust anchors"
+                );
+            }
+            certs => {
+                tracing::warn!(
+                    target: "ts_proxy::upstream",
+                    errors = certs.errors.len(),
+                    "no native trust anchors loaded; falling back to webpki-roots only"
+                );
+            }
+        }
         Self::with_roots(roots)
     }
 
