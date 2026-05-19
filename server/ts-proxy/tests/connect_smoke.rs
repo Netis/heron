@@ -57,8 +57,13 @@ async fn connect_then_tls_then_inner_request_reaches_forwarder() {
         .with_no_client_auth();
 
     // 4. Open a plain TCP socket to the proxy and send a CONNECT.
+    //    Target a known-unreachable LOCAL port so the upstream connect
+    //    fails fast (ECONNREFUSED) — gets us a deterministic 502 in
+    //    milliseconds instead of waiting for real-network DNS / TCP
+    //    timeout, which would hang the test on offline / firewalled CI.
+    //    SNI is implicit-IP, exercising the TunnelSniResolver fallback.
     let mut sock = TcpStream::connect(bound).await.expect("connect");
-    let connect_req = b"CONNECT api.openai.com:443 HTTP/1.1\r\nHost: api.openai.com:443\r\n\r\n";
+    let connect_req = b"CONNECT 127.0.0.1:1 HTTP/1.1\r\nHost: 127.0.0.1:1\r\n\r\n";
     sock.write_all(connect_req).await.unwrap();
     sock.flush().await.unwrap();
 
@@ -80,20 +85,27 @@ async fn connect_then_tls_then_inner_request_reaches_forwarder() {
         "expected 200 OK, got: {head_str:?}"
     );
 
-    // 6. TLS handshake against the now-upgraded socket.
+    // 6. TLS handshake against the now-upgraded socket. ServerName is
+    //    "127.0.0.1" (matches the CONNECT target); the proxy mints a
+    //    leaf cert with an IP SAN courtesy of build_leaf_params'
+    //    IP-detection branch.
     let connector = TlsConnector::from(Arc::new(client_config));
-    let server_name = ServerName::try_from("api.openai.com").unwrap();
+    let server_name = ServerName::try_from("127.0.0.1").unwrap();
     let mut tls = connector
         .connect(server_name, sock)
         .await
         .expect("TLS handshake");
 
-    // 7. Send an inner HTTP request. The forwarder stub returns 503.
-    //    `Connection: close` so the server tears down the socket after
-    //    the response — saves us from juggling Content-Length parsing
-    //    in the smoke test.
+    // 7. Send an inner HTTP request. WireApi will classify it as
+    //    openai-chat (route accept on /v1/chat/completions + Bearer),
+    //    the forwarder will try to dial 127.0.0.1:1, that connect will
+    //    immediately fail (ECONNREFUSED), and we get back a 502 with
+    //    JSON describing the upstream failure. The point of the test
+    //    is that EVERY layer up to and including forward error
+    //    reporting works — not that real LLM traffic flows (that's
+    //    covered by forward_capture.rs).
     let inner_req = b"POST /v1/chat/completions HTTP/1.1\r\n\
-                      Host: api.openai.com\r\n\
+                      Host: 127.0.0.1\r\n\
                       Content-Length: 0\r\n\
                       Authorization: Bearer sk-test-1234\r\n\
                       Connection: close\r\n\
@@ -122,17 +134,13 @@ async fn connect_then_tls_then_inner_request_reaches_forwarder() {
         }
     }
     let resp_str = String::from_utf8_lossy(&response);
-    // The forwarder now classifies via WireApiRegistry. Our test
-    // request is a POST /v1/chat/completions with Bearer auth, which
-    // openai-chat *route-accepts*, so detect succeeds — meaning the
-    // proxy proceeds to attempt the upstream forward. Since we point
-    // at the real openai.com host with a bogus key, the upstream call
-    // will fail with a connection / DNS / TLS error and return 502.
-    // Either way, the proxy responded — that's what the smoke test
-    // proves. Detail-level forward behavior gets its own test below.
     assert!(
-        resp_str.starts_with("HTTP/1.1 "),
-        "expected HTTP response, got: {resp_str:?}"
+        resp_str.starts_with("HTTP/1.1 502"),
+        "expected 502 from unreachable upstream, got: {resp_str:?}"
+    );
+    assert!(
+        resp_str.contains("upstream failure"),
+        "expected upstream-failure error body, got: {resp_str:?}"
     );
 }
 
