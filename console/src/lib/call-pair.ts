@@ -49,17 +49,6 @@ export interface CallGrouping {
   hopCount: number
 }
 
-interface ContentKey {
-  wire_api: string
-  model: string
-  is_stream: boolean
-  status_code: number | null
-  finish_reason: string | null
-  input_tokens: number | null
-  output_tokens: number | null
-  request_path: string
-}
-
 function contentKey(c: AgentTurnCallItem): string {
   // Joined string is the cheapest stable hash for HashMap-like
   // bucketing in JS. Token nulls and finish nulls intentionally
