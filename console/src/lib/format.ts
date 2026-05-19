@@ -1,3 +1,35 @@
+const DAY_SECONDS = 86_400
+
+/**
+ * Chart x-axis tick label that adapts to the visible window's duration.
+ *
+ *   spanSec < 24h   → `HH:MM`           (5m / 15m / 1h / 6h presets)
+ *   24h ≤ < 7d      → `MM-DD HH:MM`     (24h preset; gives the date on a
+ *                                        few ticks so multi-day windows
+ *                                        don't all read like the same
+ *                                        wrapping clock face)
+ *   ≥ 7d            → `MM-DD`           (7d preset; ticks come ~daily,
+ *                                        the time-of-day is noise)
+ *
+ * Caller supplies `spanSec` (typically `end - start` of the toolbar
+ * window, or `lastTs - firstTs` of the data). Centralized here so the
+ * four chart components share one rule.
+ */
+export function formatAxisTime(epochSec: number, spanSec: number): string {
+  const d = new Date(epochSec * 1000)
+  const hh = String(d.getHours()).padStart(2, "0")
+  const mm = String(d.getMinutes()).padStart(2, "0")
+  if (spanSec < DAY_SECONDS) {
+    return `${hh}:${mm}`
+  }
+  const mo = String(d.getMonth() + 1).padStart(2, "0")
+  const da = String(d.getDate()).padStart(2, "0")
+  if (spanSec < 7 * DAY_SECONDS) {
+    return `${mo}-${da} ${hh}:${mm}`
+  }
+  return `${mo}-${da}`
+}
+
 export function formatTime(epochMs: number): string {
   const d = new Date(epochMs)
   const hh = String(d.getHours()).padStart(2, "0")
