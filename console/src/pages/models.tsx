@@ -27,6 +27,13 @@ function getErrorRate(m: MetricsModelRow): number {
 function getSortValue(m: MetricsModelRow, key: SortKey): number | string {
   if (key === "error_rate") return getErrorRate(m)
   if (key === "model" || key === "wire_api") return m[key]
+  // Underlying field is tpot_avg (ms/token, lower = faster) but the column
+  // surfaces it as TPS = 1000/tpot_avg. Invert the sort value so "desc"
+  // gives fastest first — matches what a user clicking "Generation TPS"
+  // expects to see.
+  if (key === "tpot_avg") {
+    return m.tpot_avg != null && m.tpot_avg > 0 ? 1000 / m.tpot_avg : 0
+  }
   return (m[key] as number) ?? 0
 }
 
@@ -146,7 +153,7 @@ export function ModelsPage() {
                 <th className="px-3 py-3 text-right"><SortHeader label="TTFT p95" field="ttft_p95" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="E2E avg" field="e2e_avg" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="E2E p95" field="e2e_p95" align="right" /></th>
-                <th className="px-3 py-3 text-right"><SortHeader label="TPOT" field="tpot_avg" align="right" /></th>
+                <th className="px-3 py-3 text-right"><SortHeader label="Generation TPS" field="tpot_avg" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="In Tokens" field="total_input_tokens" align="right" /></th>
                 <th className="px-3 py-3 text-right"><SortHeader label="Out Tokens" field="total_output_tokens" align="right" /></th>
                 <th className="w-8 px-2 py-3" />
@@ -197,7 +204,9 @@ export function ModelsPage() {
                       <td className="px-3 py-2.5 text-right tabular-nums">{formatMs(m.e2e_avg)}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums">{formatMs(m.e2e_p95)}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
-                        {m.tpot_avg != null ? `${m.tpot_avg.toFixed(1)} ms/tok` : "—"}
+                        {m.tpot_avg != null && m.tpot_avg > 0
+                          ? `${(1000 / m.tpot_avg).toFixed(1)} tok/s`
+                          : "—"}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(m.total_input_tokens)}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(m.total_output_tokens)}</td>

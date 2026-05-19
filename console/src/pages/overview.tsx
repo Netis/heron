@@ -90,9 +90,13 @@ export function OverviewPage() {
           subtext={`${formatNumber(summary?.total_input_tokens)} in / ${formatNumber(summary?.total_output_tokens)} out`}
         />
         <KpiCard
-          title="Avg TPOT"
-          value={summary?.tpot_avg != null ? `${summary.tpot_avg.toFixed(1)} ms/tok` : "—"}
-          subtext="streaming only"
+          title="Avg TPS"
+          value={
+            summary?.tpot_avg != null && summary.tpot_avg > 0
+              ? `${(1000 / summary.tpot_avg).toFixed(1)} tok/s`
+              : "—"
+          }
+          subtext="streaming only · generation speed"
         />
       </div>
 

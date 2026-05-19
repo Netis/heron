@@ -15,17 +15,22 @@ const AGENT_KIND_OPTIONS = ["claude-cli", "codex-cli", "generic"]
 
 const PAGE_SIZES = [20, 50, 100] as const
 
+// Identity columns (Agent / Client) sit immediately after Time; coarse
+// shape (Calls / Status) and per-turn token counters (In / Out) follow
+// — that's the order operators reach for first when triaging a turn.
+// Less-frequently-scanned dimensions (Model / Wire API / Server) and
+// the long preview column trail.
 const columns = [
   { key: "start_time", label: "Time", width: "w-[210px]", sortable: true, align: "left" as const },
-  { key: "wire_api", label: "Wire API", width: "w-[120px]", sortable: false, align: "left" as const },
-  { key: "primary_model", label: "Model", width: "w-[180px]", sortable: false, align: "left" as const },
   { key: "agent_kind", label: "Agent", width: "w-[100px]", sortable: false, align: "left" as const },
   { key: "client_ip", label: "Client", width: "w-[130px]", sortable: false, align: "left" as const },
-  { key: "server_ip", label: "Server", width: "w-[130px]", sortable: false, align: "left" as const },
-  { key: "status", label: "Status", width: "w-[100px]", sortable: false, align: "left" as const },
   { key: "call_count", label: "Calls", width: "w-[60px]", sortable: true, align: "right" as const },
+  { key: "status", label: "Status", width: "w-[100px]", sortable: false, align: "left" as const },
   { key: "total_input_tokens", label: "In", width: "w-[70px]", sortable: true, align: "right" as const },
   { key: "total_output_tokens", label: "Out", width: "w-[70px]", sortable: true, align: "right" as const },
+  { key: "primary_model", label: "Model", width: "w-[180px]", sortable: false, align: "left" as const },
+  { key: "wire_api", label: "Wire API", width: "w-[120px]", sortable: false, align: "left" as const },
+  { key: "server_ip", label: "Server", width: "w-[130px]", sortable: false, align: "left" as const },
   { key: "duration_ms", label: "Duration", width: "w-[90px]", sortable: true, align: "right" as const },
   { key: "preview", label: "User Input", width: "", sortable: false, align: "left" as const },
 ] as const
