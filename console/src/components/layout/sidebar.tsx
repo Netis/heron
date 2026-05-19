@@ -10,6 +10,7 @@ import {
   MessagesSquare,
   Network,
   PanelLeftClose,
+  Settings,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useSidebarStore } from "@/stores/sidebar"
@@ -28,6 +29,7 @@ const navItems = [
   { to: "/agent-turns", icon: MessagesSquare, label: "Agent Turns" },
   { to: "/llm-calls", icon: Sparkles, label: "LLM Calls" },
   { to: "/http-exchanges", icon: Network, label: "HTTP Exchanges" },
+  { to: "/settings", icon: Settings, label: "Settings" },
 ]
 
 export function Sidebar() {
