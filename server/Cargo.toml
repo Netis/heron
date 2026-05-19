@@ -65,6 +65,7 @@ ts-metrics = { path = "ts-metrics" }
 ts-storage = { path = "ts-storage" }
 ts-storage-duckdb = { path = "ts-storage-duckdb" }
 ts-pcap-extract = { path = "ts-pcap-extract" }
+ts-proxy = { path = "ts-proxy" }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 rust-embed = "8"
@@ -73,3 +74,17 @@ duckdb = { version = "1", features = ["bundled", "json"] }
 chrono = "0.4"
 tdigest = "0.2"
 ts-api = { path = "ts-api" }
+
+# Built-in proxy stack — hyper 1.x is already a transitive of axum,
+# so we pin the same major and add the modules ts-proxy needs directly.
+hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "server", "http1"] }
+http-body-util = "0.1"
+http = "1"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rustls-pemfile = "2"
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "webpki-tokio"] }
+webpki-roots = "0.26"
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "x509-parser"] }
+lru = "0.12"

@@ -328,6 +328,7 @@ async fn run_pipeline(cli: Cli) {
             storage: config.storage.clone(),
             internal_metrics: config.internal_metrics.clone(),
             api: config.api.clone(),
+            proxy: config.proxy.clone(),
         }),
         config_path: config_path
             .canonicalize()

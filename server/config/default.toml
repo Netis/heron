@@ -161,3 +161,32 @@ interval_secs = 10
 [api]
 listen = "0.0.0.0"
 port = 3000
+
+# ---------------------------------------------------------------------------
+# Built-in MITM forward proxy (optional; disabled by default).
+#
+# When enabled, clients set HTTPS_PROXY=http://<tokenscope>:<port>, install
+# our root CA once, and all HTTPS LLM traffic flows through TokenScope's
+# usual capture pipeline — same parsers, same storage, same UI. Non-LLM
+# requests are rejected at the proxy edge so it can't act as a generic
+# web proxy. See docs/design/builtin-mitm-proxy.md.
+# ---------------------------------------------------------------------------
+[proxy]
+enabled = false
+listen = "0.0.0.0"
+port = 7890
+# Root CA + key live here. Generated on first boot if missing. Don't
+# share the .key file — it's what makes the CA trusted.
+ca_dir = "./proxy-ca"
+# How sensitive request headers (Authorization, x-api-key,
+# anthropic-api-key, api-key, x-goog-api-key) appear in stored captures.
+# Options: "show" | "mask_middle" (default) | "hide". The forwarded
+# request to the upstream always carries the real key.
+redact_api_keys = "mask_middle"
+# Reject anything WireApiRegistry can't classify as an LLM call.
+allow_passthrough = false
+# Per-direction body cap (bytes). Matches the joiner's existing cap.
+max_body_bytes = 4194304
+# source_id stamped on captured records so the proxy origin shows up
+# distinctly in the UI source filter.
+source_id = "builtin-proxy"

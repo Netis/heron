@@ -57,6 +57,8 @@ pub struct AppConfig {
     pub storage: StorageConfig,
     pub internal_metrics: InternalMetricsConfig,
     pub api: ApiConfig,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
 }
 
 /// A single pipeline definition bundling sources and pipeline parameters.
@@ -118,6 +120,8 @@ struct RawAppConfig {
     internal_metrics: InternalMetricsConfig,
     #[serde(default)]
     api: ApiConfig,
+    #[serde(default)]
+    proxy: ProxyConfig,
 }
 
 #[derive(Deserialize)]
@@ -170,6 +174,7 @@ impl RawAppConfig {
             storage,
             internal_metrics: self.internal_metrics,
             api: self.api,
+            proxy: self.proxy,
         }
     }
 }
@@ -559,6 +564,101 @@ fn default_listen() -> String {
 
 fn default_port() -> u16 {
     3000
+}
+
+/// Built-in MITM forward proxy for HTTPS LLM capture. Clients set
+/// `HTTPS_PROXY=http://tokenscope:port`, trust the on-disk CA once, and
+/// every LLM call flows through TokenScope's pipeline like a sniffed
+/// capture — same wire-api detection, same storage path, same UI —
+/// without any code change in the client. See
+/// `docs/design/builtin-mitm-proxy.md` for the architecture.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyConfig {
+    /// Disabled by default — opt in via TOML or the Settings UI. When
+    /// false, the proxy task is never spawned and no port is bound.
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_proxy_listen")]
+    pub listen: String,
+    #[serde(default = "default_proxy_port")]
+    pub port: u16,
+    /// Directory holding the persistent root CA used to mint per-host
+    /// leaf certs. Created on first start if missing. Path can be relative
+    /// to the process CWD or absolute; `~` is NOT expanded — supply an
+    /// absolute path in production configs.
+    #[serde(default = "default_proxy_ca_dir")]
+    pub ca_dir: String,
+    /// Redaction applied to sensitive headers (Authorization, x-api-key,
+    /// anthropic-api-key, api-key, x-goog-api-key) BEFORE the captured
+    /// request is handed to storage. Forwarded request to the upstream
+    /// always carries the real key.
+    #[serde(default)]
+    pub redact_api_keys: RedactPolicy,
+    /// If false (default), non-LLM requests get a 403 and aren't proxied
+    /// — keeps the proxy from accidentally becoming a generic web proxy.
+    #[serde(default)]
+    pub allow_passthrough: bool,
+    /// Hard cap on captured body bytes per direction. Mirrors the
+    /// joiner's existing cap so a single large response can't OOM.
+    #[serde(default = "default_proxy_max_body_bytes")]
+    pub max_body_bytes: usize,
+    /// `source_id` stamped on captured records — visible in the source
+    /// filter dropdown to distinguish proxy-originated rows from sniffed
+    /// ones.
+    #[serde(default = "default_proxy_source_id")]
+    pub source_id: String,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen: default_proxy_listen(),
+            port: default_proxy_port(),
+            ca_dir: default_proxy_ca_dir(),
+            redact_api_keys: RedactPolicy::default(),
+            allow_passthrough: false,
+            max_body_bytes: default_proxy_max_body_bytes(),
+            source_id: default_proxy_source_id(),
+        }
+    }
+}
+
+fn default_proxy_listen() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_proxy_port() -> u16 {
+    7890
+}
+
+fn default_proxy_ca_dir() -> String {
+    // Relative to CWD by default — operators are expected to override
+    // this in production. Same convention as `storage.duckdb.path`.
+    "./proxy-ca".to_string()
+}
+
+fn default_proxy_max_body_bytes() -> usize {
+    4 * 1024 * 1024
+}
+
+fn default_proxy_source_id() -> String {
+    "builtin-proxy".to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RedactPolicy {
+    /// Keep the raw header value as-seen.
+    Show,
+    /// Default: keep the first 4 + last 4 chars, replace the middle with
+    /// `***`. Lets operators recognize which key was used (`sk-abcd…wxyz`)
+    /// without storing it verbatim.
+    #[default]
+    MaskMiddle,
+    /// Replace the value with `***redacted***`. Strongest mode; loses
+    /// the ability to attribute calls back to a specific key.
+    Hide,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
