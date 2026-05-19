@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { ChevronRight, ChevronDown } from "lucide-react"
+import { ChevronRight, ChevronDown, Layers } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatMs, formatNumber } from "@/lib/format"
 import { Markdown } from "@/components/ui/markdown"
@@ -28,6 +28,11 @@ interface Props {
   active?: boolean
   defaultExpanded?: boolean
   onOpenDetail?: (id: string) => void
+  /** When this call is the canonical leg of a folded proxy duplicate
+   * pair (e.g. one captured copy of a LiteLLM→upstream hop is hidden
+   * under it), >0 number of hops folded into this row. Renders a
+   * small "+N hop" chip in the header so the fold is discoverable. */
+  hopCount?: number
 }
 
 export function CallCard({
@@ -38,6 +43,7 @@ export function CallCard({
   active,
   defaultExpanded,
   onOpenDetail,
+  hopCount = 0,
 }: Props) {
   const [expanded, setExpanded] = useState(Boolean(defaultExpanded))
   const speed = classify(call)
@@ -71,6 +77,15 @@ export function CallCard({
             finalCallId={turn.final_call_id}
           />
           <span className="flex-1 truncate text-xs text-muted-foreground">{call.model}</span>
+          {hopCount > 0 && (
+            <span
+              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-300"
+              title={`${hopCount} proxy hop call(s) folded under this leg — toggle "Show proxy hops" to reveal`}
+            >
+              <Layers className="size-3" />
+              +{hopCount}
+            </span>
+          )}
           <span className={cn(
             "shrink-0 text-xs tabular-nums",
             (speed === "slow" || speed === "warn") && "text-amber-600",

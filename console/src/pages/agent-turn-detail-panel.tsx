@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { Loader2, ArrowLeftRight } from "lucide-react"
+import { Loader2, ArrowLeftRight, Layers } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAgentTurnDetail, useAgentTurnCalls } from "@/hooks/use-agent-turns"
 import { useTurnUrlState } from "@/hooks/use-turn-url-state"
@@ -7,6 +7,7 @@ import { LlmCallDetailPanel } from "./llm-call-detail-panel"
 import { TopBar, StatsCards, GanttNav, CallCard } from "@/components/turn-detail"
 import { ProxyViewTab } from "@/components/turn-detail/proxy-view-tab"
 import { buildToolIndex } from "@/lib/turn-index"
+import { groupCalls } from "@/lib/call-pair"
 import type { AgentTurnDetail, AgentTurnCallItem } from "@/types/api"
 
 type DetailTab = "calls" | "proxy"
@@ -34,17 +35,30 @@ interface Props {
 function TurnDetailView({
   turn,
   calls,
+  renderedCalls,
   loadingCalls,
   activeSeq,
   onSelect,
   onOpenDetail,
+  foldHops,
+  setFoldHops,
+  hopsByCanonical,
+  hopCount,
 }: {
   turn: AgentTurnDetail
+  /** Full call list — used for indexing tools etc. */
   calls: AgentTurnCallItem[]
+  /** Calls to render in the list/timeline (full list, or canonical-only
+   * when foldHops is on). Sibling GanttNav uses the same view. */
+  renderedCalls: AgentTurnCallItem[]
   loadingCalls: boolean
   activeSeq: number | null
   onSelect: (seq: number) => void
   onOpenDetail: (id: string) => void
+  foldHops: boolean
+  setFoldHops: (v: boolean) => void
+  hopsByCanonical: Map<string, AgentTurnCallItem[]>
+  hopCount: number
 }) {
   const toolIndex = useMemo(() => buildToolIndex(calls), [calls])
   const userCallId = turn.user_call_id ?? calls[0]?.id ?? null
@@ -60,17 +74,38 @@ function TurnDetailView({
           onJumpToSlowest={onSelect}
         />
       </div>
-      {proxyRole && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-border px-4">
-          <TabButton active={tab === "calls"} onClick={() => setTab("calls")}>
-            Calls
-          </TabButton>
-          <TabButton active={tab === "proxy"} onClick={() => setTab("proxy")}>
-            <ArrowLeftRight className="size-3" />
-            Proxy view
-          </TabButton>
-        </div>
-      )}
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4">
+        {proxyRole && (
+          <>
+            <TabButton active={tab === "calls"} onClick={() => setTab("calls")}>
+              Calls
+            </TabButton>
+            <TabButton active={tab === "proxy"} onClick={() => setTab("proxy")}>
+              <ArrowLeftRight className="size-3" />
+              Proxy view
+            </TabButton>
+          </>
+        )}
+        {tab === "calls" && hopCount > 0 && (
+          <label
+            className="ml-auto inline-flex cursor-pointer select-none items-center gap-1.5 py-2 text-xs text-muted-foreground hover:text-foreground"
+            title={
+              foldHops
+                ? `${hopCount} duplicate call leg(s) folded — show them?`
+                : "Hide proxy-duplicated legs and keep one row per logical call"
+            }
+          >
+            <input
+              type="checkbox"
+              checked={!foldHops}
+              onChange={(e) => setFoldHops(!e.target.checked)}
+              className="size-3"
+            />
+            <Layers className="size-3" />
+            Show proxy hops ({hopCount})
+          </label>
+        )}
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {tab === "proxy" && proxyRole ? (
           <ProxyViewTab turnId={turn.turn_id} />
@@ -83,7 +118,7 @@ function TurnDetailView({
                 ))}
               </>
             ) : (
-              calls.map((c) => (
+              renderedCalls.map((c) => (
                 <CallCard
                   key={c.id}
                   call={c}
@@ -97,10 +132,11 @@ function TurnDetailView({
                     c.id === turn.final_call_id
                   }
                   onOpenDetail={onOpenDetail}
+                  hopCount={hopsByCanonical.get(c.id)?.length ?? 0}
                 />
               ))
             )}
-            {!loadingCalls && calls.length === 0 && (
+            {!loadingCalls && renderedCalls.length === 0 && (
               <p className="text-center text-xs text-muted-foreground">No calls</p>
             )}
           </div>
@@ -137,6 +173,16 @@ function TabButton({
 export function AgentTurnDetailPanel({ id, onClose }: Props) {
   const { data: turn, isLoading: loadingTurn, isError: errorTurn } = useAgentTurnDetail(id)
   const { data: calls = [], isLoading: loadingCalls } = useAgentTurnCalls(id)
+
+  // Call-level proxy-duplicate fold: when two captured calls represent
+  // the same LLM round-trip (e.g. client→litellm + litellm→upstream),
+  // hide the upstream-facing leg by default. Toggle exposed in
+  // TurnDetailView below the StatsCards. Shared between GanttNav and
+  // the CallCard list so the timeline matches what's rendered to the
+  // right.
+  const [foldHops, setFoldHops] = useState(true)
+  const callGrouping = useMemo(() => groupCalls(calls), [calls])
+  const renderedCalls = foldHops ? callGrouping.visible : calls
 
   const { call: activeSeq, detail, setCall, setDetail, openDetail } = useTurnUrlState()
 
@@ -216,8 +262,8 @@ export function AgentTurnDetailPanel({ id, onClose }: Props) {
           </div>
         ) : (
           <div className="flex flex-1 overflow-hidden">
-            {/* Left panel — Gantt nav */}
-            <GanttNav turn={turn} calls={calls} activeSequence={activeSeq} onSelect={handleSelect} />
+            {/* Left panel — Gantt nav, filtered by the same fold rule */}
+            <GanttNav turn={turn} calls={renderedCalls} activeSequence={activeSeq} onSelect={handleSelect} />
 
             {/* Right panel */}
             <section className="flex flex-1 flex-col overflow-hidden">
@@ -227,10 +273,15 @@ export function AgentTurnDetailPanel({ id, onClose }: Props) {
                 <TurnDetailView
                   turn={turn}
                   calls={calls}
+                  renderedCalls={renderedCalls}
                   loadingCalls={loadingCalls}
                   activeSeq={activeSeq}
                   onSelect={handleSelect}
                   onOpenDetail={openCallDetail}
+                  foldHops={foldHops}
+                  setFoldHops={setFoldHops}
+                  hopsByCanonical={callGrouping.hopsByCanonical}
+                  hopCount={callGrouping.hopCount}
                 />
               </div>
             </section>
