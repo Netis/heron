@@ -135,6 +135,10 @@ pub fn router(
             "/api/agent-turns/{id}/calls",
             get(routes::agent_turns::calls),
         )
+        .route(
+            "/api/agent-turns/{id}/proxy-view",
+            get(routes::agent_turns::proxy_view),
+        )
         .with_state(agent_turns_state);
 
     Router::new()
