@@ -9,21 +9,24 @@ pub mod codex_cli;
 pub mod generic;
 pub mod hermes;
 pub mod openclaw;
+pub mod opencode;
 pub mod session_id;
 
 /// Default registry with all built-in agent profiles.
 ///
 /// Order is priority — first match wins. Specific profiles (claude-cli,
-/// codex-cli, openclaw, hermes) come first; the generic profile catches
-/// traffic without distinguishing client headers, dispatching internally
-/// on `wire_api`. Header-based detection (claude-cli, codex-cli) precedes
-/// body-fingerprint detection (openclaw, hermes) so cheaper checks run
-/// first. OpenClaw and Hermes both fingerprint by `tools[]` marker names
-/// but their marker sets are disjoint — order between them is irrelevant.
+/// codex-cli, opencode, openclaw, hermes) come first; the generic profile
+/// catches traffic without distinguishing client headers, dispatching
+/// internally on `wire_api`. Header-based detection (claude-cli, codex-cli,
+/// opencode) precedes body-fingerprint detection (openclaw, hermes) so
+/// cheaper checks run first. OpenClaw and Hermes both fingerprint by
+/// `tools[]` marker names but their marker sets are disjoint — order
+/// between them is irrelevant.
 pub fn build_default_registry() -> AgentProfileRegistry {
     AgentProfileRegistry::new()
         .with(Box::new(claude_cli::ClaudeCliProfile))
         .with(Box::new(codex_cli::CodexCliProfile))
+        .with(Box::new(opencode::OpencodeProfile))
         .with(Box::new(openclaw::OpenClawProfile))
         .with(Box::new(hermes::HermesProfile))
         .with(Box::new(generic::GenericProfile))
@@ -221,6 +224,38 @@ mod priority_tests {
     fn generic_catches_openai_chat() {
         let reg = build_default_registry();
         let c = call_with(wa::OPENAI_CHAT, vec![("User-Agent", "OpenAI/JS 6.26.0")]);
+        assert_eq!(find_kind(&reg, &c), Some("generic"));
+    }
+
+    #[test]
+    fn opencode_wins_over_generic_when_ua_and_session_header_present() {
+        let reg = build_default_registry();
+        let c = call_with(
+            wa::OPENAI_CHAT,
+            vec![
+                (
+                    "User-Agent",
+                    "opencode/1.14.50 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13",
+                ),
+                ("x-session-affinity", "ses_1d9b5b09affe2vyaYUaMI4M5aS"),
+            ],
+        );
+        assert_eq!(find_kind(&reg, &c), Some("opencode"));
+    }
+
+    #[test]
+    fn generic_catches_old_opencode_without_session_header() {
+        // Pre-1.14.x opencode lacks x-session-affinity. OpencodeProfile must
+        // NOT claim it (no fallback for session_id), so the call falls
+        // through to GenericProfile which can synthesize from the body.
+        let reg = build_default_registry();
+        let c = call_with(
+            wa::OPENAI_CHAT,
+            vec![(
+                "User-Agent",
+                "opencode/1.1.31 ai-sdk/provider-utils/3.0.20 runtime/bun/1.3.5",
+            )],
+        );
         assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
 

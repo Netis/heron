@@ -350,6 +350,29 @@ export interface InternalMetricsResponse {
 }
 
 // ============================================================================
+// /api/internal-metrics/series
+// ============================================================================
+
+/** One point in an internal-metrics time series. `t` is unix epoch ms. */
+export interface InternalSeriesPoint {
+  t: number
+  v: number
+}
+
+/** One series in the response — typically one per requested metric. */
+export interface InternalSeriesEntry {
+  name: string
+  group: MetricGroup
+  points: InternalSeriesPoint[]
+}
+
+export interface InternalMetricsSeriesResponse {
+  /** Server wall-clock at response time, unix epoch ms. */
+  ts: number
+  series: InternalSeriesEntry[]
+}
+
+// ============================================================================
 // /api/runtime-config
 // ============================================================================
 
@@ -361,9 +384,79 @@ export interface RuntimeConfigResponse {
   /** Binary version (env!("CARGO_PKG_VERSION") at compile time). */
   version: string
   /**
-   * The live in-memory `AppConfig`. Shape mirrors the Rust struct but is kept
-   * opaque on the TS side — the page renders it as JSON and there is no other
-   * consumer that needs typed access.
+   * The live in-memory `AppConfig`. The narrow `AppConfigShape` typing is
+   * used by Settings; the debug page still renders the whole thing as JSON
+   * via `unknown` cast.
    */
-  config: unknown
+  config: AppConfigShape
+}
+
+// Narrow typed view of the AppConfig fields the Settings page consumes.
+// Everything else stays untyped — extend as needed.
+
+export type CaptureSource =
+  | {
+      type: "pcap"
+      interface: string
+      bpf_filter: string | null
+      snaplen: number
+      source_id: string | null
+    }
+  | {
+      type: "pcap-file"
+      path: string
+      realtime: boolean
+      source_id: string | null
+    }
+  | {
+      type: "cloud-probe"
+      endpoint: string
+      recv_hwm: number
+    }
+
+export interface PcapDumpRetention {
+  enabled: boolean
+  check_interval_secs: number
+  max_age_hours: number
+  max_size_mb: number
+}
+
+export interface PcapDumpConfig {
+  enabled: boolean
+  dir: string
+  compression: "none" | "snappy"
+  retention?: PcapDumpRetention
+}
+
+export interface PipelineShape {
+  name: string
+  dispatcher_count?: number
+  flow_shard_count?: number
+  sources: CaptureSource[]
+  pcap_dump?: PcapDumpConfig
+}
+
+export interface AppConfigShape {
+  pipelines?: PipelineShape[]
+  // Other AppConfig top-levels exist (storage, api, internal_metrics, …)
+  // but Settings does not consume them.
+  [k: string]: unknown
+}
+
+// ============================================================================
+// /api/capture/interfaces
+// ============================================================================
+
+export interface CaptureInterface {
+  name: string
+  description: string | null
+  addresses: string[]
+  is_up: boolean
+  is_running: boolean
+  is_loopback: boolean
+  is_wireless: boolean
+}
+
+export interface CaptureInterfacesResponse {
+  interfaces: CaptureInterface[]
 }

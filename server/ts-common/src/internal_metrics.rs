@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -195,7 +195,14 @@ define_metrics! {
     TurnDiscardedNoUserStart => { kind: Counter, group: Turn, short: "turns_discarded_no_user_start" },
     TurnHeartbeatsReceived   => { kind: Counter, group: Turn, short: "turn_heartbeats_received"      },
     TurnHeartbeatsDropped    => { kind: Counter, group: Turn, short: "turn_heartbeats_dropped"       },
-    TurnActive               => { kind: Gauge,   group: Turn, short: "turns_active"                  },
+    TurnActive               => { kind: Gauge,   group: Turn, short: "turn_calls_buffered"           },
+    // Process-wide registry of in-progress agent turns (size of
+    // ActiveTurnRegistry). Distinct from `turn_calls_buffered`, which sums
+    // pending LLM calls inside per-session turn buffers — that gauge counts
+    // calls, not conversations. `agent_turns_open` is the truthful
+    // "concurrent in-flight agent turns" signal and is what the dashboard
+    // "Active Agent Turns" chart reads.
+    TurnRegistryActive       => { kind: Gauge,   group: Turn, short: "agent_turns_open"              },
 
     // -- Metrics aggregation --
     // Start/Complete are kept under the `llm_events_*` family because the
@@ -682,6 +689,158 @@ impl MetricsReporter {
 }
 
 // ---------------------------------------------------------------------------
+// AggregateHistory — in-memory time-series ring for selected gauges
+// ---------------------------------------------------------------------------
+
+/// One sample in the in-memory history ring.
+#[derive(Debug, Clone, Copy)]
+pub struct HistoryPoint {
+    /// Wall-clock unix timestamp in milliseconds (when the sample was taken).
+    pub ts_ms: i64,
+    /// Aggregated value at that instant (summed across the contributing svcs
+    /// the recorder was given — typically all per-pipeline `MetricsSvc`s plus
+    /// the global one).
+    pub value: u64,
+}
+
+struct HistoryFrame {
+    ts_ms: i64,
+    values: BTreeMap<Metric, u64>,
+}
+
+/// Bounded in-memory ring of timestamped gauge samples, sampled by
+/// [`HistoryRecorder`] at a fixed interval. Reads are cheap (single
+/// `RwLock` shared read), writes are amortized O(1) (`VecDeque` push back,
+/// pop front when at capacity).
+///
+/// Capacity is computed by the caller from retention / interval (e.g. 24h
+/// at 10s ⇒ 8640 frames). At < 64 bytes / frame including the per-metric
+/// `BTreeMap` entries, a 24h ring for two gauges fits in ~500 KB — small
+/// enough to ignore.
+///
+/// History is gone on process restart; this is by design (gauges are
+/// "active now" signals — the cross-restart story isn't useful here).
+pub struct AggregateHistory {
+    tracked: Vec<Metric>,
+    capacity: usize,
+    samples: RwLock<VecDeque<HistoryFrame>>,
+}
+
+impl AggregateHistory {
+    /// Create a new history ring for the given tracked metrics.
+    pub fn new(tracked: Vec<Metric>, capacity: usize) -> Arc<Self> {
+        let cap = capacity.max(1);
+        Arc::new(Self {
+            tracked,
+            capacity: cap,
+            samples: RwLock::new(VecDeque::with_capacity(cap)),
+        })
+    }
+
+    /// Metrics this ring records (subset of `Metric::ALL`).
+    pub fn tracked(&self) -> &[Metric] {
+        &self.tracked
+    }
+
+    /// Push a frame, evicting the oldest if at capacity.
+    pub fn push(&self, ts_ms: i64, values: BTreeMap<Metric, u64>) {
+        let mut buf = self.samples.write().expect("history lock poisoned");
+        if buf.len() >= self.capacity {
+            buf.pop_front();
+        }
+        buf.push_back(HistoryFrame { ts_ms, values });
+    }
+
+    /// Return all samples for `metric` with `ts_ms >= since_ms`.
+    ///
+    /// If the ring is empty or the metric was never tracked, returns an
+    /// empty vector.
+    pub fn series(&self, metric: Metric, since_ms: i64) -> Vec<HistoryPoint> {
+        let buf = self.samples.read().expect("history lock poisoned");
+        buf.iter()
+            .filter(|f| f.ts_ms >= since_ms)
+            .map(|f| HistoryPoint {
+                ts_ms: f.ts_ms,
+                value: f.values.get(&metric).copied().unwrap_or(0),
+            })
+            .collect()
+    }
+
+    /// Number of samples currently held (test/diag helper).
+    pub fn len(&self) -> usize {
+        self.samples
+            .read()
+            .expect("history lock poisoned")
+            .len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Periodic recorder that samples every contributor `MetricsSvc` and pushes
+/// one summed frame into the shared [`AggregateHistory`].
+///
+/// Drives independent of [`MetricsReporter`] so it can keep ticking when the
+/// reporter is disabled (`internal_metrics.enabled = false` in config), and
+/// so the recorder cadence does not have to equal the log cadence — though
+/// for v1 they share `internal_metrics.interval_secs`.
+pub struct HistoryRecorder;
+
+impl HistoryRecorder {
+    /// Spawn the recorder task. `svcs` is the set of `MetricsSvc`s whose
+    /// values are summed at every tick (typically per-pipeline svcs + the
+    /// global one). The handle works the same way as [`MetricsReporter`]'s.
+    pub fn start(
+        svcs: Vec<Arc<MetricsSvc>>,
+        history: Arc<AggregateHistory>,
+        interval: Duration,
+    ) -> ReporterHandle {
+        let (stop_tx, mut stop_rx) = watch::channel(());
+
+        let join = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.tick().await; // first tick is immediate, skip
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => Self::record(&svcs, &history),
+                    _ = stop_rx.changed() => {
+                        Self::record(&svcs, &history);
+                        break;
+                    }
+                }
+            }
+        });
+
+        ReporterHandle { stop_tx, join }
+    }
+
+    /// Take one synchronous sample. Pub for unit-test reuse — production
+    /// callers should let [`start`](Self::start)'s tokio task drive this.
+    pub fn record(svcs: &[Arc<MetricsSvc>], history: &AggregateHistory) {
+        let mut sum: BTreeMap<Metric, u64> =
+            history.tracked().iter().map(|&m| (m, 0u64)).collect();
+        for svc in svcs {
+            svc.sample_probes();
+            for &m in history.tracked() {
+                if let Some(v) = svc.aggregate(m) {
+                    if let Some(slot) = sum.get_mut(&m) {
+                        *slot = slot.saturating_add(v);
+                    }
+                }
+            }
+        }
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        history.push(ts, sum);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -877,5 +1036,79 @@ mod tests {
         depth.store(5, Ordering::Relaxed);
         svc.sample_probes();
         assert_eq!(svc.aggregate(Metric::QueueDepthRaw), Some(5));
+    }
+
+    #[test]
+    fn aggregate_history_ring_evicts_oldest() {
+        let history = AggregateHistory::new(vec![Metric::FlowsActive], 3);
+        for (ts, v) in [(1, 10u64), (2, 20), (3, 30), (4, 40)] {
+            let mut frame = BTreeMap::new();
+            frame.insert(Metric::FlowsActive, v);
+            history.push(ts, frame);
+        }
+        assert_eq!(history.len(), 3, "ring should evict to capacity");
+
+        let pts = history.series(Metric::FlowsActive, 0);
+        let values: Vec<u64> = pts.iter().map(|p| p.value).collect();
+        assert_eq!(values, vec![20, 30, 40]);
+        let timestamps: Vec<i64> = pts.iter().map(|p| p.ts_ms).collect();
+        assert_eq!(timestamps, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn aggregate_history_series_since_filter() {
+        let history = AggregateHistory::new(vec![Metric::TurnActive], 10);
+        for (ts, v) in [(100, 1u64), (200, 2), (300, 3), (400, 4)] {
+            let mut frame = BTreeMap::new();
+            frame.insert(Metric::TurnActive, v);
+            history.push(ts, frame);
+        }
+        let pts = history.series(Metric::TurnActive, 250);
+        let values: Vec<u64> = pts.iter().map(|p| p.value).collect();
+        assert_eq!(values, vec![3, 4]);
+    }
+
+    #[test]
+    fn aggregate_history_untracked_metric_yields_zero() {
+        let history = AggregateHistory::new(vec![Metric::FlowsActive], 10);
+        let mut frame = BTreeMap::new();
+        frame.insert(Metric::FlowsActive, 7);
+        history.push(50, frame);
+
+        // Querying a metric we didn't track should return frames with 0,
+        // not panic — matches the "missing == zero" reader semantics.
+        let pts = history.series(Metric::TurnActive, 0);
+        assert_eq!(pts.len(), 1);
+        assert_eq!(pts[0].value, 0);
+    }
+
+    #[test]
+    fn history_recorder_sums_pipelines_and_global() {
+        let mut sys_a = MetricsSystem::new();
+        sys_a.register_queue_probe(Metric::FlowsActive, || 3);
+        sys_a.register_queue_probe(Metric::TurnActive, || 1);
+        let svc_a = sys_a.start();
+
+        let mut sys_b = MetricsSystem::new();
+        sys_b.register_queue_probe(Metric::FlowsActive, || 5);
+        sys_b.register_queue_probe(Metric::TurnActive, || 2);
+        let svc_b = sys_b.start();
+
+        let history =
+            AggregateHistory::new(vec![Metric::FlowsActive, Metric::TurnActive], 16);
+
+        HistoryRecorder::record(&[svc_a, svc_b], &history);
+        HistoryRecorder::record(&[], &history); // empty svcs should yield 0 frame
+
+        let flows = history.series(Metric::FlowsActive, 0);
+        let turns = history.series(Metric::TurnActive, 0);
+        assert_eq!(flows.len(), 2);
+        assert_eq!(turns.len(), 2);
+        // Frame 1: a(3) + b(5) = 8 flows, a(1) + b(2) = 3 turns.
+        assert_eq!(flows[0].value, 8);
+        assert_eq!(turns[0].value, 3);
+        // Frame 2: no contributors → 0.
+        assert_eq!(flows[1].value, 0);
+        assert_eq!(turns[1].value, 0);
     }
 }

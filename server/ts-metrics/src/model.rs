@@ -70,6 +70,21 @@ pub struct LlmMetric {
     pub ttft_p50: Option<f64>,
     pub ttft_p95: Option<f64>,
     pub ttft_p99: Option<f64>,
+    // TTFT split by is_stream so the dashboard can render the two
+    // distributions separately. Streaming TTFT is genuine "time to first
+    // token"; non-streaming TTFT is "time to first response byte" and ≈
+    // e2e on most servers. Both still feed `ttft_*` above for any
+    // consumer that wants the combined view.
+    pub ttft_stream_sum: f64,
+    pub ttft_stream_count: u64,
+    pub ttft_stream_p50: Option<f64>,
+    pub ttft_stream_p95: Option<f64>,
+    pub ttft_stream_p99: Option<f64>,
+    pub ttft_nonstream_sum: f64,
+    pub ttft_nonstream_count: u64,
+    pub ttft_nonstream_p50: Option<f64>,
+    pub ttft_nonstream_p95: Option<f64>,
+    pub ttft_nonstream_p99: Option<f64>,
 
     // E2E latency distribution (milliseconds)
     pub e2e_sum: f64,
@@ -141,6 +156,14 @@ impl LlmMetric {
 
     pub fn ttft_avg(&self) -> Option<f64> {
         safe_avg(self.ttft_sum, self.ttft_count)
+    }
+
+    pub fn ttft_stream_avg(&self) -> Option<f64> {
+        safe_avg(self.ttft_stream_sum, self.ttft_stream_count)
+    }
+
+    pub fn ttft_nonstream_avg(&self) -> Option<f64> {
+        safe_avg(self.ttft_nonstream_sum, self.ttft_nonstream_count)
     }
 
     pub fn e2e_avg(&self) -> Option<f64> {

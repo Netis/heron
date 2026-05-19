@@ -30,8 +30,13 @@ export function TimelineBar({ detail }: Props) {
           <div
             className="flex items-center justify-center bg-amber-400/80 text-xs font-medium text-amber-900 dark:bg-amber-500/30 dark:text-amber-300"
             style={{ width: `${Math.max(ttftRatio * 100, 8)}%` }}
+            title={
+              detail.is_stream
+                ? "Time to first generated token (streaming)"
+                : "Non-streaming: time to first response byte (≈ E2E)"
+            }
           >
-            TTFT {formatMs(ttft_ms)}
+            {detail.is_stream ? "TTFT" : "TTFB"} {formatMs(ttft_ms)}
           </div>
         )}
         {genRatio > 0 && (
@@ -44,7 +49,9 @@ export function TimelineBar({ detail }: Props) {
         )}
       </div>
       <div className="mt-1.5 flex gap-4 text-xs text-muted-foreground">
-        <span>TTFT: {formatMs(ttft_ms)}</span>
+        <span>
+          {detail.is_stream ? "TTFT" : "TTFB"}: {formatMs(ttft_ms)}
+        </span>
         <span>E2E: {formatMs(e2e_latency_ms)}</span>
       </div>
     </div>

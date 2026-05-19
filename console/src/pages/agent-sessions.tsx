@@ -3,12 +3,11 @@ import { Link, useSearchParams } from "react-router"
 import { Loader2, Filter } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAgentSessions } from "@/hooks/use-agent-sessions"
+import { useAgentKinds } from "@/hooks/use-filter-values"
 import { formatNumber, formatDateTime, formatDuration } from "@/lib/format"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import { AgentBadge } from "@/components/ui/agent-badge"
 import type { SessionListItem } from "@/types/api"
-
-const AGENT_KIND_OPTIONS = ["claude-cli", "codex-cli", "generic"]
 
 function SessionRow({ item }: { item: SessionListItem }) {
   const [searchParams] = useSearchParams()
@@ -48,6 +47,8 @@ function SessionRow({ item }: { item: SessionListItem }) {
 
 export function AgentSessionsPage() {
   const [agentKindFilter, setAgentKindFilter] = useState<string[]>([])
+  const agentKindsQuery = useAgentKinds()
+  const agentKindOptions = agentKindsQuery.data?.values ?? []
 
   const { data, isLoading, isError, error, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useAgentSessions({
@@ -64,7 +65,7 @@ export function AgentSessionsPage() {
         <span className="text-xs text-muted-foreground">Filters:</span>
         <FilterDropdown
           label="Agent kind"
-          options={AGENT_KIND_OPTIONS}
+          options={agentKindOptions}
           selected={agentKindFilter}
           onChange={setAgentKindFilter}
         />

@@ -31,8 +31,17 @@ export function SummaryCards({ detail }: Props) {
           <FinishBadge reason={detail.finish_reason} />
         </div>
       </SummaryCard>
-      <SummaryCard label="TTFT / E2E">
-        <div className="tabular-nums">{formatMs(detail.ttft_ms)}</div>
+      <SummaryCard label={detail.is_stream ? "TTFT / E2E" : "TTFB / E2E"}>
+        <div
+          className={detail.is_stream ? "tabular-nums" : "tabular-nums italic text-muted-foreground"}
+          title={
+            detail.is_stream
+              ? "Time to first generated token (streaming)"
+              : "Non-streaming: time to first response byte (≈ E2E — server buffers full body before sending)"
+          }
+        >
+          {formatMs(detail.ttft_ms)}
+        </div>
         <div className="text-xs tabular-nums text-muted-foreground">
           {formatMs(detail.e2e_latency_ms)}
         </div>

@@ -1,7 +1,8 @@
-import { useState, useCallback } from "react"
+import { useCallback } from "react"
 import { ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Loader2, Filter } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAgentTurns } from "@/hooks/use-agent-turns"
+import { useAgentKinds } from "@/hooks/use-filter-values"
 import { useSearchParamState } from "@/hooks/use-search-param-state"
 import { formatDateTimeMs, formatNumber, formatDuration } from "@/lib/format"
 import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
@@ -10,7 +11,6 @@ import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
 import type { AgentTurnListItem } from "@/types/api"
 
 const STATUS_OPTIONS = ["in_progress", "complete", "incomplete"]
-const AGENT_KIND_OPTIONS = ["claude-cli", "codex-cli", "generic"]
 
 const PAGE_SIZES = [20, 50, 100] as const
 
@@ -93,7 +93,10 @@ export function AgentTurnsPage() {
   const statusFilter = statusStr ? statusStr.split(",") : []
   const agentKindFilter = agentKindStr ? agentKindStr.split(",") : []
 
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useSearchParamState("selected", "")
+
+  const agentKindsQuery = useAgentKinds()
+  const agentKindOptions = agentKindsQuery.data?.values ?? []
 
   const { data, isLoading, isError, error } = useAgentTurns({
     page,
@@ -142,7 +145,7 @@ export function AgentTurnsPage() {
         />
         <FilterDropdown
           label="Agent kind"
-          options={AGENT_KIND_OPTIONS}
+          options={agentKindOptions}
           selected={agentKindFilter}
           onChange={(v) => {
             setAgentKindStr(v.join(","))
@@ -283,7 +286,7 @@ export function AgentTurnsPage() {
 
       {/* Slide-over detail panel */}
       {selectedId && (
-        <AgentTurnDetailPanel id={selectedId} onClose={() => setSelectedId(null)} />
+        <AgentTurnDetailPanel id={selectedId} onClose={() => setSelectedId("")} />
       )}
     </div>
   )
