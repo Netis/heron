@@ -54,16 +54,28 @@ function contentKey(c: AgentTurnCallItem): string {
   // bucketing in JS. Token nulls and finish nulls intentionally
   // stringify to "null" so two equally-tokenless calls still cluster.
   //
-  // `request_path` is intentionally NOT in the key: proxies routinely
-  // rewrite the URL prefix (e.g. client sends `/v1/chat/completions`
-  // to LiteLLM, LiteLLM forwards the path as `/chat/completions` to
-  // the upstream — or vice versa depending on which SDK the client
-  // uses). Including the path drops the pair rate to ~0 in practice.
-  // Tokens + model + finish are sufficient content equivalence —
-  // matches the backend `proxy_pair::group_all` rule.
+  // Fields intentionally NOT in the key:
+  //
+  // * `request_path` — proxies routinely rewrite the URL prefix (e.g.
+  //   client sends `/v1/chat/completions` to LiteLLM, LiteLLM forwards
+  //   the path as `/chat/completions` to the upstream — or vice versa
+  //   depending on which SDK is used).
+  //
+  // * `model` — LiteLLM in particular advertises a "model alias" to
+  //   the client (e.g. `glm5`) and rewrites it to the upstream's
+  //   canonical name (`GLM-5.1`) before forwarding. Live wuneng data
+  //   shows a 4-leg topology where leg 1 carries the alias and legs
+  //   2-4 carry the rewritten name, so the four legs would never
+  //   cluster if `model` were in the key. Model rewrite IS surfaced
+  //   in the Proxy view tab's per-leg display, which reads the
+  //   captured `model` field directly from each leg.
+  //
+  // Tokens + wire_api + finish + status + stream-flag is sufficient
+  // content equivalence. Within a 100ms window the chance that two
+  // unrelated calls happen to share the same token counts AND finish
+  // reason AND distinct 5-tuples is effectively nil.
   return [
     c.wire_api,
-    c.model,
     c.is_stream ? "S" : "N",
     c.status_code ?? "null",
     c.finish_reason ?? "null",

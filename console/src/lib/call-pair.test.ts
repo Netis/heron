@@ -173,6 +173,44 @@ describe("groupCalls", () => {
     expect(g.hopCount).toBe(1)
   })
 
+  it("pairs even when model differs (LiteLLM alias rewrite)", () => {
+    // Live wuneng case: client SDK sends `glm5` (alias) to LiteLLM:4000,
+    // LiteLLM rewrites it to `GLM-5.1` for the upstream. Same logical
+    // call, different model field per leg. Model rewrite IS surfaced
+    // in the Proxy view; pairing must succeed regardless.
+    const c1 = call({
+      id: "alias", sequence: 1, request_time: 1779171261156,
+      complete_time: 1779171261156 + 3070, e2e_latency_ms: 3070,
+      client_port: 48264, server_port: 4000,
+      model: "glm5",
+    })
+    const c2 = call({
+      id: "rewritten", sequence: 2, request_time: 1779171261213,
+      complete_time: 1779171261213 + 2998, e2e_latency_ms: 2998,
+      client_port: 40326, server_port: 9000,
+      model: "GLM-5.1",
+    })
+    const g = groupCalls([c1, c2])
+    expect(g.visible).toHaveLength(1)
+    expect(g.hopCount).toBe(1)
+  })
+
+  it("folds a 4-leg topology (alias + 3 rewritten legs)", () => {
+    // Exact shape from production: glm5 (LiteLLM ingress) → GLM-5.1
+    // (LiteLLM egress, captured 3x at different views) — all share
+    // identical tokens.
+    const base = 1779171261156
+    const calls: AgentTurnCallItem[] = [
+      call({ id: "a", sequence: 1, request_time: base, complete_time: base + 3070, e2e_latency_ms: 3070, client_port: 48264, server_port: 4000, model: "glm5" }),
+      call({ id: "b", sequence: 2, request_time: base + 57, complete_time: base + 57 + 2998, e2e_latency_ms: 2998, client_port: 40326, server_port: 9000, model: "GLM-5.1" }),
+      call({ id: "c", sequence: 3, request_time: base + 58, complete_time: base + 58 + 2997, e2e_latency_ms: 2997, client_ip: "172.17.0.1", client_port: 53036, server_ip: "172.17.0.9", server_port: 9000, model: "GLM-5.1" }),
+      call({ id: "d", sequence: 4, request_time: base + 60, complete_time: base + 60 + 2994, e2e_latency_ms: 2994, client_ip: "172.17.0.1", client_port: 39476, server_ip: "172.17.0.4", server_port: 30000, model: "GLM-5.1" }),
+    ]
+    const g = groupCalls(calls)
+    expect(g.visible).toHaveLength(1)
+    expect(g.hopCount).toBe(3)
+  })
+
   it("preserves call order in the visible list", () => {
     const c1 = call({ id: "first", sequence: 1, request_time: 0, client_port: 1000, server_port: 4000 })
     const c2 = call({ id: "first-hop", sequence: 2, request_time: 50, client_port: 2000, server_port: 9008 })
