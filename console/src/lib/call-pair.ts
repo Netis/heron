@@ -51,34 +51,39 @@ export interface CallGrouping {
 
 function contentKey(c: AgentTurnCallItem): string {
   // Joined string is the cheapest stable hash for HashMap-like
-  // bucketing in JS. Token nulls and finish nulls intentionally
-  // stringify to "null" so two equally-tokenless calls still cluster.
+  // bucketing in JS. Token nulls intentionally stringify to "null"
+  // so two equally-tokenless calls still cluster.
   //
-  // Fields intentionally NOT in the key:
+  // Fields intentionally NOT in the key (all observed live):
   //
-  // * `request_path` — proxies routinely rewrite the URL prefix (e.g.
-  //   client sends `/v1/chat/completions` to LiteLLM, LiteLLM forwards
-  //   the path as `/chat/completions` to the upstream — or vice versa
-  //   depending on which SDK is used).
+  // * `request_path` — proxies routinely rewrite the URL prefix
+  //   (`/v1/chat/completions` ↔ `/chat/completions` ↔ `/v1/messages`
+  //   etc., depending on which SDK each side speaks).
   //
-  // * `model` — LiteLLM in particular advertises a "model alias" to
-  //   the client (e.g. `glm5`) and rewrites it to the upstream's
-  //   canonical name (`GLM-5.1`) before forwarding. Live wuneng data
-  //   shows a 4-leg topology where leg 1 carries the alias and legs
-  //   2-4 carry the rewritten name, so the four legs would never
-  //   cluster if `model` were in the key. Model rewrite IS surfaced
-  //   in the Proxy view tab's per-leg display, which reads the
-  //   captured `model` field directly from each leg.
+  // * `model` — LiteLLM advertises a "model alias" to the client
+  //   (e.g. `glm5`) and rewrites it to the upstream's canonical name
+  //   (`GLM-5.1`) before forwarding. Surfaced in the Proxy view tab.
   //
-  // Tokens + wire_api + finish + status + stream-flag is sufficient
-  // content equivalence. Within a 100ms window the chance that two
-  // unrelated calls happen to share the same token counts AND finish
-  // reason AND distinct 5-tuples is effectively nil.
+  // * `wire_api` — LiteLLM (and other LLM proxies) translate across
+  //   API styles. The client may speak Anthropic at LiteLLM's ingress
+  //   while LiteLLM speaks OpenAI to the upstream. Same logical call,
+  //   different `wire_api` per captured leg.
+  //
+  // * `finish_reason` — translates alongside the API. Anthropic uses
+  //   `end_turn` / `tool_use` / `max_tokens`; OpenAI uses `stop` /
+  //   `tool_calls` / `length`. Anthropic→OpenAI proxies map them, so
+  //   each leg carries the value its side speaks.
+  //
+  // The remaining fields (status_code, is_stream, input_tokens,
+  // output_tokens) are the API-format-invariant ones — proxies pass
+  // them through unchanged. Combined with the time window (≤100ms)
+  // and the distinct-5-tuple requirement, this is a sufficiently
+  // narrow rule in practice; two unrelated calls happening to share
+  // exact token counts AND status code AND stream flag inside 100ms
+  // from different network views is effectively nil.
   return [
-    c.wire_api,
     c.is_stream ? "S" : "N",
     c.status_code ?? "null",
-    c.finish_reason ?? "null",
     c.input_tokens ?? "null",
     c.output_tokens ?? "null",
   ].join("\x1f")

@@ -211,6 +211,33 @@ describe("groupCalls", () => {
     expect(g.hopCount).toBe(3)
   })
 
+  it("pairs across API styles (Anthropic ingress → OpenAI upstream)", () => {
+    // LiteLLM accepts Anthropic-style at /v1/messages and forwards
+    // OpenAI-chat-style at /v1/chat/completions. wire_api differs
+    // ("anthropic" vs "openai-chat") AND finish_reason differs
+    // ("end_turn" vs "stop") AND the path differs — only tokens
+    // and status are constant.
+    const c1 = call({
+      id: "anth", sequence: 1, request_time: 0, complete_time: 2000,
+      client_port: 5000, server_port: 4000,
+      wire_api: "anthropic",
+      finish_reason: "end_turn",
+      request_path: "/v1/messages",
+      model: "claude-3-5-sonnet-20241022",
+    })
+    const c2 = call({
+      id: "oai", sequence: 2, request_time: 50, complete_time: 1950,
+      client_port: 5001, server_port: 9008,
+      wire_api: "openai-chat",
+      finish_reason: "stop",
+      request_path: "/v1/chat/completions",
+      model: "GLM-5.1",
+    })
+    const g = groupCalls([c1, c2])
+    expect(g.visible).toHaveLength(1)
+    expect(g.hopCount).toBe(1)
+  })
+
   it("preserves call order in the visible list", () => {
     const c1 = call({ id: "first", sequence: 1, request_time: 0, client_port: 1000, server_port: 4000 })
     const c2 = call({ id: "first-hop", sequence: 2, request_time: 50, client_port: 2000, server_port: 9008 })

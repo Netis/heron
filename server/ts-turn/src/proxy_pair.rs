@@ -181,27 +181,37 @@ impl ProxyGroup {
 
 /// Content fingerprint (everything that must agree across all members
 /// of a group) — used to bucket candidates before time-clustering.
+///
+/// Intentionally NOT in the fingerprint (all observed in live wuneng
+/// data, mirrors the same exclusions in the front-end call-level
+/// `lib/call-pair.ts::contentKey`):
+///
+/// * `wire_api` — LiteLLM and similar proxies translate API styles
+///   across the boundary (client Anthropic → upstream OpenAI etc.).
+/// * `final_finish_reason` — translates alongside the API style
+///   (`end_turn` ↔ `stop`, `tool_use` ↔ `tool_calls`, `max_tokens` ↔
+///   `length`).
+/// * `primary_model` — LiteLLM advertises a model alias on the client
+///   side (e.g. `glm5`) and rewrites it to the upstream's canonical
+///   name (`GLM-5.1`) before forwarding. Surfaced in Proxy view, not
+///   pairing-key material.
+///
+/// `session_id` is the strongest signal — agent profiles already
+/// content-hash on first user message, so cross-proxy legs land in
+/// the same session by construction. `agent_kind` and `call_count`
+/// co-vary with the session derivation and stay in the key as
+/// inexpensive sanity-checks. Tokens are passed through unchanged by
+/// well-behaved proxies and are the API-format-invariant content
+/// signal.
 fn content_fingerprint(
     c: &PairCandidate,
-) -> (
-    &str,
-    &str,
-    &str,
-    u32,
-    u64,
-    u64,
-    Option<&str>,
-    Option<&str>,
-) {
+) -> (&str, &str, u32, u64, u64) {
     (
         c.session_id.as_str(),
         c.agent_kind.as_str(),
-        c.wire_api.as_str(),
         c.call_count,
         c.total_input_tokens,
         c.total_output_tokens,
-        c.final_finish_reason.as_deref(),
-        c.primary_model.as_deref(),
     )
 }
 
@@ -292,8 +302,7 @@ fn assign_roles(
 /// omitted from the returned list — absence of `metadata.proxy` is the
 /// signal for "direct, non-duplicate turn".
 pub fn group_all(set: &[PairCandidate]) -> Vec<ProxyGroup> {
-    let mut by_fp: HashMap<(&str, &str, &str, u32, u64, u64, Option<&str>, Option<&str>), Vec<usize>> =
-        HashMap::new();
+    let mut by_fp: HashMap<(&str, &str, u32, u64, u64), Vec<usize>> = HashMap::new();
     for (i, c) in set.iter().enumerate() {
         by_fp.entry(content_fingerprint(c)).or_default().push(i);
     }
@@ -534,6 +543,29 @@ mod tests {
         b2.total_input_tokens = 200;
         let groups = group_all(&[a1, a2, b1, b2]);
         assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn pairs_across_api_style_translation() {
+        // LiteLLM accepts Anthropic at ingress, forwards OpenAI to the
+        // upstream. wire_api differs, final_finish_reason differs
+        // (`end_turn` vs `stop`), primary_model differs (alias
+        // rewrite). Everything that translates must be excluded from
+        // the fingerprint — only tokens + agent_kind + session +
+        // call_count remain.
+        let mut a = mk("anth", "S", 0, 2_000_000, "client->litellm");
+        a.wire_api = "anthropic".into();
+        a.final_finish_reason = Some("end_turn".into());
+        a.primary_model = Some("claude-3-5-sonnet-20241022".into());
+        let mut b = mk("oai", "S", 2_000, 1_998_000, "litellm->upstream");
+        b.wire_api = "openai-chat".into();
+        b.final_finish_reason = Some("stop".into());
+        b.primary_model = Some("GLM-5.1".into());
+        let groups = group_all(&[a, b]);
+        assert_eq!(groups.len(), 1);
+        let g = &groups[0];
+        assert_eq!(role_of(g, "anth"), Some(ProxyRole::ProxyIn));
+        assert_eq!(role_of(g, "oai"), Some(ProxyRole::ProxyOut));
     }
 
     #[test]
