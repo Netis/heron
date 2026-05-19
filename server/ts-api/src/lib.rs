@@ -17,7 +17,7 @@ pub mod routes;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::Router;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
@@ -104,10 +104,17 @@ pub fn router(
         )
         .with_state(metrics);
 
+    // Settings/runtime-config routes share the same context (config_path
+    // + AppConfig snapshot). GET is read-only; PUT rewrites the on-disk
+    // TOML and self-restarts.
     let runtime_config_routes = Router::new()
         .route(
             "/api/runtime-config",
             get(routes::runtime_config::runtime_config),
+        )
+        .route(
+            "/api/capture/sources",
+            put(routes::capture_sources::update),
         )
         .with_state(runtime_config);
 
@@ -136,6 +143,11 @@ pub fn router(
             get(routes::agent_turns::calls),
         )
         .with_state(agent_turns_state);
+
+    let capture_routes = Router::new().route(
+        "/api/capture/interfaces",
+        get(routes::capture_interfaces::interfaces),
+    );
 
     Router::new()
         .route("/api/filters/wire-apis", get(routes::filters::wire_apis))
@@ -174,5 +186,6 @@ pub fn router(
         .merge(health_routes)
         .merge(pcap_extract_routes)
         .merge(agent_turns_routes)
+        .merge(capture_routes)
         .layer(CorsLayer::permissive())
 }

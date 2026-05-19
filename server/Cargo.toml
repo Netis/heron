@@ -30,6 +30,7 @@ serde_json = "1"
 
 # Config
 config = { version = "0.15", features = ["toml"] }
+toml_edit = "0.22"
 
 # Logging
 tracing = "0.1"

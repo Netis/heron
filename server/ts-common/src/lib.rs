@@ -12,6 +12,7 @@
 //! compile-time coupling surface small.
 
 pub mod config;
+pub mod config_edit;
 pub mod error;
 pub mod internal_metrics;
 pub mod path;
