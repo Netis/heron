@@ -110,6 +110,23 @@ export function AgentTurnsPage() {
   const agentKindFilter = agentKindStr ? agentKindStr.split(",") : []
 
   const [selectedId, setSelectedId] = useSearchParamState("selected", "")
+  // Anchor (unix seconds) shared alongside `?selected` so a recipient who
+  // opens this URL with a stale relative preset still lands on the item's
+  // window — see use-url-sync.ts for the override logic.
+  const [, setSelectedAt] = useSearchParamState("selected_at", "")
+
+  const selectItem = useCallback(
+    (turnId: string, startTimeUs: number) => {
+      setSelectedId(turnId)
+      setSelectedAt(String(Math.floor(startTimeUs / 1_000_000)))
+    },
+    [setSelectedId, setSelectedAt],
+  )
+
+  const clearSelection = useCallback(() => {
+    setSelectedId("")
+    setSelectedAt("")
+  }, [setSelectedId, setSelectedAt])
 
   const { data, isLoading, isError, error } = useAgentTurns({
     page,
@@ -243,7 +260,7 @@ export function AgentTurnsPage() {
               items.map((item) => (
                 <tr
                   key={item.turn_id}
-                  onClick={() => setSelectedId(item.turn_id)}
+                  onClick={() => selectItem(item.turn_id, item.start_time)}
                   className={cn(
                     "cursor-pointer border-b border-border/50 transition-colors hover:bg-muted/50",
                     selectedId === item.turn_id && "bg-muted",
@@ -315,7 +332,7 @@ export function AgentTurnsPage() {
 
       {/* Slide-over detail panel */}
       {selectedId && (
-        <AgentTurnDetailPanel id={selectedId} onClose={() => setSelectedId("")} />
+        <AgentTurnDetailPanel id={selectedId} onClose={clearSelection} />
       )}
     </div>
   )
