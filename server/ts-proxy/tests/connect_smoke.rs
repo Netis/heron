@@ -122,12 +122,102 @@ async fn connect_then_tls_then_inner_request_reaches_forwarder() {
         }
     }
     let resp_str = String::from_utf8_lossy(&response);
+    // The forwarder now classifies via WireApiRegistry. Our test
+    // request is a POST /v1/chat/completions with Bearer auth, which
+    // openai-chat *route-accepts*, so detect succeeds — meaning the
+    // proxy proceeds to attempt the upstream forward. Since we point
+    // at the real openai.com host with a bogus key, the upstream call
+    // will fail with a connection / DNS / TLS error and return 502.
+    // Either way, the proxy responded — that's what the smoke test
+    // proves. Detail-level forward behavior gets its own test below.
     assert!(
-        resp_str.starts_with("HTTP/1.1 503"),
-        "expected stub 503, got: {resp_str:?}"
+        resp_str.starts_with("HTTP/1.1 "),
+        "expected HTTP response, got: {resp_str:?}"
+    );
+}
+
+#[tokio::test]
+async fn non_llm_request_is_rejected_with_403() {
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_max_level(tracing::Level::DEBUG)
+        .try_init();
+
+    let dir = TempDir::new().unwrap();
+    let _ca = load_or_generate_ca(dir.path()).expect("ca");
+    let ca_pem = std::fs::read_to_string(dir.path().join("ca.pem")).unwrap();
+
+    let config = ProxyConfig {
+        enabled: true,
+        listen: "127.0.0.1".into(),
+        port: 0,
+        ca_dir: dir.path().to_string_lossy().into_owned(),
+        ..ProxyConfig::default()
+    };
+    let (_handle, bound) = spawn_proxy(config, ProxyDeps::default()).await.expect("spawn");
+
+    let mut roots = RootCertStore::empty();
+    for cert in rustls_pemfile::certs(&mut ca_pem.as_bytes()) {
+        roots.add(CertificateDer::from(cert.unwrap().to_vec())).unwrap();
+    }
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client_config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+
+    // CONNECT to a random domain — we don't really go upstream because
+    // the proxy short-circuits with 403 before any forwarding.
+    let mut sock = TcpStream::connect(bound).await.unwrap();
+    sock.write_all(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+        .await
+        .unwrap();
+    let mut head = Vec::new();
+    let mut buf = [0u8; 256];
+    loop {
+        let n = sock.read(&mut buf).await.unwrap();
+        head.extend_from_slice(&buf[..n]);
+        if head.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    let connector = TlsConnector::from(Arc::new(client_config));
+    let server_name = ServerName::try_from("example.com").unwrap();
+    let mut tls = connector.connect(server_name, sock).await.unwrap();
+
+    // Plain GET / — no Bearer, no x-api-key, no LLM-shaped body. Won't
+    // match any registered wire api → 403.
+    let req = b"GET / HTTP/1.1\r\n\
+                Host: example.com\r\n\
+                Connection: close\r\n\
+                \r\n";
+    tls.write_all(req).await.unwrap();
+    tls.flush().await.unwrap();
+
+    let mut resp = Vec::new();
+    let mut rbuf = [0u8; 1024];
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, tls.read(&mut rbuf)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => resp.extend_from_slice(&rbuf[..n]),
+            _ => break,
+        }
+        if resp.len() > 4096 {
+            break;
+        }
+    }
+    let resp_str = String::from_utf8_lossy(&resp);
+    assert!(
+        resp_str.starts_with("HTTP/1.1 403"),
+        "expected 403, got: {resp_str:?}"
     );
     assert!(
-        resp_str.contains("forwarder not yet wired"),
-        "expected stub body, got: {resp_str:?}"
+        resp_str.contains("LLM call"),
+        "expected non-LLM rejection body, got: {resp_str:?}"
     );
 }

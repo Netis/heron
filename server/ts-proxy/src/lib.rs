@@ -13,18 +13,21 @@
 //! See `docs/design/builtin-mitm-proxy.md` for the architecture diagram.
 
 pub mod ca;
+pub mod capture;
 pub mod forward;
 pub mod redact;
 pub mod server;
 pub mod state;
 pub mod tls;
 pub mod tunnel;
+pub mod upstream;
 
 pub use ca::{load_or_generate_ca, CaError, CaMaterial};
 pub use redact::redact_headers;
 pub use server::{spawn_proxy, ProxyServerError};
-pub use state::{ProxyDeps, ProxyState};
-pub use tls::{LeafCertError, LeafCertStore, SniResolver};
+pub use state::{ProxyDeps, ProxyState, TunnelContext};
+pub use tls::{LeafCertError, LeafCertStore, SniResolver, TunnelSniResolver};
+pub use upstream::UpstreamClient;
 
 /// Convenience re-exports so callers don't need to depend on ts-common
 /// just to pass a `ProxyConfig` / `RedactPolicy`.

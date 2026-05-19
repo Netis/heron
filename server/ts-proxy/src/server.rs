@@ -10,7 +10,7 @@
 //!   For MVP we just reject these with 501; the focus is HTTPS capture,
 //!   and plain-HTTP LLM endpoints are already sniffable upstream.
 
-use crate::state::{ProxyDeps, ProxyState};
+use crate::state::{ProxyDeps, ProxyState, TunnelContext};
 use crate::tls::LeafCertStore;
 use crate::tunnel::{
     connect_response_bad_request, connect_response_ok, terminate_and_serve,
@@ -77,11 +77,7 @@ pub async fn spawn_proxy(
     let ca = load_or_generate_ca(Path::new(&config.ca_dir))?;
     let leaf_store = Arc::new(LeafCertStore::new(ca));
 
-    let state = Arc::new(ProxyState {
-        config,
-        leaf_store,
-        deps,
-    });
+    let state = Arc::new(ProxyState::new(config, leaf_store, deps));
 
     info!(target: "ts_proxy::server", addr = %bound, "proxy listening");
 
@@ -121,7 +117,7 @@ async fn serve_connection(
     let svc_state = state.clone();
     let service = service_fn(move |req: Request<Incoming>| {
         let st = svc_state.clone();
-        async move { route_top_level(req, st).await }
+        async move { route_top_level(req, st, peer).await }
     });
 
     let io = TokioIo::new(stream);
@@ -141,14 +137,19 @@ async fn serve_connection(
 async fn route_top_level(
     req: Request<Incoming>,
     state: Arc<ProxyState>,
+    peer: SocketAddr,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     if req.method() == Method::CONNECT {
-        return Ok(handle_connect(req, state).await);
+        return Ok(handle_connect(req, state, peer).await);
     }
     Ok(handle_plain_http(req).await)
 }
 
-fn handle_connect(req: Request<Incoming>, state: Arc<ProxyState>) -> impl std::future::Future<Output = Response<Full<Bytes>>> + Send {
+fn handle_connect(
+    req: Request<Incoming>,
+    state: Arc<ProxyState>,
+    peer: SocketAddr,
+) -> impl std::future::Future<Output = Response<Full<Bytes>>> + Send {
     async move {
         let authority = match req.uri().authority().cloned() {
             Some(a) => a,
@@ -158,6 +159,15 @@ fn handle_connect(req: Request<Incoming>, state: Arc<ProxyState>) -> impl std::f
             }
         };
         let host = authority.host().to_string();
+        // Default to 443 when the client omits a port (common for
+        // implicit-https CONNECT clients — though the RFC requires a
+        // port, real clients are forgiving).
+        let port = authority.port_u16().unwrap_or(443);
+        let ctx = TunnelContext {
+            host,
+            port,
+            client_peer: peer,
+        };
 
         // Schedule the TLS termination on a fresh task. hyper handles
         // the upgrade once we return 200 — the upgraded socket gets
@@ -167,7 +177,7 @@ fn handle_connect(req: Request<Incoming>, state: Arc<ProxyState>) -> impl std::f
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
                     let io = TokioIo::new(upgraded);
-                    terminate_and_serve(io, host, st).await;
+                    terminate_and_serve(io, ctx, st).await;
                 }
                 Err(e) => {
                     warn!(target: "ts_proxy::server", error = %e, "upgrade on CONNECT failed");

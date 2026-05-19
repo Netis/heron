@@ -101,9 +101,17 @@ fn build_leaf_params(sni: &str) -> Result<CertificateParams, rcgen::Error> {
         KeyUsagePurpose::DigitalSignature,
         KeyUsagePurpose::KeyEncipherment,
     ];
-    params.subject_alt_names = vec![SanType::DnsName(sni.try_into().map_err(|_| {
-        rcgen::Error::CouldNotParseCertificate
-    })?)];
+    // IP literals (127.0.0.1, ::1, real IPv4 / IPv6 endpoints) must
+    // go in an IP SAN, not a DnsName SAN — rcgen otherwise fails parse
+    // and rustls clients reject the chain on validation.
+    let san = match sni.parse::<std::net::IpAddr>() {
+        Ok(ip) => SanType::IpAddress(ip),
+        Err(_) => SanType::DnsName(
+            sni.try_into()
+                .map_err(|_| rcgen::Error::CouldNotParseCertificate)?,
+        ),
+    };
+    params.subject_alt_names = vec![san];
 
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, sni);
@@ -155,7 +163,7 @@ impl ResolvesServerCert for SniResolver {
 fn validate_sni(sni: &str) -> Result<(), LeafCertError> {
     // rustls / browsers reject hostnames with embedded NULs or control
     // chars. Cheap check up front so we don't waste cycles minting a
-    // bad cert.
+    // bad cert. Colons are allowed (IPv6).
     if sni.is_empty()
         || sni.len() > 253
         || sni
@@ -165,6 +173,46 @@ fn validate_sni(sni: &str) -> Result<(), LeafCertError> {
         return Err(LeafCertError::InvalidSni(sni.to_string()));
     }
     Ok(())
+}
+
+/// Per-tunnel resolver: prefer the SNI from the ClientHello, but fall
+/// back to the CONNECT authority's host when the client sent none
+/// (typical for HTTPS-to-IP clients — RFC 6066 forbids IP SNI).
+pub struct TunnelSniResolver {
+    store: Arc<LeafCertStore>,
+    fallback_host: String,
+}
+
+impl TunnelSniResolver {
+    pub fn new(store: Arc<LeafCertStore>, fallback_host: String) -> Self {
+        Self {
+            store,
+            fallback_host,
+        }
+    }
+}
+
+impl std::fmt::Debug for TunnelSniResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TunnelSniResolver")
+            .field("fallback_host", &self.fallback_host)
+            .finish()
+    }
+}
+
+impl ResolvesServerCert for TunnelSniResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        let host = client_hello
+            .server_name()
+            .unwrap_or(self.fallback_host.as_str());
+        match self.store.get(host) {
+            Ok(ck) => Some(ck),
+            Err(e) => {
+                warn!(target: "ts_proxy::tls", host = %host, error = %e, "leaf mint failed");
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]

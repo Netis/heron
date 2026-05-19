@@ -9,8 +9,8 @@
 //!    `serve_connection`, this time dispatching to `forward.rs` which
 //!    parses the inner request, classifies it, and proxies it upstream.
 
-use crate::state::ProxyState;
-use crate::SniResolver;
+use crate::state::{ProxyState, TunnelContext};
+use crate::tls::TunnelSniResolver;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::service::service_fn;
@@ -25,28 +25,28 @@ use tracing::{debug, warn};
 /// socket in rustls + hyper-server. Errors are logged but never
 /// propagated — by the time we're here, the CONNECT response has
 /// already flushed to the client, so there's nothing useful to return.
-pub async fn terminate_and_serve<I>(upgraded: I, host: String, state: Arc<ProxyState>)
+pub async fn terminate_and_serve<I>(upgraded: I, ctx: TunnelContext, state: Arc<ProxyState>)
 where
     I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let server_config = build_server_config(state.clone());
+    let server_config = build_server_config(state.clone(), ctx.host.clone());
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
     let tls_stream = match acceptor.accept(upgraded).await {
         Ok(s) => s,
         Err(e) => {
-            warn!(target: "ts_proxy::tunnel", host = %host, error = %e, "tls handshake failed");
+            warn!(target: "ts_proxy::tunnel", host = %ctx.host, error = %e, "tls handshake failed");
             return;
         }
     };
-    debug!(target: "ts_proxy::tunnel", host = %host, "tls handshake ok");
+    debug!(target: "ts_proxy::tunnel", host = %ctx.host, "tls handshake ok");
 
     let inner_state = state.clone();
-    let inner_host = host.clone();
+    let inner_ctx = ctx.clone();
     let service = service_fn(move |req| {
         let st = inner_state.clone();
-        let host = inner_host.clone();
-        async move { crate::forward::handle_inner_request(req, host, st).await }
+        let ctx = inner_ctx.clone();
+        async move { crate::forward::handle_inner_request(req, ctx, st).await }
     });
 
     let io = TokioIo::new(tls_stream);
@@ -58,13 +58,17 @@ where
         // hyper logs the typical incomplete-message error for stream
         // tear-down at debug level — most "errors" here are just clients
         // closing connections, not real problems.
-        debug!(target: "ts_proxy::tunnel", host = %host, error = %e, "inner http connection closed");
+        debug!(target: "ts_proxy::tunnel", host = %ctx.host, error = %e, "inner http connection closed");
     }
 }
 
-fn build_server_config(state: Arc<ProxyState>) -> ServerConfig {
-    let resolver: Arc<dyn tokio_rustls::rustls::server::ResolvesServerCert> =
-        Arc::new(SniResolver::new(state.leaf_store.clone()));
+fn build_server_config(state: Arc<ProxyState>, fallback_host: String) -> ServerConfig {
+    // Per-tunnel resolver: handles both SNI-bearing hostname clients
+    // and IP-targeted clients (which RFC 6066 forbids from sending
+    // SNI) by falling back to the CONNECT authority's host.
+    let resolver: Arc<dyn tokio_rustls::rustls::server::ResolvesServerCert> = Arc::new(
+        TunnelSniResolver::new(state.leaf_store.clone(), fallback_host),
+    );
     let mut cfg = ServerConfig::builder()
         .with_no_client_auth()
         .with_cert_resolver(resolver);
