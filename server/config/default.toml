@@ -27,8 +27,19 @@
 #
 # [[pipeline.sources]]
 # type = "pcap"
-# interface = "eth0"
-# bpf_filter = "tcp port 8080"
+# interface = "any"
+# # Default capture targets the common LLM-serving ports out of the box.
+# # Edit through the Settings UI (preferred) or trim/extend this list:
+# #   1234   LM Studio
+# #   4000   LiteLLM proxy default
+# #   4200   LiteLLM alt
+# #   8000   vLLM default
+# #   8001   vLLM alt
+# #   8080   common HTTP backend (OpenAI-compatible servers)
+# #   9000   generic / SGLang internal
+# #   11434  Ollama default
+# #   30000  SGLang default
+# bpf_filter = "tcp port 1234 or tcp port 4000 or tcp port 4200 or tcp port 8000 or tcp port 8001 or tcp port 8080 or tcp port 9000 or tcp port 11434 or tcp port 30000"
 # snaplen = 262144
 #
 # [[pipeline.sources]]

@@ -11,6 +11,7 @@ import { AgentSessionsPage } from "@/pages/agent-sessions"
 import { AgentSessionDetailPage } from "@/pages/agent-session-detail"
 import { AgentTurnsPage } from "@/pages/agent-turns"
 import { HttpExchangesPage } from "@/pages/http-exchanges"
+import { SettingsPage } from "@/pages/settings"
 import { PipelineHealthPage } from "@/pages/debug-pipeline-health"
 import { RuntimeConfigPage } from "@/pages/debug-runtime-config"
 import { DebugIndexPage } from "@/pages/debug-index"
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="/agent-turns" element={<AgentTurnsPage />} />
             <Route path="/llm-calls" element={<LlmCallsPage />} />
             <Route path="/http-exchanges" element={<HttpExchangesPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Route>
           <Route path="/debug" element={<DebugIndexPage />} />
           <Route path="/debug/pipeline-health" element={<PipelineHealthPage />} />

@@ -66,6 +66,18 @@ const VALID_METRIC_FIELDS: &[&str] = &[
     "ttft_p50",
     "ttft_p95",
     "ttft_p99",
+    "ttft_stream_avg",
+    "ttft_stream_sum",
+    "ttft_stream_count",
+    "ttft_stream_p50",
+    "ttft_stream_p95",
+    "ttft_stream_p99",
+    "ttft_nonstream_avg",
+    "ttft_nonstream_sum",
+    "ttft_nonstream_count",
+    "ttft_nonstream_p50",
+    "ttft_nonstream_p95",
+    "ttft_nonstream_p99",
     "e2e_avg",
     "e2e_sum",
     "e2e_count",
@@ -128,6 +140,8 @@ fn avg_pair(f: &str) -> Option<(&'static str, &'static str)> {
         "input_tokens_avg" => Some(("total_input_tokens", "input_token_count")),
         "output_tokens_avg" => Some(("total_output_tokens", "output_token_count")),
         "ttft_avg" => Some(("ttft_sum", "ttft_count")),
+        "ttft_stream_avg" => Some(("ttft_stream_sum", "ttft_stream_count")),
+        "ttft_nonstream_avg" => Some(("ttft_nonstream_sum", "ttft_nonstream_count")),
         "e2e_avg" => Some(("e2e_sum", "e2e_count")),
         "tpot_avg" => Some(("tpot_sum", "tpot_count")),
         _ => None,
@@ -136,7 +150,13 @@ fn avg_pair(f: &str) -> Option<(&'static str, &'static str)> {
 
 /// Weight column for percentile weighted-avg aggregation.
 fn percentile_weight(field: &str) -> &'static str {
-    if field.starts_with("ttft") {
+    // Order matters: more-specific prefixes must come before less-specific
+    // ones (`ttft_stream_*` shadows `ttft_*`).
+    if field.starts_with("ttft_stream") {
+        "ttft_stream_count"
+    } else if field.starts_with("ttft_nonstream") {
+        "ttft_nonstream_count"
+    } else if field.starts_with("ttft") {
         "ttft_count"
     } else if field.starts_with("e2e") {
         "e2e_count"
@@ -166,6 +186,10 @@ const SUM_FIELDS: &[&str] = &[
     "error_5xx_count",
     "ttft_sum",
     "ttft_count",
+    "ttft_stream_sum",
+    "ttft_stream_count",
+    "ttft_nonstream_sum",
+    "ttft_nonstream_count",
     "e2e_sum",
     "e2e_count",
     "tpot_sum",
@@ -224,6 +248,16 @@ impl DuckDbBackend {
                         m.ttft_p50,
                         m.ttft_p95,
                         m.ttft_p99,
+                        m.ttft_stream_sum,
+                        m.ttft_stream_count,
+                        m.ttft_stream_p50,
+                        m.ttft_stream_p95,
+                        m.ttft_stream_p99,
+                        m.ttft_nonstream_sum,
+                        m.ttft_nonstream_count,
+                        m.ttft_nonstream_p50,
+                        m.ttft_nonstream_p95,
+                        m.ttft_nonstream_p99,
                         m.e2e_sum,
                         m.e2e_count,
                         m.e2e_p50,
@@ -814,6 +848,18 @@ mod tests {
             ttft_p50: Some(120.0),
             ttft_p95: Some(350.0),
             ttft_p99: Some(500.0),
+            // 30 streaming calls at avg 90ms.
+            ttft_stream_sum: 2700.0,
+            ttft_stream_count: 30,
+            ttft_stream_p50: Some(80.0),
+            ttft_stream_p95: Some(180.0),
+            ttft_stream_p99: Some(220.0),
+            // 12 non-streaming at avg 300ms.
+            ttft_nonstream_sum: 3600.0,
+            ttft_nonstream_count: 12,
+            ttft_nonstream_p50: Some(280.0),
+            ttft_nonstream_p95: Some(420.0),
+            ttft_nonstream_p99: Some(500.0),
             // e2e_avg 1200 × 42 = 50400.
             e2e_sum: 50_400.0,
             e2e_count: 42,

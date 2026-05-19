@@ -2,10 +2,15 @@ import { useTimeseries } from "@/hooks/use-metrics"
 import { formatMs, formatNumber } from "@/lib/format"
 import { TimeseriesLineChart } from "@/components/charts/timeseries-line-chart"
 
+// Stream-only TTFT — non-streaming TTFT collapses to ~e2e because
+// servers buffer the full response, so showing it here is just
+// duplicated e2e curves. The non-streaming TTFT value still appears on
+// individual call rows and in the call detail panel for per-call
+// inspection.
 const TTFT_SERIES = [
-  { key: "ttft_p50", label: "p50", color: "#f59e0b" },
-  { key: "ttft_p95", label: "p95", color: "#ef4444" },
-  { key: "ttft_p99", label: "p99", color: "#dc2626", dash: "5 3" },
+  { key: "ttft_stream_p50", label: "p50", color: "#f59e0b" },
+  { key: "ttft_stream_p95", label: "p95", color: "#ef4444" },
+  { key: "ttft_stream_p99", label: "p99", color: "#dc2626", dash: "5 3" },
 ]
 
 const E2E_SERIES = [
@@ -38,17 +43,31 @@ function formatActiveCalls(v: number): string {
   return v.toFixed(1)
 }
 
-function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+function ChartCard({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string
+  subtitle?: string
+  children: React.ReactNode
+}) {
   return (
     <div className="rounded-lg border border-border bg-card p-4">
-      <h3 className="mb-3 text-sm font-medium">{title}</h3>
+      <h3 className="text-sm font-medium">{title}</h3>
+      {subtitle && (
+        <p className="mb-3 text-xs text-muted-foreground">{subtitle}</p>
+      )}
+      {!subtitle && <div className="mb-3" />}
       {children}
     </div>
   )
 }
 
 export function PerformancePage() {
-  const { data: ttftData } = useTimeseries("ttft_p50,ttft_p95,ttft_p99")
+  const { data: ttftData } = useTimeseries(
+    "ttft_stream_p50,ttft_stream_p95,ttft_stream_p99",
+  )
   const { data: e2eData } = useTimeseries("e2e_p50,e2e_p95,e2e_p99")
   const { data: tpotData } = useTimeseries("tpot_p50,tpot_p95")
   const { data: activeCallsData } = useTimeseries("active_calls_avg,active_calls_max")
@@ -57,17 +76,24 @@ export function PerformancePage() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      {/* Top row */}
+      {/* Top row: TTFT (stream + non-stream overlaid) + E2E */}
       <div className="grid grid-cols-2 gap-4">
-        <ChartCard title="TTFT Distribution">
-          <TimeseriesLineChart data={ttftData ?? null} series={TTFT_SERIES} yFormatter={formatMs} />
+        <ChartCard
+          title="Stream TTFT Distribution"
+          subtitle="Streaming responses only (true time to first token). Non-streaming TTFT collapses to e2e — see E2E chart."
+        >
+          <TimeseriesLineChart
+            data={ttftData ?? null}
+            series={TTFT_SERIES}
+            yFormatter={formatMs}
+          />
         </ChartCard>
         <ChartCard title="E2E Latency Distribution">
           <TimeseriesLineChart data={e2eData ?? null} series={E2E_SERIES} yFormatter={formatMs} />
         </ChartCard>
       </div>
 
-      {/* Middle row */}
+      {/* Middle row: TPOT + Active calls */}
       <div className="grid grid-cols-2 gap-4">
         <ChartCard title="TPOT (Time Per Output Token)">
           <TimeseriesLineChart
@@ -86,7 +112,7 @@ export function PerformancePage() {
         </ChartCard>
       </div>
 
-      {/* Bottom row */}
+      {/* Bottom row: Cache + Token averages */}
       <div className="grid grid-cols-2 gap-4">
         <ChartCard title="Cache Token Usage">
           <TimeseriesLineChart

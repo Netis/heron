@@ -371,6 +371,9 @@ impl DuckDbBackend {
                     substr.replace('\'', "''")
                 ));
             }
+            if let Some(stream) = query.is_stream {
+                where_parts.push(format!("is_stream = {stream}"));
+            }
             let where_sql = where_parts.join(" AND ");
             let sort_by = &query.sort_by;
 
@@ -754,6 +757,7 @@ mod tests {
             finish_reasons: vec![],
             client_ips: vec![],
             request_path_contains: None,
+            is_stream: None,
             sort_by: "request_time".to_string(),
             sort_order: "DESC".to_string(),
             page: 1,
@@ -796,6 +800,7 @@ mod tests {
             finish_reasons: vec![],
             client_ips: vec![],
             request_path_contains: None,
+            is_stream: None,
             sort_by: "request_time".to_string(),
             sort_order: "DESC".to_string(),
             page: 1,

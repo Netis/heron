@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+ts-capture.workspace = true
 ts-common.workspace = true
 ts-llm.workspace = true
 ts-storage.workspace = true

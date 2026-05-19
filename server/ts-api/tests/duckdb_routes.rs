@@ -20,6 +20,7 @@ fn test_metrics_context() -> ApiMetricsContext {
     ApiMetricsContext {
         pipelines: vec![],
         global: sys.start(),
+        history: None,
     }
 }
 
@@ -330,6 +331,16 @@ async fn timeseries_endpoint_backfills_full_grid_for_sparse_data() {
         ttft_p50: None,
         ttft_p95: None,
         ttft_p99: None,
+        ttft_stream_sum: 0.0,
+        ttft_stream_count: 0,
+        ttft_stream_p50: None,
+        ttft_stream_p95: None,
+        ttft_stream_p99: None,
+        ttft_nonstream_sum: 0.0,
+        ttft_nonstream_count: 0,
+        ttft_nonstream_p50: None,
+        ttft_nonstream_p95: None,
+        ttft_nonstream_p99: None,
         e2e_sum: 0.0,
         e2e_count: 0,
         e2e_p50: None,

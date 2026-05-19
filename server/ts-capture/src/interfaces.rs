@@ -1,0 +1,102 @@
+//! Enumerate local pcap-visible interfaces for the Settings UI.
+//!
+//! Thin serializable wrapper around `pcap::Device::list()` — same source
+//! `PcapLiveSource` consults at startup. Used by `GET /api/capture/interfaces`.
+
+use std::net::IpAddr;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureInterface {
+    pub name: String,
+    pub description: Option<String>,
+    pub addresses: Vec<String>,
+    pub is_up: bool,
+    pub is_running: bool,
+    pub is_loopback: bool,
+    pub is_wireless: bool,
+}
+
+pub fn list_interfaces() -> Result<Vec<CaptureInterface>, pcap::Error> {
+    let devices = pcap::Device::list()?;
+    let mut out: Vec<CaptureInterface> = devices
+        .into_iter()
+        .map(|d| {
+            let flags = &d.flags;
+            CaptureInterface {
+                name: d.name,
+                description: d.desc.filter(|s| !s.is_empty()),
+                addresses: d
+                    .addresses
+                    .into_iter()
+                    .map(|a| match a.addr {
+                        IpAddr::V4(v) => v.to_string(),
+                        IpAddr::V6(v) => v.to_string(),
+                    })
+                    .collect(),
+                is_up: flags.is_up(),
+                is_running: flags.is_running(),
+                is_loopback: flags.is_loopback(),
+                is_wireless: flags.is_wireless(),
+            }
+        })
+        .collect();
+
+    // libpcap returns the magic "any" pseudo-device on Linux. It's always
+    // safe to capture on (matches the current production config) but is
+    // missing from the kernel's netdev list, so it lacks addresses/flags.
+    // Make sure it shows up first so users can recognize it as the
+    // default-recommended choice.
+    if !out.iter().any(|i| i.name == "any") {
+        out.insert(
+            0,
+            CaptureInterface {
+                name: "any".to_string(),
+                description: Some("pseudo-device — capture on all interfaces".to_string()),
+                addresses: Vec::new(),
+                is_up: true,
+                is_running: true,
+                is_loopback: false,
+                is_wireless: false,
+            },
+        );
+    }
+    Ok(out)
+}
+
+/// Quick validation of a `pcap` capture source for the Settings save path:
+///
+/// * `interface`: must be present in `Device::list()` OR equal `"any"`
+///   (Linux pseudo-device that's always valid even though libpcap omits it
+///   from `Device::list` on some kernels).
+/// * `bpf_filter`: must compile via `pcap_compile()` against the Ethernet
+///   linktype (matches what `PcapLiveSource` would request — all real
+///   captures live and read traffic decapsulated to Ethernet).
+///
+/// The validator never opens the real interface, so it is safe to call
+/// from a non-privileged API handler thread.
+pub fn validate_pcap_source(
+    interface: &str,
+    bpf_filter: Option<&str>,
+) -> Result<(), String> {
+    if interface.is_empty() {
+        return Err("interface name is empty".to_string());
+    }
+    if interface != "any" {
+        let devices = pcap::Device::list()
+            .map_err(|e| format!("libpcap enumeration failed: {e}"))?;
+        if !devices.iter().any(|d| d.name == interface) {
+            return Err(format!(
+                "interface '{interface}' is not visible to libpcap on this host"
+            ));
+        }
+    }
+    if let Some(bpf) = bpf_filter.filter(|s| !s.trim().is_empty()) {
+        let dead = pcap::Capture::dead(pcap::Linktype::ETHERNET)
+            .map_err(|e| format!("failed to create dead pcap for BPF check: {e}"))?;
+        dead.compile(bpf, true)
+            .map_err(|e| format!("BPF compile failed: {e}"))?;
+    }
+    Ok(())
+}

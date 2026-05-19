@@ -99,6 +99,11 @@ pub struct WindowBucket {
 
     // Latency distributions (milliseconds).
     ttft: DistributionDigest,
+    // Split-by-is_stream variants of TTFT. The combined `ttft` above is
+    // still maintained for back-compat; consumers wanting the split
+    // dashboard query the stream/nonstream fields directly.
+    ttft_stream: DistributionDigest,
+    ttft_nonstream: DistributionDigest,
     e2e: DistributionDigest,
     // TPOT distribution (ms/token) — streaming requests only.
     tpot: DistributionDigest,
@@ -129,6 +134,8 @@ impl WindowBucket {
             error_5xx_count: 0,
             finish_counts: BTreeMap::new(),
             ttft: DistributionDigest::new(),
+            ttft_stream: DistributionDigest::new(),
+            ttft_nonstream: DistributionDigest::new(),
             e2e: DistributionDigest::new(),
             tpot: DistributionDigest::new(),
             complete_count: 0,
@@ -193,6 +200,11 @@ impl WindowBucket {
 
         if let Some(ttft) = call.ttft_ms {
             self.ttft.add(ttft);
+            if call.is_stream {
+                self.ttft_stream.add(ttft);
+            } else {
+                self.ttft_nonstream.add(ttft);
+            }
         }
         if let Some(e2e) = call.e2e_latency_ms {
             self.e2e.add(e2e);
@@ -273,6 +285,16 @@ impl WindowBucket {
             ttft_p50: self.ttft.quantile(0.5),
             ttft_p95: self.ttft.quantile(0.95),
             ttft_p99: self.ttft.quantile(0.99),
+            ttft_stream_sum: self.ttft_stream.sum(),
+            ttft_stream_count: self.ttft_stream.count(),
+            ttft_stream_p50: self.ttft_stream.quantile(0.5),
+            ttft_stream_p95: self.ttft_stream.quantile(0.95),
+            ttft_stream_p99: self.ttft_stream.quantile(0.99),
+            ttft_nonstream_sum: self.ttft_nonstream.sum(),
+            ttft_nonstream_count: self.ttft_nonstream.count(),
+            ttft_nonstream_p50: self.ttft_nonstream.quantile(0.5),
+            ttft_nonstream_p95: self.ttft_nonstream.quantile(0.95),
+            ttft_nonstream_p99: self.ttft_nonstream.quantile(0.99),
             e2e_sum: self.e2e.sum(),
             e2e_count: self.e2e.count(),
             e2e_p50: self.e2e.quantile(0.5),
