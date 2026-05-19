@@ -403,7 +403,17 @@ async fn run_pipeline(cli: Cli) {
     };
     let mut api_handle: Option<tokio::task::JoinHandle<()>> = None;
 
-    if !effective_pipelines.is_empty() && effective_pipelines.iter().any(|d| !d.sources.is_empty())
+    // Run the full pipeline branch when we have ANY ingest source —
+    // either a configured capture source, or the built-in MITM proxy.
+    // A proxy-only configuration (no [[capture.sources]] but
+    // proxy.enabled = true) is a valid deployment: the proxy synthesises
+    // pre-paired HttpJoinerEvent::Exchange records into the first
+    // pipeline's joiner channel, exactly the same shape the sniffed
+    // path produces. Without this branch, Pipeline::build never runs
+    // and the proxy task has nowhere to send its captures.
+    let proxy_needs_pipeline = config.proxy.enabled;
+    if !effective_pipelines.is_empty()
+        && (effective_pipelines.iter().any(|d| !d.sources.is_empty()) || proxy_needs_pipeline)
     {
         // One MetricsSystem per pipeline — the dispatcher/protocol stages
         // register workers against `per_pipeline_metrics[i]` inside
