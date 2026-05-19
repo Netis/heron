@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useCallback } from "react"
 import { ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Loader2, Filter } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAgentTurns } from "@/hooks/use-agent-turns"
@@ -93,7 +93,7 @@ export function AgentTurnsPage() {
   const statusFilter = statusStr ? statusStr.split(",") : []
   const agentKindFilter = agentKindStr ? agentKindStr.split(",") : []
 
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useSearchParamState("selected", "")
 
   const agentKindsQuery = useAgentKinds()
   const agentKindOptions = agentKindsQuery.data?.values ?? []
@@ -286,7 +286,7 @@ export function AgentTurnsPage() {
 
       {/* Slide-over detail panel */}
       {selectedId && (
-        <AgentTurnDetailPanel id={selectedId} onClose={() => setSelectedId(null)} />
+        <AgentTurnDetailPanel id={selectedId} onClose={() => setSelectedId("")} />
       )}
     </div>
   )
