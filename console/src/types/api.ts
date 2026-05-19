@@ -121,6 +121,60 @@ export interface AgentTurnListItem {
   proxy_peer_turn_ids?: string[]
 }
 
+// ---- Proxy view (multi-leg fold detail) ----
+
+export interface ProxyViewMember {
+  turn_id: string
+  role: "proxy_in" | "proxy_out" | "mirror_primary" | "mirror_secondary" | string
+  client_ip: string
+  client_port: number | null
+  server_ip: string
+  server_port: number | null
+  start_time: number
+  end_time: number
+  duration_ms: number
+  ttft_ms: number | null
+  e2e_latency_ms: number | null
+  request_model: string | null
+  wire_api: string
+  request_path: string | null
+  status_code: number | null
+  request_headers: [string, string][]
+  response_headers: [string, string][]
+}
+
+export interface HeaderValueByLeg {
+  turn_id: string
+  role: string
+  value: string
+}
+
+export interface HeaderDiffEntry {
+  name: string
+  kind: "common" | "modified" | "per_leg"
+  values: HeaderValueByLeg[]
+}
+
+export interface ModelRewrite {
+  client_requested: string | null
+  upstream_received: string | null
+}
+
+export interface LatencyBreakdown {
+  client_observed_ms: number | null
+  upstream_observed_ms: number | null
+  proxy_overhead_ms: number | null
+}
+
+export interface ProxyViewResponse {
+  group_id: string
+  members: ProxyViewMember[]
+  request_header_diff: HeaderDiffEntry[]
+  response_header_diff: HeaderDiffEntry[]
+  model_rewrite?: ModelRewrite
+  latency_breakdown: LatencyBreakdown
+}
+
 export interface AgentTurnDetail {
   turn_id: string
   source_id: string
