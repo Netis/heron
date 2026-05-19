@@ -9,4 +9,5 @@ pub mod internal_metrics;
 pub mod llm_calls;
 pub mod metrics;
 pub mod pcap_extract;
+pub mod proxy;
 pub mod runtime_config;

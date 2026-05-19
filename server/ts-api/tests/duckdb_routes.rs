@@ -30,6 +30,7 @@ fn test_runtime_config_context() -> ApiRuntimeConfigContext {
             storage: ts_common::config::StorageConfig::default(),
             internal_metrics: ts_common::config::InternalMetricsConfig::default(),
             api: ts_common::config::ApiConfig::default(),
+            proxy: ts_common::config::ProxyConfig::default(),
         }),
         config_path: "test".to_string(),
         loaded_at_ms: 0,
@@ -534,4 +535,125 @@ async fn contains_params_parse() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn proxy_ca_pem_returns_404_when_missing() {
+    // ProxyConfig::default points at "./proxy-ca", which doesn't exist
+    // in the test runner's CWD — endpoint should 404 with a helpful
+    // body rather than a generic 500.
+    let backend = DuckDbBackend::open(":memory:").unwrap();
+    <DuckDbBackend as ts_storage::StorageBackend>::init(&backend)
+        .await
+        .unwrap();
+    let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
+
+    let ctx = ApiRuntimeConfigContext {
+        config: std::sync::Arc::new(ts_common::config::AppConfig {
+            pipelines: vec![],
+            storage: ts_common::config::StorageConfig::default(),
+            internal_metrics: ts_common::config::InternalMetricsConfig::default(),
+            api: ts_common::config::ApiConfig::default(),
+            proxy: ts_common::config::ProxyConfig {
+                ca_dir: "/nonexistent-path-for-test".into(),
+                ..ts_common::config::ProxyConfig::default()
+            },
+        }),
+        config_path: "test".to_string(),
+        loaded_at_ms: 0,
+        version: "test",
+    };
+    let app = router(
+        storage,
+        test_metrics_context(),
+        ctx,
+        test_health_context(),
+        std::sync::Arc::new(vec![]),
+        ts_turn::new_active_turn_registry(),
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/proxy/ca.pem")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let body_str = std::str::from_utf8(&body).unwrap();
+    assert!(
+        body_str.contains("not generated yet"),
+        "expected helpful error body, got: {body_str}"
+    );
+}
+
+#[tokio::test]
+async fn proxy_ca_pem_serves_pem_when_present() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cert_path = tmp.path().join("ca.pem");
+    std::fs::write(
+        &cert_path,
+        "-----BEGIN CERTIFICATE-----\nFAKEPEM\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
+
+    let backend = DuckDbBackend::open(":memory:").unwrap();
+    <DuckDbBackend as ts_storage::StorageBackend>::init(&backend)
+        .await
+        .unwrap();
+    let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
+
+    let ctx = ApiRuntimeConfigContext {
+        config: std::sync::Arc::new(ts_common::config::AppConfig {
+            pipelines: vec![],
+            storage: ts_common::config::StorageConfig::default(),
+            internal_metrics: ts_common::config::InternalMetricsConfig::default(),
+            api: ts_common::config::ApiConfig::default(),
+            proxy: ts_common::config::ProxyConfig {
+                ca_dir: tmp.path().to_string_lossy().into_owned(),
+                ..ts_common::config::ProxyConfig::default()
+            },
+        }),
+        config_path: "test".to_string(),
+        loaded_at_ms: 0,
+        version: "test",
+    };
+    let app = router(
+        storage,
+        test_metrics_context(),
+        ctx,
+        test_health_context(),
+        std::sync::Arc::new(vec![]),
+        ts_turn::new_active_turn_registry(),
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/proxy/ca.pem")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let headers = resp.headers().clone();
+    assert_eq!(
+        headers.get("content-type").map(|v| v.to_str().unwrap()),
+        Some("application/x-pem-file")
+    );
+    let cd = headers
+        .get("content-disposition")
+        .map(|v| v.to_str().unwrap())
+        .unwrap_or("");
+    assert!(
+        cd.contains("tokenscope-ca.pem"),
+        "expected attachment filename, got: {cd}"
+    );
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let body_str = std::str::from_utf8(&body).unwrap();
+    assert!(body_str.contains("FAKEPEM"));
 }

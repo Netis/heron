@@ -115,6 +115,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
         pipeline_txs,
         pipeline_sources: _,
         stage_handles,
+        proxy_joiner_tx: _,
     } = Pipeline::build(
         &pipeline_defs,
         &sink_config,

@@ -116,6 +116,7 @@ pub fn router(
             "/api/capture/sources",
             put(routes::capture_sources::update),
         )
+        .route("/api/proxy/ca.pem", get(routes::proxy::ca_pem))
         .with_state(runtime_config);
 
     let health_routes = Router::new()
