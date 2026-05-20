@@ -13,6 +13,8 @@ interface UseLlmCallsParams {
   statusCode?: string
   finishReason?: string
   clientIp?: string
+  /** CSV of u16 server ports e.g. "4210,9000" */
+  serverPort?: string
   requestPath?: string
 }
 
@@ -24,6 +26,7 @@ export function useLlmCalls({
   statusCode,
   finishReason,
   clientIp,
+  serverPort,
   requestPath,
 }: UseLlmCallsParams) {
   const start = useToolbarStore((s) => s.start)
@@ -34,7 +37,7 @@ export function useLlmCalls({
     queryKey: ["llm-calls", {
       start, end, page, pageSize, sortBy, sortOrder,
       ...fp,
-      statusCode, finishReason, clientIp, requestPath,
+      statusCode, finishReason, clientIp, serverPort, requestPath,
     }],
     queryFn: () =>
       apiFetch<LlmCallsPage>("/api/llm-calls", {
@@ -48,6 +51,7 @@ export function useLlmCalls({
         status_code: statusCode || undefined,
         finish_reason: finishReason || undefined,
         client_ip: clientIp || undefined,
+        server_port: serverPort || undefined,
         request_path: requestPath || undefined,
       }),
     placeholderData: (prev) => prev,

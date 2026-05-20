@@ -27,6 +27,10 @@ pub struct TurnsParams {
     pub server_ip: Option<String>,
     #[serde(default)]
     pub client_ip: Option<String>,
+    /// CSV of u16 server ports. Resolved through the turn's first
+    /// call_id against `llm_calls.server_port`.
+    #[serde(default)]
+    pub server_port: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
@@ -65,10 +69,19 @@ pub async fn list(
 ) -> Result<impl IntoResponse, ApiError> {
     let page_size = params.page_size.min(200);
 
+    let server_ports: Vec<u16> = parse_csv(&params.server_port)
+        .iter()
+        .map(|s| {
+            s.parse::<u16>()
+                .map_err(|_| ApiError::InvalidParam(format!("invalid server_port: {s}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let query = TurnsQuery {
         time_range: to_time_range(params.start, params.end),
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         client_ips: parse_csv(&params.client_ip),
+        server_ports,
         statuses: parse_csv(&params.status),
         agent_kinds: parse_csv(&params.agent_kind),
         sort_by: params.sort_by,

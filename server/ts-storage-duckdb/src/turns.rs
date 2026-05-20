@@ -243,6 +243,24 @@ impl DuckDbBackend {
                     .collect();
                 where_parts.push(format!("client_ip IN ({})", list.join(", ")));
             }
+            if !query.server_ports.is_empty() {
+                // agent_turns has no server_port column, so we resolve it
+                // via the turn's first call_id against llm_calls — same
+                // shortcut the topology query uses. EXISTS is cheaper
+                // than a JOIN here because we never select from the
+                // joined row.
+                let list: Vec<String> = query
+                    .server_ports
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect();
+                where_parts.push(format!(
+                    "EXISTS (SELECT 1 FROM llm_calls c \
+                       WHERE c.id = json_extract_string(agent_turns.call_ids, '$[0]') \
+                         AND c.server_port IN ({}))",
+                    list.join(", ")
+                ));
+            }
             if !query.filter.server_ips.is_empty() {
                 let list: Vec<String> = query
                     .filter
@@ -800,6 +818,7 @@ mod tests {
             },
             filter: DimensionFilter::default(),
             client_ips: vec![],
+            server_ports: vec![],
             statuses: vec![],
             agent_kinds: vec![],
             sort_by: "start_time".into(),

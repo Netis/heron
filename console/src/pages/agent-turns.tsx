@@ -98,6 +98,7 @@ export function AgentTurnsPage() {
   const [statusStr, setStatusStr] = useSearchParamState("status", "")
   const [agentKindStr, setAgentKindStr] = useSearchParamState("agent_kind", "")
   const [clientIpStr, setClientIpStr] = useSearchParamState("client_ip", "")
+  const [serverPortStr, setServerPortStr] = useSearchParamState("server_port", "")
   // Default off — the user wanted the folded view as the primary
   // experience. URL serialization keeps "show hops" sticky on a
   // shared link.
@@ -136,6 +137,7 @@ export function AgentTurnsPage() {
     status: statusStr || undefined,
     agentKind: agentKindStr || undefined,
     clientIp: clientIpStr || undefined,
+    serverPort: serverPortStr || undefined,
     includeProxyHops,
   })
 
@@ -188,6 +190,13 @@ export function AgentTurnsPage() {
           onChange={(e) => { setClientIpStr(e.target.value); setPageStr("1") }}
           placeholder="Client IP (CSV)"
           className="w-[180px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
+        />
+        <input
+          value={serverPortStr}
+          onChange={(e) => { setServerPortStr(e.target.value); setPageStr("1") }}
+          placeholder="Server Port (CSV)"
+          inputMode="numeric"
+          className="w-[140px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
         />
         <label
           className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-muted"

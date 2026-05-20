@@ -184,6 +184,10 @@ pub struct CallsQuery {
     pub status_codes: Vec<u16>,
     pub finish_reasons: Vec<String>,
     pub client_ips: Vec<String>,
+    /// Per-call server port filter (matches `llm_calls.server_port` directly).
+    /// Lives outside `DimensionFilter` for the same reason `client_ips` does:
+    /// `llm_metrics` doesn't carry server_port, only `llm_calls` does.
+    pub server_ports: Vec<u16>,
     pub request_path_contains: Option<String>,
     pub sort_by: String,
     pub sort_order: String,
@@ -350,6 +354,10 @@ pub struct TurnsQuery {
     /// (the metrics-pre-aggregated dimension); client IP lives outside the
     /// filter, parallel to `CallsQuery.client_ips`.
     pub client_ips: Vec<String>,
+    /// Per-call server port filter. `agent_turns` doesn't carry `server_port`
+    /// — we resolve it through the turn's first `call_ids` entry against
+    /// `llm_calls`, same shortcut the topology query uses.
+    pub server_ports: Vec<u16>,
     pub statuses: Vec<String>,
     pub agent_kinds: Vec<String>,
     pub sort_by: String,

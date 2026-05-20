@@ -117,6 +117,7 @@ export function LlmCallsPage() {
   const [statusStr, setStatusStr] = useSearchParamState("status", "")
   const [finishStr, setFinishStr] = useSearchParamState("finish", "")
   const [clientIpStr, setClientIpStr] = useSearchParamState("client_ip", "")
+  const [serverPortStr, setServerPortStr] = useSearchParamState("server_port", "")
   const [pathStr, setPathStr] = useSearchParamState("path", "")
 
   const page = Number(pageStr) || 1
@@ -159,6 +160,7 @@ export function LlmCallsPage() {
     statusCode: statusQuery,
     finishReason: finishQuery,
     clientIp: clientIpStr || undefined,
+    serverPort: serverPortStr || undefined,
     requestPath: pathStr || undefined,
   })
 
@@ -244,6 +246,13 @@ export function LlmCallsPage() {
           onChange={(e) => { setClientIpStr(e.target.value); setPageStr("1") }}
           placeholder="Client IP (CSV)"
           className="w-[180px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
+        />
+        <input
+          value={serverPortStr}
+          onChange={(e) => { setServerPortStr(e.target.value); setPageStr("1") }}
+          placeholder="Server Port (CSV)"
+          inputMode="numeric"
+          className="w-[140px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
         />
         <input
           value={pathStr}
