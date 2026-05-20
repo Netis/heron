@@ -1603,6 +1603,136 @@ impl DuckDbBackend {
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
+
+    /// Aggregate agent_turns by agent_kind over the window — drives
+    /// the Overview distribution horizontal-bar chart.
+    pub(crate) async fn query_agent_summary(
+        &self,
+        query: &AgentSummaryQuery,
+    ) -> Result<Vec<AgentKindSummary>> {
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+            let sql = "SELECT
+                    agent_kind,
+                    COUNT(*)                                  AS turn_count,
+                    COALESCE(SUM(total_input_tokens), 0)::UBIGINT  AS total_input_tokens,
+                    COALESCE(SUM(total_output_tokens), 0)::UBIGINT AS total_output_tokens,
+                    AVG(duration_ms)                          AS avg_duration_ms,
+                    epoch_ms(MAX(start_time))                 AS last_seen_ms
+                 FROM agent_turns
+                 WHERE start_time >= ? AND start_time < ?
+                 GROUP BY agent_kind
+                 ORDER BY turn_count DESC";
+            let mut stmt = conn.prepare(sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare agent_summary query: {e}"))
+            })?;
+            let mut rs = stmt
+                .query(duckdb::params![start_ts, end_ts])
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute agent_summary query: {e}"))
+                })?;
+            let mut out = Vec::new();
+            while let Some(row) = rs
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                out.push(AgentKindSummary {
+                    agent_kind: row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    turn_count: row
+                        .get::<_, u64>(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_input_tokens: row
+                        .get::<_, u64>(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_output_tokens: row
+                        .get::<_, u64>(3)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    avg_duration_ms: row
+                        .get::<_, Option<f64>>(4)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    last_seen_ms: row
+                        .get::<_, i64>(5)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                });
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    /// Per-bucket counts split by agent_kind. Bucket size auto-picks
+    /// off the window when the client doesn't specify — keeps the
+    /// chart legible from 1 h (1-min buckets) to 30 d (4-h buckets).
+    pub(crate) async fn query_agent_activity(
+        &self,
+        query: &AgentActivityQuery,
+    ) -> Result<Vec<AgentActivityPoint>> {
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+            // Target ~60-180 buckets — enough resolution for trends
+            // without making the chart noisy. The client's explicit
+            // hint wins if provided.
+            let window_secs =
+                ((query.time_range.end_us - query.time_range.start_us) / 1_000_000).max(60);
+            let bucket = query.bucket_seconds.unwrap_or_else(|| {
+                let target = (window_secs / 120).max(60) as u32;
+                // Snap to "nice" buckets to keep tick labels readable.
+                for &nice in &[60u32, 300, 600, 1800, 3600, 7200, 14400, 86400] {
+                    if target <= nice {
+                        return nice;
+                    }
+                }
+                86400
+            });
+            let sql = format!(
+                "SELECT
+                    epoch_ms(time_bucket(INTERVAL {bucket} SECOND, start_time)) AS ts,
+                    agent_kind,
+                    COUNT(*) AS turn_count
+                 FROM agent_turns
+                 WHERE start_time >= ? AND start_time < ?
+                 GROUP BY ts, agent_kind
+                 ORDER BY ts ASC, agent_kind ASC"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare agent_activity query: {e}"))
+            })?;
+            let mut rs = stmt
+                .query(duckdb::params![start_ts, end_ts])
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute agent_activity query: {e}"))
+                })?;
+            let mut out = Vec::new();
+            while let Some(row) = rs
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                out.push(AgentActivityPoint {
+                    timestamp_ms: row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    agent_kind: row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    turn_count: row
+                        .get::<_, u64>(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                });
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
 }
 
 #[cfg(test)]

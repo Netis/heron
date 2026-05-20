@@ -137,6 +137,14 @@ pub fn router(
     };
     let agent_turns_routes = Router::new()
         .route("/api/agent-turns", get(routes::agent_turns::list))
+        .route(
+            "/api/agent-turns/summary",
+            get(routes::agent_turns::summary),
+        )
+        .route(
+            "/api/agent-turns/activity",
+            get(routes::agent_turns::activity),
+        )
         .route("/api/agent-turns/{id}", get(routes::agent_turns::detail))
         .route(
             "/api/agent-turns/{id}/calls",

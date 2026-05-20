@@ -130,6 +130,32 @@ export interface ServicesTopology {
   edges: TopologyEdge[]
 }
 
+/** One aggregate row per agent_kind over a time window. */
+export interface AgentKindSummary {
+  agent_kind: string
+  turn_count: number
+  total_input_tokens: number
+  total_output_tokens: number
+  avg_duration_ms: number | null
+  last_seen_ms: number
+}
+
+export interface AgentSummaryData {
+  summary: AgentKindSummary[]
+}
+
+/** One bucket-row of `(timestamp, agent_kind, count)` for the
+ *  Overview activity chart. */
+export interface AgentActivityPoint {
+  timestamp_ms: number
+  agent_kind: string
+  turn_count: number
+}
+
+export interface AgentActivityData {
+  points: AgentActivityPoint[]
+}
+
 export interface MetricsModelRow {
   wire_api: string
   model: string

@@ -175,6 +175,20 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::query_services_topology(self, query).await
     }
 
+    async fn query_agent_summary(
+        &self,
+        query: &AgentSummaryQuery,
+    ) -> Result<Vec<AgentKindSummary>> {
+        DuckDbBackend::query_agent_summary(self, query).await
+    }
+
+    async fn query_agent_activity(
+        &self,
+        query: &AgentActivityQuery,
+    ) -> Result<Vec<AgentActivityPoint>> {
+        DuckDbBackend::query_agent_activity(self, query).await
+    }
+
     async fn query_finish_reasons(
         &self,
         query: &FinishReasonsQuery,

@@ -142,6 +142,41 @@ pub struct ServicesTopology {
     pub edges: Vec<TopologyEdge>,
 }
 
+/// Per-agent-kind aggregate over a time window, used by the Overview
+/// distribution chart.
+#[derive(Debug, Clone)]
+pub struct AgentSummaryQuery {
+    pub time_range: TimeRange,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentKindSummary {
+    pub agent_kind: String,
+    pub turn_count: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub avg_duration_ms: Option<f64>,
+    /// Unix-epoch ms of the most recent turn for this agent.
+    pub last_seen_ms: i64,
+}
+
+/// Per-bucket agent_kind counts, used by the Overview activity chart.
+/// `bucket_seconds` is an optional client hint; the server picks a
+/// sensible default based on the window size when omitted.
+#[derive(Debug, Clone)]
+pub struct AgentActivityQuery {
+    pub time_range: TimeRange,
+    pub bucket_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentActivityPoint {
+    /// Unix-epoch ms of the bucket start.
+    pub timestamp_ms: i64,
+    pub agent_kind: String,
+    pub turn_count: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct CallsQuery {
     pub time_range: TimeRange,

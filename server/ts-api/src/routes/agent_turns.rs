@@ -4,8 +4,9 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use ts_storage::query::{
-    CallDetail, HeaderDiffEntry, HeaderDiffKind, HeaderValueByLeg, LatencyBreakdown,
-    ModelRewrite, ProxyViewMember, ProxyViewResponse, TurnDetail, TurnListItem, TurnsQuery,
+    AgentActivityPoint, AgentActivityQuery, AgentKindSummary, AgentSummaryQuery, CallDetail,
+    HeaderDiffEntry, HeaderDiffKind, HeaderValueByLeg, LatencyBreakdown, ModelRewrite,
+    ProxyViewMember, ProxyViewResponse, TurnDetail, TurnListItem, TurnsQuery,
 };
 use ts_turn::AgentTurn;
 
@@ -566,6 +567,53 @@ fn compute_latency_breakdown(members: &[ProxyViewMember]) -> LatencyBreakdown {
         upstream_observed_ms: upstream,
         proxy_overhead_ms: overhead,
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentSummaryParams {
+    pub start: i64,
+    pub end: i64,
+}
+
+#[derive(serde::Serialize)]
+struct AgentSummaryResp {
+    summary: Vec<AgentKindSummary>,
+}
+
+pub async fn summary(
+    State(ctx): State<ApiAgentTurnsContext>,
+    Query(params): Query<AgentSummaryParams>,
+) -> Result<impl IntoResponse, ApiError> {
+    let query = AgentSummaryQuery {
+        time_range: to_time_range(params.start, params.end),
+    };
+    let summary = ctx.storage.query_agent_summary(&query).await?;
+    Ok(ApiResponse::ok(AgentSummaryResp { summary }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentActivityParams {
+    pub start: i64,
+    pub end: i64,
+    #[serde(default)]
+    pub bucket: Option<u32>,
+}
+
+#[derive(serde::Serialize)]
+struct AgentActivityResp {
+    points: Vec<AgentActivityPoint>,
+}
+
+pub async fn activity(
+    State(ctx): State<ApiAgentTurnsContext>,
+    Query(params): Query<AgentActivityParams>,
+) -> Result<impl IntoResponse, ApiError> {
+    let query = AgentActivityQuery {
+        time_range: to_time_range(params.start, params.end),
+        bucket_seconds: params.bucket,
+    };
+    let points = ctx.storage.query_agent_activity(&query).await?;
+    Ok(ApiResponse::ok(AgentActivityResp { points }))
 }
 
 #[cfg(test)]

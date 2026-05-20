@@ -80,6 +80,20 @@ pub trait StorageBackend: Send + Sync {
         query: &ServicesTopologyQuery,
     ) -> Result<ServicesTopology>;
 
+    /// Aggregate `agent_turns` by `agent_kind` over the given window.
+    /// Powers the Overview "agent distribution" horizontal-bar chart.
+    async fn query_agent_summary(
+        &self,
+        query: &AgentSummaryQuery,
+    ) -> Result<Vec<AgentKindSummary>>;
+
+    /// Per-bucket agent_turn counts split by `agent_kind`. Powers
+    /// the Overview "agent activity" stacked time-series chart.
+    async fn query_agent_activity(
+        &self,
+        query: &AgentActivityQuery,
+    ) -> Result<Vec<AgentActivityPoint>>;
+
     /// Per-bucket finish-reason counts in the requested time range. One series
     /// per distinct raw `finish_reason` observed. The `wire_api`/`model`
     /// filters select a specific dimension; `None` rolls up across all values
