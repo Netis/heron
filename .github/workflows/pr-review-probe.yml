@@ -14,9 +14,11 @@ jobs:
     runs-on: [self-hosted, tokenscope]
     timeout-minutes: 5
     env:
-      ANTHROPIC_BASE_URL: http://172.16.103.81:4200
-      ANTHROPIC_API_KEY: dummy
+      ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.LITELLM_API_KEY }}
       ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
+      NO_PROXY: ${{ secrets.LITELLM_NO_PROXY }}
+      no_proxy: ${{ secrets.LITELLM_NO_PROXY }}
     steps:
       - name: Runner host
         run: |
@@ -55,15 +57,20 @@ jobs:
           python3 --version
           command -v envsubst || { echo "::error::envsubst missing (apt install gettext-base)"; exit 1; }
 
-      - name: LiteLLM reachable
+      - name: LiteLLM reachable + key accepted
         run: |
-          if ! curl -fsS --max-time 5 "$ANTHROPIC_BASE_URL/v1/models" >/dev/null; then
-            echo "::error::LiteLLM unreachable at $ANTHROPIC_BASE_URL"
-            curl -v --max-time 5 "$ANTHROPIC_BASE_URL/v1/models" || true
+          if ! curl -fsS --max-time 5 \
+              -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
+              "$ANTHROPIC_BASE_URL/v1/models" >/dev/null; then
+            echo "::error::LiteLLM unreachable or key rejected at $ANTHROPIC_BASE_URL"
+            curl -v --max-time 5 \
+              -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
+              "$ANTHROPIC_BASE_URL/v1/models" || true
             exit 1
           fi
-          curl -s "$ANTHROPIC_BASE_URL/v1/models" | head -c 400
-          echo
+          curl -s -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
+            "$ANTHROPIC_BASE_URL/v1/models" \
+            | python3 -c 'import sys,json; d=json.load(sys.stdin); print("models seen:", len(d["data"])); [print(" ", m["id"]) for m in d["data"][:8]]'
 
       - name: Round-trip claude → LiteLLM → GLM-5
         run: |

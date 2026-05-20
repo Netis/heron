@@ -28,6 +28,15 @@ OUT_PATH = Path(f"/tmp/pr-review-{PR_NUMBER}-out.md")
 RUN_URL = os.environ.get("RUN_URL", "")
 AGENT_EXIT = os.environ.get("AGENT_EXIT", "")  # "success" / "failure" / ""
 
+# Authors whose PRs the AI is allowed to auto-merge on APPROVE. The
+# AI's review still has to land first, and the review still has to
+# go through the same `pick_event` thresholding — but if the verdict
+# is APPROVE and the PR was opened by a trusted author, we squash
+# and delete the branch right after posting.
+AUTO_MERGE_AUTHORS = {
+    a.strip() for a in os.environ.get("AUTO_MERGE_AUTHORS", "vaderyang").split(",") if a.strip()
+}
+
 
 def read_review() -> str:
     if not OUT_PATH.exists():
@@ -103,6 +112,35 @@ def post_via_comment(number: str, body: str) -> int:
     return proc.returncode
 
 
+def pr_author(number: str) -> str | None:
+    proc = subprocess.run(
+        ["gh", "pr", "view", number, "--json", "author", "--jq", ".author.login"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(f"gh pr view (author) failed: {proc.stderr}\n")
+        return None
+    return proc.stdout.strip() or None
+
+
+def auto_merge(number: str) -> None:
+    """Squash-merge with admin bypass. Repo doesn't have native
+    `--auto` enabled, so we squash inline. Branch is deleted on
+    success. Any failure (merge conflict, branch protection
+    surprise, etc.) is logged but doesn't fail the workflow — the
+    review is already posted, the operator can finish merging by
+    hand."""
+    cmd = ["gh", "pr", "merge", number, "--admin", "--squash", "--delete-branch"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.stderr.write(
+            f"auto-merge failed (left for manual merge): {proc.stderr}\n"
+        )
+    else:
+        print(f"auto-merged PR #{number}")
+
+
 def main() -> int:
     body = read_review()
     if not body:
@@ -132,6 +170,19 @@ def main() -> int:
     if rc != 0:
         sys.stderr.write("falling back to plain comment\n")
         post_via_comment(PR_NUMBER, full)
+
+    # Auto-merge gate: only fires on APPROVE, only for PRs opened by
+    # a trusted author (see AUTO_MERGE_AUTHORS). The thinking is
+    # that an APPROVE from the AI is enough signal for low-stakes
+    # changes by the project maintainer, but anyone else's PR
+    # still gets human review.
+    if event == "APPROVE":
+        author = pr_author(PR_NUMBER)
+        if author and author in AUTO_MERGE_AUTHORS:
+            print(f"author={author} in AUTO_MERGE_AUTHORS — squash-merging")
+            auto_merge(PR_NUMBER)
+        else:
+            print(f"author={author} not in AUTO_MERGE_AUTHORS={AUTO_MERGE_AUTHORS} — left for human")
 
     return 0
 

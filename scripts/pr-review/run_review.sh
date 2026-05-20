@@ -29,10 +29,13 @@ BASE_REF="$(gh pr view "$PR_NUMBER" --json baseRefName --jq .baseRefName)"
 export PR_NUMBER HEAD_SHA BASE_REF
 envsubst < "$WORKDIR/prompt.md" > "$PROMPT"
 
-# Pre-flight: verify LiteLLM is reachable. A fast curl is cheaper
-# than waiting for the agent to time out per-turn.
-if ! curl -fsS --max-time 5 "${ANTHROPIC_BASE_URL:-}/v1/models" >/dev/null 2>&1; then
-  echo "ERROR: LiteLLM proxy unreachable at ${ANTHROPIC_BASE_URL:-<unset>}" \
+# Pre-flight: verify LiteLLM is reachable AND our API key is
+# accepted. The key check is what tells us the secret is wired
+# correctly before we burn turns on the real agent run.
+if ! curl -fsS --max-time 5 \
+    -H "Authorization: Bearer ${ANTHROPIC_API_KEY:-}" \
+    "${ANTHROPIC_BASE_URL:-}/v1/models" >/dev/null 2>&1; then
+  echo "ERROR: LiteLLM unreachable or auth failed at ${ANTHROPIC_BASE_URL:-<unset>}" \
     | tee "$OUT" >&2
   exit 2
 fi
