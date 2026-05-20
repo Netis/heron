@@ -13,6 +13,45 @@ pub struct ExtractRequest {
     pub server_port: Option<u16>,
 }
 
+/// One time-bounded 5-tuple filter. Optional fields are wildcards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractFlow {
+    pub start_us: i64,
+    pub end_us: i64,
+    pub client_ip: Option<IpAddr>,
+    pub client_port: Option<u16>,
+    pub server_ip: Option<IpAddr>,
+    pub server_port: Option<u16>,
+}
+
+/// A source-level extraction request that can match several exact flows.
+#[derive(Debug, Clone)]
+pub struct ExtractRequestSet {
+    pub source_id: String,
+    pub start_us: i64,
+    pub end_us: i64,
+    pub flows: Vec<ExtractFlow>,
+}
+
+impl From<ExtractRequest> for ExtractRequestSet {
+    fn from(req: ExtractRequest) -> Self {
+        let flow = ExtractFlow {
+            start_us: req.start_us,
+            end_us: req.end_us,
+            client_ip: req.client_ip,
+            client_port: req.client_port,
+            server_ip: req.server_ip,
+            server_port: req.server_port,
+        };
+        Self {
+            source_id: req.source_id,
+            start_us: req.start_us,
+            end_us: req.end_us,
+            flows: vec![flow],
+        }
+    }
+}
+
 /// One pipeline's root info, supplied by the runtime.
 #[derive(Debug, Clone)]
 pub struct PipelineRoot {
@@ -47,5 +86,10 @@ mod tests {
             server_port: None,
         };
         assert_eq!(req.source_id, "en0");
+
+        let set = ExtractRequestSet::from(req);
+        assert_eq!(set.source_id, "en0");
+        assert_eq!(set.flows.len(), 1);
+        assert_eq!(set.flows[0].start_us, 0);
     }
 }

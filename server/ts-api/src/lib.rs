@@ -77,6 +77,15 @@ pub struct ApiAgentTurnsContext {
     pub active_turns: ActiveTurnRegistry,
 }
 
+/// Composite state for pcap download routes. Turn-level pcap downloads need
+/// both pcap roots and turn/call metadata so they can build exact flow filters.
+#[derive(Clone)]
+pub struct ApiPcapExtractContext {
+    pub roots: Arc<Vec<PipelineRoot>>,
+    pub storage: Arc<dyn StorageBackend>,
+    pub active_turns: ActiveTurnRegistry,
+}
+
 /// Bind the API server listener. Call this before spawning so bind errors
 /// propagate to the caller (and can abort startup).
 pub async fn bind(config: &ApiConfig) -> Result<TcpListener> {
@@ -123,9 +132,18 @@ pub fn router(
         .route("/api/health", get(routes::health::health))
         .with_state(health);
 
+    let pcap_extract_state = ApiPcapExtractContext {
+        roots: pcap_roots,
+        storage: storage.clone(),
+        active_turns: active_turns.clone(),
+    };
     let pcap_extract_routes = Router::new()
         .route("/api/pcap/extract", get(routes::pcap_extract::handler))
-        .with_state(pcap_roots);
+        .route(
+            "/api/pcap/agent-turns/{id}/packets",
+            get(routes::pcap_extract::agent_turn_handler),
+        )
+        .with_state(pcap_extract_state);
 
     // Agent-turns routes use a composite state (storage + in-memory
     // active-turn registry) so the list handler can union finalized

@@ -11,7 +11,7 @@ pub mod output;
 pub mod reader;
 pub mod types;
 
-pub use types::{ExtractError, ExtractRequest, PipelineRoot};
+pub use types::{ExtractError, ExtractFlow, ExtractRequest, ExtractRequestSet, PipelineRoot};
 
 use std::io;
 use std::sync::Arc;
@@ -44,7 +44,11 @@ struct ChunkIter {
 
 impl ChunkIter {
     fn new(merge: MergeIter, link_type: u32) -> Self {
-        Self { state: ChunkState::NeedHeader, merge, link_type }
+        Self {
+            state: ChunkState::NeedHeader,
+            merge,
+            link_type,
+        }
     }
 }
 
@@ -89,7 +93,7 @@ impl Iterator for ChunkIter {
 pub struct Prep {
     iters: Vec<PacketIter>,
     header_link_type: u32,
-    req: Arc<ExtractRequest>,
+    req: Arc<ExtractRequestSet>,
 }
 
 /// Synchronous prepare: list candidate files, open them, validate that all
@@ -101,6 +105,13 @@ pub struct Prep {
 /// still wrap it in `tokio::task::spawn_blocking` — short reads on a slow
 /// disk can still stall a runtime worker.
 pub fn prepare(req: ExtractRequest, roots: &[PipelineRoot]) -> Result<Prep, ExtractError> {
+    prepare_many(ExtractRequestSet::from(req), roots)
+}
+
+/// Synchronous prepare for a request containing multiple time-bounded flows.
+/// This is used by turn-level extraction, where each LLM call contributes
+/// its exact observed TCP 5-tuple.
+pub fn prepare_many(req: ExtractRequestSet, roots: &[PipelineRoot]) -> Result<Prep, ExtractError> {
     let files = list_candidate_files(&req, roots);
 
     let mut iters: Vec<PacketIter> = Vec::with_capacity(files.len());
@@ -235,7 +246,10 @@ mod tests {
             server_ip: None,
             server_port: None,
         };
-        let roots = vec![PipelineRoot { name: "local".into(), dump_dir: dir.path().to_path_buf() }];
+        let roots = vec![PipelineRoot {
+            name: "local".into(),
+            dump_dir: dir.path().to_path_buf(),
+        }];
         let bytes = rt.block_on(async {
             let prep = prepare(req, &roots).unwrap();
             collect_stream(stream_extract(prep)).await
@@ -259,7 +273,10 @@ mod tests {
             server_ip: None,
             server_port: None,
         };
-        let roots = vec![PipelineRoot { name: "local".into(), dump_dir: dir.path().to_path_buf() }];
+        let roots = vec![PipelineRoot {
+            name: "local".into(),
+            dump_dir: dir.path().to_path_buf(),
+        }];
         let bytes = rt.block_on(async {
             let prep = prepare(req, &roots).unwrap();
             collect_stream(stream_extract(prep)).await
@@ -294,7 +311,10 @@ mod tests {
             server_ip: None,
             server_port: None,
         };
-        let roots = vec![PipelineRoot { name: "local".into(), dump_dir: dir.path().to_path_buf() }];
+        let roots = vec![PipelineRoot {
+            name: "local".into(),
+            dump_dir: dir.path().to_path_buf(),
+        }];
 
         match prepare(req, &roots) {
             Err(ExtractError::LinkTypeMismatch { expected, got }) => {
