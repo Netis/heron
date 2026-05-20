@@ -877,10 +877,21 @@ impl DuckDbBackend {
                     CAST(list_distinct(array_agg(model))[1:32] AS JSON)::VARCHAR    AS models_json,
                     CAST(list_distinct(array_agg(wire_api))[1:8] AS JSON)::VARCHAR  AS wire_apis_json,
                     CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR AS paths_json,
+                    -- `arg_min(LENGTH)` alone picks malformed short blobs
+                    -- (e.g. rows where the response parser stashed the
+                    -- literal string `null` because no headers reached
+                    -- it). Filter to \"looks like a real JSON header
+                    -- list\": starts with `[`, length >= 30 chars.
+                    -- Drops anomalies, still picks the smallest valid
+                    -- sample.
                     arg_min(response_headers, LENGTH(response_headers))
-                        FILTER (WHERE response_headers IS NOT NULL)               AS sample_response_headers,
+                        FILTER (WHERE response_headers IS NOT NULL
+                            AND LENGTH(response_headers) >= 30
+                            AND response_headers LIKE '[%')             AS sample_response_headers,
                     arg_min(request_headers, LENGTH(request_headers))
-                        FILTER (WHERE request_headers IS NOT NULL)                AS sample_request_headers,
+                        FILTER (WHERE request_headers IS NOT NULL
+                            AND LENGTH(request_headers) >= 30
+                            AND request_headers LIKE '[%')              AS sample_request_headers,
                     COUNT(*)                                  AS call_count,
                     COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0)::UBIGINT AS error_count,
                     COALESCE(SUM(CASE WHEN is_stream THEN 1 ELSE 0 END), 0)::UBIGINT          AS stream_count,
