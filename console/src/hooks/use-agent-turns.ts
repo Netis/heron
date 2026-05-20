@@ -57,10 +57,22 @@ export function useAgentTurnDetail(id: string | null) {
   })
 }
 
-export function useAgentTurnCalls(id: string | null) {
+/**
+ * Fetch the calls list for one turn.
+ *
+ * `lite=true` asks the server to NULL the four heavy fields
+ * (request_body, response_body, request_headers, response_headers) so
+ * a mega-turn (878 agentic iterations × ~190 KB request_body each ≈
+ * 168 MB JSON) doesn't freeze the browser. Callers that render an
+ * expanded call body in lite mode should fall back to
+ * `useLlmCallDetail(callId)` to fetch that one call's full bodies on
+ * demand.
+ */
+export function useAgentTurnCalls(id: string | null, lite = false) {
   return useQuery({
-    queryKey: ["agent-turn-calls", id],
-    queryFn: () => apiFetch<AgentTurnCallItem[]>(`/api/agent-turns/${id}/calls`),
+    queryKey: ["agent-turn-calls", id, lite],
+    queryFn: () =>
+      apiFetch<AgentTurnCallItem[]>(`/api/agent-turns/${id}/calls`, lite ? { lite: 1 } : {}),
     enabled: id != null,
   })
 }
