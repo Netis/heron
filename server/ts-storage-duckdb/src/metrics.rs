@@ -23,6 +23,18 @@ struct PreparedMetric {
     inner: LlmMetric,
 }
 
+/// Body / header sample bundle used by app classification, fetched
+/// independently from the main per-endpoint aggregation so the heavy
+/// body scan can run on a clipped window (see `fetch_app_samples`).
+pub(crate) struct AppSample {
+    pub request_paths: Vec<String>,
+    pub finish_reasons: Vec<String>,
+    pub sample_response_headers: Option<String>,
+    pub sample_request_headers: Option<String>,
+    pub sample_request_body: Option<String>,
+    pub sample_response_body: Option<String>,
+}
+
 fn prepare_metric(m: LlmMetric) -> PreparedMetric {
     PreparedMetric {
         timestamp: Value::Timestamp(TimeUnit::Microsecond, m.timestamp_us),
@@ -771,6 +783,177 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
+    /// Per-endpoint body / header sample, used by app classification.
+    /// Keyed by `(server_ip, server_port)`.
+    pub(crate) fn fetch_app_samples(
+        conn: &duckdb::Connection,
+        window_start_us: i64,
+        window_end_us: i64,
+    ) -> Result<std::collections::HashMap<(String, u16), AppSample>> {
+        // Body columns are heavy (16-32 KB / row); a per-group
+        // arg_max(body, ...) FILTER (LENGTH(body) BETWEEN ...) forces
+        // DuckDB to materialize every body in the window — 5+ GB on a
+        // 7-day range, ~17 s wall-clock.
+        //
+        // Strategy: pull only the top-N (=5) most-recent rows per
+        // (server_ip, server_port) via a row_number window
+        // partitioning trick. DuckDB can keep the rank in-place and
+        // only emit those few rows' bodies — measured ~1.3 s on the
+        // same 7-day data. We further clip the scan window to the
+        // last 24 h (app classification doesn't change over the
+        // wider window) so the row_number scan stays narrow.
+        //
+        // In Rust we look through the 5 returned rows per endpoint
+        // for the first one whose body matches our shape filter
+        // (100-32768 B and starts with `{`) — equivalent to the old
+        // SQL FILTER without paying the full-scan cost.
+        const SAMPLE_WINDOW_US: i64 = 24 * 60 * 60 * 1_000_000;
+        let sample_start_us = std::cmp::max(window_start_us, window_end_us - SAMPLE_WINDOW_US);
+        let sample_start = us_to_timestamp(sample_start_us);
+        let sample_end = us_to_timestamp(window_end_us);
+
+        // The outer aggregation over the same window gives us
+        // request_paths / finish_reasons distinct lists — those
+        // columns are small so this is cheap (< 0.2 s for 7 d).
+        let dim_sql = "SELECT
+                server_ip,
+                server_port,
+                CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR     AS paths_json,
+                CAST(list_distinct(array_agg(finish_reason))[1:32] AS JSON)::VARCHAR    AS finish_reasons_json
+             FROM llm_calls
+             WHERE request_time >= ? AND request_time < ?
+             GROUP BY server_ip, server_port";
+
+        let mut out: std::collections::HashMap<(String, u16), AppSample> =
+            std::collections::HashMap::new();
+        {
+            let mut stmt = conn.prepare(dim_sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare dim sample query: {e}"))
+            })?;
+            let mut rs = stmt
+                .query(duckdb::params![sample_start.clone(), sample_end.clone()])
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute dim sample query: {e}"))
+                })?;
+            while let Some(row) = rs
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                let server_ip: String = row
+                    .get(0)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let server_port: u16 = row
+                    .get(1)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let paths_json: Option<String> = row
+                    .get(2)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let finish_reasons_json: Option<String> = row
+                    .get(3)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                out.insert(
+                    (server_ip, server_port),
+                    AppSample {
+                        request_paths: parse_json_string_list(paths_json.as_deref()),
+                        finish_reasons: parse_json_string_list(finish_reasons_json.as_deref()),
+                        sample_response_headers: None,
+                        sample_request_headers: None,
+                        sample_request_body: None,
+                        sample_response_body: None,
+                    },
+                );
+            }
+        }
+
+        // Body / header sampling — top-5 most-recent rows per
+        // endpoint. We filter for shape (`headers LIKE '[%'`,
+        // `body LIKE '{%'`) in Rust below.
+        let body_sql = "SELECT server_ip, server_port,
+                response_headers, request_headers, request_body, response_body
+             FROM (
+                SELECT server_ip, server_port,
+                       response_headers, request_headers,
+                       request_body, response_body,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY server_ip, server_port
+                           ORDER BY request_time DESC
+                       ) AS rn
+                FROM llm_calls
+                WHERE request_time >= ? AND request_time < ?
+             ) WHERE rn <= 5";
+
+        let mut stmt = conn.prepare(body_sql).map_err(|e| {
+            AppError::Storage(format!("failed to prepare body sample query: {e}"))
+        })?;
+        let mut rs = stmt
+            .query(duckdb::params![sample_start, sample_end])
+            .map_err(|e| {
+                AppError::Storage(format!("failed to execute body sample query: {e}"))
+            })?;
+        while let Some(row) = rs
+            .next()
+            .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+        {
+            let server_ip: String = row
+                .get(0)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+            let server_port: u16 = row
+                .get(1)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+            let resp_h: Option<String> = row
+                .get(2)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+            let req_h: Option<String> = row
+                .get(3)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+            let req_b: Option<String> = row
+                .get(4)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+            let resp_b: Option<String> = row
+                .get(5)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+
+            let entry = out.entry((server_ip, server_port)).or_insert_with(|| AppSample {
+                request_paths: Vec::new(),
+                finish_reasons: Vec::new(),
+                sample_response_headers: None,
+                sample_request_headers: None,
+                sample_request_body: None,
+                sample_response_body: None,
+            });
+
+            // First-match-wins per field: row_number ORDER BY
+            // request_time DESC means the first row we see for an
+            // endpoint is the most recent. Skip if we already have a
+            // good sample.
+            if entry.sample_response_headers.is_none() {
+                if let Some(s) = resp_h.filter(|s| s.starts_with('[')) {
+                    entry.sample_response_headers = Some(s);
+                }
+            }
+            if entry.sample_request_headers.is_none() {
+                if let Some(s) = req_h.filter(|s| s.starts_with('[')) {
+                    entry.sample_request_headers = Some(s);
+                }
+            }
+            if entry.sample_request_body.is_none() {
+                if let Some(s) =
+                    req_b.filter(|s| (100..=32768).contains(&s.len()) && s.starts_with('{'))
+                {
+                    entry.sample_request_body = Some(s);
+                }
+            }
+            if entry.sample_response_body.is_none() {
+                if let Some(s) =
+                    resp_b.filter(|s| (30..=8192).contains(&s.len()) && s.starts_with('{'))
+                {
+                    entry.sample_response_body = Some(s);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// "Services" view — aggregate `llm_calls` by `(server_ip,
     /// server_port)`. See `StorageBackend::query_services` for the
     /// motivation (port is not on `llm_metrics`).
@@ -836,6 +1019,17 @@ impl DuckDbBackend {
             // LENGTH(col)) FILTER (...)` picks the smallest non-null
             // value — predictable across re-runs and tiny enough that
             // streaming back to Rust costs nothing.
+            // Body / header sampling for app classification runs as
+            // a separate, time-clipped query — see fetch_app_samples.
+            // Keeps the main per-endpoint aggregation off the heavy
+            // body columns so a 7-day window stays sub-second
+            // instead of pegging at 17s.
+            let samples = DuckDbBackend::fetch_app_samples(
+                &conn,
+                query.time_range.start_us,
+                query.time_range.end_us,
+            )?;
+
             let sql = format!(
                 "SELECT
                     server_ip,
@@ -843,47 +1037,6 @@ impl DuckDbBackend {
                     CAST(list_distinct(array_agg(model))[1:32] AS JSON)::VARCHAR    AS models_json,
                     CAST(list_distinct(array_agg(wire_api))[1:8] AS JSON)::VARCHAR  AS wire_apis_json,
                     CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR AS paths_json,
-                    -- Distinct finish_reasons. SGLang has signatures
-                    -- vLLM doesn't (`matched_stop`, `matched_eos`,
-                    -- `stop_str`); per-call we keep the raw string, so
-                    -- a single appearance in the window is enough to
-                    -- pin the server.
-                    CAST(list_distinct(array_agg(finish_reason))[1:32] AS JSON)::VARCHAR AS finish_reasons_json,
-                    -- Pick any well-formed header sample per group.
-                    -- `MAX(response_headers)` is lexicographic — for
-                    -- JSON-encoded headers starting with `[[` it's a
-                    -- stable arbitrary choice and dodges the
-                    -- arg_min(LENGTH)-picks-anomalous-short-blob hazard
-                    -- (rows with empty or malformed-short headers exist
-                    -- in production and were dropping real endpoints to
-                    -- `unknown`). We filter to `[%` so the picked
-                    -- sample looks like a JSON array.
-                    MAX(response_headers)
-                        FILTER (WHERE response_headers IS NOT NULL
-                            AND response_headers LIKE '[%')             AS sample_response_headers,
-                    MAX(request_headers)
-                        FILTER (WHERE request_headers IS NOT NULL
-                            AND request_headers LIKE '[%')              AS sample_request_headers,
-                    -- Body samples for the vLLM vs SGLang fingerprint.
-                    -- We pick the LARGEST request body in the window
-                    -- (`arg_max(LENGTH)` — fast u64 comparison; the
-                    -- chosen body materialises only once) because
-                    -- larger bodies = deeper agentic history =
-                    -- assistant.tool_calls[].id values from the same
-                    -- server, which is our distinguishing signal.
-                    -- response_body is NULL for SSE streaming calls,
-                    -- so it's a weaker but still useful complement.
-                    -- Both are capped at 32 KB / 8 KB to keep the
-                    -- planner from materialising oversized agentic
-                    -- histories.
-                    arg_max(request_body, LENGTH(request_body))
-                        FILTER (WHERE request_body IS NOT NULL
-                            AND LENGTH(request_body) BETWEEN 100 AND 32768
-                            AND request_body LIKE '{{%')                AS sample_request_body,
-                    arg_max(response_body, LENGTH(response_body))
-                        FILTER (WHERE response_body IS NOT NULL
-                            AND LENGTH(response_body) BETWEEN 30 AND 8192
-                            AND response_body LIKE '{{%')               AS sample_response_body,
                     COUNT(*)                                  AS call_count,
                     COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0)::UBIGINT AS error_count,
                     COALESCE(SUM(CASE WHEN is_stream THEN 1 ELSE 0 END), 0)::UBIGINT          AS stream_count,
@@ -914,6 +1067,12 @@ impl DuckDbBackend {
                 .next()
                 .map_err(|e| AppError::Storage(format!("row error: {e}")))?
             {
+                let server_ip: String = row
+                    .get(0)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let server_port: u16 = row
+                    .get(1)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
                 let models_json: Option<String> = row
                     .get(2)
                     .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
@@ -923,81 +1082,76 @@ impl DuckDbBackend {
                 let paths_json: Option<String> = row
                     .get(4)
                     .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                let finish_reasons_json: Option<String> = row
-                    .get(5)
-                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                let sample_response_headers: Option<String> = row
-                    .get(6)
-                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                let sample_request_headers: Option<String> = row
-                    .get(7)
-                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                let sample_request_body: Option<String> = row
-                    .get(8)
-                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                let sample_response_body: Option<String> = row
-                    .get(9)
-                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
 
                 let models = parse_json_string_list(models_json.as_deref());
                 let wire_apis = parse_json_string_list(wire_apis_json.as_deref());
-                let request_paths = parse_json_string_list(paths_json.as_deref());
-                let finish_reasons = parse_json_string_list(finish_reasons_json.as_deref());
-                let server_header =
-                    crate::apps::extract_server_header(sample_response_headers.as_deref());
+                // Default request_paths comes from the main window;
+                // if the endpoint also has a recent sample, prefer
+                // the recent paths (they're already in `samples`).
+                let mut request_paths = parse_json_string_list(paths_json.as_deref());
+
+                let sample = samples.get(&(server_ip.clone(), server_port));
+                let finish_reasons = sample.map(|s| s.finish_reasons.clone()).unwrap_or_default();
+                if let Some(s) = sample {
+                    if !s.request_paths.is_empty() {
+                        request_paths = s.request_paths.clone();
+                    }
+                }
+                let sample_response_headers = sample.and_then(|s| s.sample_response_headers.as_deref());
+                let sample_request_headers = sample.and_then(|s| s.sample_request_headers.as_deref());
+                let sample_request_body = sample.and_then(|s| s.sample_request_body.as_deref());
+                let sample_response_body = sample.and_then(|s| s.sample_response_body.as_deref());
+
+                let server_header = crate::apps::extract_server_header(sample_response_headers);
                 let app = crate::apps::classify_app(
                     server_header.as_deref(),
-                    sample_response_headers.as_deref(),
-                    sample_request_headers.as_deref(),
+                    sample_response_headers,
+                    sample_request_headers,
                     &request_paths,
                     &finish_reasons,
                     &models,
-                    sample_request_body.as_deref(),
-                    sample_response_body.as_deref(),
+                    sample_request_body,
+                    sample_response_body,
                 );
 
                 rows.push(ServiceRow {
-                    server_ip: row
-                        .get(0)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    server_port: row
-                        .get::<_, u16>(1)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    server_ip,
+                    server_port,
                     models,
                     wire_apis,
                     request_paths,
                     call_count: row
-                        .get::<_, u64>(10)
+                        .get::<_, u64>(5)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     error_count: row
-                        .get::<_, u64>(11)
+                        .get::<_, u64>(6)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     stream_count: row
-                        .get::<_, u64>(12)
+                        .get::<_, u64>(7)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     total_input_tokens: row
-                        .get::<_, u64>(13)
+                        .get::<_, u64>(8)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     total_output_tokens: row
-                        .get::<_, u64>(14)
+                        .get::<_, u64>(9)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     ttft_avg_ms: row
-                        .get::<_, Option<f64>>(15)
+                        .get::<_, Option<f64>>(10)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     ttft_p95_ms: row
-                        .get::<_, Option<f64>>(16)
+                        .get::<_, Option<f64>>(11)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     e2e_avg_ms: row
-                        .get::<_, Option<f64>>(17)
+                        .get::<_, Option<f64>>(12)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     e2e_p95_ms: row
-                        .get::<_, Option<f64>>(18)
+                        .get::<_, Option<f64>>(13)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     first_seen_ms: row
-                        .get::<_, i64>(19)
+                        .get::<_, i64>(14)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     last_seen_ms: row
-                        .get::<_, i64>(20)
+                        .get::<_, i64>(15)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     app,
                     server_header,
@@ -1042,41 +1196,27 @@ impl DuckDbBackend {
             let start_ts = us_to_timestamp(query.time_range.start_us);
             let end_ts = us_to_timestamp(query.time_range.end_us);
 
-            // --- Nodes: same grouping as the table view. We pull the
-            // smallest set of fields needed for graph rendering.
-            // App classification is replicated here (rather than
-            // shoehorning the whole query_services machinery) so the
-            // Path view doesn't depend on the full metric percentiles.
-            let nodes_sql = format!(
-                "SELECT
+            // Body / header sampling for app classification — same
+            // clipped-window helper used by query_services.
+            let samples = DuckDbBackend::fetch_app_samples(
+                &conn,
+                query.time_range.start_us,
+                query.time_range.end_us,
+            )?;
+
+            let nodes_sql = "SELECT
                     server_ip,
                     server_port,
                     CAST(list_distinct(array_agg(model))[1:32] AS JSON)::VARCHAR    AS models_json,
                     CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR AS paths_json,
-                    CAST(list_distinct(array_agg(finish_reason))[1:32] AS JSON)::VARCHAR AS finish_reasons_json,
-                    MAX(response_headers)
-                        FILTER (WHERE response_headers IS NOT NULL
-                            AND response_headers LIKE '[%')             AS sample_response_headers,
-                    MAX(request_headers)
-                        FILTER (WHERE request_headers IS NOT NULL
-                            AND request_headers LIKE '[%')              AS sample_request_headers,
-                    arg_max(request_body, LENGTH(request_body))
-                        FILTER (WHERE request_body IS NOT NULL
-                            AND LENGTH(request_body) BETWEEN 100 AND 32768
-                            AND request_body LIKE '{{%')                AS sample_request_body,
-                    arg_max(response_body, LENGTH(response_body))
-                        FILTER (WHERE response_body IS NOT NULL
-                            AND LENGTH(response_body) BETWEEN 30 AND 8192
-                            AND response_body LIKE '{{%')               AS sample_response_body,
                     COUNT(*)                                  AS call_count
                  FROM llm_calls
                  WHERE request_time >= ? AND request_time < ?
-                 GROUP BY server_ip, server_port"
-            );
+                 GROUP BY server_ip, server_port";
 
             let mut nodes: Vec<TopologyNode> = Vec::new();
             {
-                let mut stmt = conn.prepare(&nodes_sql).map_err(|e| {
+                let mut stmt = conn.prepare(nodes_sql).map_err(|e| {
                     AppError::Storage(format!("failed to prepare topology nodes query: {e}"))
                 })?;
                 let mut rs = stmt
@@ -1100,39 +1240,34 @@ impl DuckDbBackend {
                     let paths_json: Option<String> = row
                         .get(3)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                    let finish_reasons_json: Option<String> = row
-                        .get(4)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                    let sample_response_headers: Option<String> = row
-                        .get(5)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                    let sample_request_headers: Option<String> = row
-                        .get(6)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                    let sample_request_body: Option<String> = row
-                        .get(7)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                    let sample_response_body: Option<String> = row
-                        .get(8)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
                     let call_count: u64 = row
-                        .get(9)
+                        .get(4)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
 
                     let models = parse_json_string_list(models_json.as_deref());
-                    let request_paths = parse_json_string_list(paths_json.as_deref());
-                    let finish_reasons = parse_json_string_list(finish_reasons_json.as_deref());
-                    let server_header =
-                        crate::apps::extract_server_header(sample_response_headers.as_deref());
+                    let mut request_paths = parse_json_string_list(paths_json.as_deref());
+
+                    let sample = samples.get(&(server_ip.clone(), server_port));
+                    let finish_reasons = sample.map(|s| s.finish_reasons.clone()).unwrap_or_default();
+                    if let Some(s) = sample {
+                        if !s.request_paths.is_empty() {
+                            request_paths = s.request_paths.clone();
+                        }
+                    }
+                    let sample_response_headers = sample.and_then(|s| s.sample_response_headers.as_deref());
+                    let sample_request_headers = sample.and_then(|s| s.sample_request_headers.as_deref());
+                    let sample_request_body = sample.and_then(|s| s.sample_request_body.as_deref());
+                    let sample_response_body = sample.and_then(|s| s.sample_response_body.as_deref());
+                    let server_header = crate::apps::extract_server_header(sample_response_headers);
                     let app = crate::apps::classify_app(
                         server_header.as_deref(),
-                        sample_response_headers.as_deref(),
-                        sample_request_headers.as_deref(),
+                        sample_response_headers,
+                        sample_request_headers,
                         &request_paths,
                         &finish_reasons,
                         &models,
-                        sample_request_body.as_deref(),
-                        sample_response_body.as_deref(),
+                        sample_request_body,
+                        sample_response_body,
                     );
 
                     nodes.push(TopologyNode {
