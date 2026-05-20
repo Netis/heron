@@ -177,6 +177,10 @@ pub fn router(
         .route("/api/filters/models", get(routes::filters::models))
         .route("/api/filters/server-ips", get(routes::filters::server_ips))
         .route(
+            "/api/filters/agent-kinds",
+            get(routes::filters::agent_kinds),
+        )
+        .route(
             "/api/filters/finish-reasons",
             get(routes::filters::finish_reasons),
         )

@@ -222,6 +222,13 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::query_distinct_server_ips(self).await
     }
 
+    async fn query_distinct_agent_kinds(
+        &self,
+        query: &DistinctAgentKindsQuery,
+    ) -> Result<Vec<String>> {
+        DuckDbBackend::query_distinct_agent_kinds(self, query).await
+    }
+
     async fn query_distinct_finish_reasons(&self) -> Result<Vec<DistinctFinishReason>> {
         DuckDbBackend::query_distinct_finish_reasons(self).await
     }

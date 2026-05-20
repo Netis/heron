@@ -7,10 +7,10 @@ import { formatDateTimeMs, formatNumber, formatDuration } from "@/lib/format"
 import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
+import { useAgentKinds } from "@/hooks/use-filter-values"
 import type { AgentTurnListItem } from "@/types/api"
 
 const STATUS_OPTIONS = ["in_progress", "complete", "incomplete"]
-const AGENT_KIND_OPTIONS = ["claude-cli", "codex-cli", "generic"]
 
 const PAGE_SIZES = [20, 50, 100] as const
 
@@ -102,6 +102,7 @@ export function AgentTurnsPage() {
   const pageSize = Number(pageSizeStr) || 50
   const statusFilter = statusStr ? statusStr.split(",") : []
   const agentKindFilter = agentKindStr ? agentKindStr.split(",") : []
+  const { data: agentKindsData } = useAgentKinds({ includeProxyHops })
 
   const [selectedId, setSelectedId] = useSearchParamState("selected", "")
   // Anchor (unix seconds) shared alongside `?selected` so a recipient who
@@ -134,6 +135,13 @@ export function AgentTurnsPage() {
   })
 
   const items = data?.items ?? []
+  const agentKindOptions = Array.from(
+    new Set([
+      ...(agentKindsData?.values ?? []),
+      ...items.map((item) => item.agent_kind),
+      ...agentKindFilter,
+    ]),
+  ).sort()
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1
@@ -170,7 +178,7 @@ export function AgentTurnsPage() {
         />
         <FilterDropdown
           label="Agent kind"
-          options={AGENT_KIND_OPTIONS}
+          options={agentKindOptions}
           selected={agentKindFilter}
           onChange={(v) => {
             setAgentKindStr(v.join(","))

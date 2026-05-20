@@ -1,8 +1,18 @@
 //! Distinct-value queries used to populate filter dropdowns.
 
 use ts_common::error::{AppError, Result};
+use ts_storage::query::DistinctAgentKindsQuery;
 
+use crate::util::us_to_timestamp;
 use crate::DuckDbBackend;
+
+fn sql_string_list(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|s| format!("'{}'", s.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 impl DuckDbBackend {
     pub(crate) async fn query_distinct_wire_apis(&self) -> Result<Vec<String>> {
@@ -69,16 +79,82 @@ impl DuckDbBackend {
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
+
+    pub(crate) async fn query_distinct_agent_kinds(
+        &self,
+        query: &DistinctAgentKindsQuery,
+    ) -> Result<Vec<String>> {
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+
+            let mut where_parts =
+                vec!["start_time >= ?".to_string(), "start_time < ?".to_string()];
+
+            if !query.filter.wire_apis.is_empty() {
+                where_parts.push(format!(
+                    "wire_api IN ({})",
+                    sql_string_list(&query.filter.wire_apis)
+                ));
+            }
+            if !query.filter.models.is_empty() {
+                where_parts.push(format!(
+                    "list_has_any(CAST(CAST(models_used AS JSON) AS VARCHAR[]), [{}])",
+                    sql_string_list(&query.filter.models)
+                ));
+            }
+            if !query.filter.server_ips.is_empty() {
+                where_parts.push(format!(
+                    "server_ip IN ({})",
+                    sql_string_list(&query.filter.server_ips)
+                ));
+            }
+            if !query.include_proxy_hops {
+                where_parts.push(
+                    "(json_extract_string(metadata, '$.proxy.role') IS NULL \
+                       OR json_extract_string(metadata, '$.proxy.role') \
+                          NOT IN ('proxy_out', 'mirror_secondary'))"
+                        .to_string(),
+                );
+            }
+
+            let sql = format!(
+                "SELECT DISTINCT agent_kind FROM agent_turns WHERE {} ORDER BY agent_kind",
+                where_parts.join(" AND ")
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare distinct_agent_kinds query: {e}"))
+            })?;
+            let mut rows = stmt.query(duckdb::params![start_ts, end_ts]).map_err(|e| {
+                AppError::Storage(format!("failed to execute distinct_agent_kinds query: {e}"))
+            })?;
+            let mut result = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                let v: String = row
+                    .get(0)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                result.push(v);
+            }
+            Ok(result)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::DuckDbBackend;
-    use std::net::IpAddr;
-    use ts_llm::model::{ApiType, LlmCall};
     use ts_llm::wire_apis as wa;
     use ts_metrics::model::LlmMetric;
+    use ts_storage::query::{DimensionFilter, DistinctAgentKindsQuery, TimeRange};
     use ts_storage::StorageBackend;
+    use ts_turn::{AgentTurn, TurnStatus};
 
     fn in_memory() -> DuckDbBackend {
         DuckDbBackend::open(":memory:").unwrap()
@@ -123,6 +199,45 @@ mod tests {
             tpot_p50: Some(23.8),
             tpot_p95: Some(12.5),
             tpot_p99: Some(8.3),
+        }
+    }
+
+    fn sample_turn(
+        turn_id: &str,
+        agent_kind: &str,
+        wire_api: &str,
+        models_used: Vec<&str>,
+        server_ip: &str,
+        start_us: i64,
+        metadata: serde_json::Value,
+    ) -> AgentTurn {
+        AgentTurn {
+            source_id: String::new(),
+            turn_id: turn_id.into(),
+            session_id: "s1".into(),
+            wire_api: wire_api.into(),
+            agent_kind: agent_kind.into(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            server_ip: server_ip.parse().unwrap(),
+            start_time_us: start_us,
+            end_time_us: start_us + 100_000,
+            duration_ms: 100,
+            call_count: 1,
+            models_used: models_used.into_iter().map(String::from).collect(),
+            subagents_used: vec![],
+            total_input_tokens: 100,
+            total_output_tokens: 50,
+            total_cache_read_input_tokens: 0,
+            total_cache_creation_input_tokens: 0,
+            total_cost_usd: None,
+            status: TurnStatus::Complete,
+            final_finish_reason: Some("complete".into()),
+            user_input_preview: Some("hello".into()),
+            user_call_id: None,
+            final_answer_preview: Some("world".into()),
+            final_call_id: None,
+            call_ids: vec!["call-1".into()],
+            metadata,
         }
     }
 
@@ -205,4 +320,80 @@ mod tests {
         assert_eq!(server_ips, vec!["10.0.0.1", "10.0.0.2"]);
     }
 
+    #[tokio::test]
+    async fn test_query_distinct_agent_kinds_filters_by_turn_window() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+
+        let base = 1_700_000_000_000_000_i64;
+        backend
+            .write_turns(vec![
+                sample_turn(
+                    "t-openclaw",
+                    "openclaw",
+                    wa::OPENAI_CHAT,
+                    vec!["gpt-4"],
+                    "10.0.0.1",
+                    base + 1_000_000,
+                    serde_json::json!({}),
+                ),
+                sample_turn(
+                    "t-hermes",
+                    "hermes",
+                    wa::ANTHROPIC,
+                    vec!["claude-sonnet"],
+                    "10.0.0.2",
+                    base + 2_000_000,
+                    serde_json::json!({}),
+                ),
+                sample_turn(
+                    "t-old",
+                    "codex-cli",
+                    wa::OPENAI_CHAT,
+                    vec!["gpt-4"],
+                    "10.0.0.1",
+                    base - 1_000_000,
+                    serde_json::json!({}),
+                ),
+                sample_turn(
+                    "t-hidden",
+                    "generic",
+                    wa::OPENAI_CHAT,
+                    vec!["gpt-4"],
+                    "10.0.0.1",
+                    base + 3_000_000,
+                    serde_json::json!({"proxy": {"role": "proxy_out"}}),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let query = DistinctAgentKindsQuery {
+            time_range: TimeRange {
+                start_us: base,
+                end_us: base + 10_000_000,
+            },
+            filter: DimensionFilter::default(),
+            include_proxy_hops: false,
+        };
+
+        let agent_kinds = backend.query_distinct_agent_kinds(&query).await.unwrap();
+        assert_eq!(agent_kinds, vec!["hermes", "openclaw"]);
+
+        let mut openai_query = query.clone();
+        openai_query.filter.wire_apis = vec![wa::OPENAI_CHAT.to_string()];
+        let agent_kinds = backend
+            .query_distinct_agent_kinds(&openai_query)
+            .await
+            .unwrap();
+        assert_eq!(agent_kinds, vec!["openclaw"]);
+
+        let mut hidden_query = query;
+        hidden_query.include_proxy_hops = true;
+        let agent_kinds = backend
+            .query_distinct_agent_kinds(&hidden_query)
+            .await
+            .unwrap();
+        assert_eq!(agent_kinds, vec!["generic", "hermes", "openclaw"]);
+    }
 }
