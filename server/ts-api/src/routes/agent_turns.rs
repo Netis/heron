@@ -243,10 +243,24 @@ fn agent_turn_to_detail(t: AgentTurn) -> ts_storage::query::TurnDetail {
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct CallsParams {
+    /// `lite=1` strips request_body, response_body, request_headers,
+    /// response_headers from the response so a mega-turn (hundreds of
+    /// agentic iterations × hundreds of KB body each) doesn't OOM the
+    /// browser. Use `GET /api/llm-calls/{id}` to fetch a specific
+    /// call's bodies on demand.
+    #[serde(default)]
+    pub lite: u8,
+}
+
 pub async fn calls(
     State(ctx): State<ApiAgentTurnsContext>,
     Path(turn_id): Path<String>,
+    Query(params): Query<CallsParams>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let include_bodies = params.lite == 0;
+
     // In-progress turns: pull call_ids from the in-memory registry
     // snapshot, then ask storage to fetch the matching `llm_calls`
     // rows. A call may be ingested into the tracker microseconds before
@@ -261,9 +275,15 @@ pub async fn calls(
         .and_then(|map| map.get(&turn_id).map(|t| t.call_ids.clone()));
 
     if let Some(call_ids) = in_progress_call_ids {
-        let items = ctx.storage.query_calls_by_ids(&call_ids).await?;
+        let items = ctx
+            .storage
+            .query_calls_by_ids(&call_ids, include_bodies)
+            .await?;
         return Ok(ApiResponse::ok(items));
     }
-    let items = ctx.storage.query_turn_calls(&turn_id).await?;
+    let items = ctx
+        .storage
+        .query_turn_calls(&turn_id, include_bodies)
+        .await?;
     Ok(ApiResponse::ok(items))
 }

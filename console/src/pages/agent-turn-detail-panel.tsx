@@ -16,6 +16,7 @@ function TurnDetailView({
   turn,
   calls,
   loadingCalls,
+  liteMode,
   activeSeq,
   onSelect,
   onOpenDetail,
@@ -23,6 +24,7 @@ function TurnDetailView({
   turn: AgentTurnDetail
   calls: AgentTurnCallItem[]
   loadingCalls: boolean
+  liteMode: boolean
   activeSeq: number | null
   onSelect: (seq: number) => void
   onOpenDetail: (id: string) => void
@@ -42,6 +44,13 @@ function TurnDetailView({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="flex flex-col gap-3">
+          {liteMode && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700/60 dark:bg-amber-900/20 dark:text-amber-200">
+              Large turn ({turn.call_count} calls) — request/response bodies
+              omitted from the list. Expand any call to fetch its bodies on
+              demand.
+            </div>
+          )}
           {loadingCalls && calls.length === 0 ? (
             <>
               {[0, 1, 2].map((i) => (
@@ -75,9 +84,19 @@ function TurnDetailView({
   )
 }
 
+/// Above this call_count threshold, the calls list switches to lite
+/// mode — server NULLs the four heavy body/header fields so a
+/// mega-turn (hundreds of agentic iterations × hundreds of KB
+/// request_body each) doesn't OOM the browser. Individual call bodies
+/// are still reachable per-card via `useLlmCallDetail`. Threshold is
+/// empirical: a 100-call turn round-trips in well under a second; a
+/// 300-call turn (~60 MB at p50 body size) starts dropping frames.
+const CALLS_LITE_THRESHOLD = 200
+
 export function AgentTurnDetailPanel({ id, onClose }: Props) {
   const { data: turn, isLoading: loadingTurn, isError: errorTurn } = useAgentTurnDetail(id)
-  const { data: calls = [], isLoading: loadingCalls } = useAgentTurnCalls(id)
+  const liteMode = (turn?.call_count ?? 0) > CALLS_LITE_THRESHOLD
+  const { data: calls = [], isLoading: loadingCalls } = useAgentTurnCalls(id, liteMode)
 
   const { call: activeSeq, detail, setCall, setDetail, openDetail } = useTurnUrlState()
 
@@ -169,6 +188,7 @@ export function AgentTurnDetailPanel({ id, onClose }: Props) {
                   turn={turn}
                   calls={calls}
                   loadingCalls={loadingCalls}
+                  liteMode={liteMode}
                   activeSeq={activeSeq}
                   onSelect={handleSelect}
                   onOpenDetail={openCallDetail}
