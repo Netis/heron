@@ -4,7 +4,6 @@ import {
   Gauge,
   BarChart3,
   AlertTriangle,
-  Cpu,
   Server,
   Sparkles,
   MessageSquare,
@@ -23,9 +22,10 @@ const TOOLBAR_KEYS = ["preset", "start", "end", "wire_api", "model", "server_ip"
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Overview" },
   { to: "/performance", icon: Gauge, label: "Performance" },
-  { to: "/traffic", icon: BarChart3, label: "Traffic" },
+  // Models view is now a tab inside Services; route /models still
+  // resolves for shared links but the sidebar entry was redundant.
+  { to: "/traffic", icon: BarChart3, label: "Usage" },
   { to: "/errors", icon: AlertTriangle, label: "Errors" },
-  { to: "/models", icon: Cpu, label: "Models" },
   { to: "/services", icon: Server, label: "Services" },
   { to: "/agent-sessions", icon: MessageSquare, label: "Agent Sessions" },
   { to: "/agent-turns", icon: MessagesSquare, label: "Agent Turns" },

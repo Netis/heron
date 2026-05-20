@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react"
-import { ArrowUpDown, Loader2, Table as TableIcon, Network } from "lucide-react"
+import { ArrowUpDown, Loader2, Table as TableIcon, Network, Cpu } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatMs, formatNumber } from "@/lib/format"
 import { useServices } from "@/hooks/use-services"
 import { useServicesTopology } from "@/hooks/use-services-topology"
 import { ServicePathView } from "@/components/services/path-view"
+import { ModelsPage } from "@/pages/models"
 import type { ServiceRow } from "@/types/api"
 
-type ViewMode = "table" | "path"
+type ViewMode = "table" | "path" | "model"
 
 type SortKey =
   | "endpoint"
@@ -156,6 +157,8 @@ export function ServicesPage() {
       <ViewTabs view={view} onChange={setView} />
       {view === "path" ? (
         <PathViewContainer />
+      ) : view === "model" ? (
+        <ModelsPage />
       ) : (
       <div className="rounded-lg border border-border bg-card">
         <div className="overflow-auto">
@@ -336,6 +339,18 @@ function ViewTabs({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode) 
       >
         <Network className="size-3.5" />
         Path
+      </button>
+      <button
+        onClick={() => onChange("model")}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium",
+          view === "model"
+            ? "bg-muted text-foreground"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <Cpu className="size-3.5" />
+        Model
       </button>
     </div>
   )
