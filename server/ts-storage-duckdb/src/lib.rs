@@ -163,6 +163,10 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::query_metrics_models(self, query).await
     }
 
+    async fn query_services(&self, query: &ServicesQuery) -> Result<Vec<ServiceRow>> {
+        DuckDbBackend::query_services(self, query).await
+    }
+
     async fn query_finish_reasons(
         &self,
         query: &FinishReasonsQuery,

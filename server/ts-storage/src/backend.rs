@@ -51,6 +51,18 @@ pub trait StorageBackend: Send + Sync {
         query: &MetricsModelsQuery,
     ) -> Result<Vec<MetricsModelRow>>;
 
+    /// Aggregate `llm_calls` by `(server_ip, server_port)` to produce
+    /// one row per LLM-serving endpoint. Used by the Services page.
+    ///
+    /// Not served off the pre-aggregated `llm_metrics` table because
+    /// that schema's grouping sets stop at `server_ip` — different
+    /// vLLM instances on the same host (port 8000 / 9000) would
+    /// collapse into one row. Worst-case this scans `llm_calls` rows
+    /// in the time window; the user's typical 7-day window has tens of
+    /// thousands of rows and the query completes in well under a
+    /// second.
+    async fn query_services(&self, query: &ServicesQuery) -> Result<Vec<ServiceRow>>;
+
     /// Per-bucket finish-reason counts in the requested time range. One series
     /// per distinct raw `finish_reason` observed. The `wire_api`/`model`
     /// filters select a specific dimension; `None` rolls up across all values

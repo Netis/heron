@@ -63,6 +63,28 @@ export interface ModelsData {
   models: MetricsModelRow[]
 }
 
+export interface ServicesData {
+  services: ServiceRow[]
+}
+
+export interface ServiceRow {
+  server_ip: string
+  server_port: number
+  models: string[]
+  wire_apis: string[]
+  call_count: number
+  error_count: number
+  stream_count: number
+  total_input_tokens: number
+  total_output_tokens: number
+  ttft_avg_ms: number | null
+  ttft_p95_ms: number | null
+  e2e_avg_ms: number | null
+  e2e_p95_ms: number | null
+  first_seen_ms: number
+  last_seen_ms: number
+}
+
 export interface MetricsModelRow {
   wire_api: string
   model: string
