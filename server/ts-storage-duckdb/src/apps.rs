@@ -28,8 +28,6 @@
 //! | `vllm`      | request body contains `chatcmpl-tool-` — agentic flows echo the  |
 //! |             | server's prior tool_call_id back in assistant history; works     |
 //! |             | even when responses are SSE-streamed (response_body is NULL)     |
-//! | `litellm`   | uvicorn endpoint with ≥ 3 distinct models (real-world signal     |
-//! |             | from wuneng's 127.0.0.1:4000 LiteLLM proxy)                      |
 //! | `sglang`    | uvicorn endpoint, model name starts with `glm` or `deepseek`     |
 //! |             | (SGLang is the reference deployment for those families)         |
 //! | `vllm`      | uvicorn fallback — vLLM is by far the more common openai-compat  |
@@ -191,12 +189,13 @@ pub(crate) fn classify_app(
     }
 
     if is_uvicorn {
-        // Multi-model tiebreaker: LiteLLM proxies routinely host 5–20
-        // models at one port; vLLM occasionally hosts multiple LoRAs
-        // but rarely > 2.
-        if models.len() >= 3 {
-            return Some("litellm".to_string());
-        }
+        // The "uvicorn + ≥3 distinct models → litellm" tiebreaker
+        // used to live here, but it was window-width-sensitive: at
+        // 7 d a vLLM serving Qwen3.5-35B accumulates 3-4 stray model
+        // names (`text-embedding-ada-002`, `test`, …) from rogue
+        // clients and gets misclassified. The signal isn't strong
+        // enough to overrule the body / path / header evidence we
+        // already weighed above. Removed.
 
         // Model-name heuristic. SGLang is the reference deployment for
         // the Zhipu GLM family and the DeepSeek family in production;
@@ -442,22 +441,6 @@ mod tests {
             ])),
             request_paths: vec!["/v1/chat/completions".into()],
             models: vec!["gpt-4o".into()],
-            ..Default::default()
-        };
-        assert_eq!(run(&c).as_deref(), Some("litellm"));
-    }
-
-    #[test]
-    fn litellm_via_multi_model_tiebreaker() {
-        let c = C {
-            server_header: Some("uvicorn".into()),
-            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
-            request_paths: vec!["/v1/chat/completions".into()],
-            models: vec![
-                "qwen3-embed-8b".into(),
-                "glm5".into(),
-                "qwen35-27b".into(),
-            ],
             ..Default::default()
         };
         assert_eq!(run(&c).as_deref(), Some("litellm"));
