@@ -9,6 +9,7 @@ type SortKey =
   | "endpoint"
   | "call_count"
   | "error_rate"
+  | "stream_pct"
   | "ttft_avg_ms"
   | "ttft_p95_ms"
   | "e2e_avg_ms"
@@ -22,9 +23,14 @@ function errorRate(s: ServiceRow): number {
   return s.call_count > 0 ? (s.error_count / s.call_count) * 100 : 0
 }
 
+function streamPct(s: ServiceRow): number {
+  return s.call_count > 0 ? (s.stream_count / s.call_count) * 100 : 0
+}
+
 function getSortValue(s: ServiceRow, key: SortKey): number | string {
   if (key === "endpoint") return `${s.server_ip}:${s.server_port}`
   if (key === "error_rate") return errorRate(s)
+  if (key === "stream_pct") return streamPct(s)
   return (s[key as keyof ServiceRow] as number) ?? 0
 }
 
@@ -169,6 +175,9 @@ export function ServicesPage() {
                   <SortHeader label="Calls" field="call_count" align="right" />
                 </th>
                 <th className="px-3 py-3 text-right">
+                  <SortHeader label="Stream %" field="stream_pct" align="right" />
+                </th>
+                <th className="px-3 py-3 text-right">
                   <SortHeader label="Error %" field="error_rate" align="right" />
                 </th>
                 <th className="px-3 py-3 text-right">
@@ -197,13 +206,13 @@ export function ServicesPage() {
             <tbody>
               {isLoading && services.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="py-12 text-center text-muted-foreground">
+                  <td colSpan={14} className="py-12 text-center text-muted-foreground">
                     Loading…
                   </td>
                 </tr>
               ) : sorted.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="py-12 text-center text-muted-foreground">
+                  <td colSpan={14} className="py-12 text-center text-muted-foreground">
                     No services found in selected time range
                   </td>
                 </tr>
@@ -246,14 +255,12 @@ export function ServicesPage() {
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
                         {formatNumber(s.call_count)}
-                        {s.stream_count > 0 && (
-                          <span
-                            className="ml-1 text-[10px] text-muted-foreground"
-                            title={`${formatNumber(s.stream_count)} streaming calls`}
-                          >
-                            ({Math.round((s.stream_count / s.call_count) * 100)}% str)
-                          </span>
-                        )}
+                      </td>
+                      <td
+                        className="px-3 py-2.5 text-right tabular-nums text-muted-foreground"
+                        title={`${formatNumber(s.stream_count)} streaming / ${formatNumber(s.call_count)} total`}
+                      >
+                        {s.stream_count > 0 ? `${streamPct(s).toFixed(0)}%` : "—"}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
                         <span
