@@ -82,20 +82,39 @@ needs:
 
 1. **Claude Code CLI** installed and on `$PATH`:
    ```
-   npm i -g @anthropic-ai/claude-code
+   sudo npm i -g @anthropic-ai/claude-code
    ```
-2. **GitHub CLI** authenticated:
-   ```
-   gh auth login         # one-time, as the `tokenscope-review-bot` account
-   ```
-3. **Python 3** (default `python3` is fine — `post_review.py` uses
-   stdlib only).
-4. **Network path** to LiteLLM at `172.16.103.81:4200` (the VM is on
-   wuneng's libvirt bridge, so this works out of the box).
+2. **GitHub CLI** — comes free with the actions runner via the
+   `GH_TOKEN` the workflow exports.
+3. **Python 3** — `post_review.py` uses stdlib only.
+4. **Network path + key** to a LiteLLM proxy that maps
+   `claude-3-5-sonnet-20241022` onto a locally-served backend.
+   Configured entirely via repo secrets so this stays portable:
+   * `LITELLM_BASE_URL` — proxy origin (e.g. `http://host:port`)
+   * `LITELLM_API_KEY` — proxy master key
+   * `LITELLM_NO_PROXY` — comma-separated host list to bypass any
+     ambient `HTTP_PROXY` set on the runner
+5. **No ambient HTTP proxy interference**: if the runner has
+   `HTTP_PROXY` / `HTTPS_PROXY` set (cloud-init defaults often
+   do), `LITELLM_NO_PROXY` should include the LiteLLM host so curl
+   from the agent bypasses it.
 
-The workflow exports `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` /
-`ANTHROPIC_MODEL` per-job. LiteLLM rewrites
-`claude-3-5-sonnet-20241022` onto GLM-5.
+## Auto-merge for trusted authors
+
+When the AI's verdict is **APPROVE** and the PR's author is in
+`AUTO_MERGE_AUTHORS` (default `vaderyang`; comma-CSV override via
+the workflow env), `post_review.py` follows up the review with
+`gh pr merge --admin --squash --delete-branch`. The repo doesn't
+have native `--auto` enabled, so we squash inline.
+
+Rationale: an APPROVE from the AI on a low-stakes change by the
+project maintainer is enough signal to land. Anyone else's PRs
+still wait for a human reviewer — the AI's review is informational,
+not a merge gate.
+
+If the merge fails (merge conflict, branch protection surprise,
+…) it's logged but the workflow stays green — the review is
+already posted, an operator can finish the merge by hand.
 
 ## Cost / latency
 
