@@ -38,6 +38,43 @@ pub struct MetricsModelsQuery {
 }
 
 #[derive(Debug, Clone)]
+pub struct ServicesQuery {
+    pub time_range: TimeRange,
+    pub sort_by: String,
+    pub sort_order: String,
+    pub limit: u32,
+}
+
+/// One row of the "Services" view: a unique `(server_ip, server_port)`
+/// endpoint with the models it served, error/perf stats, and the time
+/// window where it appeared. Computed directly off `llm_calls` because
+/// the pre-aggregated `llm_metrics` table doesn't carry `server_port`
+/// (its grouping sets stop at `server_ip`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceRow {
+    pub server_ip: String,
+    pub server_port: u16,
+    /// Distinct models seen on this endpoint. Capped at 32 in SQL via
+    /// `list_distinct(... )[:32]` so a misbehaving client that sends
+    /// thousands of made-up model strings doesn't bloat a single row.
+    pub models: Vec<String>,
+    pub wire_apis: Vec<String>,
+    pub call_count: u64,
+    pub error_count: u64,
+    pub stream_count: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub ttft_avg_ms: Option<f64>,
+    pub ttft_p95_ms: Option<f64>,
+    pub e2e_avg_ms: Option<f64>,
+    pub e2e_p95_ms: Option<f64>,
+    /// Unix-epoch milliseconds of the first / last call seen in the
+    /// query window. Useful for "is this endpoint still live?".
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct CallsQuery {
     pub time_range: TimeRange,
     pub filter: DimensionFilter,

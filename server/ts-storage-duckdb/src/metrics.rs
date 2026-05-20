@@ -8,7 +8,8 @@ use ts_metrics::model::{LlmFinishMetric, LlmMetric};
 use ts_storage::query::*;
 
 use crate::util::{
-    build_dimension_where, build_dimension_where_for_group, sql_in_list, us_to_timestamp,
+    build_dimension_where, build_dimension_where_for_group, parse_json_string_list, sql_in_list,
+    us_to_timestamp,
 };
 use crate::DuckDbBackend;
 
@@ -765,6 +766,157 @@ impl DuckDbBackend {
                 });
             }
             Ok(result)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    /// "Services" view — aggregate `llm_calls` by `(server_ip,
+    /// server_port)`. See `StorageBackend::query_services` for the
+    /// motivation (port is not on `llm_metrics`).
+    pub(crate) async fn query_services(
+        &self,
+        query: &ServicesQuery,
+    ) -> Result<Vec<ServiceRow>> {
+        const VALID_SORT_FIELDS: &[&str] = &[
+            "call_count",
+            "error_count",
+            "total_input_tokens",
+            "total_output_tokens",
+            "ttft_avg_ms",
+            "ttft_p95_ms",
+            "e2e_avg_ms",
+            "e2e_p95_ms",
+            "last_seen_ms",
+            "first_seen_ms",
+            "server_ip",
+            "server_port",
+        ];
+        if !VALID_SORT_FIELDS.contains(&query.sort_by.as_str()) {
+            return Err(AppError::Storage(format!(
+                "invalid sort_by field: {}",
+                query.sort_by
+            )));
+        }
+        let sort_order = if query.sort_order.to_uppercase() == "ASC" {
+            "ASC"
+        } else {
+            "DESC"
+        };
+
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+        let sort_order = sort_order.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+            let sort_by = &query.sort_by;
+            let limit = query.limit;
+
+            // Notes on the SQL:
+            //   * `list_distinct(array_agg(model))` collects distinct
+            //     values, then `[1:32]` caps the list — protects against a
+            //     pathological row producing thousands of values that
+            //     would each show up here.
+            //   * Percentiles use `quantile_cont(col, 0.95)` (DuckDB's
+            //     name for PERCENTILE_CONT). NULL inputs are skipped
+            //     automatically so streaming-only calls with no
+            //     `e2e_latency_ms` don't poison the result.
+            //   * `epoch_ms(MIN(request_time))` returns Unix-epoch ms as
+            //     i64 — matches the convention used elsewhere in the
+            //     `/api/llm-calls` and `/api/agent-turns` payloads.
+            // List-of-VARCHAR columns come back as JSON strings (DuckDB's
+            // rust binding has no `FromSql` for `Vec<String>`). We cast
+            // to JSON in SQL and then `parse_json_string_list` them on
+            // the Rust side — same pattern used by `agent_turns.models_used`.
+            let sql = format!(
+                "SELECT
+                    server_ip,
+                    server_port,
+                    CAST(list_distinct(array_agg(model))[1:32] AS JSON)::VARCHAR    AS models_json,
+                    CAST(list_distinct(array_agg(wire_api))[1:8] AS JSON)::VARCHAR  AS wire_apis_json,
+                    COUNT(*)                                  AS call_count,
+                    COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0)::UBIGINT AS error_count,
+                    COALESCE(SUM(CASE WHEN is_stream THEN 1 ELSE 0 END), 0)::UBIGINT          AS stream_count,
+                    COALESCE(SUM(input_tokens), 0)::UBIGINT   AS total_input_tokens,
+                    COALESCE(SUM(output_tokens), 0)::UBIGINT  AS total_output_tokens,
+                    AVG(ttft_ms)                              AS ttft_avg_ms,
+                    quantile_cont(ttft_ms, 0.95)              AS ttft_p95_ms,
+                    AVG(e2e_latency_ms)                       AS e2e_avg_ms,
+                    quantile_cont(e2e_latency_ms, 0.95)       AS e2e_p95_ms,
+                    epoch_ms(MIN(request_time))               AS first_seen_ms,
+                    epoch_ms(MAX(request_time))               AS last_seen_ms
+                 FROM llm_calls
+                 WHERE request_time >= ? AND request_time < ?
+                 GROUP BY server_ip, server_port
+                 ORDER BY {sort_by} {sort_order}
+                 LIMIT {limit}"
+            );
+
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| AppError::Storage(format!("failed to prepare services query: {e}")))?;
+            let mut query_rows = stmt
+                .query(duckdb::params![start_ts, end_ts])
+                .map_err(|e| AppError::Storage(format!("failed to execute services query: {e}")))?;
+
+            let mut rows = Vec::new();
+            while let Some(row) = query_rows
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                let models_json: Option<String> = row
+                    .get(2)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let wire_apis_json: Option<String> = row
+                    .get(3)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                rows.push(ServiceRow {
+                    server_ip: row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    server_port: row
+                        .get::<_, u16>(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    models: parse_json_string_list(models_json.as_deref()),
+                    wire_apis: parse_json_string_list(wire_apis_json.as_deref()),
+                    call_count: row
+                        .get::<_, u64>(4)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    error_count: row
+                        .get::<_, u64>(5)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    stream_count: row
+                        .get::<_, u64>(6)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_input_tokens: row
+                        .get::<_, u64>(7)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_output_tokens: row
+                        .get::<_, u64>(8)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    ttft_avg_ms: row
+                        .get::<_, Option<f64>>(9)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    ttft_p95_ms: row
+                        .get::<_, Option<f64>>(10)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    e2e_avg_ms: row
+                        .get::<_, Option<f64>>(11)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    e2e_p95_ms: row
+                        .get::<_, Option<f64>>(12)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    first_seen_ms: row
+                        .get::<_, i64>(13)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    last_seen_ms: row
+                        .get::<_, i64>(14)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                });
+            }
+            Ok(rows)
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?

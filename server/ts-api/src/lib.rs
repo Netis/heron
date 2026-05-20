@@ -164,6 +164,7 @@ pub fn router(
         .route("/api/metrics/timeseries", get(routes::metrics::timeseries))
         .route("/api/metrics/summary", get(routes::metrics::summary))
         .route("/api/metrics/models", get(routes::metrics::models))
+        .route("/api/services", get(routes::services::services))
         .route(
             "/api/metrics/finish-reasons",
             get(routes::metrics::finish_reasons),
