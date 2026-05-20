@@ -7,10 +7,10 @@ name: pr-review
 #
 # Manual `workflow_dispatch` is kept as a fallback for re-runs.
 #
-# Runs on the wuneng self-hosted runner. Reaches LiteLLM at
-# 172.16.103.81:4200 over the internal libvirt bridge; LiteLLM
-# rewrites the Anthropic-shaped request onto the GLM-5 backend
-# (SGLang :9000). See docs/pr-review-agent.md.
+# Runs on the self-hosted runner. Reaches LiteLLM via the
+# `LITELLM_*` repo secrets; LiteLLM rewrites the Anthropic-shaped
+# request onto the locally-served backend. See
+# docs/pr-review-agent.md.
 
 on:
   workflow_run:
@@ -56,7 +56,6 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.LITELLM_API_KEY }}
       ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
       NO_PROXY: ${{ secrets.LITELLM_NO_PROXY }}
-      no_proxy: ${{ secrets.LITELLM_NO_PROXY }}
     steps:
       - name: Resolve PR + head SHA
         id: pr
