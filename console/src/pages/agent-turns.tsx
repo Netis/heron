@@ -6,7 +6,6 @@ import { useSearchParamState } from "@/hooks/use-search-param-state"
 import { formatDateTimeMs, formatNumber, formatDuration } from "@/lib/format"
 import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
-import { ProxyBadge } from "@/components/ui/proxy-badge"
 import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
 import type { AgentTurnListItem } from "@/types/api"
 
@@ -43,12 +42,7 @@ function SortIcon({ column, sortBy, sortOrder }: { column: string; sortBy: strin
 function CellValue({ item, column }: { item: AgentTurnListItem; column: (typeof columns)[number]["key"] }) {
   switch (column) {
     case "start_time":
-      return (
-        <span className="inline-flex items-center gap-2">
-          <span className="tabular-nums">{formatDateTimeMs(item.start_time)}</span>
-          <ProxyBadge item={item} />
-        </span>
-      )
+      return <span className="tabular-nums">{formatDateTimeMs(item.start_time)}</span>
     case "wire_api":
       return (
         <span className="truncate" title={item.wire_api}>
