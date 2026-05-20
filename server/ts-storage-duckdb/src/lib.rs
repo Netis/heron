@@ -1,3 +1,4 @@
+mod apps;
 mod calls;
 #[cfg(test)]
 mod concurrent_tests;

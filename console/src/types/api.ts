@@ -72,6 +72,7 @@ export interface ServiceRow {
   server_port: number
   models: string[]
   wire_apis: string[]
+  request_paths: string[]
   call_count: number
   error_count: number
   stream_count: number
@@ -83,6 +84,13 @@ export interface ServiceRow {
   e2e_p95_ms: number | null
   first_seen_ms: number
   last_seen_ms: number
+  /** Server software label — "vllm" / "sglang" / "ollama" /
+   * "llamacpp" / "litellm" / "openai-compat" / "openai" / "anthropic"
+   * / "gemini" / null (unknown). vLLM and SGLang both run on uvicorn
+   * so they're currently bucketed as "openai-compat". */
+  app: string | null
+  /** Raw `Server` HTTP response header value, for the badge tooltip. */
+  server_header: string | null
 }
 
 export interface MetricsModelRow {

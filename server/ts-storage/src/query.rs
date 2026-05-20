@@ -59,6 +59,11 @@ pub struct ServiceRow {
     /// thousands of made-up model strings doesn't bloat a single row.
     pub models: Vec<String>,
     pub wire_apis: Vec<String>,
+    /// Distinct request paths seen at this endpoint. Used by the
+    /// classifier to spot Ollama (`/api/chat`) and llama.cpp
+    /// (`/completion`, `/tokenize`) from their native non-OpenAI
+    /// surface. Capped at 8 in SQL.
+    pub request_paths: Vec<String>,
     pub call_count: u64,
     pub error_count: u64,
     pub stream_count: u64,
@@ -72,6 +77,16 @@ pub struct ServiceRow {
     /// query window. Useful for "is this endpoint still live?".
     pub first_seen_ms: i64,
     pub last_seen_ms: i64,
+    /// Best-effort serving-software identification — one of
+    /// `vllm`, `sglang`, `ollama`, `llamacpp`, `litellm`,
+    /// `openai-compat`, `openai`, `anthropic`, or `None` (unknown).
+    /// vLLM / SGLang both run under uvicorn and can't yet be told
+    /// apart from headers alone; both show up as `openai-compat`
+    /// today. See `apps::classify_app`.
+    pub app: Option<String>,
+    /// Raw `Server` HTTP response header — surfaced in the UI as a
+    /// tooltip so the user can override the classifier visually.
+    pub server_header: Option<String>,
 }
 
 #[derive(Debug, Clone)]

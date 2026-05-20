@@ -864,12 +864,23 @@ impl DuckDbBackend {
             // rust binding has no `FromSql` for `Vec<String>`). We cast
             // to JSON in SQL and then `parse_json_string_list` them on
             // the Rust side — same pattern used by `agent_turns.models_used`.
+            //
+            // For app classification we sample one `request_headers` /
+            // `response_headers` blob per group. `arg_min(col,
+            // LENGTH(col)) FILTER (...)` picks the smallest non-null
+            // value — predictable across re-runs and tiny enough that
+            // streaming back to Rust costs nothing.
             let sql = format!(
                 "SELECT
                     server_ip,
                     server_port,
                     CAST(list_distinct(array_agg(model))[1:32] AS JSON)::VARCHAR    AS models_json,
                     CAST(list_distinct(array_agg(wire_api))[1:8] AS JSON)::VARCHAR  AS wire_apis_json,
+                    CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR AS paths_json,
+                    arg_min(response_headers, LENGTH(response_headers))
+                        FILTER (WHERE response_headers IS NOT NULL)               AS sample_response_headers,
+                    arg_min(request_headers, LENGTH(request_headers))
+                        FILTER (WHERE request_headers IS NOT NULL)                AS sample_request_headers,
                     COUNT(*)                                  AS call_count,
                     COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0)::UBIGINT AS error_count,
                     COALESCE(SUM(CASE WHEN is_stream THEN 1 ELSE 0 END), 0)::UBIGINT          AS stream_count,
@@ -906,6 +917,29 @@ impl DuckDbBackend {
                 let wire_apis_json: Option<String> = row
                     .get(3)
                     .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let paths_json: Option<String> = row
+                    .get(4)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let sample_response_headers: Option<String> = row
+                    .get(5)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let sample_request_headers: Option<String> = row
+                    .get(6)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+
+                let models = parse_json_string_list(models_json.as_deref());
+                let wire_apis = parse_json_string_list(wire_apis_json.as_deref());
+                let request_paths = parse_json_string_list(paths_json.as_deref());
+                let server_header =
+                    crate::apps::extract_server_header(sample_response_headers.as_deref());
+                let app = crate::apps::classify_app(
+                    server_header.as_deref(),
+                    sample_response_headers.as_deref(),
+                    sample_request_headers.as_deref(),
+                    &request_paths,
+                    &models,
+                );
+
                 rows.push(ServiceRow {
                     server_ip: row
                         .get(0)
@@ -913,41 +947,44 @@ impl DuckDbBackend {
                     server_port: row
                         .get::<_, u16>(1)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    models: parse_json_string_list(models_json.as_deref()),
-                    wire_apis: parse_json_string_list(wire_apis_json.as_deref()),
+                    models,
+                    wire_apis,
+                    request_paths,
                     call_count: row
-                        .get::<_, u64>(4)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    error_count: row
-                        .get::<_, u64>(5)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    stream_count: row
-                        .get::<_, u64>(6)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    total_input_tokens: row
                         .get::<_, u64>(7)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    total_output_tokens: row
+                    error_count: row
                         .get::<_, u64>(8)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    stream_count: row
+                        .get::<_, u64>(9)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_input_tokens: row
+                        .get::<_, u64>(10)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_output_tokens: row
+                        .get::<_, u64>(11)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     ttft_avg_ms: row
-                        .get::<_, Option<f64>>(9)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    ttft_p95_ms: row
-                        .get::<_, Option<f64>>(10)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    e2e_avg_ms: row
-                        .get::<_, Option<f64>>(11)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    e2e_p95_ms: row
                         .get::<_, Option<f64>>(12)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    ttft_p95_ms: row
+                        .get::<_, Option<f64>>(13)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    e2e_avg_ms: row
+                        .get::<_, Option<f64>>(14)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    e2e_p95_ms: row
+                        .get::<_, Option<f64>>(15)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     first_seen_ms: row
-                        .get::<_, i64>(13)
+                        .get::<_, i64>(16)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     last_seen_ms: row
-                        .get::<_, i64>(14)
+                        .get::<_, i64>(17)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    app,
+                    server_header,
                 });
             }
             Ok(rows)
