@@ -18,7 +18,6 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.LITELLM_API_KEY }}
       ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
       NO_PROXY: ${{ secrets.LITELLM_NO_PROXY }}
-      no_proxy: ${{ secrets.LITELLM_NO_PROXY }}
     steps:
       - name: Runner host
         run: |
