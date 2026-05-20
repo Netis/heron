@@ -34,8 +34,6 @@ function getSortValue(s: ServiceRow, key: SortKey): number | string {
 const APP_BADGE_STYLE: Record<string, string> = {
   vllm: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300",
   sglang: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300",
-  "openai-compat":
-    "bg-slate-200 text-slate-800 dark:bg-slate-700/60 dark:text-slate-200",
   ollama: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
   llamacpp: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
   litellm: "bg-pink-100 text-pink-800 dark:bg-pink-900/40 dark:text-pink-300",
@@ -55,7 +53,9 @@ function AppBadge({ app, serverHeader }: { app: string | null; serverHeader: str
       </span>
     )
   }
-  const cls = APP_BADGE_STYLE[app] ?? APP_BADGE_STYLE["openai-compat"]
+  const cls =
+    APP_BADGE_STYLE[app] ??
+    "bg-slate-200 text-slate-800 dark:bg-slate-700/60 dark:text-slate-200"
   const title = serverHeader
     ? `Server: ${serverHeader}`
     : `Identified as ${app} (no Server header sample)`

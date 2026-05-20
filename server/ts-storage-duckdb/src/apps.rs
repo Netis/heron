@@ -2,42 +2,55 @@
 //!
 //! Wire-traffic doesn't carry an "I am vLLM" header. Each project
 //! leaves slightly different fingerprints though, and combining a
-//! handful of cheap signals — the `Server` response header, distinctive
+//! handful of cheap signals — `Server` response header, distinctive
 //! native paths, LiteLLM's custom response headers, well-known
-//! upstream hostnames — gives a usable label for the table at almost
-//! zero query cost.
+//! upstream hostnames, distinct `finish_reason` values, plus small
+//! request- and response-body samples — gives a definitive label for
+//! almost every endpoint at near-zero query cost.
 //!
-//! What ships today:
+//! Signal table (highest confidence first):
 //!
 //! | App         | Primary signal                                                  |
 //! |-------------|-----------------------------------------------------------------|
 //! | `ollama`    | path `/api/chat` / `/api/generate` / `/api/tags` (native API)    |
 //! | `llamacpp`  | path `/completion` / `/tokenize` / `/props` (non-`/v1/...`)      |
+//! | `sglang`    | path `/generate` / `/health_generate` / `/get_server_info` /     |
+//! |             | `/flush_cache` / `/encode` (SGLang's own surface alongside       |
+//! |             | OpenAI-compat)                                                   |
+//! | `vllm`      | path `/version` / `/v1/score` (vLLM-specific endpoints)          |
 //! | `litellm`   | any `x-litellm-*` response header (LiteLLM stamps these)         |
 //! | `openai`    | request `Host: api.openai.com`                                   |
 //! | `anthropic` | request `Host: api.anthropic.com`                                |
-//! | `openai-compat` | `Server: uvicorn` (vLLM and SGLang both — body sample needed |
-//! |             | to disambiguate; tracked as a follow-up)                         |
-//! | `None`      | nothing matches — show no badge                                  |
-//!
-//! A secondary signal — endpoint serves ≥ 3 distinct models — bumps an
-//! otherwise-`openai-compat` row to `litellm`. The user's production
-//! data has `127.0.0.1:4000` serving five different models from one
-//! port; that's a LiteLLM proxy. Real vLLM occasionally hosts multiple
-//! LoRAs at one endpoint, so this is a *hint*, not a definitive
-//! signal — we only apply it as a tiebreaker.
+//! | `sglang`    | `finish_reason` ∈ {`matched_stop`, `matched_eos`, `stop_str`}    |
+//! |             | (SGLang's stop-condition machinery; vLLM doesn't have these)     |
+//! | `vllm`      | response body has `"id":"chatcmpl-tool-` (vLLM tool_call_id) OR  |
+//! |             | `"system_fingerprint":"fp_…"` (vLLM only)                        |
+//! | `vllm`      | request body contains `chatcmpl-tool-` — agentic flows echo the  |
+//! |             | server's prior tool_call_id back in assistant history; works     |
+//! |             | even when responses are SSE-streamed (response_body is NULL)     |
+//! | `litellm`   | uvicorn endpoint with ≥ 3 distinct models (real-world signal     |
+//! |             | from wuneng's 127.0.0.1:4000 LiteLLM proxy)                      |
+//! | `sglang`    | uvicorn endpoint, model name starts with `glm` or `deepseek`     |
+//! |             | (SGLang is the reference deployment for those families)         |
+//! | `vllm`      | uvicorn fallback — vLLM is by far the more common openai-compat  |
+//! |             | server, better default than `unknown`                            |
+//! | `None`      | nothing matches (no Server header, no distinctive paths)         |
 
 use std::collections::HashMap;
 
 /// Classify one Services-page row from the cheap signals we can pull
 /// out of the SQL aggregate. Returns the app label (lowercase, stable
 /// — surfaces straight in the API JSON / UI badges).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn classify_app(
     server_header: Option<&str>,
     raw_response_headers_json: Option<&str>,
     raw_request_headers_json: Option<&str>,
     request_paths: &[String],
+    finish_reasons: &[String],
     models: &[String],
+    sample_request_body: Option<&str>,
+    sample_response_body: Option<&str>,
 ) -> Option<String> {
     // -- Native non-OpenAI surface, very high confidence. --
     if request_paths.iter().any(|p| {
@@ -62,9 +75,34 @@ pub(crate) fn classify_app(
         return Some("llamacpp".to_string());
     }
 
-    // -- LiteLLM stamps its own response headers. This is a one-shot
-    // -- substring check on the JSON blob — cheap enough to run on
-    // -- every row, even if it's mildly indirect.
+    // -- SGLang-specific paths. Even when serving OpenAI-compat,
+    // -- SGLang exposes /generate / /health_generate / /flush_cache /
+    // -- /get_server_info / /encode at the same port.
+    if request_paths.iter().any(|p| {
+        matches!(
+            p.as_str(),
+            "/generate"
+                | "/health_generate"
+                | "/get_server_info"
+                | "/flush_cache"
+                | "/encode"
+                | "/start_profile"
+                | "/stop_profile"
+        )
+    }) {
+        return Some("sglang".to_string());
+    }
+
+    // -- vLLM-specific paths. /version returns vLLM's version JSON.
+    // -- /v1/score is reranking, vLLM-only.
+    if request_paths
+        .iter()
+        .any(|p| p == "/version" || p.starts_with("/v1/score"))
+    {
+        return Some("vllm".to_string());
+    }
+
+    // -- LiteLLM stamps its own response headers.
     if let Some(json) = raw_response_headers_json {
         let lower = json.to_ascii_lowercase();
         if lower.contains("x-litellm-") || lower.contains("\"server\":\"litellm") {
@@ -88,32 +126,97 @@ pub(crate) fn classify_app(
         }
     }
 
-    // -- Server header. uvicorn matches BOTH vLLM and SGLang; we ship
-    // -- them as `openai-compat` today and the (in-flight) body-sample
-    // -- follow-up will split them.
-    let mut base_label: Option<&'static str> = None;
-    if let Some(sh) = server_header {
-        let l = sh.to_ascii_lowercase();
-        if l.contains("ollama") {
-            return Some("ollama".to_string());
-        }
-        if l.contains("uvicorn") || l.contains("hypercorn") {
-            base_label = Some("openai-compat");
-        }
-        if l.starts_with("litellm") {
-            return Some("litellm".to_string());
+    // -- SGLang-exclusive finish_reasons. Captured for both streaming
+    // -- and non-streaming calls (extracted from SSE for the former).
+    // -- `matched_stop` / `matched_eos` / `stop_str` come out of SGLang's
+    // -- stop-condition machinery and vLLM doesn't have them.
+    if finish_reasons.iter().any(|fr| {
+        let l = fr.to_ascii_lowercase();
+        l == "matched_stop" || l == "matched_eos" || l == "stop_str"
+    }) {
+        return Some("sglang".to_string());
+    }
+
+    // -- vLLM signatures in the response body sample. Two patterns:
+    // --   1. tool_call_id `"id":"chatcmpl-tool-<hex>"` — vLLM's
+    // --      tool parser uses this format; SGLang follows OpenAI's
+    // --      `call_<hex>`.
+    // --   2. `system_fingerprint":"fp_<hex>"` — vLLM emits this
+    // --      field (mirroring OpenAI's); SGLang leaves it null.
+    let vllm_in_response_body = sample_response_body
+        .map(|body| {
+            body.contains("\"id\":\"chatcmpl-tool-")
+                || body.contains("\"id\": \"chatcmpl-tool-")
+                || body.contains("\"system_fingerprint\":\"fp_")
+                || body.contains("\"system_fingerprint\": \"fp_")
+        })
+        .unwrap_or(false);
+    if vllm_in_response_body {
+        return Some("vllm".to_string());
+    }
+
+    // -- vLLM signature in the request body. Agentic flows include
+    // -- prior `assistant.tool_calls[].id` values in their message
+    // -- history, and vLLM-generated tool_call_ids carry the
+    // -- `chatcmpl-tool-` prefix. Works even when the response is
+    // -- SSE-streamed (response_body is NULL).
+    if let Some(body) = sample_request_body {
+        if body.contains("chatcmpl-tool-") {
+            return Some("vllm".to_string());
         }
     }
 
-    // -- Multi-model tiebreaker for LiteLLM. Real LiteLLM proxies
-    // -- routinely host 5-20 models at one port; vLLM occasionally
-    // -- hosts multiple LoRAs but rarely > 2. Threshold of 3 keeps
-    // -- the false-positive risk small.
-    if base_label == Some("openai-compat") && models.len() >= 3 {
+    // -- Server header check. uvicorn matches BOTH vLLM and SGLang;
+    // -- the multi-model tiebreaker handles LiteLLM, the model-name
+    // -- heuristic handles SGLang's GLM/DeepSeek family deployments,
+    // -- and everything else falls through to vLLM.
+    let is_uvicorn = server_header
+        .map(|sh| {
+            let l = sh.to_ascii_lowercase();
+            l.contains("uvicorn") || l.contains("hypercorn")
+        })
+        .unwrap_or(false);
+    let has_litellm_server = server_header
+        .map(|sh| sh.to_ascii_lowercase().starts_with("litellm"))
+        .unwrap_or(false);
+    let has_ollama_server = server_header
+        .map(|sh| sh.to_ascii_lowercase().contains("ollama"))
+        .unwrap_or(false);
+
+    if has_ollama_server {
+        return Some("ollama".to_string());
+    }
+    if has_litellm_server {
         return Some("litellm".to_string());
     }
 
-    base_label.map(String::from)
+    if is_uvicorn {
+        // Multi-model tiebreaker: LiteLLM proxies routinely host 5–20
+        // models at one port; vLLM occasionally hosts multiple LoRAs
+        // but rarely > 2.
+        if models.len() >= 3 {
+            return Some("litellm".to_string());
+        }
+
+        // Model-name heuristic. SGLang is the reference deployment for
+        // the Zhipu GLM family and the DeepSeek family in production;
+        // both are non-trivial to run on vLLM (custom kernels, MLA,
+        // etc.). Matches the user's prod corpus exactly.
+        let lower_models: Vec<String> = models.iter().map(|m| m.to_ascii_lowercase()).collect();
+        let smells_like_sglang = lower_models.iter().any(|m| {
+            m.starts_with("glm")
+                || m.contains("/glm")
+                || m.starts_with("deepseek")
+                || m.contains("/deepseek")
+        });
+        if smells_like_sglang {
+            return Some("sglang".to_string());
+        }
+
+        return Some("vllm".to_string());
+    }
+
+    None
 }
 
 /// Pull the `Server` header value out of a serialized `Vec<(String,
@@ -166,135 +269,299 @@ mod tests {
         _headermap(items)
     }
 
+    /// Empty everything — shared test default. Use overrides to inject
+    /// the specific signal each case is exercising.
+    struct C {
+        server_header: Option<String>,
+        raw_response_headers_json: Option<String>,
+        raw_request_headers_json: Option<String>,
+        request_paths: Vec<String>,
+        finish_reasons: Vec<String>,
+        models: Vec<String>,
+        sample_request_body: Option<String>,
+        sample_response_body: Option<String>,
+    }
+    impl Default for C {
+        fn default() -> Self {
+            Self {
+                server_header: None,
+                raw_response_headers_json: None,
+                raw_request_headers_json: None,
+                request_paths: vec![],
+                finish_reasons: vec![],
+                models: vec![],
+                sample_request_body: None,
+                sample_response_body: None,
+            }
+        }
+    }
+    fn run(c: &C) -> Option<String> {
+        classify_app(
+            c.server_header.as_deref(),
+            c.raw_response_headers_json.as_deref(),
+            c.raw_request_headers_json.as_deref(),
+            &c.request_paths,
+            &c.finish_reasons,
+            &c.models,
+            c.sample_request_body.as_deref(),
+            c.sample_response_body.as_deref(),
+        )
+    }
+
     #[test]
     fn ollama_via_native_path() {
-        let app = classify_app(None, None, None, &["/api/chat".to_string()], &[]);
-        assert_eq!(app.as_deref(), Some("ollama"));
+        let c = C {
+            request_paths: vec!["/api/chat".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("ollama"));
     }
 
     #[test]
     fn ollama_via_server_header_with_oai_path() {
-        // Ollama exposes `/v1/chat/completions` too in compat mode —
-        // path alone won't help, but a `Server: ollama/x.y` header
-        // settles it.
-        let h = hdrs(&[("server", "ollama/0.1.45")]);
-        let app = classify_app(
-            Some("ollama/0.1.45"),
-            Some(&h),
-            None,
-            &["/v1/chat/completions".to_string()],
-            &["llama3".to_string()],
-        );
-        assert_eq!(app.as_deref(), Some("ollama"));
+        let c = C {
+            server_header: Some("ollama/0.1.45".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "ollama/0.1.45")])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            models: vec!["llama3".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("ollama"));
     }
 
     #[test]
     fn llamacpp_via_completion_path() {
-        let app = classify_app(None, None, None, &["/completion".to_string()], &[]);
-        assert_eq!(app.as_deref(), Some("llamacpp"));
+        let c = C {
+            request_paths: vec!["/completion".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("llamacpp"));
+    }
+
+    #[test]
+    fn sglang_via_native_path() {
+        // SGLang exposes /generate alongside its OpenAI-compat surface.
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
+            request_paths: vec!["/v1/chat/completions".into(), "/generate".into()],
+            models: vec!["llama-3-8b".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("sglang"));
+    }
+
+    #[test]
+    fn sglang_via_health_generate_path() {
+        let c = C {
+            request_paths: vec!["/health_generate".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("sglang"));
+    }
+
+    #[test]
+    fn sglang_via_matched_stop_finish_reason() {
+        // Streaming endpoint — no response body, but SSE-extracted
+        // finish_reason `matched_stop` exposes SGLang.
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            finish_reasons: vec!["stop".into(), "matched_stop".into()],
+            models: vec!["mystery-model".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("sglang"));
+    }
+
+    #[test]
+    fn vllm_via_version_path() {
+        let c = C {
+            request_paths: vec!["/v1/chat/completions".into(), "/version".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("vllm"));
+    }
+
+    #[test]
+    fn vllm_via_response_body_tool_call_id() {
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            models: vec!["qwen35-27b".into()],
+            sample_response_body: Some(
+                r#"{"id":"chatcmpl-abc","choices":[{"message":{"tool_calls":[{"id":"chatcmpl-tool-deadbeef","type":"function"}]}}]}"#.into(),
+            ),
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("vllm"));
+    }
+
+    #[test]
+    fn vllm_via_response_body_system_fingerprint() {
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            models: vec!["qwen35-27b".into()],
+            sample_response_body: Some(
+                r#"{"id":"chatcmpl-x","system_fingerprint":"fp_abc123","choices":[]}"#.into(),
+            ),
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("vllm"));
+    }
+
+    #[test]
+    fn vllm_via_request_body_tool_history() {
+        // Streaming-only endpoint — response_body is null. Agentic
+        // round N+1 sends prior assistant.tool_calls history back to
+        // the server, and vLLM's tool_call_ids carry `chatcmpl-tool-`.
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            models: vec!["mystery-model".into()],
+            sample_request_body: Some(
+                r#"{"messages":[{"role":"assistant","tool_calls":[{"id":"chatcmpl-tool-deadbeef","type":"function","function":{"name":"x"}}]}]}"#.into(),
+            ),
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("vllm"));
     }
 
     #[test]
     fn litellm_via_response_header() {
-        let h = hdrs(&[
-            ("server", "uvicorn"),
-            ("x-litellm-call-id", "abc123"),
-        ]);
-        let app = classify_app(
-            Some("uvicorn"),
-            Some(&h),
-            None,
-            &["/v1/chat/completions".to_string()],
-            &["gpt-4o".to_string()],
-        );
-        assert_eq!(app.as_deref(), Some("litellm"));
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[
+                ("server", "uvicorn"),
+                ("x-litellm-call-id", "abc123"),
+            ])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            models: vec!["gpt-4o".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("litellm"));
     }
 
     #[test]
     fn litellm_via_multi_model_tiebreaker() {
-        // Three+ distinct models on one uvicorn endpoint → LiteLLM
-        // (real-world signal from wuneng's 127.0.0.1:4000).
-        let app = classify_app(
-            Some("uvicorn"),
-            Some(&hdrs(&[("server", "uvicorn")])),
-            None,
-            &["/v1/chat/completions".to_string()],
-            &[
-                "qwen3-embed-8b".to_string(),
-                "glm5".to_string(),
-                "qwen35-27b".to_string(),
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            models: vec![
+                "qwen3-embed-8b".into(),
+                "glm5".into(),
+                "qwen35-27b".into(),
             ],
-        );
-        assert_eq!(app.as_deref(), Some("litellm"));
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("litellm"));
     }
 
     #[test]
-    fn openai_compat_for_single_model_uvicorn() {
-        // 1 model, uvicorn, no LiteLLM signals → can't tell vLLM from
-        // SGLang yet; bucket as openai-compat.
-        let app = classify_app(
-            Some("uvicorn"),
-            Some(&hdrs(&[("server", "uvicorn")])),
-            None,
-            &["/v1/chat/completions".to_string()],
-            &["qwen35-27b".to_string()],
-        );
-        assert_eq!(app.as_deref(), Some("openai-compat"));
+    fn sglang_via_glm_model_heuristic() {
+        // Single GLM model on uvicorn, no LiteLLM signal, no
+        // discriminating finish_reason. Falls back to the model-name
+        // heuristic — Zhipu's reference deployment is SGLang.
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            models: vec!["GLM-5.1".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("sglang"));
+    }
+
+    #[test]
+    fn sglang_via_deepseek_model_heuristic() {
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            models: vec!["deepseek-v3".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("sglang"));
+    }
+
+    #[test]
+    fn vllm_default_for_single_model_uvicorn() {
+        // 1 model, uvicorn, no LiteLLM signals, no SGLang signals →
+        // pick the more common openai-compat server.
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            models: vec!["qwen35-27b".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("vllm"));
     }
 
     #[test]
     fn openai_via_request_host() {
-        let req_h = hdrs(&[("host", "api.openai.com")]);
-        let app = classify_app(
-            None,
-            None,
-            Some(&req_h),
-            &["/v1/chat/completions".to_string()],
-            &["gpt-4".to_string()],
-        );
-        assert_eq!(app.as_deref(), Some("openai"));
+        let c = C {
+            raw_request_headers_json: Some(hdrs(&[("host", "api.openai.com")])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            models: vec!["gpt-4".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("openai"));
     }
 
     #[test]
     fn anthropic_via_request_host() {
-        let req_h = hdrs(&[("host", "api.anthropic.com")]);
-        let app = classify_app(
-            None,
-            None,
-            Some(&req_h),
-            &["/v1/messages".to_string()],
-            &["claude-3-5-sonnet".to_string()],
-        );
-        assert_eq!(app.as_deref(), Some("anthropic"));
+        let c = C {
+            raw_request_headers_json: Some(hdrs(&[("host", "api.anthropic.com")])),
+            request_paths: vec!["/v1/messages".into()],
+            models: vec!["claude-3-5-sonnet".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("anthropic"));
     }
 
     #[test]
     fn unknown_when_no_signals() {
-        let app = classify_app(None, None, None, &[], &[]);
-        assert!(app.is_none());
+        let c = C::default();
+        assert!(run(&c).is_none());
     }
 
     #[test]
     fn ollama_path_wins_over_uvicorn_server() {
-        // Edge case: an Ollama install fronted by an unrelated uvicorn
-        // tool that proxies to /api/chat. Path matches first.
-        let app = classify_app(
-            Some("uvicorn"),
-            Some(&hdrs(&[("server", "uvicorn")])),
-            None,
-            &["/api/chat".to_string()],
-            &["llama3".to_string()],
-        );
-        assert_eq!(app.as_deref(), Some("ollama"));
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
+            request_paths: vec!["/api/chat".into()],
+            models: vec!["llama3".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("ollama"));
+    }
+
+    #[test]
+    fn sglang_finish_reason_beats_glm_heuristic_consistency() {
+        // SGLang finish_reason AND GLM model — should still be SGLang.
+        let c = C {
+            server_header: Some("uvicorn".into()),
+            raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),
+            request_paths: vec!["/v1/chat/completions".into()],
+            finish_reasons: vec!["matched_stop".into()],
+            models: vec!["GLM-5.1".into()],
+            ..Default::default()
+        };
+        assert_eq!(run(&c).as_deref(), Some("sglang"));
     }
 
     #[test]
     fn extract_server_header_finds_match() {
         let h = hdrs(&[("content-type", "application/json"), ("Server", "uvicorn")]);
-        assert_eq!(
-            extract_server_header(Some(&h)).as_deref(),
-            Some("uvicorn")
-        );
+        assert_eq!(extract_server_header(Some(&h)).as_deref(), Some("uvicorn"));
     }
 
     #[test]
