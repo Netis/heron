@@ -1,0 +1,11 @@
+{
+  "name": "ts-screenshots",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "snap": "node snap.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
