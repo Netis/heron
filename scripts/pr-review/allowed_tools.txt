@@ -1,0 +1,17 @@
+Read
+Grep
+Glob
+Bash(gh pr diff:*)
+Bash(gh pr view:*)
+Bash(gh pr checks:*)
+Bash(git diff:*)
+Bash(git log:*)
+Bash(git show:*)
+Bash(git blame:*)
+Bash(rg:*)
+Bash(find:*)
+Bash(wc:*)
+Bash(head:*)
+Bash(tail:*)
+Bash(cat:*)
+Bash(ls:*)
