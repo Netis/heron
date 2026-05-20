@@ -84,6 +84,13 @@ pub struct FinishReasonsQuery {
     pub server_ips: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct DistinctAgentKindsQuery {
+    pub time_range: TimeRange,
+    pub filter: DimensionFilter,
+    pub include_proxy_hops: bool,
+}
+
 /// One distinct `(wire_api, finish_reason)` pair observed in the
 /// `llm_finish_metrics` table. Served by `GET /api/filters/finish-reasons` and
 /// used by the calls-page filter dropdown to populate its options dynamically.

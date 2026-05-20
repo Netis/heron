@@ -47,8 +47,7 @@ function SessionRow({ item }: { item: SessionListItem }) {
 
 export function AgentSessionsPage() {
   const [agentKindFilter, setAgentKindFilter] = useState<string[]>([])
-  const agentKindsQuery = useAgentKinds()
-  const agentKindOptions = agentKindsQuery.data?.values ?? []
+  const { data: agentKindsData } = useAgentKinds()
 
   const { data, isLoading, isError, error, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useAgentSessions({
@@ -56,6 +55,13 @@ export function AgentSessionsPage() {
     })
 
   const items: SessionListItem[] = data?.pages.flatMap((p) => p.items) ?? []
+  const agentKindOptions = Array.from(
+    new Set([
+      ...(agentKindsData?.values ?? []),
+      ...items.map((item) => item.agent_kind),
+      ...agentKindFilter,
+    ]),
+  ).sort()
 
   return (
     <div className="flex h-full flex-col">

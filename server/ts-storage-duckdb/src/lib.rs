@@ -224,10 +224,9 @@ impl StorageBackend for DuckDbBackend {
 
     async fn query_distinct_agent_kinds(
         &self,
-        start_us: i64,
-        end_us: i64,
+        query: &DistinctAgentKindsQuery,
     ) -> Result<Vec<String>> {
-        DuckDbBackend::query_distinct_agent_kinds(self, start_us, end_us).await
+        DuckDbBackend::query_distinct_agent_kinds(self, query).await
     }
 
     async fn query_distinct_finish_reasons(&self) -> Result<Vec<DistinctFinishReason>> {
