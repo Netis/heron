@@ -168,6 +168,13 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::query_services(self, query).await
     }
 
+    async fn query_services_topology(
+        &self,
+        query: &ServicesTopologyQuery,
+    ) -> Result<ServicesTopology> {
+        DuckDbBackend::query_services_topology(self, query).await
+    }
+
     async fn query_finish_reasons(
         &self,
         query: &FinishReasonsQuery,

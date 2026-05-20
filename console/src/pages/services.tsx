@@ -1,9 +1,13 @@
 import { useMemo, useState } from "react"
-import { ArrowUpDown } from "lucide-react"
+import { ArrowUpDown, Loader2, Table as TableIcon, Network } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatMs, formatNumber } from "@/lib/format"
 import { useServices } from "@/hooks/use-services"
+import { useServicesTopology } from "@/hooks/use-services-topology"
+import { ServicePathView } from "@/components/services/path-view"
 import type { ServiceRow } from "@/types/api"
+
+type ViewMode = "table" | "path"
 
 type SortKey =
   | "endpoint"
@@ -83,6 +87,7 @@ function formatAgo(ms: number): string {
 }
 
 export function ServicesPage() {
+  const [view, setView] = useState<ViewMode>("table")
   const [sortKey, setSortKey] = useState<SortKey>("call_count")
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc")
   const { data, isLoading } = useServices({
@@ -148,6 +153,10 @@ export function ServicesPage() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
+      <ViewTabs view={view} onChange={setView} />
+      {view === "path" ? (
+        <PathViewContainer />
+      ) : (
       <div className="rounded-lg border border-border bg-card">
         <div className="overflow-auto">
           <table className="w-full text-sm">
@@ -296,6 +305,62 @@ export function ServicesPage() {
           </table>
         </div>
       </div>
+      )}
+    </div>
+  )
+}
+
+function ViewTabs({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode) => void }) {
+  return (
+    <div className="inline-flex w-fit rounded-lg border border-border bg-card p-0.5">
+      <button
+        onClick={() => onChange("table")}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium",
+          view === "table"
+            ? "bg-muted text-foreground"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <TableIcon className="size-3.5" />
+        Table
+      </button>
+      <button
+        onClick={() => onChange("path")}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium",
+          view === "path"
+            ? "bg-muted text-foreground"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <Network className="size-3.5" />
+        Path
+      </button>
+    </div>
+  )
+}
+
+function PathViewContainer() {
+  const { data, isLoading } = useServicesTopology()
+  if (isLoading && !data) {
+    return (
+      <div className="flex h-[400px] items-center justify-center text-sm text-muted-foreground">
+        <Loader2 className="mr-2 size-4 animate-spin" />
+        Building topology…
+      </div>
+    )
+  }
+  if (!data) {
+    return (
+      <div className="flex h-[400px] items-center justify-center text-sm text-muted-foreground">
+        No topology data
+      </div>
+    )
+  }
+  return (
+    <div className="rounded-lg border border-border bg-card p-3">
+      <ServicePathView topology={data} />
     </div>
   )
 }

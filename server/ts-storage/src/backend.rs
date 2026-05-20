@@ -63,6 +63,23 @@ pub trait StorageBackend: Send + Sync {
     /// second.
     async fn query_services(&self, query: &ServicesQuery) -> Result<Vec<ServiceRow>>;
 
+    /// Build the service→service directed graph used by the Services
+    /// page's Path view. Pulls the same per-endpoint node set as
+    /// `query_services` (just call counts; perf stats aren't needed for
+    /// a graph view), then adds two edge kinds:
+    ///   * `proxy` — pair_sweeper-confirmed proxy hops between two
+    ///     real endpoints. Definitive (we observed both legs of the
+    ///     same turn group on the wire).
+    ///   * `client` — synthetic edges from a `__clients__` super-node
+    ///     into every service that has at least one non-proxy-out
+    ///     turn in the window (i.e., the service receives traffic
+    ///     directly, not just from another service). Lets us draw a
+    ///     complete graph even when no proxy hop was observed.
+    async fn query_services_topology(
+        &self,
+        query: &ServicesTopologyQuery,
+    ) -> Result<ServicesTopology>;
+
     /// Per-bucket finish-reason counts in the requested time range. One series
     /// per distinct raw `finish_reason` observed. The `wire_api`/`model`
     /// filters select a specific dimension; `None` rolls up across all values

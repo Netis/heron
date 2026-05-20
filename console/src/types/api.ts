@@ -93,6 +93,37 @@ export interface ServiceRow {
   server_header: string | null
 }
 
+/** One node in the service-topology graph powering the Path view.
+ * The synthetic clients aggregate uses `server_ip = "__clients__"` and
+ * `server_port = 0` — the UI should treat those as a single
+ * left-anchored super-node, not as a real endpoint. */
+export interface TopologyNode {
+  server_ip: string
+  server_port: number
+  app: string | null
+  models: string[]
+  call_count: number
+}
+
+/** One directed edge.
+ *  - `kind: "proxy"` — pair-sweeper-confirmed hop, real service →
+ *    real service.
+ *  - `kind: "client"` — synthetic edge from `__clients__` into an
+ *    entry-point service. */
+export interface TopologyEdge {
+  from_ip: string
+  from_port: number
+  to_ip: string
+  to_port: number
+  turn_count: number
+  kind: "proxy" | "client"
+}
+
+export interface ServicesTopology {
+  nodes: TopologyNode[]
+  edges: TopologyEdge[]
+}
+
 export interface MetricsModelRow {
   wire_api: string
   model: string

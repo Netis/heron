@@ -13,7 +13,7 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use ts_storage::query::ServicesQuery;
+use ts_storage::query::{ServicesQuery, ServicesTopologyQuery};
 use ts_storage::StorageBackend;
 
 use crate::extractors::Query;
@@ -66,4 +66,21 @@ pub async fn services(
     };
     let rows = storage.query_services(&query).await?;
     Ok(ApiResponse::ok(ServicesData { services: rows }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServicesTopologyParams {
+    pub start: i64,
+    pub end: i64,
+}
+
+pub async fn services_topology(
+    State(storage): State<Arc<dyn StorageBackend>>,
+    Query(params): Query<ServicesTopologyParams>,
+) -> Result<impl IntoResponse, ApiError> {
+    let query = ServicesTopologyQuery {
+        time_range: to_time_range(params.start, params.end),
+    };
+    let topology = storage.query_services_topology(&query).await?;
+    Ok(ApiResponse::ok(topology))
 }

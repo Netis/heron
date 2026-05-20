@@ -166,6 +166,10 @@ pub fn router(
         .route("/api/metrics/models", get(routes::metrics::models))
         .route("/api/services", get(routes::services::services))
         .route(
+            "/api/services/topology",
+            get(routes::services::services_topology),
+        )
+        .route(
             "/api/metrics/finish-reasons",
             get(routes::metrics::finish_reasons),
         )

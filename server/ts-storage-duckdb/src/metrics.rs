@@ -1008,6 +1008,304 @@ impl DuckDbBackend {
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
+
+    /// Build the service-topology graph for the Path view. The shape:
+    ///
+    ///   * Nodes — one per `(server_ip, server_port)` seen in the
+    ///     window (reuses the call_count aggregation logic from
+    ///     `query_services`, just the columns we need). Models / app
+    ///     come along so the UI can label and color nodes the same
+    ///     way the Table view does, no second fetch.
+    ///   * Proxy edges — `agent_turns` carries
+    ///     `metadata.proxy.pair_id` from the pair sweeper. For every
+    ///     `proxy_in` turn we look up the sibling `proxy_out` turn(s)
+    ///     by `pair_id`. The `proxy_in.server_endpoint →
+    ///     proxy_out.server_endpoint` pair becomes one edge, counted
+    ///     by number of paired turns. `agent_turns` has no
+    ///     `server_port`, so we look it up via the turn's first
+    ///     `call_ids` entry against `llm_calls`.
+    ///   * Client edges — any service that has a non-`proxy_out` turn
+    ///     in the window gets a virtual edge from `__clients__`. So
+    ///     entry-point services (no inbound proxy hop) still appear
+    ///     connected. We don't break out individual client IPs as
+    ///     nodes — there can be hundreds of SDK instances and the
+    ///     value-add over "they came from outside the service mesh"
+    ///     is low.
+    pub(crate) async fn query_services_topology(
+        &self,
+        query: &ServicesTopologyQuery,
+    ) -> Result<ServicesTopology> {
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+
+            // --- Nodes: same grouping as the table view. We pull the
+            // smallest set of fields needed for graph rendering.
+            // App classification is replicated here (rather than
+            // shoehorning the whole query_services machinery) so the
+            // Path view doesn't depend on the full metric percentiles.
+            let nodes_sql = format!(
+                "SELECT
+                    server_ip,
+                    server_port,
+                    CAST(list_distinct(array_agg(model))[1:32] AS JSON)::VARCHAR    AS models_json,
+                    CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR AS paths_json,
+                    CAST(list_distinct(array_agg(finish_reason))[1:32] AS JSON)::VARCHAR AS finish_reasons_json,
+                    MAX(response_headers)
+                        FILTER (WHERE response_headers IS NOT NULL
+                            AND response_headers LIKE '[%')             AS sample_response_headers,
+                    MAX(request_headers)
+                        FILTER (WHERE request_headers IS NOT NULL
+                            AND request_headers LIKE '[%')              AS sample_request_headers,
+                    arg_max(request_body, LENGTH(request_body))
+                        FILTER (WHERE request_body IS NOT NULL
+                            AND LENGTH(request_body) BETWEEN 100 AND 32768
+                            AND request_body LIKE '{{%')                AS sample_request_body,
+                    arg_max(response_body, LENGTH(response_body))
+                        FILTER (WHERE response_body IS NOT NULL
+                            AND LENGTH(response_body) BETWEEN 30 AND 8192
+                            AND response_body LIKE '{{%')               AS sample_response_body,
+                    COUNT(*)                                  AS call_count
+                 FROM llm_calls
+                 WHERE request_time >= ? AND request_time < ?
+                 GROUP BY server_ip, server_port"
+            );
+
+            let mut nodes: Vec<TopologyNode> = Vec::new();
+            {
+                let mut stmt = conn.prepare(&nodes_sql).map_err(|e| {
+                    AppError::Storage(format!("failed to prepare topology nodes query: {e}"))
+                })?;
+                let mut rs = stmt
+                    .query(duckdb::params![start_ts.clone(), end_ts.clone()])
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to execute topology nodes query: {e}"))
+                    })?;
+                while let Some(row) = rs
+                    .next()
+                    .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+                {
+                    let server_ip: String = row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let server_port: u16 = row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let models_json: Option<String> = row
+                        .get(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let paths_json: Option<String> = row
+                        .get(3)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let finish_reasons_json: Option<String> = row
+                        .get(4)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let sample_response_headers: Option<String> = row
+                        .get(5)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let sample_request_headers: Option<String> = row
+                        .get(6)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let sample_request_body: Option<String> = row
+                        .get(7)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let sample_response_body: Option<String> = row
+                        .get(8)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let call_count: u64 = row
+                        .get(9)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+
+                    let models = parse_json_string_list(models_json.as_deref());
+                    let request_paths = parse_json_string_list(paths_json.as_deref());
+                    let finish_reasons = parse_json_string_list(finish_reasons_json.as_deref());
+                    let server_header =
+                        crate::apps::extract_server_header(sample_response_headers.as_deref());
+                    let app = crate::apps::classify_app(
+                        server_header.as_deref(),
+                        sample_response_headers.as_deref(),
+                        sample_request_headers.as_deref(),
+                        &request_paths,
+                        &finish_reasons,
+                        &models,
+                        sample_request_body.as_deref(),
+                        sample_response_body.as_deref(),
+                    );
+
+                    nodes.push(TopologyNode {
+                        server_ip,
+                        server_port,
+                        app,
+                        models,
+                        call_count,
+                    });
+                }
+            }
+
+            // --- Proxy edges: pair the turn's endpoint with its
+            // sibling's. We resolve (server_ip, server_port) for each
+            // turn via its first call_id; `agent_turns.server_ip`
+            // alone isn't enough since the table doesn't carry
+            // server_port. Filtering by `proxy.role` is done after
+            // the join because some turns have NULL metadata.
+            //
+            // We keep edges where from != to — same-endpoint pair_id
+            // groups come from multi-interface dup capture (e.g. lo
+            // + docker0 see the same packet), not real proxy hops,
+            // and rendering them adds noise.
+            let edges_sql = "
+                WITH turn_endpoint AS (
+                    SELECT
+                        t.turn_id,
+                        c.server_ip,
+                        c.server_port,
+                        json_extract_string(t.metadata, '$.proxy.role')    AS proxy_role,
+                        json_extract_string(t.metadata, '$.proxy.pair_id') AS pair_id
+                    FROM agent_turns t
+                    JOIN llm_calls c
+                      ON c.id = json_extract_string(t.call_ids, '$[0]')
+                    WHERE t.start_time >= ? AND t.start_time < ?
+                )
+                SELECT
+                    a.server_ip   AS from_ip,
+                    a.server_port AS from_port,
+                    b.server_ip   AS to_ip,
+                    b.server_port AS to_port,
+                    COUNT(*)      AS turn_count
+                FROM turn_endpoint a
+                JOIN turn_endpoint b ON a.pair_id = b.pair_id AND a.turn_id <> b.turn_id
+                WHERE a.proxy_role = 'proxy_in'
+                  AND b.proxy_role = 'proxy_out'
+                  AND a.pair_id IS NOT NULL
+                  AND NOT (a.server_ip = b.server_ip AND a.server_port = b.server_port)
+                GROUP BY a.server_ip, a.server_port, b.server_ip, b.server_port";
+
+            let mut proxy_edges: Vec<TopologyEdge> = Vec::new();
+            {
+                let mut stmt = conn.prepare(edges_sql).map_err(|e| {
+                    AppError::Storage(format!("failed to prepare topology edges query: {e}"))
+                })?;
+                let mut rs = stmt
+                    .query(duckdb::params![start_ts.clone(), end_ts.clone()])
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to execute topology edges query: {e}"))
+                    })?;
+                while let Some(row) = rs
+                    .next()
+                    .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+                {
+                    let from_ip: String = row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let from_port: u16 = row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let to_ip: String = row
+                        .get(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let to_port: u16 = row
+                        .get(3)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let turn_count: u64 = row
+                        .get(4)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    proxy_edges.push(TopologyEdge {
+                        from_ip,
+                        from_port,
+                        to_ip,
+                        to_port,
+                        turn_count,
+                        kind: "proxy".to_string(),
+                    });
+                }
+            }
+
+            // --- Client entry edges: any service that has at least
+            // one turn in the window whose role isn't 'proxy_out'.
+            // Those are the endpoints clients can reach directly (the
+            // outer hop in a proxy chain, or a plain non-proxied
+            // service). proxy_out endpoints are reached *via* another
+            // service, so they should not get a clients edge.
+            let entry_sql = "
+                WITH turn_endpoint AS (
+                    SELECT
+                        c.server_ip,
+                        c.server_port,
+                        COALESCE(json_extract_string(t.metadata, '$.proxy.role'), '') AS proxy_role
+                    FROM agent_turns t
+                    JOIN llm_calls c
+                      ON c.id = json_extract_string(t.call_ids, '$[0]')
+                    WHERE t.start_time >= ? AND t.start_time < ?
+                )
+                SELECT server_ip, server_port, COUNT(*) AS turn_count
+                FROM turn_endpoint
+                WHERE proxy_role <> 'proxy_out'
+                GROUP BY server_ip, server_port";
+
+            let mut client_edges: Vec<TopologyEdge> = Vec::new();
+            {
+                let mut stmt = conn.prepare(entry_sql).map_err(|e| {
+                    AppError::Storage(format!("failed to prepare topology entry query: {e}"))
+                })?;
+                let mut rs = stmt
+                    .query(duckdb::params![start_ts, end_ts])
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to execute topology entry query: {e}"))
+                    })?;
+                while let Some(row) = rs
+                    .next()
+                    .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+                {
+                    let to_ip: String = row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let to_port: u16 = row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let turn_count: u64 = row
+                        .get(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    client_edges.push(TopologyEdge {
+                        from_ip: "__clients__".to_string(),
+                        from_port: 0,
+                        to_ip,
+                        to_port,
+                        turn_count,
+                        kind: "client".to_string(),
+                    });
+                }
+            }
+
+            let mut edges = proxy_edges;
+            edges.extend(client_edges);
+
+            // Add the synthetic clients node so the UI doesn't have
+            // to invent it. Total call_count is the sum of every
+            // client edge — the number of inbound turn-endpoints
+            // (matches the dotted-line widths on the Path view).
+            let client_total: u64 = edges
+                .iter()
+                .filter(|e| e.kind == "client")
+                .map(|e| e.turn_count)
+                .sum();
+            if client_total > 0 {
+                nodes.push(TopologyNode {
+                    server_ip: "__clients__".to_string(),
+                    server_port: 0,
+                    app: Some("clients".to_string()),
+                    models: Vec::new(),
+                    call_count: client_total,
+                });
+            }
+
+            Ok(ServicesTopology { nodes, edges })
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
 }
 
 #[cfg(test)]

@@ -89,6 +89,48 @@ pub struct ServiceRow {
     pub server_header: Option<String>,
 }
 
+/// Query for the Services *topology* — the directed
+/// service→service / clients→service graph used by the Services page's
+/// Path view. Reuses the same window as `ServicesQuery`; node selection
+/// follows the same `(server_ip, server_port)` grouping as the table.
+#[derive(Debug, Clone)]
+pub struct ServicesTopologyQuery {
+    pub time_range: TimeRange,
+}
+
+/// One node in the service topology graph. The synthetic `__clients__`
+/// node uses `server_ip = "__clients__"`, `server_port = 0`, app =
+/// `Some("clients")`, and models empty — the UI uses these sentinels to
+/// render it differently from real endpoints.
+#[derive(Debug, Clone, Serialize)]
+pub struct TopologyNode {
+    pub server_ip: String,
+    pub server_port: u16,
+    pub app: Option<String>,
+    pub models: Vec<String>,
+    pub call_count: u64,
+}
+
+/// One directed edge in the service topology graph. `kind = "proxy"`
+/// edges are pairs found by `pair_sweeper` (definitive); `kind =
+/// "client"` edges go from the synthetic clients node into entry-point
+/// services (services with no inbound proxy edge in the window).
+#[derive(Debug, Clone, Serialize)]
+pub struct TopologyEdge {
+    pub from_ip: String,
+    pub from_port: u16,
+    pub to_ip: String,
+    pub to_port: u16,
+    pub turn_count: u64,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServicesTopology {
+    pub nodes: Vec<TopologyNode>,
+    pub edges: Vec<TopologyEdge>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CallsQuery {
     pub time_range: TimeRange,
