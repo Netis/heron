@@ -877,6 +877,12 @@ impl DuckDbBackend {
                     CAST(list_distinct(array_agg(model))[1:32] AS JSON)::VARCHAR    AS models_json,
                     CAST(list_distinct(array_agg(wire_api))[1:8] AS JSON)::VARCHAR  AS wire_apis_json,
                     CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR AS paths_json,
+                    -- Distinct finish_reasons. SGLang has signatures
+                    -- vLLM doesn't (`matched_stop`, `matched_eos`,
+                    -- `stop_str`); per-call we keep the raw string, so
+                    -- a single appearance in the window is enough to
+                    -- pin the server.
+                    CAST(list_distinct(array_agg(finish_reason))[1:32] AS JSON)::VARCHAR AS finish_reasons_json,
                     -- Pick any well-formed header sample per group.
                     -- `MAX(response_headers)` is lexicographic — for
                     -- JSON-encoded headers starting with `[[` it's a
@@ -892,6 +898,26 @@ impl DuckDbBackend {
                     MAX(request_headers)
                         FILTER (WHERE request_headers IS NOT NULL
                             AND request_headers LIKE '[%')              AS sample_request_headers,
+                    -- Body samples for the vLLM vs SGLang fingerprint.
+                    -- We pick the LARGEST request body in the window
+                    -- (`arg_max(LENGTH)` — fast u64 comparison; the
+                    -- chosen body materialises only once) because
+                    -- larger bodies = deeper agentic history =
+                    -- assistant.tool_calls[].id values from the same
+                    -- server, which is our distinguishing signal.
+                    -- response_body is NULL for SSE streaming calls,
+                    -- so it's a weaker but still useful complement.
+                    -- Both are capped at 32 KB / 8 KB to keep the
+                    -- planner from materialising oversized agentic
+                    -- histories.
+                    arg_max(request_body, LENGTH(request_body))
+                        FILTER (WHERE request_body IS NOT NULL
+                            AND LENGTH(request_body) BETWEEN 100 AND 32768
+                            AND request_body LIKE '{{%')                AS sample_request_body,
+                    arg_max(response_body, LENGTH(response_body))
+                        FILTER (WHERE response_body IS NOT NULL
+                            AND LENGTH(response_body) BETWEEN 30 AND 8192
+                            AND response_body LIKE '{{%')               AS sample_response_body,
                     COUNT(*)                                  AS call_count,
                     COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0)::UBIGINT AS error_count,
                     COALESCE(SUM(CASE WHEN is_stream THEN 1 ELSE 0 END), 0)::UBIGINT          AS stream_count,
@@ -931,16 +957,26 @@ impl DuckDbBackend {
                 let paths_json: Option<String> = row
                     .get(4)
                     .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                let sample_response_headers: Option<String> = row
+                let finish_reasons_json: Option<String> = row
                     .get(5)
                     .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                let sample_request_headers: Option<String> = row
+                let sample_response_headers: Option<String> = row
                     .get(6)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let sample_request_headers: Option<String> = row
+                    .get(7)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let sample_request_body: Option<String> = row
+                    .get(8)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let sample_response_body: Option<String> = row
+                    .get(9)
                     .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
 
                 let models = parse_json_string_list(models_json.as_deref());
                 let wire_apis = parse_json_string_list(wire_apis_json.as_deref());
                 let request_paths = parse_json_string_list(paths_json.as_deref());
+                let finish_reasons = parse_json_string_list(finish_reasons_json.as_deref());
                 let server_header =
                     crate::apps::extract_server_header(sample_response_headers.as_deref());
                 let app = crate::apps::classify_app(
@@ -948,7 +984,10 @@ impl DuckDbBackend {
                     sample_response_headers.as_deref(),
                     sample_request_headers.as_deref(),
                     &request_paths,
+                    &finish_reasons,
                     &models,
+                    sample_request_body.as_deref(),
+                    sample_response_body.as_deref(),
                 );
 
                 rows.push(ServiceRow {
@@ -962,37 +1001,37 @@ impl DuckDbBackend {
                     wire_apis,
                     request_paths,
                     call_count: row
-                        .get::<_, u64>(7)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    error_count: row
-                        .get::<_, u64>(8)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    stream_count: row
-                        .get::<_, u64>(9)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    total_input_tokens: row
                         .get::<_, u64>(10)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    total_output_tokens: row
+                    error_count: row
                         .get::<_, u64>(11)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    stream_count: row
+                        .get::<_, u64>(12)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_input_tokens: row
+                        .get::<_, u64>(13)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_output_tokens: row
+                        .get::<_, u64>(14)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     ttft_avg_ms: row
-                        .get::<_, Option<f64>>(12)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    ttft_p95_ms: row
-                        .get::<_, Option<f64>>(13)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    e2e_avg_ms: row
-                        .get::<_, Option<f64>>(14)
-                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
-                    e2e_p95_ms: row
                         .get::<_, Option<f64>>(15)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    ttft_p95_ms: row
+                        .get::<_, Option<f64>>(16)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    e2e_avg_ms: row
+                        .get::<_, Option<f64>>(17)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    e2e_p95_ms: row
+                        .get::<_, Option<f64>>(18)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     first_seen_ms: row
-                        .get::<_, i64>(16)
+                        .get::<_, i64>(19)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     last_seen_ms: row
-                        .get::<_, i64>(17)
+                        .get::<_, i64>(20)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     app,
                     server_header,
