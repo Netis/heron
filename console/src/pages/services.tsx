@@ -28,6 +28,47 @@ function getSortValue(s: ServiceRow, key: SortKey): number | string {
   return (s[key as keyof ServiceRow] as number) ?? 0
 }
 
+/// Color theme per app — picked so the most common production
+/// surfaces (vllm/litellm) read at a glance. Falls back to muted gray
+/// for unknown so the absence of detection is visually quiet.
+const APP_BADGE_STYLE: Record<string, string> = {
+  vllm: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300",
+  sglang: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300",
+  "openai-compat":
+    "bg-slate-200 text-slate-800 dark:bg-slate-700/60 dark:text-slate-200",
+  ollama: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
+  llamacpp: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
+  litellm: "bg-pink-100 text-pink-800 dark:bg-pink-900/40 dark:text-pink-300",
+  openai: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300",
+  anthropic: "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
+  gemini: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
+}
+
+function AppBadge({ app, serverHeader }: { app: string | null; serverHeader: string | null }) {
+  if (!app) {
+    return (
+      <span
+        className="rounded bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+        title={serverHeader ? `Server: ${serverHeader}` : "No identifying signal"}
+      >
+        unknown
+      </span>
+    )
+  }
+  const cls = APP_BADGE_STYLE[app] ?? APP_BADGE_STYLE["openai-compat"]
+  const title = serverHeader
+    ? `Server: ${serverHeader}`
+    : `Identified as ${app} (no Server header sample)`
+  return (
+    <span
+      className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium", cls)}
+      title={title}
+    >
+      {app}
+    </span>
+  )
+}
+
 function formatAgo(ms: number): string {
   const diff = Date.now() - ms
   if (diff < 0) return "just now"
@@ -116,6 +157,9 @@ export function ServicesPage() {
                   <SortHeader label="Endpoint" field="endpoint" align="left" />
                 </th>
                 <th className="px-3 py-3 text-left text-xs font-medium text-muted-foreground">
+                  App
+                </th>
+                <th className="px-3 py-3 text-left text-xs font-medium text-muted-foreground">
                   Models
                 </th>
                 <th className="px-3 py-3 text-left text-xs font-medium text-muted-foreground">
@@ -153,13 +197,13 @@ export function ServicesPage() {
             <tbody>
               {isLoading && services.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="py-12 text-center text-muted-foreground">
+                  <td colSpan={13} className="py-12 text-center text-muted-foreground">
                     Loading…
                   </td>
                 </tr>
               ) : sorted.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="py-12 text-center text-muted-foreground">
+                  <td colSpan={13} className="py-12 text-center text-muted-foreground">
                     No services found in selected time range
                   </td>
                 </tr>
@@ -172,6 +216,9 @@ export function ServicesPage() {
                       <td className="px-4 py-2.5 font-mono text-xs">
                         <span className="font-medium">{s.server_ip}</span>
                         <span className="text-muted-foreground">:{s.server_port}</span>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <AppBadge app={s.app} serverHeader={s.server_header} />
                       </td>
                       <td className="px-3 py-2.5">
                         <div className="flex flex-wrap gap-1">
