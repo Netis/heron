@@ -17,8 +17,26 @@ jobs:
       ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
       ANTHROPIC_API_KEY: ${{ secrets.LITELLM_API_KEY }}
       ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
-      NO_PROXY: ${{ secrets.LITELLM_NO_PROXY }}
     steps:
+      - name: Override inherited HTTP proxy
+        # Runner ships with http_proxy=<internal apt proxy> baked into
+        # /etc/environment by cloud-init. curl on Linux honors the
+        # lowercase no_proxy and ignores the GH-Actions-set NO_PROXY
+        # (uppercase); GH Actions deduplicates env keys
+        # case-insensitively, so we can't set both at job level.
+        # Workaround: punch the right values into $GITHUB_ENV from a
+        # setup step. Empty `http_proxy` / `https_proxy` cancels the
+        # inherited proxy; lowercase `no_proxy` is what curl reads.
+        run: |
+          {
+            echo "http_proxy="
+            echo "https_proxy="
+            echo "HTTP_PROXY="
+            echo "HTTPS_PROXY="
+            echo "no_proxy=${{ secrets.LITELLM_NO_PROXY }}"
+            echo "NO_PROXY=${{ secrets.LITELLM_NO_PROXY }}"
+          } >> "$GITHUB_ENV"
+
       - name: Runner host
         run: |
           echo "hostname: $(hostname)"
