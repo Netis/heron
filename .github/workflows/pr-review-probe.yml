@@ -1,0 +1,72 @@
+name: pr-review-probe
+
+# One-off probe that verifies the self-hosted runner has the
+# prerequisites the pr-review workflow needs. Run manually before
+# merging the pr-review feature, or any time the runner is reimaged.
+# Reports each check as a step so failure points are obvious in the
+# workflow log.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, tokenscope]
+    timeout-minutes: 5
+    env:
+      ANTHROPIC_BASE_URL: http://172.16.103.81:4200
+      ANTHROPIC_API_KEY: dummy
+      ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
+    steps:
+      - name: Runner host
+        run: |
+          echo "hostname: $(hostname)"
+          echo "user: $(whoami)"
+          echo "pwd: $(pwd)"
+          echo "uname: $(uname -a)"
+
+      - name: PATH
+        run: echo "$PATH" | tr ':' '\n'
+
+      - name: Claude Code CLI present
+        run: |
+          if command -v claude >/dev/null 2>&1; then
+            echo "claude: $(which claude)"
+            claude --version || echo "(no --version)"
+          else
+            echo "::error::claude CLI not found on PATH"
+            echo "install with: npm i -g @anthropic-ai/claude-code"
+            exit 1
+          fi
+
+      - name: gh CLI authenticated
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "::error::gh CLI not found on PATH"
+            exit 1
+          fi
+          gh auth status || true
+          gh api repos/${{ github.repository }} --jq .full_name
+
+      - name: Python 3 + envsubst
+        run: |
+          python3 --version
+          command -v envsubst || { echo "::error::envsubst missing (apt install gettext-base)"; exit 1; }
+
+      - name: LiteLLM reachable
+        run: |
+          if ! curl -fsS --max-time 5 "$ANTHROPIC_BASE_URL/v1/models" >/dev/null; then
+            echo "::error::LiteLLM unreachable at $ANTHROPIC_BASE_URL"
+            curl -v --max-time 5 "$ANTHROPIC_BASE_URL/v1/models" || true
+            exit 1
+          fi
+          curl -s "$ANTHROPIC_BASE_URL/v1/models" | head -c 400
+          echo
+
+      - name: Round-trip claude → LiteLLM → GLM-5
+        run: |
+          OUT="$(timeout 60 claude --print --model "$ANTHROPIC_MODEL" --max-turns 1 --output-format text "say PONG, nothing else" 2>&1)"
+          echo "agent response: $OUT"
+          echo "$OUT" | grep -qi PONG || { echo "::error::no PONG in agent output"; exit 1; }
