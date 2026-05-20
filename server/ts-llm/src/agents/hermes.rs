@@ -17,10 +17,9 @@
 //!
 //! Hermes's chat-title-generation call (system: "Generate a short,
 //! descriptive title…") carries no `tools` and no Hermes markers; it does
-//! NOT match this profile and falls through to `GenericProfile`. That is
-//! by design — title generation is a standalone turn from the wire's
-//! perspective, and conflating it into the parent turn would mis-shape
-//! the per-call data.
+//! NOT match this profile. Generic fallback also ignores text-only calls, so
+//! title generation remains visible as an LLM call without creating a
+//! synthetic agent turn.
 
 use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
@@ -306,7 +305,7 @@ mod tests {
 
     #[test]
     fn does_not_match_title_generation_call() {
-        // No tools array at all → must not match. Falls through to generic.
+        // No tools array at all → must not match.
         let c = call(wa::OPENAI_CHAT, Some(HERMES_TITLE_GEN), None);
         assert!(!HermesProfile.matches(&c.ctx()));
     }

@@ -131,6 +131,30 @@ mod priority_tests {
       ]
     }"#;
 
+    const GENERIC_ANT_TOOL_HISTORY: &str = r#"{
+      "messages":[
+        {"role":"user","content":[{"type":"text","text":"hi"}]},
+        {"role":"assistant","content":[{"type":"tool_use","id":"toolu_generic","name":"Read","input":{}}]},
+        {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_generic","content":"ok"}]}
+      ]
+    }"#;
+
+    const GENERIC_OAI_CHAT_TOOL_HISTORY: &str = r#"{
+      "messages":[
+        {"role":"user","content":"hi"},
+        {"role":"assistant","content":null,"tool_calls":[{"id":"call_generic","type":"function","function":{"name":"f","arguments":"{}"}}]},
+        {"role":"tool","tool_call_id":"call_generic","content":"ok"}
+      ]
+    }"#;
+
+    const GENERIC_RESPONSES_TOOL_HISTORY: &str = r#"{
+      "input":[
+        {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+        {"type":"function_call","name":"f","arguments":"{}","call_id":"fc_generic"},
+        {"type":"function_call_output","call_id":"fc_generic","output":"ok"}
+      ]
+    }"#;
+
     #[test]
     fn claude_cli_wins_over_generic_for_anthropic() {
         let reg = build_default_registry();
@@ -147,9 +171,10 @@ mod priority_tests {
     #[test]
     fn generic_catches_no_ua_anthropic() {
         let reg = build_default_registry();
-        let c = call_with(
+        let c = call_with_body(
             wa::ANTHROPIC,
             vec![("User-Agent", "python/3.12 anthropic/0.40")],
+            Some(GENERIC_ANT_TOOL_HISTORY),
         );
         assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
@@ -159,11 +184,12 @@ mod priority_tests {
         // UA-spoofing or header-stripping: looks like claude-cli but the
         // session header is absent. ClaudeCliProfile must NOT claim it
         // (otherwise extract_session_id would return None with no fallback) —
-        // GenericProfile picks it up and synthesizes a session anchor.
+        // GenericProfile picks it up when the body has a tool-call anchor.
         let reg = build_default_registry();
-        let c = call_with(
+        let c = call_with_body(
             wa::ANTHROPIC,
             vec![("User-Agent", "claude-cli/2.1.98 (cli)")],
+            Some(GENERIC_ANT_TOOL_HISTORY),
         );
         assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
@@ -199,9 +225,10 @@ mod priority_tests {
     #[test]
     fn generic_catches_no_codex_metadata_responses() {
         let reg = build_default_registry();
-        let c = call_with(
+        let c = call_with_body(
             wa::OPENAI_RESPONSES,
             vec![("User-Agent", "OpenAI/Python 1.50")],
+            Some(GENERIC_RESPONSES_TOOL_HISTORY),
         );
         assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
@@ -211,11 +238,12 @@ mod priority_tests {
         // UA-spoofing or header-stripping: looks like codex but the
         // turn-metadata header is absent. CodexCliProfile must NOT claim it
         // (otherwise extract_session_id would return None with no fallback) —
-        // GenericProfile picks it up and synthesizes a session anchor.
+        // GenericProfile picks it up when the body has a tool-call anchor.
         let reg = build_default_registry();
-        let c = call_with(
+        let c = call_with_body(
             wa::OPENAI_RESPONSES,
             vec![("User-Agent", "codex-tui/0.118.0")],
+            Some(GENERIC_RESPONSES_TOOL_HISTORY),
         );
         assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
@@ -223,7 +251,11 @@ mod priority_tests {
     #[test]
     fn generic_catches_openai_chat() {
         let reg = build_default_registry();
-        let c = call_with(wa::OPENAI_CHAT, vec![("User-Agent", "OpenAI/JS 6.26.0")]);
+        let c = call_with_body(
+            wa::OPENAI_CHAT,
+            vec![("User-Agent", "OpenAI/JS 6.26.0")],
+            Some(GENERIC_OAI_CHAT_TOOL_HISTORY),
+        );
         assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
 
@@ -247,14 +279,15 @@ mod priority_tests {
     fn generic_catches_old_opencode_without_session_header() {
         // Pre-1.14.x opencode lacks x-session-affinity. OpencodeProfile must
         // NOT claim it (no fallback for session_id), so the call falls
-        // through to GenericProfile which can synthesize from the body.
+        // through to GenericProfile when the body has a tool-call anchor.
         let reg = build_default_registry();
-        let c = call_with(
+        let c = call_with_body(
             wa::OPENAI_CHAT,
             vec![(
                 "User-Agent",
                 "opencode/1.1.31 ai-sdk/provider-utils/3.0.20 runtime/bun/1.3.5",
             )],
+            Some(GENERIC_OAI_CHAT_TOOL_HISTORY),
         );
         assert_eq!(find_kind(&reg, &c), Some("generic"));
     }
@@ -306,10 +339,15 @@ mod priority_tests {
 
     #[test]
     fn generic_still_wins_for_non_openclaw_anthropic() {
-        // Body lacks OpenClaw marker tools → falls through to generic.
+        // Body lacks OpenClaw marker tools but has a tool-call anchor →
+        // falls through to generic.
         let reg = build_default_registry();
         let body = r#"{
-          "messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],
+          "messages":[
+            {"role":"user","content":[{"type":"text","text":"hi"}]},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_generic","name":"Read","input":{}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_generic","content":"ok"}]}
+          ],
           "tools":[{"name":"Read"},{"name":"Edit"}]
         }"#;
         let c = call_with_body(
@@ -324,7 +362,11 @@ mod priority_tests {
     fn generic_still_wins_for_non_openclaw_openai_chat() {
         let reg = build_default_registry();
         let body = r#"{
-          "messages":[{"role":"user","content":"hi"}],
+          "messages":[
+            {"role":"user","content":"hi"},
+            {"role":"assistant","content":null,"tool_calls":[{"id":"call_generic","type":"function","function":{"name":"calculator","arguments":"{}"}}]},
+            {"role":"tool","tool_call_id":"call_generic","content":"ok"}
+          ],
           "tools":[{"type":"function","function":{"name":"calculator"}}]
         }"#;
         let c = call_with_body(
@@ -368,19 +410,17 @@ mod priority_tests {
     }
 
     #[test]
-    fn hermes_title_gen_falls_through_to_generic() {
+    fn hermes_title_gen_has_no_agent_profile() {
         // Hermes's chat-title-generation call carries no tools and no
-        // Hermes markers, so HermesProfile must NOT match it. The call
-        // is correctly classified as generic — and it correctly remains
-        // its own AgentTurn from the wire's perspective (separate
-        // session, fresh user-start, finish_reason=stop).
+        // Hermes markers, so HermesProfile must NOT match it. Generic
+        // fallback also ignores text-only calls, so it stays call-only.
         let reg = build_default_registry();
         let c = call_with_body(
             wa::OPENAI_CHAT,
             vec![("User-Agent", "OpenAI/Python 2.33.0")],
             Some(HERMES_TITLE_GEN),
         );
-        assert_eq!(find_kind(&reg, &c), Some("generic"));
+        assert_eq!(find_kind(&reg, &c), None);
     }
 
     #[test]
