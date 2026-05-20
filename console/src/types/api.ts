@@ -108,15 +108,21 @@ export interface TopologyNode {
 /** One directed edge.
  *  - `kind: "proxy"` — pair-sweeper-confirmed hop, real service →
  *    real service.
+ *  - `kind: "inferred"` — heuristic edge: caller_ip matches a known
+ *    service's server_ip (typically LiteLLM forwarding to a real
+ *    backend) but pair_sweeper hasn't paired the turn. Drawn as
+ *    a dashed blue line so users can tell it apart from confirmed
+ *    proxy hops.
  *  - `kind: "client"` — synthetic edge from `__clients__` into an
- *    entry-point service. */
+ *    entry-point service whose caller_ip doesn't resolve to any
+ *    known service. */
 export interface TopologyEdge {
   from_ip: string
   from_port: number
   to_ip: string
   to_port: number
   turn_count: number
-  kind: "proxy" | "client"
+  kind: "proxy" | "inferred" | "client"
 }
 
 export interface ServicesTopology {

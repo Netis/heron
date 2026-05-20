@@ -111,10 +111,21 @@ pub struct TopologyNode {
     pub call_count: u64,
 }
 
-/// One directed edge in the service topology graph. `kind = "proxy"`
-/// edges are pairs found by `pair_sweeper` (definitive); `kind =
-/// "client"` edges go from the synthetic clients node into entry-point
-/// services (services with no inbound proxy edge in the window).
+/// One directed edge in the service topology graph.
+///
+/// * `kind = "proxy"` — pairs found by `pair_sweeper`. Definitive: we
+///   observed both sides of the same turn group on the wire.
+/// * `kind = "inferred"` — heuristic edge. The inbound call's
+///   `client_ip` matches the `server_ip` of an existing service node
+///   (typical pattern: LiteLLM accepts the user's call, then makes
+///   outgoing calls that hit upstream as `client_ip=<litellm host>`).
+///   We attribute the hop to the litellm/proxy service on that host
+///   when there is one, else the most-active service. Less certain
+///   than `proxy` — source ports are ephemeral so we can't pinpoint
+///   when multiple services share a host.
+/// * `kind = "client"` — synthetic edges from the `__clients__`
+///   super-node into entry-point services whose inbound `client_ip`
+///   doesn't resolve to any known service.
 #[derive(Debug, Clone, Serialize)]
 pub struct TopologyEdge {
     pub from_ip: String,

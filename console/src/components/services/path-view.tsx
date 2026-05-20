@@ -49,7 +49,7 @@ interface LayoutNode extends TopologyNode {
 interface LayoutEdge {
   from: string
   to: string
-  kind: "proxy" | "client"
+  kind: "proxy" | "inferred" | "client"
   turn_count: number
 }
 
@@ -253,6 +253,17 @@ export function ServicePathView({ topology }: { topology: ServicesTopology }) {
             <path d="M 0 0 L 10 5 L 0 10 z" className="fill-blue-500" />
           </marker>
           <marker
+            id="arrow-inferred"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="6"
+            markerHeight="6"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" className="fill-blue-400" />
+          </marker>
+          <marker
             id="arrow-client"
             viewBox="0 0 10 10"
             refX="9"
@@ -277,8 +288,23 @@ export function ServicePathView({ topology }: { topology: ServicesTopology }) {
           const cx1 = x1 + COL_GAP / 2
           const cx2 = x2 - COL_GAP / 2
           const d = `M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`
-          const colorCls = e.kind === "proxy" ? "stroke-blue-500" : "stroke-slate-400"
-          const dash = e.kind === "client" ? "4 4" : undefined
+          const colorCls =
+            e.kind === "proxy"
+              ? "stroke-blue-500"
+              : e.kind === "inferred"
+                ? "stroke-blue-400"
+                : "stroke-slate-400"
+          // Solid for pair-confirmed; short-dash for heuristic
+          // inferred edges (signals lower confidence); long-dash for
+          // anonymous clients.
+          const dash =
+            e.kind === "client" ? "4 4" : e.kind === "inferred" ? "6 3" : undefined
+          const marker =
+            e.kind === "proxy"
+              ? "arrow-proxy"
+              : e.kind === "inferred"
+                ? "arrow-inferred"
+                : "arrow-client"
           return (
             <g key={idx}>
               <path
@@ -287,18 +313,23 @@ export function ServicePathView({ topology }: { topology: ServicesTopology }) {
                 className={colorCls}
                 strokeWidth={strokeWidth(e.turn_count)}
                 strokeDasharray={dash}
-                markerEnd={`url(#${e.kind === "proxy" ? "arrow-proxy" : "arrow-client"})`}
+                markerEnd={`url(#${marker})`}
                 opacity={0.75}
               />
-              {/* Mid-edge label — only on proxy edges where the count
-                  is meaningful. Client edges are aggregate and a label
-                  on every dotted arrow becomes noise. */}
-              {e.kind === "proxy" && (
+              {/* Mid-edge label — show counts on real service→service
+                  hops (proxy + inferred). Skip on client edges since
+                  the aggregate already shows on the clients node. */}
+              {e.kind !== "client" && (
                 <text
                   x={(x1 + x2) / 2}
                   y={(y1 + y2) / 2 - 4}
                   textAnchor="middle"
-                  className="fill-blue-700 text-[10px] dark:fill-blue-300"
+                  className={cn(
+                    "text-[10px]",
+                    e.kind === "proxy"
+                      ? "fill-blue-700 dark:fill-blue-300"
+                      : "fill-blue-500 dark:fill-blue-400",
+                  )}
                 >
                   {formatNumber(e.turn_count)}
                 </text>
@@ -312,17 +343,22 @@ export function ServicePathView({ topology }: { topology: ServicesTopology }) {
           </foreignObject>
         ))}
       </svg>
-      <div className="sticky bottom-0 mt-2 flex items-center gap-4 border-t border-border bg-card px-3 py-2 text-[10px] text-muted-foreground">
+      <div className="sticky bottom-0 mt-2 flex flex-wrap items-center gap-4 border-t border-border bg-card px-3 py-2 text-[10px] text-muted-foreground">
         <span className="inline-flex items-center gap-1">
           <span className="inline-block h-0.5 w-4 bg-blue-500"></span>
-          proxy hop (paired by sweeper)
+          proxy hop (pair-confirmed)
         </span>
         <span className="inline-flex items-center gap-1">
-          <span
-            className="inline-block h-0.5 w-4 bg-slate-400"
-            style={{ backgroundImage: "linear-gradient(90deg, currentColor 50%, transparent 50%)", backgroundSize: "8px 1px" }}
-          ></span>
-          client entry edge
+          <svg width="20" height="2" className="overflow-visible">
+            <line x1="0" y1="1" x2="20" y2="1" className="stroke-blue-400" strokeWidth="1.5" strokeDasharray="6 3" />
+          </svg>
+          inferred (caller_ip = known service)
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <svg width="20" height="2" className="overflow-visible">
+            <line x1="0" y1="1" x2="20" y2="1" className="stroke-slate-400" strokeWidth="1.5" strokeDasharray="4 4" />
+          </svg>
+          anonymous client
         </span>
         <span className="ml-auto">Edge width ∝ turn count</span>
       </div>

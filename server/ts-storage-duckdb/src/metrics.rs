@@ -1223,29 +1223,118 @@ impl DuckDbBackend {
                 }
             }
 
-            // --- Client entry edges: any service that has at least
-            // one turn in the window whose role isn't 'proxy_out'.
-            // Those are the endpoints clients can reach directly (the
-            // outer hop in a proxy chain, or a plain non-proxied
-            // service). proxy_out endpoints are reached *via* another
-            // service, so they should not get a clients edge.
+            // --- Inbound traffic grouped by (caller_ip, to_ip,
+            // to_port). For each row we either:
+            //   (a) attribute the traffic to a service we already
+            //       know about — `caller_ip` matches the server_ip of
+            //       some node (typical case: LiteLLM at .81:4210
+            //       accepts an inbound, then makes outgoing calls
+            //       that hit the upstream as `client_ip=172.16.103.81`
+            //       — those should render as litellm → upstream, not
+            //       anonymous-clients → upstream); or
+            //   (b) fall through to a synthetic `__clients__` edge.
+            // Same SQL as before, just adds `client_ip` to the
+            // grouping. We exclude `proxy_out` turns because their
+            // inbound side is the proxy hop itself (already covered
+            // by the pair_sweeper edges above).
             let entry_sql = "
                 WITH turn_endpoint AS (
                     SELECT
-                        c.server_ip,
-                        c.server_port,
+                        c.client_ip   AS caller_ip,
+                        c.server_ip   AS to_ip,
+                        c.server_port AS to_port,
                         COALESCE(json_extract_string(t.metadata, '$.proxy.role'), '') AS proxy_role
                     FROM agent_turns t
                     JOIN llm_calls c
                       ON c.id = json_extract_string(t.call_ids, '$[0]')
                     WHERE t.start_time >= ? AND t.start_time < ?
                 )
-                SELECT server_ip, server_port, COUNT(*) AS turn_count
+                SELECT caller_ip, to_ip, to_port, COUNT(*) AS turn_count
                 FROM turn_endpoint
                 WHERE proxy_role <> 'proxy_out'
-                GROUP BY server_ip, server_port";
+                GROUP BY caller_ip, to_ip, to_port";
+
+            // Build per-IP service index so we can resolve a
+            // `caller_ip` to its most-likely originating service.
+            // Strategy: among the services on that IP, prefer
+            // `litellm` (the typical fan-out culprit); next prefer
+            // any explicitly-app-tagged service; fall back to
+            // the highest-call-count one. Skip the target itself so
+            // we never draw a self-loop.
+            let mut services_by_ip: std::collections::HashMap<&str, Vec<&TopologyNode>> =
+                std::collections::HashMap::new();
+            for n in &nodes {
+                services_by_ip.entry(n.server_ip.as_str()).or_default().push(n);
+            }
+            // Quick lookup so we can check the target's app class.
+            let app_of: std::collections::HashMap<(String, u16), Option<String>> = nodes
+                .iter()
+                .map(|n| {
+                    (
+                        (n.server_ip.clone(), n.server_port),
+                        n.app.clone(),
+                    )
+                })
+                .collect();
+            let is_proxy_app = |app: Option<&str>| {
+                matches!(app, Some("litellm") | Some("haproxy") | Some("nginx"))
+            };
+            let resolve_caller = |caller_ip: &str,
+                                  to_ip: &str,
+                                  to_port: u16|
+             -> Option<(String, u16)> {
+                // If the TARGET is itself a proxy (litellm/haproxy/
+                // nginx), inbound calls are by definition real
+                // clients, not another local service forwarding. A
+                // co-host vllm is the destination's neighbour, not
+                // its caller — attributing inbound litellm traffic
+                // to vllm produced backwards edges in early dev.
+                let target_app = app_of
+                    .get(&(to_ip.to_string(), to_port))
+                    .and_then(|a| a.as_deref());
+                if is_proxy_app(target_app) {
+                    return None;
+                }
+                let candidates = services_by_ip.get(caller_ip)?;
+                let usable: Vec<&&TopologyNode> = candidates
+                    .iter()
+                    .filter(|n| !(n.server_ip == to_ip && n.server_port == to_port))
+                    .collect();
+                if usable.is_empty() {
+                    return None;
+                }
+                // 1) Prefer litellm.
+                if let Some(n) = usable.iter().find(|n| n.app.as_deref() == Some("litellm")) {
+                    return Some((n.server_ip.clone(), n.server_port));
+                }
+                // 2) Else any proxy-ish app.
+                if let Some(n) = usable.iter().find(|n| is_proxy_app(n.app.as_deref())) {
+                    return Some((n.server_ip.clone(), n.server_port));
+                }
+                // 3) Else most-active service on that IP.
+                let n = usable
+                    .iter()
+                    .max_by_key(|n| n.call_count)
+                    .expect("usable non-empty");
+                Some((n.server_ip.clone(), n.server_port))
+            };
+
+            // To avoid drawing two arrows for the same hop, dedupe
+            // against proxy_pair edges we already produced.
+            let proxy_pair_set: std::collections::HashSet<(String, u16, String, u16)> = proxy_edges
+                .iter()
+                .map(|e| {
+                    (
+                        e.from_ip.clone(),
+                        e.from_port,
+                        e.to_ip.clone(),
+                        e.to_port,
+                    )
+                })
+                .collect();
 
             let mut client_edges: Vec<TopologyEdge> = Vec::new();
+            let mut inferred_edges: Vec<TopologyEdge> = Vec::new();
             {
                 let mut stmt = conn.prepare(entry_sql).map_err(|e| {
                     AppError::Storage(format!("failed to prepare topology entry query: {e}"))
@@ -1259,27 +1348,100 @@ impl DuckDbBackend {
                     .next()
                     .map_err(|e| AppError::Storage(format!("row error: {e}")))?
                 {
-                    let to_ip: String = row
+                    let caller_ip: String = row
                         .get(0)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                    let to_port: u16 = row
+                    let to_ip: String = row
                         .get(1)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                    let turn_count: u64 = row
+                    let to_port: u16 = row
                         .get(2)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                    client_edges.push(TopologyEdge {
-                        from_ip: "__clients__".to_string(),
-                        from_port: 0,
-                        to_ip,
-                        to_port,
-                        turn_count,
-                        kind: "client".to_string(),
-                    });
+                    let turn_count: u64 = row
+                        .get(3)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+
+                    match resolve_caller(&caller_ip, &to_ip, to_port) {
+                        Some((from_ip, from_port)) => {
+                            // Suppress if the pair_sweeper already
+                            // covered this hop — we don't want to
+                            // double-count via a weaker signal.
+                            if proxy_pair_set.contains(&(
+                                from_ip.clone(),
+                                from_port,
+                                to_ip.clone(),
+                                to_port,
+                            )) {
+                                continue;
+                            }
+                            inferred_edges.push(TopologyEdge {
+                                from_ip,
+                                from_port,
+                                to_ip,
+                                to_port,
+                                turn_count,
+                                kind: "inferred".to_string(),
+                            });
+                        }
+                        None => {
+                            client_edges.push(TopologyEdge {
+                                from_ip: "__clients__".to_string(),
+                                from_port: 0,
+                                to_ip,
+                                to_port,
+                                turn_count,
+                                kind: "client".to_string(),
+                            });
+                        }
+                    }
                 }
             }
 
+            // SQL groups by caller_ip but multiple caller_ips can
+            // resolve to the same originating service (e.g. external
+            // 172.16.103.81 AND loopback 127.0.0.1 both have a
+            // litellm); collapse those into single edges.
+            let mut inferred_dedup: std::collections::HashMap<(String, u16, String, u16), u64> =
+                std::collections::HashMap::new();
+            for e in inferred_edges {
+                *inferred_dedup
+                    .entry((e.from_ip, e.from_port, e.to_ip, e.to_port))
+                    .or_insert(0) += e.turn_count;
+            }
+            let inferred_edges: Vec<TopologyEdge> = inferred_dedup
+                .into_iter()
+                .map(|((fi, fp, ti, tp), c)| TopologyEdge {
+                    from_ip: fi,
+                    from_port: fp,
+                    to_ip: ti,
+                    to_port: tp,
+                    turn_count: c,
+                    kind: "inferred".to_string(),
+                })
+                .collect();
+
+            // Same idea for client edges — multiple caller_ips that
+            // don't resolve to a known service still aggregate into
+            // one __clients__ edge per (to_ip, to_port).
+            let mut client_dedup: std::collections::HashMap<(String, u16), u64> =
+                std::collections::HashMap::new();
+            for e in client_edges {
+                *client_dedup.entry((e.to_ip, e.to_port)).or_insert(0) += e.turn_count;
+            }
+            let client_edges: Vec<TopologyEdge> = client_dedup
+                .into_iter()
+                .map(|((ti, tp), c)| TopologyEdge {
+                    from_ip: "__clients__".to_string(),
+                    from_port: 0,
+                    to_ip: ti,
+                    to_port: tp,
+                    turn_count: c,
+                    kind: "client".to_string(),
+                })
+                .collect();
+
             let mut edges = proxy_edges;
+            edges.extend(inferred_edges);
             edges.extend(client_edges);
 
             // Add the synthetic clients node so the UI doesn't have
