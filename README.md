@@ -44,7 +44,7 @@ The trade-off is honest: you give up cross-cluster client tracing, you get a sin
 ## What's in the box
 
 **Ingress**
-- libpcap on a live interface (BPF-filtered)
+- libpcap on a live interface
 - Replay from `.pcap` files (any speed)
 - ZMQ from [cloud-probe](https://github.com/Netis/cloud-probe) for hosts you can't install on directly
 
@@ -65,8 +65,6 @@ The trade-off is honest: you give up cross-cluster client tracing, you get a sin
 This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Vertex (Anthropic wire), Google Gemini, and any OpenAI-compatible local server — vLLM, SGLang, Ollama, llama.cpp's server, LM Studio, etc.
 
 **Per-call drill-down when you need it** — every LLM call is also captured with structured request/response *and* the raw body. Stalled tool calls, malformed prompts, unexpected token counts: the evidence is on the page, not behind a re-run.
-
-![LLM call detail — structured request/response with full body drawer](docs/images/llm-call-detail.png)
 
 **Metrics** are framed first at the **agent layer** — turn count and duration distribution per agent kind, call count per turn, tool-call success rate — and then at the **call layer**: TTFT · E2E latency · TPOT · token throughput · call rate · active calls · call error rate · prompt-cache hit ratio. The Overview page is built around both. See [glossary](docs/glossary.md) for what each means and why.
 
@@ -109,7 +107,7 @@ curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh \
 sudo setcap cap_net_raw,cap_net_admin=eip ~/.local/bin/tokenscope
 
 # Capture from a live interface
-tokenscope -i eth0 --bpf-filter "tcp port 8000"
+tokenscope -i eth0
 
 # ...or replay a pcap (no privileges needed)
 tokenscope --pcap-file capture.pcap --no-retention
@@ -119,17 +117,17 @@ Then open <http://localhost:3000>.
 
 After a pcap finishes replaying, the process keeps the API/console available so you can browse the results — press Ctrl+C to exit, or pass `--exit-after-drain` for batch/CI use that exits as soon as the pipeline drains.
 
-> TokenScope sees **plaintext** HTTP. The BPF filter targets the *internal* port your inference server listens on (vLLM 8000, Ollama 11434, your TLS-terminator's backend pool, …) — never `:443`.
+> TokenScope sees **plaintext** HTTP. Install it where the traffic is already decrypted, such as on the inference host, behind a TLS terminator, or fed from a trusted packet source.
 
-For systemd deployment, capability options, macOS BPF setup, and uninstall, see [docs/install.md](docs/install.md).
+For systemd deployment, capability options, and uninstall, see [docs/install.md](docs/install.md).
 
 ## Documentation
 
 - [Install](docs/install.md) — one-line installer, systemd, capabilities
-- [Configure](docs/configure.md) — pipelines, sources, storage, retention, BPF filters
+- [Configure](docs/configure.md) — pipelines, sources, storage, retention
 - [Glossary](docs/glossary.md) — what every metric means
 - [Architecture](docs/design/01-architecture.md) — pipeline design and trade-offs
-- [Mission](docs/mission.md) — long-arc vision and BPC heritage
+- [Mission](docs/mission.md) — long-arc vision
 
 ## Roadmap
 
@@ -139,10 +137,6 @@ The current surface is the foundation layer (Ops use cases). On the way:
 - **Wire APIs** — more provider-specific extensions (Bedrock variants, Vertex non-Anthropic, etc.)
 
 See [docs/mission.md](docs/mission.md) for the full ladder.
-
-## Project origin
-
-TokenScope is an open-source project from **Netis Systems**, a Shenzhen-based NPM/BPC vendor (founded 2000) with two decades of packet-evidence observability work for regulated enterprise. The project's ambition is **vendor-neutral**: useful to anyone operating LLM API traffic, not Netis customers alone. [cloud-probe](https://github.com/Netis/cloud-probe) is one supported ingress, not a requirement.
 
 ## Contributing
 
