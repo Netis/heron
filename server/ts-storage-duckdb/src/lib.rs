@@ -1,3 +1,4 @@
+mod apps;
 mod calls;
 #[cfg(test)]
 mod concurrent_tests;
@@ -161,6 +162,31 @@ impl StorageBackend for DuckDbBackend {
         query: &MetricsModelsQuery,
     ) -> Result<Vec<MetricsModelRow>> {
         DuckDbBackend::query_metrics_models(self, query).await
+    }
+
+    async fn query_services(&self, query: &ServicesQuery) -> Result<Vec<ServiceRow>> {
+        DuckDbBackend::query_services(self, query).await
+    }
+
+    async fn query_services_topology(
+        &self,
+        query: &ServicesTopologyQuery,
+    ) -> Result<ServicesTopology> {
+        DuckDbBackend::query_services_topology(self, query).await
+    }
+
+    async fn query_agent_summary(
+        &self,
+        query: &AgentSummaryQuery,
+    ) -> Result<Vec<AgentKindSummary>> {
+        DuckDbBackend::query_agent_summary(self, query).await
+    }
+
+    async fn query_agent_activity(
+        &self,
+        query: &AgentActivityQuery,
+    ) -> Result<Vec<AgentActivityPoint>> {
+        DuckDbBackend::query_agent_activity(self, query).await
     }
 
     async fn query_finish_reasons(

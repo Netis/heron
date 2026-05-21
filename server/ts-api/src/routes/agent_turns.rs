@@ -4,8 +4,9 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use ts_storage::query::{
-    CallDetail, HeaderDiffEntry, HeaderDiffKind, HeaderValueByLeg, LatencyBreakdown,
-    ModelRewrite, ProxyViewMember, ProxyViewResponse, TurnDetail, TurnListItem, TurnsQuery,
+    AgentActivityPoint, AgentActivityQuery, AgentKindSummary, AgentSummaryQuery, CallDetail,
+    HeaderDiffEntry, HeaderDiffKind, HeaderValueByLeg, LatencyBreakdown, ModelRewrite,
+    ProxyViewMember, ProxyViewResponse, TurnDetail, TurnListItem, TurnsQuery,
 };
 use ts_turn::AgentTurn;
 
@@ -26,6 +27,10 @@ pub struct TurnsParams {
     pub server_ip: Option<String>,
     #[serde(default)]
     pub client_ip: Option<String>,
+    /// CSV of u16 server ports. Resolved through the turn's first
+    /// call_id against `llm_calls.server_port`.
+    #[serde(default)]
+    pub server_port: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
@@ -64,10 +69,19 @@ pub async fn list(
 ) -> Result<impl IntoResponse, ApiError> {
     let page_size = params.page_size.min(200);
 
+    let server_ports: Vec<u16> = parse_csv(&params.server_port)
+        .iter()
+        .map(|s| {
+            s.parse::<u16>()
+                .map_err(|_| ApiError::InvalidParam(format!("invalid server_port: {s}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let query = TurnsQuery {
         time_range: to_time_range(params.start, params.end),
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         client_ips: parse_csv(&params.client_ip),
+        server_ports,
         statuses: parse_csv(&params.status),
         agent_kinds: parse_csv(&params.agent_kind),
         sort_by: params.sort_by,
@@ -567,6 +581,54 @@ fn compute_latency_breakdown(members: &[ProxyViewMember]) -> LatencyBreakdown {
         proxy_overhead_ms: overhead,
     }
 }
+
+#[derive(Debug, Deserialize)]
+pub struct AgentSummaryParams {
+    pub start: i64,
+    pub end: i64,
+}
+
+#[derive(serde::Serialize)]
+struct AgentSummaryResp {
+    summary: Vec<AgentKindSummary>,
+}
+
+pub async fn summary(
+    State(ctx): State<ApiAgentTurnsContext>,
+    Query(params): Query<AgentSummaryParams>,
+) -> Result<impl IntoResponse, ApiError> {
+    let query = AgentSummaryQuery {
+        time_range: to_time_range(params.start, params.end),
+    };
+    let summary = ctx.storage.query_agent_summary(&query).await?;
+    Ok(ApiResponse::ok(AgentSummaryResp { summary }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentActivityParams {
+    pub start: i64,
+    pub end: i64,
+    #[serde(default)]
+    pub bucket: Option<u32>,
+}
+
+#[derive(serde::Serialize)]
+struct AgentActivityResp {
+    points: Vec<AgentActivityPoint>,
+}
+
+pub async fn activity(
+    State(ctx): State<ApiAgentTurnsContext>,
+    Query(params): Query<AgentActivityParams>,
+) -> Result<impl IntoResponse, ApiError> {
+    let query = AgentActivityQuery {
+        time_range: to_time_range(params.start, params.end),
+        bucket_seconds: params.bucket,
+    };
+    let points = ctx.storage.query_agent_activity(&query).await?;
+    Ok(ApiResponse::ok(AgentActivityResp { points }))
+}
+
 
 #[cfg(test)]
 mod proxy_view_tests {

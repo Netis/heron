@@ -8,7 +8,8 @@ use ts_metrics::model::{LlmFinishMetric, LlmMetric};
 use ts_storage::query::*;
 
 use crate::util::{
-    build_dimension_where, build_dimension_where_for_group, sql_in_list, us_to_timestamp,
+    build_dimension_where, build_dimension_where_for_group, parse_json_string_list, sql_in_list,
+    us_to_timestamp,
 };
 use crate::DuckDbBackend;
 
@@ -20,6 +21,18 @@ struct PreparedMetric {
     model: String,
     server_ip: String,
     inner: LlmMetric,
+}
+
+/// Body / header sample bundle used by app classification, fetched
+/// independently from the main per-endpoint aggregation so the heavy
+/// body scan can run on a clipped window (see `fetch_app_samples`).
+pub(crate) struct AppSample {
+    pub request_paths: Vec<String>,
+    pub finish_reasons: Vec<String>,
+    pub sample_response_headers: Option<String>,
+    pub sample_request_headers: Option<String>,
+    pub sample_request_body: Option<String>,
+    pub sample_response_body: Option<String>,
 }
 
 fn prepare_metric(m: LlmMetric) -> PreparedMetric {
@@ -799,6 +812,957 @@ impl DuckDbBackend {
                 });
             }
             Ok(result)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    /// Per-endpoint body / header sample, used by app classification.
+    /// Keyed by `(server_ip, server_port)`.
+    pub(crate) fn fetch_app_samples(
+        conn: &duckdb::Connection,
+        window_start_us: i64,
+        window_end_us: i64,
+    ) -> Result<std::collections::HashMap<(String, u16), AppSample>> {
+        // Body columns are heavy (16-32 KB / row); a per-group
+        // arg_max(body, ...) FILTER (LENGTH(body) BETWEEN ...) forces
+        // DuckDB to materialize every body in the window — 5+ GB on a
+        // 7-day range, ~17 s wall-clock.
+        //
+        // Strategy: pull only the top-N (=5) most-recent rows per
+        // (server_ip, server_port) via a row_number window
+        // partitioning trick. DuckDB can keep the rank in-place and
+        // only emit those few rows' bodies — measured ~1.3 s on the
+        // same 7-day data. We further clip the scan window to the
+        // last 24 h (app classification doesn't change over the
+        // wider window) so the row_number scan stays narrow.
+        //
+        // In Rust we look through the 5 returned rows per endpoint
+        // for the first one whose body matches our shape filter
+        // (100-32768 B and starts with `{`) — equivalent to the old
+        // SQL FILTER without paying the full-scan cost.
+        const SAMPLE_WINDOW_US: i64 = 24 * 60 * 60 * 1_000_000;
+        let sample_start_us = std::cmp::max(window_start_us, window_end_us - SAMPLE_WINDOW_US);
+        let sample_start = us_to_timestamp(sample_start_us);
+        let sample_end = us_to_timestamp(window_end_us);
+
+        // The outer aggregation over the same window gives us
+        // request_paths / finish_reasons distinct lists — those
+        // columns are small so this is cheap (< 0.2 s for 7 d).
+        let dim_sql = "SELECT
+                server_ip,
+                server_port,
+                CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR     AS paths_json,
+                CAST(list_distinct(array_agg(finish_reason))[1:32] AS JSON)::VARCHAR    AS finish_reasons_json
+             FROM llm_calls
+             WHERE request_time >= ? AND request_time < ?
+             GROUP BY server_ip, server_port";
+
+        let mut out: std::collections::HashMap<(String, u16), AppSample> =
+            std::collections::HashMap::new();
+        {
+            let mut stmt = conn.prepare(dim_sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare dim sample query: {e}"))
+            })?;
+            let mut rs = stmt
+                .query(duckdb::params![sample_start.clone(), sample_end.clone()])
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute dim sample query: {e}"))
+                })?;
+            while let Some(row) = rs
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                let server_ip: String = row
+                    .get(0)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let server_port: u16 = row
+                    .get(1)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let paths_json: Option<String> = row
+                    .get(2)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let finish_reasons_json: Option<String> = row
+                    .get(3)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                out.insert(
+                    (server_ip, server_port),
+                    AppSample {
+                        request_paths: parse_json_string_list(paths_json.as_deref()),
+                        finish_reasons: parse_json_string_list(finish_reasons_json.as_deref()),
+                        sample_response_headers: None,
+                        sample_request_headers: None,
+                        sample_request_body: None,
+                        sample_response_body: None,
+                    },
+                );
+            }
+        }
+
+        // Body / header sampling — top-5 most-recent rows per
+        // endpoint. We filter for shape (`headers LIKE '[%'`,
+        // `body LIKE '{%'`) in Rust below.
+        let body_sql = "SELECT server_ip, server_port,
+                response_headers, request_headers, request_body, response_body
+             FROM (
+                SELECT server_ip, server_port,
+                       response_headers, request_headers,
+                       request_body, response_body,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY server_ip, server_port
+                           ORDER BY request_time DESC
+                       ) AS rn
+                FROM llm_calls
+                WHERE request_time >= ? AND request_time < ?
+             ) WHERE rn <= 5";
+
+        let mut stmt = conn.prepare(body_sql).map_err(|e| {
+            AppError::Storage(format!("failed to prepare body sample query: {e}"))
+        })?;
+        let mut rs = stmt
+            .query(duckdb::params![sample_start, sample_end])
+            .map_err(|e| {
+                AppError::Storage(format!("failed to execute body sample query: {e}"))
+            })?;
+        while let Some(row) = rs
+            .next()
+            .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+        {
+            let server_ip: String = row
+                .get(0)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+            let server_port: u16 = row
+                .get(1)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+            let resp_h: Option<String> = row
+                .get(2)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+            let req_h: Option<String> = row
+                .get(3)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+            let req_b: Option<String> = row
+                .get(4)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+            let resp_b: Option<String> = row
+                .get(5)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+
+            let entry = out.entry((server_ip, server_port)).or_insert_with(|| AppSample {
+                request_paths: Vec::new(),
+                finish_reasons: Vec::new(),
+                sample_response_headers: None,
+                sample_request_headers: None,
+                sample_request_body: None,
+                sample_response_body: None,
+            });
+
+            // First-match-wins per field: row_number ORDER BY
+            // request_time DESC means the first row we see for an
+            // endpoint is the most recent. Skip if we already have a
+            // good sample.
+            if entry.sample_response_headers.is_none() {
+                if let Some(s) = resp_h.filter(|s| s.starts_with('[')) {
+                    entry.sample_response_headers = Some(s);
+                }
+            }
+            if entry.sample_request_headers.is_none() {
+                if let Some(s) = req_h.filter(|s| s.starts_with('[')) {
+                    entry.sample_request_headers = Some(s);
+                }
+            }
+            if entry.sample_request_body.is_none() {
+                if let Some(s) =
+                    req_b.filter(|s| (100..=32768).contains(&s.len()) && s.starts_with('{'))
+                {
+                    entry.sample_request_body = Some(s);
+                }
+            }
+            if entry.sample_response_body.is_none() {
+                if let Some(s) =
+                    resp_b.filter(|s| (30..=8192).contains(&s.len()) && s.starts_with('{'))
+                {
+                    entry.sample_response_body = Some(s);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// "Services" view — aggregate `llm_calls` by `(server_ip,
+    /// server_port)`. See `StorageBackend::query_services` for the
+    /// motivation (port is not on `llm_metrics`).
+    pub(crate) async fn query_services(
+        &self,
+        query: &ServicesQuery,
+    ) -> Result<Vec<ServiceRow>> {
+        const VALID_SORT_FIELDS: &[&str] = &[
+            "call_count",
+            "error_count",
+            "total_input_tokens",
+            "total_output_tokens",
+            "ttft_avg_ms",
+            "ttft_p95_ms",
+            "e2e_avg_ms",
+            "e2e_p95_ms",
+            "last_seen_ms",
+            "first_seen_ms",
+            "server_ip",
+            "server_port",
+        ];
+        if !VALID_SORT_FIELDS.contains(&query.sort_by.as_str()) {
+            return Err(AppError::Storage(format!(
+                "invalid sort_by field: {}",
+                query.sort_by
+            )));
+        }
+        let sort_order = if query.sort_order.to_uppercase() == "ASC" {
+            "ASC"
+        } else {
+            "DESC"
+        };
+
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+        let sort_order = sort_order.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+            let sort_by = &query.sort_by;
+            let limit = query.limit;
+
+            // Notes on the SQL:
+            //   * `list_distinct(array_agg(model))` collects distinct
+            //     values, then `[1:32]` caps the list — protects against a
+            //     pathological row producing thousands of values that
+            //     would each show up here.
+            //   * Percentiles use `quantile_cont(col, 0.95)` (DuckDB's
+            //     name for PERCENTILE_CONT). NULL inputs are skipped
+            //     automatically so streaming-only calls with no
+            //     `e2e_latency_ms` don't poison the result.
+            //   * `epoch_ms(MIN(request_time))` returns Unix-epoch ms as
+            //     i64 — matches the convention used elsewhere in the
+            //     `/api/llm-calls` and `/api/agent-turns` payloads.
+            // List-of-VARCHAR columns come back as JSON strings (DuckDB's
+            // rust binding has no `FromSql` for `Vec<String>`). We cast
+            // to JSON in SQL and then `parse_json_string_list` them on
+            // the Rust side — same pattern used by `agent_turns.models_used`.
+            //
+            // For app classification we sample one `request_headers` /
+            // `response_headers` blob per group. `arg_min(col,
+            // LENGTH(col)) FILTER (...)` picks the smallest non-null
+            // value — predictable across re-runs and tiny enough that
+            // streaming back to Rust costs nothing.
+            // Body / header sampling for app classification runs as
+            // a separate, time-clipped query — see fetch_app_samples.
+            // Keeps the main per-endpoint aggregation off the heavy
+            // body columns so a 7-day window stays sub-second
+            // instead of pegging at 17s.
+            let samples = DuckDbBackend::fetch_app_samples(
+                &conn,
+                query.time_range.start_us,
+                query.time_range.end_us,
+            )?;
+
+            let sql = format!(
+                "SELECT
+                    server_ip,
+                    server_port,
+                    CAST(list_distinct(array_agg(model))[1:32] AS JSON)::VARCHAR    AS models_json,
+                    CAST(list_distinct(array_agg(wire_api))[1:8] AS JSON)::VARCHAR  AS wire_apis_json,
+                    CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR AS paths_json,
+                    COUNT(*)                                  AS call_count,
+                    COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0)::UBIGINT AS error_count,
+                    COALESCE(SUM(CASE WHEN is_stream THEN 1 ELSE 0 END), 0)::UBIGINT          AS stream_count,
+                    COALESCE(SUM(input_tokens), 0)::UBIGINT   AS total_input_tokens,
+                    COALESCE(SUM(output_tokens), 0)::UBIGINT  AS total_output_tokens,
+                    AVG(ttft_ms)                              AS ttft_avg_ms,
+                    quantile_cont(ttft_ms, 0.95)              AS ttft_p95_ms,
+                    AVG(e2e_latency_ms)                       AS e2e_avg_ms,
+                    quantile_cont(e2e_latency_ms, 0.95)       AS e2e_p95_ms,
+                    epoch_ms(MIN(request_time))               AS first_seen_ms,
+                    epoch_ms(MAX(request_time))               AS last_seen_ms
+                 FROM llm_calls
+                 WHERE request_time >= ? AND request_time < ?
+                 GROUP BY server_ip, server_port
+                 ORDER BY {sort_by} {sort_order}
+                 LIMIT {limit}"
+            );
+
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| AppError::Storage(format!("failed to prepare services query: {e}")))?;
+            let mut query_rows = stmt
+                .query(duckdb::params![start_ts, end_ts])
+                .map_err(|e| AppError::Storage(format!("failed to execute services query: {e}")))?;
+
+            let mut rows = Vec::new();
+            while let Some(row) = query_rows
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                let server_ip: String = row
+                    .get(0)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let server_port: u16 = row
+                    .get(1)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let models_json: Option<String> = row
+                    .get(2)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let wire_apis_json: Option<String> = row
+                    .get(3)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let paths_json: Option<String> = row
+                    .get(4)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+
+                let models = parse_json_string_list(models_json.as_deref());
+                let wire_apis = parse_json_string_list(wire_apis_json.as_deref());
+                // Default request_paths comes from the main window;
+                // if the endpoint also has a recent sample, prefer
+                // the recent paths (they're already in `samples`).
+                let mut request_paths = parse_json_string_list(paths_json.as_deref());
+
+                let sample = samples.get(&(server_ip.clone(), server_port));
+                let finish_reasons = sample.map(|s| s.finish_reasons.clone()).unwrap_or_default();
+                if let Some(s) = sample {
+                    if !s.request_paths.is_empty() {
+                        request_paths = s.request_paths.clone();
+                    }
+                }
+                let sample_response_headers = sample.and_then(|s| s.sample_response_headers.as_deref());
+                let sample_request_headers = sample.and_then(|s| s.sample_request_headers.as_deref());
+                let sample_request_body = sample.and_then(|s| s.sample_request_body.as_deref());
+                let sample_response_body = sample.and_then(|s| s.sample_response_body.as_deref());
+
+                let server_header = crate::apps::extract_server_header(sample_response_headers);
+                let app = crate::apps::classify_app(
+                    server_header.as_deref(),
+                    sample_response_headers,
+                    sample_request_headers,
+                    &request_paths,
+                    &finish_reasons,
+                    &models,
+                    sample_request_body,
+                    sample_response_body,
+                );
+
+                rows.push(ServiceRow {
+                    server_ip,
+                    server_port,
+                    models,
+                    wire_apis,
+                    request_paths,
+                    call_count: row
+                        .get::<_, u64>(5)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    error_count: row
+                        .get::<_, u64>(6)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    stream_count: row
+                        .get::<_, u64>(7)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_input_tokens: row
+                        .get::<_, u64>(8)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_output_tokens: row
+                        .get::<_, u64>(9)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    ttft_avg_ms: row
+                        .get::<_, Option<f64>>(10)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    ttft_p95_ms: row
+                        .get::<_, Option<f64>>(11)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    e2e_avg_ms: row
+                        .get::<_, Option<f64>>(12)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    e2e_p95_ms: row
+                        .get::<_, Option<f64>>(13)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    first_seen_ms: row
+                        .get::<_, i64>(14)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    last_seen_ms: row
+                        .get::<_, i64>(15)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    app,
+                    server_header,
+                });
+            }
+            Ok(rows)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    /// Build the service-topology graph for the Path view. The shape:
+    ///
+    ///   * Nodes — one per `(server_ip, server_port)` seen in the
+    ///     window (reuses the call_count aggregation logic from
+    ///     `query_services`, just the columns we need). Models / app
+    ///     come along so the UI can label and color nodes the same
+    ///     way the Table view does, no second fetch.
+    ///   * Proxy edges — `agent_turns` carries
+    ///     `metadata.proxy.pair_id` from the pair sweeper. For every
+    ///     `proxy_in` turn we look up the sibling `proxy_out` turn(s)
+    ///     by `pair_id`. The `proxy_in.server_endpoint →
+    ///     proxy_out.server_endpoint` pair becomes one edge, counted
+    ///     by number of paired turns. `agent_turns` has no
+    ///     `server_port`, so we look it up via the turn's first
+    ///     `call_ids` entry against `llm_calls`.
+    ///   * Client edges — any service that has a non-`proxy_out` turn
+    ///     in the window gets a virtual edge from `__clients__`. So
+    ///     entry-point services (no inbound proxy hop) still appear
+    ///     connected. We don't break out individual client IPs as
+    ///     nodes — there can be hundreds of SDK instances and the
+    ///     value-add over "they came from outside the service mesh"
+    ///     is low.
+    pub(crate) async fn query_services_topology(
+        &self,
+        query: &ServicesTopologyQuery,
+    ) -> Result<ServicesTopology> {
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+
+            // Body / header sampling for app classification — same
+            // clipped-window helper used by query_services.
+            let samples = DuckDbBackend::fetch_app_samples(
+                &conn,
+                query.time_range.start_us,
+                query.time_range.end_us,
+            )?;
+
+            let nodes_sql = "SELECT
+                    server_ip,
+                    server_port,
+                    CAST(list_distinct(array_agg(model))[1:32] AS JSON)::VARCHAR    AS models_json,
+                    CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR AS paths_json,
+                    COUNT(*)                                  AS call_count
+                 FROM llm_calls
+                 WHERE request_time >= ? AND request_time < ?
+                 GROUP BY server_ip, server_port";
+
+            let mut nodes: Vec<TopologyNode> = Vec::new();
+            {
+                let mut stmt = conn.prepare(nodes_sql).map_err(|e| {
+                    AppError::Storage(format!("failed to prepare topology nodes query: {e}"))
+                })?;
+                let mut rs = stmt
+                    .query(duckdb::params![start_ts.clone(), end_ts.clone()])
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to execute topology nodes query: {e}"))
+                    })?;
+                while let Some(row) = rs
+                    .next()
+                    .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+                {
+                    let server_ip: String = row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let server_port: u16 = row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let models_json: Option<String> = row
+                        .get(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let paths_json: Option<String> = row
+                        .get(3)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let call_count: u64 = row
+                        .get(4)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+
+                    let models = parse_json_string_list(models_json.as_deref());
+                    let mut request_paths = parse_json_string_list(paths_json.as_deref());
+
+                    let sample = samples.get(&(server_ip.clone(), server_port));
+                    let finish_reasons = sample.map(|s| s.finish_reasons.clone()).unwrap_or_default();
+                    if let Some(s) = sample {
+                        if !s.request_paths.is_empty() {
+                            request_paths = s.request_paths.clone();
+                        }
+                    }
+                    let sample_response_headers = sample.and_then(|s| s.sample_response_headers.as_deref());
+                    let sample_request_headers = sample.and_then(|s| s.sample_request_headers.as_deref());
+                    let sample_request_body = sample.and_then(|s| s.sample_request_body.as_deref());
+                    let sample_response_body = sample.and_then(|s| s.sample_response_body.as_deref());
+                    let server_header = crate::apps::extract_server_header(sample_response_headers);
+                    let app = crate::apps::classify_app(
+                        server_header.as_deref(),
+                        sample_response_headers,
+                        sample_request_headers,
+                        &request_paths,
+                        &finish_reasons,
+                        &models,
+                        sample_request_body,
+                        sample_response_body,
+                    );
+
+                    nodes.push(TopologyNode {
+                        server_ip,
+                        server_port,
+                        app,
+                        models,
+                        call_count,
+                    });
+                }
+            }
+
+            // --- Proxy edges: pair the turn's endpoint with its
+            // sibling's. We resolve (server_ip, server_port) for each
+            // turn via its first call_id; `agent_turns.server_ip`
+            // alone isn't enough since the table doesn't carry
+            // server_port. Filtering by `proxy.role` is done after
+            // the join because some turns have NULL metadata.
+            //
+            // We keep edges where from != to — same-endpoint pair_id
+            // groups come from multi-interface dup capture (e.g. lo
+            // + docker0 see the same packet), not real proxy hops,
+            // and rendering them adds noise.
+            let edges_sql = "
+                WITH turn_endpoint AS (
+                    SELECT
+                        t.turn_id,
+                        c.server_ip,
+                        c.server_port,
+                        json_extract_string(t.metadata, '$.proxy.role')    AS proxy_role,
+                        json_extract_string(t.metadata, '$.proxy.pair_id') AS pair_id
+                    FROM agent_turns t
+                    JOIN llm_calls c
+                      ON c.id = json_extract_string(t.call_ids, '$[0]')
+                    WHERE t.start_time >= ? AND t.start_time < ?
+                )
+                SELECT
+                    a.server_ip   AS from_ip,
+                    a.server_port AS from_port,
+                    b.server_ip   AS to_ip,
+                    b.server_port AS to_port,
+                    COUNT(*)      AS turn_count
+                FROM turn_endpoint a
+                JOIN turn_endpoint b ON a.pair_id = b.pair_id AND a.turn_id <> b.turn_id
+                WHERE a.proxy_role = 'proxy_in'
+                  AND b.proxy_role = 'proxy_out'
+                  AND a.pair_id IS NOT NULL
+                  AND NOT (a.server_ip = b.server_ip AND a.server_port = b.server_port)
+                GROUP BY a.server_ip, a.server_port, b.server_ip, b.server_port";
+
+            let mut proxy_edges: Vec<TopologyEdge> = Vec::new();
+            {
+                let mut stmt = conn.prepare(edges_sql).map_err(|e| {
+                    AppError::Storage(format!("failed to prepare topology edges query: {e}"))
+                })?;
+                let mut rs = stmt
+                    .query(duckdb::params![start_ts.clone(), end_ts.clone()])
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to execute topology edges query: {e}"))
+                    })?;
+                while let Some(row) = rs
+                    .next()
+                    .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+                {
+                    let from_ip: String = row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let from_port: u16 = row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let to_ip: String = row
+                        .get(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let to_port: u16 = row
+                        .get(3)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let turn_count: u64 = row
+                        .get(4)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    proxy_edges.push(TopologyEdge {
+                        from_ip,
+                        from_port,
+                        to_ip,
+                        to_port,
+                        turn_count,
+                        kind: "proxy".to_string(),
+                    });
+                }
+            }
+
+            // --- Inbound traffic grouped by (caller_ip, to_ip,
+            // to_port). For each row we either:
+            //   (a) attribute the traffic to a service we already
+            //       know about — `caller_ip` matches the server_ip of
+            //       some node (typical case: LiteLLM at .81:4210
+            //       accepts an inbound, then makes outgoing calls
+            //       that hit the upstream as `client_ip=172.16.103.81`
+            //       — those should render as litellm → upstream, not
+            //       anonymous-clients → upstream); or
+            //   (b) fall through to a synthetic `__clients__` edge.
+            // Same SQL as before, just adds `client_ip` to the
+            // grouping. We exclude `proxy_out` turns because their
+            // inbound side is the proxy hop itself (already covered
+            // by the pair_sweeper edges above).
+            let entry_sql = "
+                WITH turn_endpoint AS (
+                    SELECT
+                        c.client_ip   AS caller_ip,
+                        c.server_ip   AS to_ip,
+                        c.server_port AS to_port,
+                        COALESCE(json_extract_string(t.metadata, '$.proxy.role'), '') AS proxy_role
+                    FROM agent_turns t
+                    JOIN llm_calls c
+                      ON c.id = json_extract_string(t.call_ids, '$[0]')
+                    WHERE t.start_time >= ? AND t.start_time < ?
+                )
+                SELECT caller_ip, to_ip, to_port, COUNT(*) AS turn_count
+                FROM turn_endpoint
+                WHERE proxy_role <> 'proxy_out'
+                GROUP BY caller_ip, to_ip, to_port";
+
+            // Build per-IP service index so we can resolve a
+            // `caller_ip` to its most-likely originating service.
+            // Strategy: among the services on that IP, prefer
+            // `litellm` (the typical fan-out culprit); next prefer
+            // any explicitly-app-tagged service; fall back to
+            // the highest-call-count one. Skip the target itself so
+            // we never draw a self-loop.
+            let mut services_by_ip: std::collections::HashMap<&str, Vec<&TopologyNode>> =
+                std::collections::HashMap::new();
+            for n in &nodes {
+                services_by_ip.entry(n.server_ip.as_str()).or_default().push(n);
+            }
+            // Quick lookup so we can check the target's app class.
+            let app_of: std::collections::HashMap<(String, u16), Option<String>> = nodes
+                .iter()
+                .map(|n| {
+                    (
+                        (n.server_ip.clone(), n.server_port),
+                        n.app.clone(),
+                    )
+                })
+                .collect();
+            let is_proxy_app = |app: Option<&str>| {
+                matches!(app, Some("litellm") | Some("haproxy") | Some("nginx"))
+            };
+            let resolve_caller = |caller_ip: &str,
+                                  to_ip: &str,
+                                  to_port: u16|
+             -> Option<(String, u16)> {
+                // If the TARGET is itself a proxy (litellm/haproxy/
+                // nginx), inbound calls are by definition real
+                // clients, not another local service forwarding. A
+                // co-host vllm is the destination's neighbour, not
+                // its caller — attributing inbound litellm traffic
+                // to vllm produced backwards edges in early dev.
+                let target_app = app_of
+                    .get(&(to_ip.to_string(), to_port))
+                    .and_then(|a| a.as_deref());
+                if is_proxy_app(target_app) {
+                    return None;
+                }
+                let candidates = services_by_ip.get(caller_ip)?;
+                let usable: Vec<&&TopologyNode> = candidates
+                    .iter()
+                    .filter(|n| !(n.server_ip == to_ip && n.server_port == to_port))
+                    .collect();
+                if usable.is_empty() {
+                    return None;
+                }
+                // 1) Prefer litellm.
+                if let Some(n) = usable.iter().find(|n| n.app.as_deref() == Some("litellm")) {
+                    return Some((n.server_ip.clone(), n.server_port));
+                }
+                // 2) Else any proxy-ish app.
+                if let Some(n) = usable.iter().find(|n| is_proxy_app(n.app.as_deref())) {
+                    return Some((n.server_ip.clone(), n.server_port));
+                }
+                // 3) Else most-active service on that IP.
+                let n = usable
+                    .iter()
+                    .max_by_key(|n| n.call_count)
+                    .expect("usable non-empty");
+                Some((n.server_ip.clone(), n.server_port))
+            };
+
+            // To avoid drawing two arrows for the same hop, dedupe
+            // against proxy_pair edges we already produced.
+            let proxy_pair_set: std::collections::HashSet<(String, u16, String, u16)> = proxy_edges
+                .iter()
+                .map(|e| {
+                    (
+                        e.from_ip.clone(),
+                        e.from_port,
+                        e.to_ip.clone(),
+                        e.to_port,
+                    )
+                })
+                .collect();
+
+            let mut client_edges: Vec<TopologyEdge> = Vec::new();
+            let mut inferred_edges: Vec<TopologyEdge> = Vec::new();
+            {
+                let mut stmt = conn.prepare(entry_sql).map_err(|e| {
+                    AppError::Storage(format!("failed to prepare topology entry query: {e}"))
+                })?;
+                let mut rs = stmt
+                    .query(duckdb::params![start_ts, end_ts])
+                    .map_err(|e| {
+                        AppError::Storage(format!("failed to execute topology entry query: {e}"))
+                    })?;
+                while let Some(row) = rs
+                    .next()
+                    .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+                {
+                    let caller_ip: String = row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let to_ip: String = row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let to_port: u16 = row
+                        .get(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                    let turn_count: u64 = row
+                        .get(3)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+
+                    match resolve_caller(&caller_ip, &to_ip, to_port) {
+                        Some((from_ip, from_port)) => {
+                            // Suppress if the pair_sweeper already
+                            // covered this hop — we don't want to
+                            // double-count via a weaker signal.
+                            if proxy_pair_set.contains(&(
+                                from_ip.clone(),
+                                from_port,
+                                to_ip.clone(),
+                                to_port,
+                            )) {
+                                continue;
+                            }
+                            inferred_edges.push(TopologyEdge {
+                                from_ip,
+                                from_port,
+                                to_ip,
+                                to_port,
+                                turn_count,
+                                kind: "inferred".to_string(),
+                            });
+                        }
+                        None => {
+                            client_edges.push(TopologyEdge {
+                                from_ip: "__clients__".to_string(),
+                                from_port: 0,
+                                to_ip,
+                                to_port,
+                                turn_count,
+                                kind: "client".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            // SQL groups by caller_ip but multiple caller_ips can
+            // resolve to the same originating service (e.g. external
+            // 172.16.103.81 AND loopback 127.0.0.1 both have a
+            // litellm); collapse those into single edges.
+            let mut inferred_dedup: std::collections::HashMap<(String, u16, String, u16), u64> =
+                std::collections::HashMap::new();
+            for e in inferred_edges {
+                *inferred_dedup
+                    .entry((e.from_ip, e.from_port, e.to_ip, e.to_port))
+                    .or_insert(0) += e.turn_count;
+            }
+            let inferred_edges: Vec<TopologyEdge> = inferred_dedup
+                .into_iter()
+                .map(|((fi, fp, ti, tp), c)| TopologyEdge {
+                    from_ip: fi,
+                    from_port: fp,
+                    to_ip: ti,
+                    to_port: tp,
+                    turn_count: c,
+                    kind: "inferred".to_string(),
+                })
+                .collect();
+
+            // Same idea for client edges — multiple caller_ips that
+            // don't resolve to a known service still aggregate into
+            // one __clients__ edge per (to_ip, to_port).
+            let mut client_dedup: std::collections::HashMap<(String, u16), u64> =
+                std::collections::HashMap::new();
+            for e in client_edges {
+                *client_dedup.entry((e.to_ip, e.to_port)).or_insert(0) += e.turn_count;
+            }
+            let client_edges: Vec<TopologyEdge> = client_dedup
+                .into_iter()
+                .map(|((ti, tp), c)| TopologyEdge {
+                    from_ip: "__clients__".to_string(),
+                    from_port: 0,
+                    to_ip: ti,
+                    to_port: tp,
+                    turn_count: c,
+                    kind: "client".to_string(),
+                })
+                .collect();
+
+            let mut edges = proxy_edges;
+            edges.extend(inferred_edges);
+            edges.extend(client_edges);
+
+            // Add the synthetic clients node so the UI doesn't have
+            // to invent it. Total call_count is the sum of every
+            // client edge — the number of inbound turn-endpoints
+            // (matches the dotted-line widths on the Path view).
+            let client_total: u64 = edges
+                .iter()
+                .filter(|e| e.kind == "client")
+                .map(|e| e.turn_count)
+                .sum();
+            if client_total > 0 {
+                nodes.push(TopologyNode {
+                    server_ip: "__clients__".to_string(),
+                    server_port: 0,
+                    app: Some("clients".to_string()),
+                    models: Vec::new(),
+                    call_count: client_total,
+                });
+            }
+
+            Ok(ServicesTopology { nodes, edges })
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    /// Aggregate agent_turns by agent_kind over the window — drives
+    /// the Overview distribution horizontal-bar chart.
+    pub(crate) async fn query_agent_summary(
+        &self,
+        query: &AgentSummaryQuery,
+    ) -> Result<Vec<AgentKindSummary>> {
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+            let sql = "SELECT
+                    agent_kind,
+                    COUNT(*)                                  AS turn_count,
+                    COALESCE(SUM(total_input_tokens), 0)::UBIGINT  AS total_input_tokens,
+                    COALESCE(SUM(total_output_tokens), 0)::UBIGINT AS total_output_tokens,
+                    AVG(duration_ms)                          AS avg_duration_ms,
+                    epoch_ms(MAX(start_time))                 AS last_seen_ms
+                 FROM agent_turns
+                 WHERE start_time >= ? AND start_time < ?
+                 GROUP BY agent_kind
+                 ORDER BY turn_count DESC";
+            let mut stmt = conn.prepare(sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare agent_summary query: {e}"))
+            })?;
+            let mut rs = stmt
+                .query(duckdb::params![start_ts, end_ts])
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute agent_summary query: {e}"))
+                })?;
+            let mut out = Vec::new();
+            while let Some(row) = rs
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                out.push(AgentKindSummary {
+                    agent_kind: row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    turn_count: row
+                        .get::<_, u64>(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_input_tokens: row
+                        .get::<_, u64>(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    total_output_tokens: row
+                        .get::<_, u64>(3)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    avg_duration_ms: row
+                        .get::<_, Option<f64>>(4)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    last_seen_ms: row
+                        .get::<_, i64>(5)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                });
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    /// Per-bucket counts split by agent_kind. Bucket size auto-picks
+    /// off the window when the client doesn't specify — keeps the
+    /// chart legible from 1 h (1-min buckets) to 30 d (4-h buckets).
+    pub(crate) async fn query_agent_activity(
+        &self,
+        query: &AgentActivityQuery,
+    ) -> Result<Vec<AgentActivityPoint>> {
+        let conn = self.read_pool.acquire().await?;
+        let query = query.clone();
+        tokio::task::spawn_blocking(move || {
+            let start_ts = us_to_timestamp(query.time_range.start_us);
+            let end_ts = us_to_timestamp(query.time_range.end_us);
+            // Target ~60-180 buckets — enough resolution for trends
+            // without making the chart noisy. The client's explicit
+            // hint wins if provided.
+            let window_secs =
+                ((query.time_range.end_us - query.time_range.start_us) / 1_000_000).max(60);
+            let bucket = query.bucket_seconds.unwrap_or_else(|| {
+                let target = (window_secs / 120).max(60) as u32;
+                // Snap to "nice" buckets to keep tick labels readable.
+                for &nice in &[60u32, 300, 600, 1800, 3600, 7200, 14400, 86400] {
+                    if target <= nice {
+                        return nice;
+                    }
+                }
+                86400
+            });
+            let sql = format!(
+                "SELECT
+                    epoch_ms(time_bucket(INTERVAL {bucket} SECOND, start_time)) AS ts,
+                    agent_kind,
+                    COUNT(*) AS turn_count
+                 FROM agent_turns
+                 WHERE start_time >= ? AND start_time < ?
+                 GROUP BY ts, agent_kind
+                 ORDER BY ts ASC, agent_kind ASC"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| {
+                AppError::Storage(format!("failed to prepare agent_activity query: {e}"))
+            })?;
+            let mut rs = stmt
+                .query(duckdb::params![start_ts, end_ts])
+                .map_err(|e| {
+                    AppError::Storage(format!("failed to execute agent_activity query: {e}"))
+                })?;
+            let mut out = Vec::new();
+            while let Some(row) = rs
+                .next()
+                .map_err(|e| AppError::Storage(format!("row error: {e}")))?
+            {
+                out.push(AgentActivityPoint {
+                    timestamp_ms: row
+                        .get(0)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    agent_kind: row
+                        .get(1)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    turn_count: row
+                        .get::<_, u64>(2)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                });
+            }
+            Ok(out)
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?

@@ -374,6 +374,14 @@ impl DuckDbBackend {
                     .collect();
                 where_parts.push(format!("client_ip IN ({})", list.join(", ")));
             }
+            if !query.server_ports.is_empty() {
+                let list: Vec<String> = query
+                    .server_ports
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect();
+                where_parts.push(format!("server_port IN ({})", list.join(", ")));
+            }
             if let Some(substr) = query
                 .request_path_contains
                 .as_deref()
@@ -777,6 +785,7 @@ mod tests {
             status_codes: vec![],
             finish_reasons: vec![],
             client_ips: vec![],
+            server_ports: vec![],
             request_path_contains: None,
             is_stream: None,
             sort_by: "request_time".to_string(),
@@ -820,6 +829,7 @@ mod tests {
             status_codes: vec![429],
             finish_reasons: vec![],
             client_ips: vec![],
+            server_ports: vec![],
             request_path_contains: None,
             is_stream: None,
             sort_by: "request_time".to_string(),

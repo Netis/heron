@@ -211,12 +211,13 @@ pub fn spawn_storage_sink_stage(
 mod tests {
     use super::*;
     use crate::query::{
-        CallDetail, CallsPage, CallsQuery, DistinctFinishReason, FinishReasonTimeseries,
-        FinishReasonsQuery, HttpExchangeDetail, HttpExchangesPage, HttpExchangesQuery,
-        MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery, MetricsSummaryRow,
-        MetricsTimeseriesQuery, MetricsTimeseriesRow, SessionDetail, SessionListQuery,
-        SessionTurnsPage, SessionTurnsQuery, SessionsPage, TurnCallItem, TurnDetail, TurnsPage,
-        TurnsQuery,
+        AgentActivityPoint, AgentActivityQuery, AgentKindSummary, AgentSummaryQuery, CallDetail,
+        CallsPage, CallsQuery, DistinctFinishReason, FinishReasonTimeseries, FinishReasonsQuery,
+        HttpExchangeDetail, HttpExchangesPage, HttpExchangesQuery, MetricsModelRow,
+        MetricsModelsQuery, MetricsSummaryQuery, MetricsSummaryRow, MetricsTimeseriesQuery,
+        MetricsTimeseriesRow, ServiceRow, ServicesQuery, ServicesTopology, ServicesTopologyQuery,
+        SessionDetail, SessionListQuery, SessionTurnsPage, SessionTurnsQuery, SessionsPage,
+        TurnCallItem, TurnDetail, TurnsPage, TurnsQuery,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -297,6 +298,27 @@ mod tests {
             &self,
             _query: &MetricsModelsQuery,
         ) -> Result<Vec<MetricsModelRow>> {
+            Ok(vec![])
+        }
+        async fn query_services(&self, _query: &ServicesQuery) -> Result<Vec<ServiceRow>> {
+            Ok(vec![])
+        }
+        async fn query_services_topology(
+            &self,
+            _query: &ServicesTopologyQuery,
+        ) -> Result<ServicesTopology> {
+            Ok(ServicesTopology { nodes: vec![], edges: vec![] })
+        }
+        async fn query_agent_summary(
+            &self,
+            _query: &AgentSummaryQuery,
+        ) -> Result<Vec<AgentKindSummary>> {
+            Ok(vec![])
+        }
+        async fn query_agent_activity(
+            &self,
+            _query: &AgentActivityQuery,
+        ) -> Result<Vec<AgentActivityPoint>> {
             Ok(vec![])
         }
         async fn query_finish_reasons(

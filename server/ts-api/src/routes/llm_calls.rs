@@ -26,6 +26,9 @@ pub struct CallsParams {
     pub finish_reason: Option<String>,
     #[serde(default)]
     pub client_ip: Option<String>,
+    /// CSV of u16 server ports. Filters `llm_calls.server_port` directly.
+    #[serde(default)]
+    pub server_port: Option<String>,
     /// Substring match against `request_path` (case-sensitive, `LIKE '%…%'`).
     #[serde(default)]
     pub request_path: Option<String>,
@@ -69,6 +72,14 @@ pub async fn list(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let server_ports: Vec<u16> = parse_csv(&params.server_port)
+        .iter()
+        .map(|s| {
+            s.parse::<u16>()
+                .map_err(|_| ApiError::InvalidParam(format!("invalid server_port: {s}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let is_stream = match params.is_stream.as_deref() {
         None | Some("") | Some("all") => None,
         Some("stream") | Some("true") | Some("1") => Some(true),
@@ -86,6 +97,7 @@ pub async fn list(
         status_codes,
         finish_reasons: parse_csv(&params.finish_reason),
         client_ips: parse_csv(&params.client_ip),
+        server_ports,
         request_path_contains: params.request_path.filter(|s| !s.is_empty()),
         is_stream,
         sort_by: params.sort_by,

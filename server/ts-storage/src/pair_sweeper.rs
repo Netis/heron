@@ -214,6 +214,27 @@ mod tests {
         ) -> Result<Vec<MetricsModelRow>> {
             Ok(vec![])
         }
+        async fn query_services(&self, _: &ServicesQuery) -> Result<Vec<ServiceRow>> {
+            Ok(vec![])
+        }
+        async fn query_services_topology(
+            &self,
+            _: &ServicesTopologyQuery,
+        ) -> Result<ServicesTopology> {
+            Ok(ServicesTopology { nodes: vec![], edges: vec![] })
+        }
+        async fn query_agent_summary(
+            &self,
+            _: &AgentSummaryQuery,
+        ) -> Result<Vec<AgentKindSummary>> {
+            Ok(vec![])
+        }
+        async fn query_agent_activity(
+            &self,
+            _: &AgentActivityQuery,
+        ) -> Result<Vec<AgentActivityPoint>> {
+            Ok(vec![])
+        }
         async fn query_finish_reasons(
             &self,
             _: &FinishReasonsQuery,

@@ -63,6 +63,99 @@ export interface ModelsData {
   models: MetricsModelRow[]
 }
 
+export interface ServicesData {
+  services: ServiceRow[]
+}
+
+export interface ServiceRow {
+  server_ip: string
+  server_port: number
+  models: string[]
+  wire_apis: string[]
+  request_paths: string[]
+  call_count: number
+  error_count: number
+  stream_count: number
+  total_input_tokens: number
+  total_output_tokens: number
+  ttft_avg_ms: number | null
+  ttft_p95_ms: number | null
+  e2e_avg_ms: number | null
+  e2e_p95_ms: number | null
+  first_seen_ms: number
+  last_seen_ms: number
+  /** Server software label — "vllm" / "sglang" / "ollama" /
+   * "llamacpp" / "litellm" / "openai-compat" / "openai" / "anthropic"
+   * / "gemini" / null (unknown). vLLM and SGLang both run on uvicorn
+   * so they're currently bucketed as "openai-compat". */
+  app: string | null
+  /** Raw `Server` HTTP response header value, for the badge tooltip. */
+  server_header: string | null
+}
+
+/** One node in the service-topology graph powering the Path view.
+ * The synthetic clients aggregate uses `server_ip = "__clients__"` and
+ * `server_port = 0` — the UI should treat those as a single
+ * left-anchored super-node, not as a real endpoint. */
+export interface TopologyNode {
+  server_ip: string
+  server_port: number
+  app: string | null
+  models: string[]
+  call_count: number
+}
+
+/** One directed edge.
+ *  - `kind: "proxy"` — pair-sweeper-confirmed hop, real service →
+ *    real service.
+ *  - `kind: "inferred"` — heuristic edge: caller_ip matches a known
+ *    service's server_ip (typically LiteLLM forwarding to a real
+ *    backend) but pair_sweeper hasn't paired the turn. Drawn as
+ *    a dashed blue line so users can tell it apart from confirmed
+ *    proxy hops.
+ *  - `kind: "client"` — synthetic edge from `__clients__` into an
+ *    entry-point service whose caller_ip doesn't resolve to any
+ *    known service. */
+export interface TopologyEdge {
+  from_ip: string
+  from_port: number
+  to_ip: string
+  to_port: number
+  turn_count: number
+  kind: "proxy" | "inferred" | "client"
+}
+
+export interface ServicesTopology {
+  nodes: TopologyNode[]
+  edges: TopologyEdge[]
+}
+
+/** One aggregate row per agent_kind over a time window. */
+export interface AgentKindSummary {
+  agent_kind: string
+  turn_count: number
+  total_input_tokens: number
+  total_output_tokens: number
+  avg_duration_ms: number | null
+  last_seen_ms: number
+}
+
+export interface AgentSummaryData {
+  summary: AgentKindSummary[]
+}
+
+/** One bucket-row of `(timestamp, agent_kind, count)` for the
+ *  Overview activity chart. */
+export interface AgentActivityPoint {
+  timestamp_ms: number
+  agent_kind: string
+  turn_count: number
+}
+
+export interface AgentActivityData {
+  points: AgentActivityPoint[]
+}
+
 export interface MetricsModelRow {
   wire_api: string
   model: string

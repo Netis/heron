@@ -38,12 +38,156 @@ pub struct MetricsModelsQuery {
 }
 
 #[derive(Debug, Clone)]
+pub struct ServicesQuery {
+    pub time_range: TimeRange,
+    pub sort_by: String,
+    pub sort_order: String,
+    pub limit: u32,
+}
+
+/// One row of the "Services" view: a unique `(server_ip, server_port)`
+/// endpoint with the models it served, error/perf stats, and the time
+/// window where it appeared. Computed directly off `llm_calls` because
+/// the pre-aggregated `llm_metrics` table doesn't carry `server_port`
+/// (its grouping sets stop at `server_ip`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceRow {
+    pub server_ip: String,
+    pub server_port: u16,
+    /// Distinct models seen on this endpoint. Capped at 32 in SQL via
+    /// `list_distinct(... )[:32]` so a misbehaving client that sends
+    /// thousands of made-up model strings doesn't bloat a single row.
+    pub models: Vec<String>,
+    pub wire_apis: Vec<String>,
+    /// Distinct request paths seen at this endpoint. Used by the
+    /// classifier to spot Ollama (`/api/chat`) and llama.cpp
+    /// (`/completion`, `/tokenize`) from their native non-OpenAI
+    /// surface. Capped at 8 in SQL.
+    pub request_paths: Vec<String>,
+    pub call_count: u64,
+    pub error_count: u64,
+    pub stream_count: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub ttft_avg_ms: Option<f64>,
+    pub ttft_p95_ms: Option<f64>,
+    pub e2e_avg_ms: Option<f64>,
+    pub e2e_p95_ms: Option<f64>,
+    /// Unix-epoch milliseconds of the first / last call seen in the
+    /// query window. Useful for "is this endpoint still live?".
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
+    /// Best-effort serving-software identification — one of
+    /// `vllm`, `sglang`, `ollama`, `llamacpp`, `litellm`,
+    /// `openai-compat`, `openai`, `anthropic`, or `None` (unknown).
+    /// vLLM / SGLang both run under uvicorn and can't yet be told
+    /// apart from headers alone; both show up as `openai-compat`
+    /// today. See `apps::classify_app`.
+    pub app: Option<String>,
+    /// Raw `Server` HTTP response header — surfaced in the UI as a
+    /// tooltip so the user can override the classifier visually.
+    pub server_header: Option<String>,
+}
+
+/// Query for the Services *topology* — the directed
+/// service→service / clients→service graph used by the Services page's
+/// Path view. Reuses the same window as `ServicesQuery`; node selection
+/// follows the same `(server_ip, server_port)` grouping as the table.
+#[derive(Debug, Clone)]
+pub struct ServicesTopologyQuery {
+    pub time_range: TimeRange,
+}
+
+/// One node in the service topology graph. The synthetic `__clients__`
+/// node uses `server_ip = "__clients__"`, `server_port = 0`, app =
+/// `Some("clients")`, and models empty — the UI uses these sentinels to
+/// render it differently from real endpoints.
+#[derive(Debug, Clone, Serialize)]
+pub struct TopologyNode {
+    pub server_ip: String,
+    pub server_port: u16,
+    pub app: Option<String>,
+    pub models: Vec<String>,
+    pub call_count: u64,
+}
+
+/// One directed edge in the service topology graph.
+///
+/// * `kind = "proxy"` — pairs found by `pair_sweeper`. Definitive: we
+///   observed both sides of the same turn group on the wire.
+/// * `kind = "inferred"` — heuristic edge. The inbound call's
+///   `client_ip` matches the `server_ip` of an existing service node
+///   (typical pattern: LiteLLM accepts the user's call, then makes
+///   outgoing calls that hit upstream as `client_ip=<litellm host>`).
+///   We attribute the hop to the litellm/proxy service on that host
+///   when there is one, else the most-active service. Less certain
+///   than `proxy` — source ports are ephemeral so we can't pinpoint
+///   when multiple services share a host.
+/// * `kind = "client"` — synthetic edges from the `__clients__`
+///   super-node into entry-point services whose inbound `client_ip`
+///   doesn't resolve to any known service.
+#[derive(Debug, Clone, Serialize)]
+pub struct TopologyEdge {
+    pub from_ip: String,
+    pub from_port: u16,
+    pub to_ip: String,
+    pub to_port: u16,
+    pub turn_count: u64,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServicesTopology {
+    pub nodes: Vec<TopologyNode>,
+    pub edges: Vec<TopologyEdge>,
+}
+
+/// Per-agent-kind aggregate over a time window, used by the Overview
+/// distribution chart.
+#[derive(Debug, Clone)]
+pub struct AgentSummaryQuery {
+    pub time_range: TimeRange,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentKindSummary {
+    pub agent_kind: String,
+    pub turn_count: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub avg_duration_ms: Option<f64>,
+    /// Unix-epoch ms of the most recent turn for this agent.
+    pub last_seen_ms: i64,
+}
+
+/// Per-bucket agent_kind counts, used by the Overview activity chart.
+/// `bucket_seconds` is an optional client hint; the server picks a
+/// sensible default based on the window size when omitted.
+#[derive(Debug, Clone)]
+pub struct AgentActivityQuery {
+    pub time_range: TimeRange,
+    pub bucket_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentActivityPoint {
+    /// Unix-epoch ms of the bucket start.
+    pub timestamp_ms: i64,
+    pub agent_kind: String,
+    pub turn_count: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct CallsQuery {
     pub time_range: TimeRange,
     pub filter: DimensionFilter,
     pub status_codes: Vec<u16>,
     pub finish_reasons: Vec<String>,
     pub client_ips: Vec<String>,
+    /// Per-call server port filter (matches `llm_calls.server_port` directly).
+    /// Lives outside `DimensionFilter` for the same reason `client_ips` does:
+    /// `llm_metrics` doesn't carry server_port, only `llm_calls` does.
+    pub server_ports: Vec<u16>,
     pub request_path_contains: Option<String>,
     /// Optional stream-mode filter. `None` keeps everything; `Some(true)` /
     /// `Some(false)` narrows to streaming-only / non-streaming-only.
@@ -213,6 +357,10 @@ pub struct TurnsQuery {
     /// (the metrics-pre-aggregated dimension); client IP lives outside the
     /// filter, parallel to `CallsQuery.client_ips`.
     pub client_ips: Vec<String>,
+    /// Per-call server port filter. `agent_turns` doesn't carry `server_port`
+    /// — we resolve it through the turn's first `call_ids` entry against
+    /// `llm_calls`, same shortcut the topology query uses.
+    pub server_ports: Vec<u16>,
     pub statuses: Vec<String>,
     pub agent_kinds: Vec<String>,
     pub sort_by: String,

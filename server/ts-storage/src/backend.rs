@@ -51,6 +51,49 @@ pub trait StorageBackend: Send + Sync {
         query: &MetricsModelsQuery,
     ) -> Result<Vec<MetricsModelRow>>;
 
+    /// Aggregate `llm_calls` by `(server_ip, server_port)` to produce
+    /// one row per LLM-serving endpoint. Used by the Services page.
+    ///
+    /// Not served off the pre-aggregated `llm_metrics` table because
+    /// that schema's grouping sets stop at `server_ip` — different
+    /// vLLM instances on the same host (port 8000 / 9000) would
+    /// collapse into one row. Worst-case this scans `llm_calls` rows
+    /// in the time window; the user's typical 7-day window has tens of
+    /// thousands of rows and the query completes in well under a
+    /// second.
+    async fn query_services(&self, query: &ServicesQuery) -> Result<Vec<ServiceRow>>;
+
+    /// Build the service→service directed graph used by the Services
+    /// page's Path view. Pulls the same per-endpoint node set as
+    /// `query_services` (just call counts; perf stats aren't needed for
+    /// a graph view), then adds two edge kinds:
+    ///   * `proxy` — pair_sweeper-confirmed proxy hops between two
+    ///     real endpoints. Definitive (we observed both legs of the
+    ///     same turn group on the wire).
+    ///   * `client` — synthetic edges from a `__clients__` super-node
+    ///     into every service that has at least one non-proxy-out
+    ///     turn in the window (i.e., the service receives traffic
+    ///     directly, not just from another service). Lets us draw a
+    ///     complete graph even when no proxy hop was observed.
+    async fn query_services_topology(
+        &self,
+        query: &ServicesTopologyQuery,
+    ) -> Result<ServicesTopology>;
+
+    /// Aggregate `agent_turns` by `agent_kind` over the given window.
+    /// Powers the Overview "agent distribution" horizontal-bar chart.
+    async fn query_agent_summary(
+        &self,
+        query: &AgentSummaryQuery,
+    ) -> Result<Vec<AgentKindSummary>>;
+
+    /// Per-bucket agent_turn counts split by `agent_kind`. Powers
+    /// the Overview "agent activity" stacked time-series chart.
+    async fn query_agent_activity(
+        &self,
+        query: &AgentActivityQuery,
+    ) -> Result<Vec<AgentActivityPoint>>;
+
     /// Per-bucket finish-reason counts in the requested time range. One series
     /// per distinct raw `finish_reason` observed. The `wire_api`/`model`
     /// filters select a specific dimension; `None` rolls up across all values
