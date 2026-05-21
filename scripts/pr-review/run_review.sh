@@ -35,11 +35,15 @@ envsubst < "$WORKDIR/prompt.md" > "$PROMPT"
 if ! curl -fsS --max-time 5 \
     -H "Authorization: Bearer ${ANTHROPIC_API_KEY:-}" \
     "${ANTHROPIC_BASE_URL:-}/v1/models" >/dev/null 2>&1; then
-  # Keep the LLM-endpoint URL out of the PR-visible OUT file; full
-  # details are in the workflow log.
-  echo "ERROR: LiteLLM unreachable or auth failed (see workflow log)" \
-    > "$OUT"
-  echo "pre-flight: LiteLLM unreachable at ${ANTHROPIC_BASE_URL:-<unset>}" >&2
+  # Pre-flight diagnostics MUST stay local — `post_review.py` is
+  # gated to skip posting when the agent exits non-zero, so this
+  # OUT file is consumed only by the workflow log. Endpoint URL +
+  # full curl trace go to the workflow log on the next two lines.
+  echo "ERROR: agent unavailable (pre-flight)" > "$OUT"
+  echo "pre-flight: backend unreachable at ${ANTHROPIC_BASE_URL:-<unset>}" >&2
+  curl -v --max-time 5 \
+    -H "Authorization: Bearer ${ANTHROPIC_API_KEY:-}" \
+    "${ANTHROPIC_BASE_URL:-}/v1/models" >&2 2>&1 || true
   exit 2
 fi
 
@@ -71,10 +75,10 @@ timeout 1800 claude \
   || {
     rc=$?
     echo "ERROR: agent exited with code $rc" >> "$LOG"
-    if [ ! -s "$OUT" ]; then
-      printf '### Summary\nAgent run failed (exit %d). See workflow logs.\n' \
-        "$rc" > "$OUT"
-    fi
+    # Don't synthesize a PR-bound failure summary here — post_review.py
+    # is gated on AGENT_EXIT and will skip the PR entirely on non-zero.
+    # The OUT file is left as-is (possibly empty) for workflow-log
+    # consumption.
     exit "$rc"
   }
 
