@@ -8,7 +8,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts"
-import { formatNumber } from "@/lib/format"
+import { formatNumber, formatAxisTime } from "@/lib/format"
 import type { TimeseriesData } from "@/types/api"
 
 const GROUP_COLORS = [
@@ -21,11 +21,6 @@ const GROUP_COLORS = [
   "#06b6d4", // cyan
   "#84cc16", // lime
 ]
-
-function formatAxisTime(epoch: number): string {
-  const d = new Date(epoch * 1000)
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
-}
 
 interface Props {
   data: TimeseriesData | null
@@ -56,6 +51,10 @@ export function StackedBarChart({ data, field, height = 240, yFormatter = format
     }
     return point
   })
+  const spanSec =
+    data.timestamps.length > 1
+      ? data.timestamps[data.timestamps.length - 1] - data.timestamps[0]
+      : 0
 
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -63,7 +62,7 @@ export function StackedBarChart({ data, field, height = 240, yFormatter = format
         <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
         <XAxis
           dataKey="time"
-          tickFormatter={formatAxisTime}
+          tickFormatter={(v: number) => formatAxisTime(v, spanSec)}
           className="text-[11px] fill-muted-foreground"
           tickLine={false}
           axisLine={false}

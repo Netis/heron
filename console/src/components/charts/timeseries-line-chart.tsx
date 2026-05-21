@@ -11,6 +11,7 @@ import {
   Legend,
 } from "recharts"
 import type { TimeseriesData } from "@/types/api"
+import { formatAxisTime } from "@/lib/format"
 
 interface SeriesConfig {
   key: string
@@ -25,33 +26,6 @@ interface Props {
   yFormatter: (value: number) => string
   height?: number
   variant?: "line" | "area"
-}
-
-/**
- * Pick a *short* X-axis tick formatter based on the plotted span. Tick
- * labels must stay narrow because the chart container is often only
- * 300-400 px wide; the precise datetime lives in the hover tooltip
- * (`labelFormatter` below), not on the axis itself.
- *
- *   < 24 h    : `HH:mm`     (intra-day buckets, time is what matters)
- *   ≥ 24 h    : `MM-DD`     (one tick per day; granularity is 1h+, so
- *                            intra-day detail on the axis is noise)
- */
-function pickAxisFormatter(spanSec: number): (epoch: number) => string {
-  if (spanSec < 86400) {
-    return (epoch) => {
-      const d = new Date(epoch * 1000)
-      return `${pad(d.getHours())}:${pad(d.getMinutes())}`
-    }
-  }
-  return (epoch) => {
-    const d = new Date(epoch * 1000)
-    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-  }
-}
-
-function pad(n: number): string {
-  return String(n).padStart(2, "0")
 }
 
 export function TimeseriesLineChart({
@@ -79,12 +53,13 @@ export function TimeseriesLineChart({
     }
     return point
   })
-
+  // Span of the visible data window — drives axis tick density (HH:MM
+  // vs MM-DD HH:MM vs MM-DD). Falls back to 0 (sub-day format) for
+  // single-point series.
   const spanSec =
     data.timestamps.length > 1
       ? data.timestamps[data.timestamps.length - 1] - data.timestamps[0]
       : 0
-  const formatAxisTime = pickAxisFormatter(spanSec)
 
   const ChartComponent = variant === "area" ? AreaChart : LineChart
 
@@ -94,7 +69,7 @@ export function TimeseriesLineChart({
         <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
         <XAxis
           dataKey="time"
-          tickFormatter={formatAxisTime}
+          tickFormatter={(v: number) => formatAxisTime(v, spanSec)}
           className="text-[11px] fill-muted-foreground"
           tickLine={false}
           axisLine={false}

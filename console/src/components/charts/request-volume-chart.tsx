@@ -8,7 +8,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts"
-import { formatNumber } from "@/lib/format"
+import { formatNumber, formatAxisTime } from "@/lib/format"
 import type { TimeseriesData } from "@/types/api"
 
 // Stable color palette for wire APIs
@@ -22,13 +22,6 @@ const SERIES_COLORS = [
   "#06b6d4", // cyan
   "#84cc16", // lime
 ]
-
-function formatAxisTime(epoch: number): string {
-  const d = new Date(epoch * 1000)
-  const hh = String(d.getHours()).padStart(2, "0")
-  const mm = String(d.getMinutes()).padStart(2, "0")
-  return `${hh}:${mm}`
-}
 
 interface Props {
   data: TimeseriesData | null
@@ -55,6 +48,10 @@ export function RequestVolumeChart({ data }: Props) {
     }
     return point
   })
+  const spanSec =
+    data.timestamps.length > 1
+      ? data.timestamps[data.timestamps.length - 1] - data.timestamps[0]
+      : 0
 
   return (
     <ResponsiveContainer width="100%" height={240}>
@@ -62,7 +59,7 @@ export function RequestVolumeChart({ data }: Props) {
         <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
         <XAxis
           dataKey="time"
-          tickFormatter={formatAxisTime}
+          tickFormatter={(v: number) => formatAxisTime(v, spanSec)}
           className="text-[11px] fill-muted-foreground"
           tickLine={false}
           axisLine={false}
