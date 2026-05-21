@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::response::IntoResponse;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_storage::query::DistinctFinishReason;
 use ts_storage::StorageBackend;
 
+use crate::params::to_time_range;
 use crate::response::{ApiError, ApiResponse};
 
 #[derive(Serialize)]
@@ -36,6 +37,23 @@ pub async fn server_ips(
     State(storage): State<Arc<dyn StorageBackend>>,
 ) -> Result<impl IntoResponse, ApiError> {
     let values = storage.query_distinct_server_ips().await?;
+    Ok(ApiResponse::ok(FilterValues { values }))
+}
+
+#[derive(Deserialize)]
+pub struct AgentKindsQuery {
+    pub start: i64,
+    pub end: i64,
+}
+
+pub async fn agent_kinds(
+    State(storage): State<Arc<dyn StorageBackend>>,
+    Query(params): Query<AgentKindsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let range = to_time_range(params.start, params.end);
+    let values = storage
+        .query_distinct_agent_kinds(range.start_us, range.end_us)
+        .await?;
     Ok(ApiResponse::ok(FilterValues { values }))
 }
 

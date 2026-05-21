@@ -280,7 +280,7 @@ function MessageRow({ msg, index, overlay }: { msg: OpenAiChatMessage; index: nu
               tool_call_id: <span className="font-mono">{msg.tool_call_id}</span>
             </div>
           )}
-          <MessageContent content={msg.content} isUserText={msg.role === "user"} overlay={overlay} />
+          {/* Reasoning trace renders before the content it produced. */}
           {msg.reasoning_content && (
             <div className="rounded bg-purple-50/60 border border-purple-200 dark:bg-purple-900/10 dark:border-purple-900/40 p-2 text-[11px]">
               <div className="font-mono text-[9px] uppercase tracking-wider text-purple-700/80 dark:text-purple-400/80">reasoning_content</div>
@@ -289,6 +289,7 @@ function MessageRow({ msg, index, overlay }: { msg: OpenAiChatMessage; index: nu
               </pre>
             </div>
           )}
+          <MessageContent content={msg.content} isUserText={msg.role === "user"} overlay={overlay} />
           {msg.tool_calls && msg.tool_calls.map((tc, i) => <ToolCallView key={i} tc={tc} />)}
           {msg.refusal && (
             <div className="rounded border border-red-300 bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-900/20 dark:text-red-300">
@@ -540,7 +541,9 @@ function ChoiceCard({ choice, ctx }: { choice: OpenAiChatChoice; ctx?: OutputCtx
         <FinishReasonBadge reason={typeof choice.finish_reason === "string" ? choice.finish_reason : null} />
       </div>
       <div className="space-y-2">
-        <MessageContent content={choice.message.content} isUserText={false} />
+        {/* Render reasoning before content: the model thinks first, then
+            answers. The stored field order is not load-bearing — what
+            matters is matching the temporal flow of the response. */}
         {choice.message.reasoning_content && (
           <div className="rounded bg-purple-50/60 border border-purple-200 dark:bg-purple-900/10 dark:border-purple-900/40 p-2 text-[11px]">
             <div className="font-mono text-[9px] uppercase tracking-wider text-purple-700/80 dark:text-purple-400/80">reasoning_content</div>
@@ -549,6 +552,7 @@ function ChoiceCard({ choice, ctx }: { choice: OpenAiChatChoice; ctx?: OutputCtx
             </pre>
           </div>
         )}
+        <MessageContent content={choice.message.content} isUserText={false} />
         {choice.message.tool_calls?.map((tc, i) => <ToolCallView key={i} tc={tc} ctx={ctx} />)}
         {choice.message.refusal && (
           <div className="rounded border border-red-300 bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-900/20 dark:text-red-300">

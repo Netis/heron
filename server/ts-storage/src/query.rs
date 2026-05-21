@@ -45,6 +45,9 @@ pub struct CallsQuery {
     pub finish_reasons: Vec<String>,
     pub client_ips: Vec<String>,
     pub request_path_contains: Option<String>,
+    /// Optional stream-mode filter. `None` keeps everything; `Some(true)` /
+    /// `Some(false)` narrows to streaming-only / non-streaming-only.
+    pub is_stream: Option<bool>,
     pub sort_by: String,
     pub sort_order: String,
     pub page: u32,

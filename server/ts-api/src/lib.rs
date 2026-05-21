@@ -23,7 +23,7 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use ts_common::config::{ApiConfig, AppConfig};
 use ts_common::error::{AppError, Result};
-use ts_common::internal_metrics::MetricsSvc;
+use ts_common::internal_metrics::{AggregateHistory, MetricsSvc};
 use ts_pcap_extract::PipelineRoot;
 use ts_storage::StorageBackend;
 use ts_turn::ActiveTurnRegistry;
@@ -31,10 +31,17 @@ use ts_turn::ActiveTurnRegistry;
 /// Carriers for `/api/internal-metrics` — every per-pipeline `MetricsSvc`
 /// plus the cross-pipeline (storage) one. Build this in `main.rs` after
 /// `MetricsSystem::start()`.
+///
+/// `history` is the optional in-memory time-series ring populated by
+/// `HistoryRecorder` (set when `internal_metrics.enabled` is true). The
+/// `/api/internal-metrics/series` endpoint reads it; the rest of the
+/// internal-metrics routes don't need it. `None` ⇒ the series route
+/// reports an empty series rather than 503'ing.
 #[derive(Clone)]
 pub struct ApiMetricsContext {
     pub pipelines: Vec<(String, Arc<MetricsSvc>)>,
     pub global: Arc<MetricsSvc>,
+    pub history: Option<Arc<AggregateHistory>>,
 }
 
 /// Carrier for `/api/runtime-config` — the live in-memory `AppConfig`
@@ -102,6 +109,10 @@ pub fn router(
             "/api/internal-metrics",
             get(routes::internal_metrics::internal_metrics),
         )
+        .route(
+            "/api/internal-metrics/series",
+            get(routes::internal_metrics::series),
+        )
         .with_state(metrics);
 
     // Settings/runtime-config routes share the same context (config_path
@@ -157,6 +168,10 @@ pub fn router(
         .route("/api/filters/wire-apis", get(routes::filters::wire_apis))
         .route("/api/filters/models", get(routes::filters::models))
         .route("/api/filters/server-ips", get(routes::filters::server_ips))
+        .route(
+            "/api/filters/agent-kinds",
+            get(routes::filters::agent_kinds),
+        )
         .route(
             "/api/filters/finish-reasons",
             get(routes::filters::finish_reasons),
