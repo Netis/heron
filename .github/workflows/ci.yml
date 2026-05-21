@@ -20,6 +20,11 @@ jobs:
   test:
     runs-on: [self-hosted, tokenscope]
     timeout-minutes: 25
+    env:
+      # actions/checkout@v4 ships Node 20; GitHub is deprecating
+      # Node 20 on runners. Opt JS actions into Node 24 so each run
+      # doesn't annotate with the deprecation warning.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
     steps:
       - uses: actions/checkout@v4
 
