@@ -62,11 +62,27 @@ def pick_event(body: str) -> str:
     """Choose the gh-review event from section presence.
 
     Priority:
+      * agent run failed OR body has no markdown structure → COMMENT
+        (never approve a failed run)
       * agent explicitly said "REQUEST_CHANGES" / "APPROVE" / "COMMENT"
         in the Summary → trust the agent
       * else: Blocking → REQUEST_CHANGES; Suggestions/Questions only →
         COMMENT; nothing → APPROVE.
     """
+    # Hard guard: if the agent itself bailed out (workflow step failed)
+    # or wrote a bare ERROR line, do NOT issue an APPROVE — the body
+    # may not have any of the structured sections below and would
+    # otherwise fall through to the default-APPROVE branch.
+    if AGENT_EXIT == "failure":
+        return "COMMENT"
+    stripped = body.lstrip()
+    if stripped.startswith("ERROR:") or stripped.startswith("ERROR "):
+        return "COMMENT"
+    if "### " not in body:
+        # No markdown headings at all — treat as a free-form note,
+        # not a verdict.
+        return "COMMENT"
+
     summary_pat = re.compile(
         r"^###\s+Summary\s*\n(.*?)(?=^###\s+|\Z)",
         re.MULTILINE | re.DOTALL,

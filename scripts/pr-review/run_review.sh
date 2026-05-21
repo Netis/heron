@@ -35,8 +35,11 @@ envsubst < "$WORKDIR/prompt.md" > "$PROMPT"
 if ! curl -fsS --max-time 5 \
     -H "Authorization: Bearer ${ANTHROPIC_API_KEY:-}" \
     "${ANTHROPIC_BASE_URL:-}/v1/models" >/dev/null 2>&1; then
-  echo "ERROR: LiteLLM unreachable or auth failed at ${ANTHROPIC_BASE_URL:-<unset>}" \
-    | tee "$OUT" >&2
+  # Keep the LLM-endpoint URL out of the PR-visible OUT file; full
+  # details are in the workflow log.
+  echo "ERROR: LiteLLM unreachable or auth failed (see workflow log)" \
+    > "$OUT"
+  echo "pre-flight: LiteLLM unreachable at ${ANTHROPIC_BASE_URL:-<unset>}" >&2
   exit 2
 fi
 
