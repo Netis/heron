@@ -219,6 +219,12 @@ pub struct TurnsQuery {
     pub sort_order: String,
     pub page: u32,
     pub page_size: u32,
+    /// When `false` (default), hide turns the pair sweeper has marked as
+    /// `proxy_out` or `mirror_secondary`. The folded leg is still
+    /// reachable by `turn_id` lookup. When `true`, return every row,
+    /// useful for diagnostics or for users who want to see the raw
+    /// captured topology.
+    pub include_proxy_hops: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -242,6 +248,25 @@ pub struct TurnListItem {
     pub final_finish_reason: Option<String>,
     pub user_input_preview: Option<String>,
     pub final_answer_preview: Option<String>,
+    /// `"proxy_in"` / `"proxy_out"` / `"mirror_primary"` /
+    /// `"mirror_secondary"` when the pair sweeper has classified this
+    /// turn. Absent on direct (un-proxied) turns and on turns the
+    /// sweeper hasn't reached yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_role: Option<String>,
+    /// `turn_id` of the matched peer leg, for navigation. Absent when
+    /// `proxy_role` is absent. For groups of >2 turns (the haproxy
+    /// 3-leg case) this surfaces only the first peer for backward
+    /// compatibility — clients should read `proxy_peer_turn_ids` to
+    /// see the full set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_peer_turn_id: Option<String>,
+    /// Every other member of this turn's proxy group (excludes self),
+    /// sorted lex. Empty/absent on direct turns. Two-member groups
+    /// have one entry here; three-member groups (haproxy_glm5: host
+    /// view + docker view + upstream hop) have two.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_peer_turn_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -564,6 +589,104 @@ pub struct SessionTurnsQuery {
     pub session_id: String,
     pub cursor: Option<SessionTurnsCursor>,
     pub page_size: u32,
+}
+
+// ---- Proxy view (multi-leg fold) ----
+
+/// Per-leg snapshot returned in a `ProxyViewResponse`. Each row is one
+/// captured vantage point of the same logical call. The list is ordered
+/// canonical-first (proxy_in / mirror_primary), then the hops.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProxyViewMember {
+    pub turn_id: String,
+    pub role: String,
+    pub client_ip: String,
+    pub client_port: Option<u16>,
+    pub server_ip: String,
+    pub server_port: Option<u16>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub duration_ms: u64,
+    pub ttft_ms: Option<f64>,
+    pub e2e_latency_ms: Option<f64>,
+    pub request_model: Option<String>,
+    pub wire_api: String,
+    pub request_path: Option<String>,
+    pub status_code: Option<u16>,
+    /// Parsed request headers as `Vec<(name, value)>`. Empty when the
+    /// leg's first call had no captured request_headers blob.
+    pub request_headers: Vec<(String, String)>,
+    pub response_headers: Vec<(String, String)>,
+}
+
+/// One header line in the multi-leg diff. The same `name` may appear in
+/// multiple entries if the proxy adds *and* removes the same header
+/// across legs (the leg dimension is captured via `values[i].turn_id`).
+#[derive(Debug, Clone, Serialize)]
+pub struct HeaderDiffEntry {
+    pub name: String,
+    pub kind: HeaderDiffKind,
+    pub values: Vec<HeaderValueByLeg>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeaderDiffKind {
+    /// Same `(name, value)` in every member of the group. UI dims these.
+    Common,
+    /// All members have the header but with different values — the
+    /// proxy rewrote it. Classic example: `Host`.
+    Modified,
+    /// Only some members have the header. The non-listed members
+    /// stripped or never carried it. Classic example:
+    /// `x-litellm-call-id` (added by proxy_in side only) or
+    /// `anthropic-request-id` (returned only by the upstream provider).
+    PerLeg,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HeaderValueByLeg {
+    pub turn_id: String,
+    pub role: String,
+    pub value: String,
+}
+
+/// Optional model-name rewrite the proxy applied. `None` when every
+/// leg's request body had the same `model` field (or none of them did).
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelRewrite {
+    /// Model name the client *sent*. Taken from the canonical leg's
+    /// (proxy_in / mirror_primary) request body.
+    pub client_requested: Option<String>,
+    /// Model name the upstream provider *received*. Taken from the
+    /// proxy_out leg's request body.
+    pub upstream_received: Option<String>,
+}
+
+/// Latency breakdown across legs. `proxy_overhead_ms` is the difference
+/// between the client-facing leg's e2e and the upstream-facing leg's
+/// e2e — what the proxy itself spent dispatching / serializing /
+/// running its callbacks.
+#[derive(Debug, Clone, Serialize)]
+pub struct LatencyBreakdown {
+    pub client_observed_ms: Option<f64>,
+    pub upstream_observed_ms: Option<f64>,
+    pub proxy_overhead_ms: Option<f64>,
+}
+
+/// Response from `GET /api/agent-turns/{id}/proxy-view`. Aggregates the
+/// requested turn plus every peer in its `metadata.proxy.peer_turn_ids`
+/// group, then produces a header diff and latency breakdown.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProxyViewResponse {
+    /// `metadata.proxy.pair_id` shared by every member.
+    pub group_id: String,
+    pub members: Vec<ProxyViewMember>,
+    pub request_header_diff: Vec<HeaderDiffEntry>,
+    pub response_header_diff: Vec<HeaderDiffEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_rewrite: Option<ModelRewrite>,
+    pub latency_breakdown: LatencyBreakdown,
 }
 
 #[derive(Debug, Clone, Serialize)]

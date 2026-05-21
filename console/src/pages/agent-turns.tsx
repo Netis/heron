@@ -7,6 +7,7 @@ import { useSearchParamState } from "@/hooks/use-search-param-state"
 import { formatDateTimeMs, formatNumber, formatDuration } from "@/lib/format"
 import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
+import { ProxyBadge } from "@/components/ui/proxy-badge"
 import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
 import type { AgentTurnListItem } from "@/types/api"
 
@@ -42,7 +43,12 @@ function SortIcon({ column, sortBy, sortOrder }: { column: string; sortBy: strin
 function CellValue({ item, column }: { item: AgentTurnListItem; column: (typeof columns)[number]["key"] }) {
   switch (column) {
     case "start_time":
-      return <span className="tabular-nums">{formatDateTimeMs(item.start_time)}</span>
+      return (
+        <span className="inline-flex items-center gap-2">
+          <span className="tabular-nums">{formatDateTimeMs(item.start_time)}</span>
+          <ProxyBadge item={item} />
+        </span>
+      )
     case "wire_api":
       return (
         <span className="truncate" title={item.wire_api}>
@@ -92,6 +98,11 @@ export function AgentTurnsPage() {
   const [statusStr, setStatusStr] = useSearchParamState("status", "")
   const [agentKindStr, setAgentKindStr] = useSearchParamState("agent_kind", "")
   const [clientIpStr, setClientIpStr] = useSearchParamState("client_ip", "")
+  // Default off — the user wanted the folded view as the primary
+  // experience. URL serialization keeps "show hops" sticky on a
+  // shared link.
+  const [showHopsStr, setShowHopsStr] = useSearchParamState("show_hops", "")
+  const includeProxyHops = showHopsStr === "1"
 
   const page = Number(pageStr) || 1
   const pageSize = Number(pageSizeStr) || 50
@@ -128,6 +139,7 @@ export function AgentTurnsPage() {
     status: statusStr || undefined,
     agentKind: agentKindStr || undefined,
     clientIp: clientIpStr || undefined,
+    includeProxyHops,
   })
 
   const items = data?.items ?? []
@@ -180,6 +192,21 @@ export function AgentTurnsPage() {
           placeholder="Client IP (CSV)"
           className="w-[180px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
         />
+        <label
+          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-muted"
+          title="Show the upstream/mirror leg of llmproxy duplicates (hidden by default)"
+        >
+          <input
+            type="checkbox"
+            checked={includeProxyHops}
+            onChange={(e) => {
+              setShowHopsStr(e.target.checked ? "1" : "")
+              setPageStr("1")
+            }}
+            className="size-3"
+          />
+          Show proxy hops
+        </label>
       </div>
 
       {/* Table */}

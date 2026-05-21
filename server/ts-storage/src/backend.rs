@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use ts_llm::model::LlmCall;
 use ts_metrics::model::{LlmFinishMetric, LlmMetric};
 use ts_protocol::HttpExchange;
-use ts_turn::AgentTurn;
+use ts_turn::{AgentTurn, PairCandidate};
 
 use crate::query::*;
 use crate::retention::{RetentionPolicy, RetentionReport};
@@ -126,4 +126,40 @@ pub trait StorageBackend: Send + Sync {
     /// Delete rows older than the cutoffs in `policy`. `None` cutoffs are
     /// skipped. Returns per-table / per-granularity row counts.
     async fn apply_retention(&self, policy: RetentionPolicy) -> Result<RetentionReport>;
+
+    // ---- llmproxy pair-detection support ----
+    //
+    // The sweeper polls a sliding window of recently-finalized turns,
+    // skipping those that already carry `metadata.proxy.role`, and runs
+    // `ts_turn::pair_all` over the projection. For each pair it writes a
+    // JSON patch into both turns' `metadata` field.
+
+    /// Return a minimal projection of `agent_turns` rows in
+    /// `[start_us, end_us)` suitable for `ts_turn::pair_all`. Rows whose
+    /// `metadata` already carries `proxy.role` are excluded — once a turn
+    /// is paired we don't want to re-pair it on the next sweep.
+    /// Default: empty (in-memory mock backends used by tests have no
+    /// pairing to surface).
+    async fn query_pair_candidates(
+        &self,
+        _start_us: i64,
+        _end_us: i64,
+    ) -> Result<Vec<PairCandidate>> {
+        Ok(Vec::new())
+    }
+
+    /// Merge `patch` into the existing `metadata` JSON of `turn_id`
+    /// (top-level shallow merge — only keys present in `patch` are
+    /// replaced). Used by the pair sweeper to write `proxy.role` /
+    /// `proxy.pair_id` / `proxy.peer_turn_id` back to both legs.
+    /// Returns `Ok(())` even if `turn_id` doesn't exist — the sweeper
+    /// races finalization and a turn may briefly be unwritten when the
+    /// patch arrives.
+    async fn update_turn_metadata(
+        &self,
+        _turn_id: &str,
+        _patch: serde_json::Value,
+    ) -> Result<()> {
+        Ok(())
+    }
 }

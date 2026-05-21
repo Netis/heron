@@ -46,6 +46,15 @@ export function useToolbarUrlSync() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { pathname } = useLocation()
   const skipUrlUpdate = useRef(false)
+  // The selected_at anchor exists to rescue a STALE shared link — when
+  // the recipient opens a URL whose relative preset has moved past the
+  // selected item, shift the window so the item is in view. Applying
+  // it on every searchParams change wrecks the live page: every click
+  // updates ?selected_at=, the URL→store effect re-runs, and the helper
+  // sees the (slightly newer) window boundary as having drifted past
+  // the just-clicked item — shifting unexpectedly. Gate the anchor to
+  // the very first hydration in this tab.
+  const anchorAppliedOnce = useRef(false)
 
   // ── URL → Store (on mount & on searchParams change from popstate) ──
   useEffect(() => {
@@ -69,8 +78,11 @@ export function useToolbarUrlSync() {
       }
     }
 
-    const selectedAtRaw = searchParams.get(SELECTED_AT_PARAM)
-    applySelectedAtAnchor(hydratePatch, selectedAtRaw, nowSeconds())
+    if (!anchorAppliedOnce.current) {
+      const selectedAtRaw = searchParams.get(SELECTED_AT_PARAM)
+      applySelectedAtAnchor(hydratePatch, selectedAtRaw, nowSeconds())
+      anchorAppliedOnce.current = true
+    }
 
     const wireApi = searchParams.get(P.wireApi)
     const model = searchParams.get(P.model)

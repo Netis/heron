@@ -20,7 +20,7 @@ use ts_common::error::{AppError, Result};
 use ts_llm::model::LlmCall;
 use ts_metrics::model::{LlmFinishMetric, LlmMetric};
 use ts_protocol::HttpExchange;
-use ts_turn::AgentTurn;
+use ts_turn::{AgentTurn, PairCandidate};
 
 use ts_storage::query::*;
 use ts_storage::retention::{RetentionPolicy, RetentionReport};
@@ -244,5 +244,21 @@ impl StorageBackend for DuckDbBackend {
 
     async fn apply_retention(&self, policy: RetentionPolicy) -> Result<RetentionReport> {
         DuckDbBackend::apply_retention(self, policy).await
+    }
+
+    async fn query_pair_candidates(
+        &self,
+        start_us: i64,
+        end_us: i64,
+    ) -> Result<Vec<PairCandidate>> {
+        DuckDbBackend::query_pair_candidates(self, start_us, end_us).await
+    }
+
+    async fn update_turn_metadata(
+        &self,
+        turn_id: &str,
+        patch: serde_json::Value,
+    ) -> Result<()> {
+        DuckDbBackend::update_turn_metadata(self, turn_id, patch).await
     }
 }

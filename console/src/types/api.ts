@@ -106,6 +106,73 @@ export interface AgentTurnListItem {
   final_finish_reason: string | null
   user_input_preview: string | null
   final_answer_preview: string | null
+  /** Set by the backend pair sweeper when this turn is one leg of a
+   * llmproxy duplicate pair. `"proxy_in"` / `"mirror_primary"` legs are
+   * the canonical (visible) members; `"proxy_out"` / `"mirror_secondary"`
+   * are hidden by default and only returned when the API is asked with
+   * `include_proxy_hops=true`. Absent on direct (non-proxied) turns. */
+  proxy_role?: "proxy_in" | "proxy_out" | "mirror_primary" | "mirror_secondary"
+  /** `turn_id` of the first matched peer leg (for backward compat).
+   * For groups of >2 turns (haproxy 3-leg case), read
+   * `proxy_peer_turn_ids` for the full list. */
+  proxy_peer_turn_id?: string
+  /** Every other member of this turn's proxy group, sorted lex. The
+   * haproxy 3-leg case shows 2 peers here (br0 mirror + upstream hop). */
+  proxy_peer_turn_ids?: string[]
+}
+
+// ---- Proxy view (multi-leg fold detail) ----
+
+export interface ProxyViewMember {
+  turn_id: string
+  role: "proxy_in" | "proxy_out" | "mirror_primary" | "mirror_secondary" | string
+  client_ip: string
+  client_port: number | null
+  server_ip: string
+  server_port: number | null
+  start_time: number
+  end_time: number
+  duration_ms: number
+  ttft_ms: number | null
+  e2e_latency_ms: number | null
+  request_model: string | null
+  wire_api: string
+  request_path: string | null
+  status_code: number | null
+  request_headers: [string, string][]
+  response_headers: [string, string][]
+}
+
+export interface HeaderValueByLeg {
+  turn_id: string
+  role: string
+  value: string
+}
+
+export interface HeaderDiffEntry {
+  name: string
+  kind: "common" | "modified" | "per_leg"
+  values: HeaderValueByLeg[]
+}
+
+export interface ModelRewrite {
+  client_requested: string | null
+  upstream_received: string | null
+}
+
+export interface LatencyBreakdown {
+  client_observed_ms: number | null
+  upstream_observed_ms: number | null
+  proxy_overhead_ms: number | null
+}
+
+export interface ProxyViewResponse {
+  group_id: string
+  members: ProxyViewMember[]
+  request_header_diff: HeaderDiffEntry[]
+  response_header_diff: HeaderDiffEntry[]
+  model_rewrite?: ModelRewrite
+  latency_breakdown: LatencyBreakdown
 }
 
 export interface AgentTurnDetail {
