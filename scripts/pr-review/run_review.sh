@@ -52,6 +52,12 @@ ALLOWED_TOOLS="$(grep -v '^#' "$WORKDIR/allowed_tools.txt" \
 # Headless agent run. The 1800 s outer cap is a hard fence — if the
 # model loops we'd rather post a "review timed out" than wedge the
 # workflow.
+#
+# Feed the prompt over stdin instead of as a trailing positional arg —
+# `--allowed-tools` is variadic (<tools...>), so a positional prompt
+# right after it gets consumed as an extra tool name and claude then
+# errors with "Input must be provided either through stdin or as a
+# prompt argument when using --print".
 timeout 1800 claude \
   --print \
   --model "${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}" \
@@ -59,7 +65,7 @@ timeout 1800 claude \
   --output-format text \
   --permission-mode acceptEdits \
   --allowed-tools "$ALLOWED_TOOLS" \
-  "$(cat "$PROMPT")" \
+  < "$PROMPT" \
   > "$OUT" \
   2> "$LOG" \
   || {
