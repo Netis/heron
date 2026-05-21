@@ -1,4 +1,4 @@
-// Pure mappers from anchor row → form initial values for the extract dialog.
+// Pure mappers from anchor rows to pcap extract request values.
 
 import type { LlmCallDetail, HttpExchangeDetail, AgentTurnDetail } from "@/types/api"
 
@@ -17,6 +17,8 @@ export type Anchor =
   | { type: "llm_call"; row: LlmCallDetail }
   | { type: "agent_turn"; row: AgentTurnDetail }
 
+export type ExtractAnchor = Exclude<Anchor, { type: "agent_turn" }>
+
 const SECOND_US = 1_000_000
 
 /// Convert an ISO-or-ms timestamp from the API to microseconds since epoch.
@@ -26,7 +28,7 @@ function tsToUs(ts_ms: number): number {
   return ts_ms * 1000
 }
 
-export function defaultsFor(anchor: Anchor): ExtractFormValues {
+export function defaultsFor(anchor: ExtractAnchor): ExtractFormValues {
   switch (anchor.type) {
     case "http_exchange": {
       const r = anchor.row
@@ -55,18 +57,6 @@ export function defaultsFor(anchor: Anchor): ExtractFormValues {
         server_port: r.server_port?.toString() ?? "",
         start_us: tsToUs(r.request_time) - SECOND_US,
         end_us: tsToUs(end_ms) + SECOND_US,
-      }
-    }
-    case "agent_turn": {
-      const r = anchor.row
-      return {
-        source_id: r.source_id ?? "",
-        client_ip: r.client_ip ?? "",
-        client_port: "",                     // intentionally blank — turn spans connections
-        server_ip: r.server_ip ?? "",
-        server_port: "",                     // server endpoints can vary
-        start_us: tsToUs(r.start_time) - SECOND_US,
-        end_us: tsToUs(r.end_time) + SECOND_US,
       }
     }
   }
@@ -108,4 +98,8 @@ export function buildExtractUrl(v: ExtractFormValues): string {
   if (v.server_ip)   params.set("server_ip", v.server_ip)
   if (v.server_port) params.set("server_port", v.server_port)
   return `/api/pcap/extract?${params.toString()}`
+}
+
+export function buildAgentTurnPacketsUrl(turn: AgentTurnDetail): string {
+  return `/api/pcap/agent-turns/${encodeURIComponent(turn.turn_id)}/packets`
 }

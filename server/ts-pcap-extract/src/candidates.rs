@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use ts_common::path::sanitize_path_component;
 
 use crate::format::{minute_label, MICROS_PER_MINUTE};
-use crate::types::{ExtractRequest, PipelineRoot};
+use crate::types::{ExtractRequestSet, PipelineRoot};
 
 /// One physical file we will read from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,7 +16,7 @@ pub struct CandidateFile {
     pub compressed: bool,
 }
 
-pub fn list_candidate_files(req: &ExtractRequest, roots: &[PipelineRoot]) -> Vec<CandidateFile> {
+pub fn list_candidate_files(req: &ExtractRequestSet, roots: &[PipelineRoot]) -> Vec<CandidateFile> {
     let safe_source = match sanitize_path_component(&req.source_id) {
         Some(s) => s,
         None => return Vec::new(),
@@ -43,7 +43,13 @@ pub fn list_candidate_files(req: &ExtractRequest, roots: &[PipelineRoot]) -> Vec
     out
 }
 
-fn push_if_file(out: &mut Vec<CandidateFile>, dir: &Path, label: &str, ext: &str, compressed: bool) {
+fn push_if_file(
+    out: &mut Vec<CandidateFile>,
+    dir: &Path,
+    label: &str,
+    ext: &str,
+    compressed: bool,
+) {
     let path = dir.join(format!("{label}{ext}"));
     if path.is_file() {
         out.push(CandidateFile { path, compressed });
@@ -53,11 +59,12 @@ fn push_if_file(out: &mut Vec<CandidateFile>, dir: &Path, label: &str, ext: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ExtractRequest;
     use std::fs;
     use tempfile::tempdir;
 
-    fn req(source_id: &str, start_us: i64, end_us: i64) -> ExtractRequest {
-        ExtractRequest {
+    fn req(source_id: &str, start_us: i64, end_us: i64) -> ExtractRequestSet {
+        ExtractRequestSet::from(ExtractRequest {
             source_id: source_id.into(),
             start_us,
             end_us,
@@ -65,11 +72,14 @@ mod tests {
             client_port: None,
             server_ip: None,
             server_port: None,
-        }
+        })
     }
 
     fn root(name: &str, dir: &Path) -> PipelineRoot {
-        PipelineRoot { name: name.into(), dump_dir: dir.to_path_buf() }
+        PipelineRoot {
+            name: name.into(),
+            dump_dir: dir.to_path_buf(),
+        }
     }
 
     #[test]
@@ -112,8 +122,12 @@ mod tests {
         let roots = vec![root("alpha", dir.path()), root("beta", dir.path())];
         let files = list_candidate_files(&req("en0", 0, 30_000_000), &roots);
         assert_eq!(files.len(), 2);
-        assert!(files.iter().any(|c| c.path.to_string_lossy().contains("alpha/en0")));
-        assert!(files.iter().any(|c| c.path.to_string_lossy().contains("beta/en0")));
+        assert!(files
+            .iter()
+            .any(|c| c.path.to_string_lossy().contains("alpha/en0")));
+        assert!(files
+            .iter()
+            .any(|c| c.path.to_string_lossy().contains("beta/en0")));
     }
 
     #[test]

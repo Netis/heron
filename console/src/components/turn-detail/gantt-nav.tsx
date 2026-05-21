@@ -36,8 +36,7 @@ function classifySpeed(call: AgentTurnCallItem): "normal" | "slow" | "warn" | "e
  * Compact badge surfaced under the Timeline header when the turn is one
  * leg of a proxy group. Tells the user "this turn is folded together
  * with N other captured legs — see the Proxy view tab for the merged
- * view". Color follows the role-tone palette used by `ProxyBadge` in
- * the agent-turns list so the two callsites are visually consistent.
+ * view".
  */
 function MultiLegBadge({
   proxy,

@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
+import { useSupportedFilterParams } from "@/hooks/use-supported-filters"
+import { useToolbarStore } from "@/stores/toolbar"
 
 interface FilterValuesData {
   values: string[]
@@ -18,25 +20,50 @@ interface Options {
   enabled?: boolean
 }
 
-function useFilterValues(endpoint: string, opts?: Options) {
+interface AgentKindOptions extends Options {
+  includeProxyHops?: boolean
+}
+
+function useFilterValues(
+  endpoint: string,
+  params?: Record<string, string | number | boolean | undefined>,
+  opts?: Options,
+) {
   return useQuery({
-    queryKey: ["filter-values", endpoint],
-    queryFn: () => apiFetch<FilterValuesData>(endpoint),
+    queryKey: ["filter-values", endpoint, params ?? {}],
+    queryFn: () => apiFetch<FilterValuesData>(endpoint, params),
     staleTime: 60_000,
     enabled: opts?.enabled ?? true,
   })
 }
 
 export function useWireApis(opts?: Options) {
-  return useFilterValues("/api/filters/wire-apis", opts)
+  return useFilterValues("/api/filters/wire-apis", undefined, opts)
 }
 
 export function useModelNames(opts?: Options) {
-  return useFilterValues("/api/filters/models", opts)
+  return useFilterValues("/api/filters/models", undefined, opts)
 }
 
 export function useServerIps(opts?: Options) {
-  return useFilterValues("/api/filters/server-ips", opts)
+  return useFilterValues("/api/filters/server-ips", undefined, opts)
+}
+
+export function useAgentKinds(opts?: AgentKindOptions) {
+  const start = useToolbarStore((s) => s.start)
+  const end = useToolbarStore((s) => s.end)
+  const { params: fp } = useSupportedFilterParams()
+
+  return useFilterValues(
+    "/api/filters/agent-kinds",
+    {
+      start,
+      end,
+      ...fp,
+      include_proxy_hops: opts?.includeProxyHops ? true : undefined,
+    },
+    opts,
+  )
 }
 
 /**

@@ -263,6 +263,12 @@ mod tests {
         async fn query_distinct_server_ips(&self) -> Result<Vec<String>> {
             Ok(vec![])
         }
+        async fn query_distinct_agent_kinds(
+            &self,
+            _: &DistinctAgentKindsQuery,
+        ) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
         async fn query_distinct_finish_reasons(&self) -> Result<Vec<DistinctFinishReason>> {
             Ok(vec![])
         }

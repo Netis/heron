@@ -211,12 +211,12 @@ pub fn spawn_storage_sink_stage(
 mod tests {
     use super::*;
     use crate::query::{
-        CallDetail, CallsPage, CallsQuery, DistinctFinishReason, FinishReasonTimeseries,
-        FinishReasonsQuery, HttpExchangeDetail, HttpExchangesPage, HttpExchangesQuery,
-        MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery, MetricsSummaryRow,
-        MetricsTimeseriesQuery, MetricsTimeseriesRow, SessionDetail, SessionListQuery,
-        SessionTurnsPage, SessionTurnsQuery, SessionsPage, TurnCallItem, TurnDetail, TurnsPage,
-        TurnsQuery,
+        CallDetail, CallsPage, CallsQuery, DistinctAgentKindsQuery, DistinctFinishReason,
+        FinishReasonTimeseries, FinishReasonsQuery, HttpExchangeDetail, HttpExchangesPage,
+        HttpExchangesQuery, MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery,
+        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, SessionDetail,
+        SessionListQuery, SessionTurnsPage, SessionTurnsQuery, SessionsPage, TurnCallItem,
+        TurnDetail, TurnsPage, TurnsQuery,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -358,6 +358,12 @@ mod tests {
             Ok(vec![])
         }
         async fn query_distinct_server_ips(&self) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
+        async fn query_distinct_agent_kinds(
+            &self,
+            _query: &DistinctAgentKindsQuery,
+        ) -> Result<Vec<String>> {
             Ok(vec![])
         }
         async fn query_distinct_finish_reasons(&self) -> Result<Vec<DistinctFinishReason>> {

@@ -94,6 +94,10 @@ pub trait StorageBackend: Send + Sync {
     async fn query_distinct_wire_apis(&self) -> Result<Vec<String>>;
     async fn query_distinct_models(&self) -> Result<Vec<String>>;
     async fn query_distinct_server_ips(&self) -> Result<Vec<String>>;
+    async fn query_distinct_agent_kinds(
+        &self,
+        query: &DistinctAgentKindsQuery,
+    ) -> Result<Vec<String>>;
 
     /// Distinct `(wire_api, finish_reason)` pairs observed in
     /// `llm_finish_metrics`. Excludes the `*` rollup tiers. Used by the calls
