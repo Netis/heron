@@ -214,6 +214,27 @@ mod tests {
         ) -> Result<Vec<MetricsModelRow>> {
             Ok(vec![])
         }
+        async fn query_services(&self, _: &ServicesQuery) -> Result<Vec<ServiceRow>> {
+            Ok(vec![])
+        }
+        async fn query_services_topology(
+            &self,
+            _: &ServicesTopologyQuery,
+        ) -> Result<ServicesTopology> {
+            Ok(ServicesTopology { nodes: vec![], edges: vec![] })
+        }
+        async fn query_agent_summary(
+            &self,
+            _: &AgentSummaryQuery,
+        ) -> Result<Vec<AgentKindSummary>> {
+            Ok(vec![])
+        }
+        async fn query_agent_activity(
+            &self,
+            _: &AgentActivityQuery,
+        ) -> Result<Vec<AgentActivityPoint>> {
+            Ok(vec![])
+        }
         async fn query_finish_reasons(
             &self,
             _: &FinishReasonsQuery,
@@ -232,10 +253,18 @@ mod tests {
         async fn query_turn_by_id(&self, _: &str) -> Result<Option<TurnDetail>> {
             Ok(None)
         }
-        async fn query_turn_calls(&self, _: &str) -> Result<Vec<TurnCallItem>> {
+        async fn query_turn_calls(
+            &self,
+            _: &str,
+            _include_bodies: bool,
+        ) -> Result<Vec<TurnCallItem>> {
             Ok(vec![])
         }
-        async fn query_calls_by_ids(&self, _: &[String]) -> Result<Vec<TurnCallItem>> {
+        async fn query_calls_by_ids(
+            &self,
+            _: &[String],
+            _include_bodies: bool,
+        ) -> Result<Vec<TurnCallItem>> {
             Ok(vec![])
         }
         async fn query_sessions(&self, _: &SessionListQuery) -> Result<SessionsPage> {

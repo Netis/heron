@@ -188,6 +188,7 @@ function TabButton({
   )
 }
 
+
 /// Above this call_count threshold, the calls list switches to lite
 /// mode — server NULLs the four heavy body/header fields so a
 /// mega-turn (hundreds of agentic iterations × hundreds of KB
