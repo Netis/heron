@@ -186,12 +186,20 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::query_turn_by_id(self, turn_id).await
     }
 
-    async fn query_turn_calls(&self, turn_id: &str) -> Result<Vec<TurnCallItem>> {
-        DuckDbBackend::query_turn_calls(self, turn_id).await
+    async fn query_turn_calls(
+        &self,
+        turn_id: &str,
+        include_bodies: bool,
+    ) -> Result<Vec<TurnCallItem>> {
+        DuckDbBackend::query_turn_calls(self, turn_id, include_bodies).await
     }
 
-    async fn query_calls_by_ids(&self, call_ids: &[String]) -> Result<Vec<TurnCallItem>> {
-        DuckDbBackend::query_calls_by_ids(self, call_ids).await
+    async fn query_calls_by_ids(
+        &self,
+        call_ids: &[String],
+        include_bodies: bool,
+    ) -> Result<Vec<TurnCallItem>> {
+        DuckDbBackend::query_calls_by_ids(self, call_ids, include_bodies).await
     }
 
     async fn query_sessions(&self, query: &SessionListQuery) -> Result<SessionsPage> {

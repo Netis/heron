@@ -63,7 +63,18 @@ pub trait StorageBackend: Send + Sync {
     async fn query_call_by_id(&self, id: &str) -> Result<Option<CallDetail>>;
     async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage>;
     async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>>;
-    async fn query_turn_calls(&self, turn_id: &str) -> Result<Vec<TurnCallItem>>;
+    /// `include_bodies = false` makes the four heavy fields
+    /// (`request_body`, `response_body`, `request_headers`,
+    /// `response_headers`) come back as `None`. On mega-turns (878
+    /// agentic iterations × ~190 KB request_body each ≈ 168 MB JSON)
+    /// the body-bearing response freezes browsers; lite mode keeps the
+    /// summary < 1 MB. `tokens_estimated` cannot be derived without
+    /// the response body and defaults to `false` in lite mode.
+    async fn query_turn_calls(
+        &self,
+        turn_id: &str,
+        include_bodies: bool,
+    ) -> Result<Vec<TurnCallItem>>;
     /// Sister of `query_turn_calls` for in-progress turns: the API
     /// already knows the call_ids (from the in-memory active-turn
     /// registry) and only needs Step 2 of the join. Returns the same
@@ -71,7 +82,11 @@ pub trait StorageBackend: Send + Sync {
     /// identically whether the turn is still in progress or finalized.
     /// Calls not yet flushed from `WriteBuffer` to `llm_calls` are
     /// silently skipped — they appear on the next refresh.
-    async fn query_calls_by_ids(&self, call_ids: &[String]) -> Result<Vec<TurnCallItem>>;
+    async fn query_calls_by_ids(
+        &self,
+        call_ids: &[String],
+        include_bodies: bool,
+    ) -> Result<Vec<TurnCallItem>>;
 
     /// Paginated session list (view over `agent_turns`; no materialised
     /// session table). A session is included when at least one of its turns

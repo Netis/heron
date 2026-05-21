@@ -1090,7 +1090,7 @@ mod tests {
         );
         backend.write_turns(vec![turn]).await.unwrap();
 
-        let items = backend.query_turn_calls("t-calls").await.unwrap();
+        let items = backend.query_turn_calls("t-calls", true).await.unwrap();
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].id, "call-a");
         assert_eq!(items[0].sequence, 1);
@@ -1100,8 +1100,28 @@ mod tests {
         assert_eq!(items[2].sequence, 3);
         assert!(items[0].request_time < items[1].request_time);
 
+        // Lite mode strips bodies/headers but keeps every other field
+        // identical. Use this same fixture to verify the contract: ids,
+        // sequence, timing, etc. all match; only the 4 heavy fields
+        // come back as None.
+        let lite = backend.query_turn_calls("t-calls", false).await.unwrap();
+        assert_eq!(lite.len(), 3);
+        for (full, lite) in items.iter().zip(lite.iter()) {
+            assert_eq!(full.id, lite.id);
+            assert_eq!(full.sequence, lite.sequence);
+            assert_eq!(full.input_tokens, lite.input_tokens);
+            assert_eq!(full.output_tokens, lite.output_tokens);
+            assert!(lite.request_body.is_none());
+            assert!(lite.response_body.is_none());
+            assert!(lite.request_headers.is_none());
+            assert!(lite.response_headers.is_none());
+        }
+
         // Unknown turn → empty vec (not error).
-        let empty = backend.query_turn_calls("no-such-turn").await.unwrap();
+        let empty = backend
+            .query_turn_calls("no-such-turn", true)
+            .await
+            .unwrap();
         assert!(empty.is_empty());
     }
 
