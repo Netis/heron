@@ -232,10 +232,18 @@ mod tests {
         async fn query_turn_by_id(&self, _: &str) -> Result<Option<TurnDetail>> {
             Ok(None)
         }
-        async fn query_turn_calls(&self, _: &str) -> Result<Vec<TurnCallItem>> {
+        async fn query_turn_calls(
+            &self,
+            _: &str,
+            _include_bodies: bool,
+        ) -> Result<Vec<TurnCallItem>> {
             Ok(vec![])
         }
-        async fn query_calls_by_ids(&self, _: &[String]) -> Result<Vec<TurnCallItem>> {
+        async fn query_calls_by_ids(
+            &self,
+            _: &[String],
+            _include_bodies: bool,
+        ) -> Result<Vec<TurnCallItem>> {
             Ok(vec![])
         }
         async fn query_sessions(&self, _: &SessionListQuery) -> Result<SessionsPage> {
