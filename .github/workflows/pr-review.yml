@@ -100,6 +100,17 @@ jobs:
       - name: Fetch base for diff
         run: git fetch origin "${{ steps.pr.outputs.base_ref }}" --depth 200
 
+      - name: Overlay reviewer scripts from default branch
+        # PRs older than the AI-reviewer feature don't carry
+        # scripts/pr-review/ on their head. Always overlay the latest
+        # reviewer scripts from the default branch so we run a single
+        # canonical reviewer regardless of PR vintage. The PR head's
+        # source tree is left otherwise untouched — the agent still
+        # sees the code under review, not main's code.
+        run: |
+          git fetch origin "${{ github.event.repository.default_branch }}" --depth 1
+          git checkout "origin/${{ github.event.repository.default_branch }}" -- scripts/pr-review
+
       - name: Run review agent
         id: review
         env:
