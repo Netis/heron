@@ -55,6 +55,11 @@ jobs:
       ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
       ANTHROPIC_API_KEY: ${{ secrets.LITELLM_API_KEY }}
       ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
+      # actions/checkout@v4 ships a Node 20 runtime; GitHub is
+      # deprecating Node 20 on runners. Opt the JS actions into the
+      # Node 24 runtime so the workflow doesn't annotate every run
+      # with a deprecation warning.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
     steps:
       - name: Configure no_proxy for LiteLLM
         # See pr-review-probe.yml. We keep the cloud-init-installed

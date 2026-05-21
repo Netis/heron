@@ -17,6 +17,7 @@ jobs:
       ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
       ANTHROPIC_API_KEY: ${{ secrets.LITELLM_API_KEY }}
       ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
     steps:
       - name: Configure no_proxy for LiteLLM
         # Runner ships with http_proxy=<internal egress proxy> baked
