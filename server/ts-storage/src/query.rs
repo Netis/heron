@@ -189,6 +189,9 @@ pub struct CallsQuery {
     /// `llm_metrics` doesn't carry server_port, only `llm_calls` does.
     pub server_ports: Vec<u16>,
     pub request_path_contains: Option<String>,
+    /// Optional stream-mode filter. `None` keeps everything; `Some(true)` /
+    /// `Some(false)` narrows to streaming-only / non-streaming-only.
+    pub is_stream: Option<bool>,
     pub sort_by: String,
     pub sort_order: String,
     pub page: u32,

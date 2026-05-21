@@ -178,7 +178,18 @@ export function CallCard({
           </section>
 
           <div className="text-[10px] text-muted-foreground font-mono">
-            {call.model} · {call.wire_api} · TTFB {formatMs(call.ttft_ms)} · finish: {call.finish_reason ?? "—"}
+            {call.model} · {call.wire_api} ·{" "}
+            <span
+              title={
+                call.is_stream
+                  ? "Time to first generated token (streaming)"
+                  : "Non-streaming: time to first response byte (≈ E2E)"
+              }
+              className={call.is_stream ? undefined : "italic"}
+            >
+              {call.is_stream ? "TTFT" : "TTFB"} {formatMs(call.ttft_ms)}
+            </span>{" "}
+            · finish: {call.finish_reason ?? "—"}
           </div>
           <button onClick={() => onOpenDetail?.(call.id)} className="text-xs text-foreground hover:underline">
             View call detail →

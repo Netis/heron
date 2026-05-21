@@ -3,12 +3,15 @@ import { cn } from "@/lib/utils"
 import { formatMs, formatNumber } from "@/lib/format"
 import { useMetricsSummary, useTimeseries, useModels } from "@/hooks/use-metrics"
 import { useAgentActivity, useAgentSummary } from "@/hooks/use-agent-overview"
+import { useInternalMetricsSeries } from "@/hooks/use-internal-metrics"
+import { useToolbarStore } from "@/stores/toolbar"
 import { RequestVolumeChart } from "@/components/charts/request-volume-chart"
 import { LatencyOverviewChart } from "@/components/charts/latency-overview-chart"
 import { ModelBreakdownChart } from "@/components/charts/model-breakdown-chart"
 import { ErrorByModelChart } from "@/components/charts/error-by-model-chart"
 import { AgentActivityChart } from "@/components/charts/agent-activity-chart"
 import { AgentDistributionChart } from "@/components/charts/agent-distribution-chart"
+import { ActiveGaugeChart } from "@/components/charts/active-gauge-chart"
 
 function KpiCard({
   title,
@@ -52,6 +55,12 @@ export function OverviewPage() {
   const { data: modelsData } = useModels()
   const { data: agentActivity } = useAgentActivity()
   const { data: agentSummary } = useAgentSummary()
+  // Toolbar exposes `start` as unix-seconds; convert to ms for the series API.
+  const start = useToolbarStore((s) => s.start)
+  const { data: gauges } = useInternalMetricsSeries({
+    metrics: ["flows_active", "agent_turns_open"],
+    sinceMs: start * 1000,
+  })
 
   if (summaryLoading) {
     return (
@@ -126,6 +135,38 @@ export function OverviewPage() {
         <div className="rounded-lg border border-border bg-card p-4">
           <h3 className="mb-3 text-sm font-medium">Agent Distribution</h3>
           <AgentDistributionChart rows={agentSummary?.summary ?? []} />
+        </div>
+      </div>
+
+      {/* Active concurrency — live gauges from internal_metrics ring */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="rounded-lg border border-border bg-card p-4">
+          <h3 className="mb-3 text-sm font-medium">
+            Active TCP Connections
+            <span className="ml-2 text-xs font-normal text-muted-foreground">
+              tracked flows across all pipelines
+            </span>
+          </h3>
+          <ActiveGaugeChart
+            metric="flows_active"
+            label="Active connections"
+            color="#3b82f6"
+            data={gauges}
+          />
+        </div>
+        <div className="rounded-lg border border-border bg-card p-4">
+          <h3 className="mb-3 text-sm font-medium">
+            Active Agent Turns
+            <span className="ml-2 text-xs font-normal text-muted-foreground">
+              in-progress agent turns (registry size)
+            </span>
+          </h3>
+          <ActiveGaugeChart
+            metric="agent_turns_open"
+            label="Open turns"
+            color="#10b981"
+            data={gauges}
+          />
         </div>
       </div>
 

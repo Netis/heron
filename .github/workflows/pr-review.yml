@@ -1,0 +1,137 @@
+name: pr-review
+
+# Headless code-review agent. Fires AFTER the `ci` workflow completes
+# successfully on a PR — that gate keeps the agent from wasting GLM-5
+# cycles on PRs that don't even compile, and ensures the review the
+# author sees is "tests are green, here's what to look at next".
+#
+# Manual `workflow_dispatch` is kept as a fallback for re-runs.
+#
+# Runs on the self-hosted runner. Reaches LiteLLM via the
+# `LITELLM_*` repo secrets; LiteLLM rewrites the Anthropic-shaped
+# request onto the locally-served backend. See
+# docs/pr-review-agent.md.
+
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+        type: number
+
+concurrency:
+  # One review per PR. A re-trigger cancels an in-flight review of
+  # the same PR so we don't post conflicting comments.
+  group: pr-review-${{ github.event.workflow_run.pull_requests[0].number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Gate the workflow_run path on:
+    #   * CI actually succeeded (we never review red builds)
+    #   * the upstream run was triggered by a PR (push events have no
+    #     PR to comment on)
+    #   * pull_requests[] is populated (empty for fork PRs — by design
+    #     we only review same-repo PRs from this internal repo)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.pull_requests[0] != null
+      )
+    runs-on: [self-hosted, tokenscope]
+    timeout-minutes: 30
+    env:
+      # Agent endpoint + key live in repo secrets so this workflow
+      # is portable across deployments without exposing internal
+      # addressing. The LiteLLM proxy at LITELLM_BASE_URL maps
+      # `claude-3-5-sonnet-20241022` onto whatever local backend
+      # is configured.
+      ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+      ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
+      # actions/checkout@v4 ships a Node 20 runtime; GitHub is
+      # deprecating Node 20 on runners. Opt the JS actions into the
+      # Node 24 runtime so the workflow doesn't annotate every run
+      # with a deprecation warning.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    steps:
+      - name: Configure no_proxy for LiteLLM
+        # See pr-review-probe.yml. We keep the cloud-init-installed
+        # http_proxy intact (gh CLI needs it to reach api.github.com)
+        # and only ensure no_proxy lists the in-cluster LiteLLM host
+        # so curl / claude CLI go direct there.
+        run: |
+          {
+            echo "no_proxy=${{ secrets.LITELLM_NO_PROXY }}"
+            echo "NO_PROXY=${{ secrets.LITELLM_NO_PROXY }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Resolve PR + head SHA
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PR_NUMBER="${{ inputs.pr_number }}"
+          else
+            PR_NUMBER="${{ github.event.workflow_run.pull_requests[0].number }}"
+          fi
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+            echo "::error::could not resolve PR number"
+            exit 1
+          fi
+          eval "$(gh pr view "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json headRefOid,baseRefName \
+            --jq '"HEAD_SHA=\(.headRefOid)\nBASE_REF=\(.baseRefName)"')"
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "head_sha=$HEAD_SHA"
+            echo "base_ref=$BASE_REF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+
+      - name: Fetch base for diff
+        run: git fetch origin "${{ steps.pr.outputs.base_ref }}" --depth 200
+
+      - name: Overlay reviewer scripts from default branch
+        # PRs older than the AI-reviewer feature don't carry
+        # scripts/pr-review/ on their head. Always overlay the latest
+        # reviewer scripts from the default branch so we run a single
+        # canonical reviewer regardless of PR vintage. The PR head's
+        # source tree is left otherwise untouched — the agent still
+        # sees the code under review, not main's code.
+        run: |
+          git fetch origin "${{ github.event.repository.default_branch }}" --depth 1
+          git checkout "origin/${{ github.event.repository.default_branch }}" -- scripts/pr-review
+
+      - name: Run review agent
+        id: review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+        run: bash scripts/pr-review/run_review.sh "$PR_NUMBER"
+
+      - name: Post review
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AGENT_EXIT: ${{ steps.review.outcome }}
+        run: python3 scripts/pr-review/post_review.py "$PR_NUMBER"
+
+      - name: Cleanup transient files
+        if: always()
+        run: rm -f /tmp/pr-review-*.md /tmp/pr-review-*.log /tmp/pr-review-*.json || true

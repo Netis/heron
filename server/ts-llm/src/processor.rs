@@ -197,14 +197,20 @@ impl LlmProcessor {
         let response_time = response.first_byte_timestamp_us;
         let complete_time = response.complete_timestamp_us;
 
-        // TTFT (time to first token) is only meaningful for streaming
-        // responses — the wire `first_byte` then marks when the model
-        // started emitting tokens. Non-streaming servers buffer the full
-        // generation server-side and ship the complete JSON in one shot,
-        // so `first_byte ≈ complete_byte` and the metric collapses to E2E
-        // latency. Reporting that under the TTFT label was misleading and
-        // polluted the streaming-TTFT distributions on the dashboard.
-        let ttft_ms = if req_info.is_stream && response_time > request_time {
+        // `ttft_ms` = response-first-byte minus request, computed for *every*
+        // call regardless of streaming. The semantic is:
+        //
+        //   - streaming: time to first emitted token (true TTFT)
+        //   - non-streaming: time to first response byte; ≈ e2e because
+        //     servers buffer the full body before shipping
+        //
+        // The earlier behaviour of nulling non-streaming TTFT (the original
+        // "purity" fix) left the Performance dashboard empty in
+        // non-streaming-dominant workloads and forced users to read TTFT
+        // from individual call rows. Carry both and let the aggregator
+        // split them (`ttft_stream_*` / `ttft_nonstream_*` rollup fields)
+        // so dashboards can show each distribution separately.
+        let ttft_ms = if response_time > request_time {
             Some((response_time - request_time) as f64 / 1000.0)
         } else {
             None
@@ -608,13 +614,13 @@ mod tests {
     }
 
     #[test]
-    fn ttft_is_none_for_non_streaming_request() {
-        // For non-streaming requests, the wire `first_byte_timestamp_us`
-        // marks when the server starts shipping the JSON response — which
-        // only happens AFTER the model has finished generating. Reporting
-        // this gap as "TTFT" makes the metric collapse to E2E latency and
-        // pollutes the dashboard's TTFT percentiles. The processor must
-        // refuse to populate `ttft_ms` for non-streaming exchanges.
+    fn ttft_is_populated_for_non_streaming_request() {
+        // Non-streaming requests also carry a meaningful first-byte gap —
+        // it's "time until the response started arriving on the wire",
+        // which for non-streaming ≈ e2e latency but is still a useful
+        // user-facing number. The aggregator splits the stream and
+        // non-stream distributions on the rollup side, so each shows
+        // separately on the dashboard.
         use serde_json::json;
         let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
         let req_body = json!({
@@ -630,7 +636,7 @@ mod tests {
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
         });
         // exchange_parts() sets first_byte_timestamp_us = request_ts + 100_000 (i.e.
-        // 100 ms gap — enough for the old code path to compute ttft_ms = 100.0).
+        // 100 ms gap → ttft_ms = 100.0).
         let (request, response) = exchange_parts(req, Bytes::from(resp_body.to_string()), false);
         let events = proc.process(HttpJoinerEvent::Exchange {
             id: "xchg-nostream".to_string(),
@@ -641,16 +647,17 @@ mod tests {
         match &events[0] {
             LlmEvent::Complete { call, .. } => {
                 assert!(!call.is_stream, "fixture should be non-streaming");
+                let ttft = call
+                    .ttft_ms
+                    .expect("ttft_ms must be populated for non-streaming too");
                 assert!(
-                    call.ttft_ms.is_none(),
-                    "ttft_ms must be None for non-streaming, got {:?}",
-                    call.ttft_ms,
+                    (ttft - 100.0).abs() < 1.0,
+                    "ttft_ms expected ~100.0, got {}",
+                    ttft,
                 );
-                // E2E latency stays meaningful regardless of streaming flag — it's
-                // (request_ts → complete_ts) which the wire genuinely measures.
                 assert!(
                     call.e2e_latency_ms.is_some(),
-                    "e2e_latency_ms must remain populated for non-streaming",
+                    "e2e_latency_ms must remain populated",
                 );
             }
             _ => panic!("expected Complete"),
@@ -721,9 +728,8 @@ mod tests {
         // Defensive: a malformed capture where first_byte_timestamp_us
         // somehow precedes request_ts (clock skew between capture points,
         // out-of-order packet reassembly, etc.) must NOT produce a
-        // negative or wrap-around ttft. The original guard
-        // `response_time > request_time` already covered this; the gate
-        // we just added is `&&`-ed onto it, so we re-assert it holds.
+        // negative or wrap-around ttft. The `response_time > request_time`
+        // guard covers this.
         use serde_json::json;
         let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics());
         let req_body = json!({

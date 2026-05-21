@@ -153,6 +153,13 @@ pub trait StorageBackend: Send + Sync {
     async fn query_distinct_models(&self) -> Result<Vec<String>>;
     async fn query_distinct_server_ips(&self) -> Result<Vec<String>>;
 
+    /// Distinct `agent_kind` values seen in `agent_turns` whose `start_time`
+    /// falls in `[start_us, end_us)`. Empty range ⇒ empty result. Used by
+    /// the agent-sessions / agent-turns filter dropdowns so options stay in
+    /// sync with what was actually captured in the visible window.
+    async fn query_distinct_agent_kinds(&self, start_us: i64, end_us: i64)
+        -> Result<Vec<String>>;
+
     /// Distinct `(wire_api, finish_reason)` pairs observed in
     /// `llm_finish_metrics`. Excludes the `*` rollup tiers. Used by the calls
     /// page filter dropdown to populate options dynamically — values are raw

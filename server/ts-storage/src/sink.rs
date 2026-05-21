@@ -360,6 +360,13 @@ mod tests {
         async fn query_distinct_server_ips(&self) -> Result<Vec<String>> {
             Ok(vec![])
         }
+        async fn query_distinct_agent_kinds(
+            &self,
+            _start_us: i64,
+            _end_us: i64,
+        ) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
         async fn query_distinct_finish_reasons(&self) -> Result<Vec<DistinctFinishReason>> {
             Ok(vec![])
         }
@@ -576,6 +583,16 @@ mod tests {
                 ttft_p50: None,
                 ttft_p95: None,
                 ttft_p99: None,
+                ttft_stream_sum: 0.0,
+                ttft_stream_count: 0,
+                ttft_stream_p50: None,
+                ttft_stream_p95: None,
+                ttft_stream_p99: None,
+                ttft_nonstream_sum: 0.0,
+                ttft_nonstream_count: 0,
+                ttft_nonstream_p50: None,
+                ttft_nonstream_p95: None,
+                ttft_nonstream_p99: None,
                 e2e_sum: 0.0,
                 e2e_count: 0,
                 e2e_p50: None,

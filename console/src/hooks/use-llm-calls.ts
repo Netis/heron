@@ -16,6 +16,8 @@ interface UseLlmCallsParams {
   /** CSV of u16 server ports e.g. "4210,9000" */
   serverPort?: string
   requestPath?: string
+  /** Stream-mode filter: "stream", "non-stream", or undefined for all. */
+  isStream?: string
 }
 
 export function useLlmCalls({
@@ -28,6 +30,7 @@ export function useLlmCalls({
   clientIp,
   serverPort,
   requestPath,
+  isStream,
 }: UseLlmCallsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
@@ -37,7 +40,7 @@ export function useLlmCalls({
     queryKey: ["llm-calls", {
       start, end, page, pageSize, sortBy, sortOrder,
       ...fp,
-      statusCode, finishReason, clientIp, serverPort, requestPath,
+      statusCode, finishReason, clientIp, serverPort, requestPath, isStream,
     }],
     queryFn: () =>
       apiFetch<LlmCallsPage>("/api/llm-calls", {
@@ -53,6 +56,7 @@ export function useLlmCalls({
         client_ip: clientIp || undefined,
         server_port: serverPort || undefined,
         request_path: requestPath || undefined,
+        is_stream: isStream || undefined,
       }),
     placeholderData: (prev) => prev,
   })
