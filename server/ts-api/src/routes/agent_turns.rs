@@ -629,6 +629,7 @@ pub async fn activity(
     Ok(ApiResponse::ok(AgentActivityResp { points }))
 }
 
+
 #[cfg(test)]
 mod proxy_view_tests {
     use super::*;

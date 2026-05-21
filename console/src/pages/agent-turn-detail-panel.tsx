@@ -124,9 +124,9 @@ function TurnDetailView({
           <div className="flex flex-col gap-3 p-4">
             {liteMode && (
               <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700/60 dark:bg-amber-900/20 dark:text-amber-200">
-                Large turn ({turn.call_count} calls) — request/response
-                bodies omitted from the list. Expand any call to fetch its
-                bodies on demand.
+                Large turn ({turn.call_count} calls) — request/response bodies
+                omitted from the list. Expand any call to fetch its bodies on
+                demand.
               </div>
             )}
             {loadingCalls && calls.length === 0 ? (
@@ -187,7 +187,6 @@ function TabButton({
     </button>
   )
 }
-
 
 /// Above this call_count threshold, the calls list switches to lite
 /// mode — server NULLs the four heavy body/header fields so a
