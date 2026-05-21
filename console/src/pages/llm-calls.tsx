@@ -167,6 +167,10 @@ export function LlmCallsPage() {
   }, [finishReasonsData])
 
   const [selectedId, setSelectedId] = useSearchParamState("selected", "")
+  // Anchor (unix seconds) shared alongside `?selected` so a recipient who
+  // opens this URL with a stale relative preset still lands on the call's
+  // window — see use-url-sync.ts for the override logic.
+  const [, setSelectedAt] = useSearchParamState("selected_at", "")
 
   // Stream filter accepts "stream" / "non-stream" / "" (= all).
   const streamFilter =
@@ -211,26 +215,37 @@ export function LlmCallsPage() {
     ? items.findIndex((i) => i.id === selectedId)
     : -1
 
+  const selectItemById = useCallback(
+    (id: string) => {
+      const item = items.find((i) => i.id === id)
+      setSelectedId(id)
+      // request_time is unix ms — convert to seconds for the anchor.
+      setSelectedAt(item ? String(Math.floor(item.request_time / 1000)) : "")
+    },
+    [items, setSelectedId, setSelectedAt],
+  )
+
   const handleRowClick = useCallback(
     (id: string, _index: number) => {
-      setSelectedId(id)
+      selectItemById(id)
     },
-    [setSelectedId],
+    [selectItemById],
   )
 
   const handleNavigate = useCallback(
     (direction: "prev" | "next") => {
       const newIndex = direction === "prev" ? selectedIndex - 1 : selectedIndex + 1
       if (newIndex >= 0 && newIndex < items.length) {
-        setSelectedId(items[newIndex].id)
+        selectItemById(items[newIndex].id)
       }
     },
-    [selectedIndex, items, setSelectedId],
+    [selectedIndex, items, selectItemById],
   )
 
   const handleClose = useCallback(() => {
     setSelectedId("")
-  }, [setSelectedId])
+    setSelectedAt("")
+  }, [setSelectedId, setSelectedAt])
 
   return (
     <div className="relative flex h-full flex-col">

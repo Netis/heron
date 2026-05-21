@@ -7,6 +7,7 @@ import {
   isValidPreset,
 } from "@/stores/toolbar"
 import { getSpecForPath, type DimensionKey } from "@/stores/page-filter-specs"
+import { applySelectedAtAnchor } from "./selected-at-anchor"
 
 function nowSeconds() {
   return Math.floor(Date.now() / 1000)
@@ -22,6 +23,13 @@ const P = {
   serverIp: "server_ip",
   refresh: "refresh",
 } as const
+
+/**
+ * Page-level "selected item" anchor — written by list pages alongside
+ * `?selected=<id>` so the recipient of a shared link can recover the
+ * window the item was in, not just the most-recent N minutes.
+ */
+const SELECTED_AT_PARAM = "selected_at"
 
 /**
  * Bidirectional sync between the toolbar Zustand store and URL search params.
@@ -60,6 +68,9 @@ export function useToolbarUrlSync() {
         hydratePatch.end = now
       }
     }
+
+    const selectedAtRaw = searchParams.get(SELECTED_AT_PARAM)
+    applySelectedAtAnchor(hydratePatch, selectedAtRaw, nowSeconds())
 
     const wireApi = searchParams.get(P.wireApi)
     const model = searchParams.get(P.model)
