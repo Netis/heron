@@ -158,21 +158,29 @@ def auto_merge(number: str) -> None:
 
 
 def main() -> int:
+    # Agent-failure path: keep failure details out of the PR entirely.
+    # Operators read workflow logs for diagnostics; PR readers should
+    # never see "Agent run failed" / "agent unavailable" / etc. — those
+    # comments are noise to anyone watching the PR and leak nothing
+    # useful to authors.
+    if AGENT_EXIT == "failure":
+        print("agent run failed — not posting to PR (see workflow log)")
+        return 0
+
     body = read_review()
     if not body:
-        if AGENT_EXIT == "failure":
-            body = (
-                "### Summary\n"
-                "Agent run failed before producing output. "
-                f"See [workflow run]({RUN_URL}) for the agent log."
-            )
-        else:
-            print("no review body — skipping post")
-            return 0
+        print("no review body — skipping post")
+        return 0
+
+    # Bare body if it starts with ERROR — that's a pre-flight signal,
+    # also belongs in workflow logs only.
+    if body.lstrip().startswith("ERROR"):
+        print("agent reported pre-flight error — not posting to PR")
+        return 0
 
     footer = (
         "\n\n---\n"
-        "🤖 Reviewed by **glm-5** via LiteLLM • "
+        "🤖 Reviewed by **vivi** • "
         f"[workflow run]({RUN_URL})"
     )
     full = body + footer
