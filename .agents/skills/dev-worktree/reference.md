@@ -17,8 +17,6 @@ General best practices for using git worktrees with parallel Claude Code session
 | Switch directories mid-session | Context confusion | Stay in one project per session |
 | Keep root session while spawning to worktree | Lock acquisition failures | Close root or use for monitoring only |
 
-**Research**: See docs/research/0006-2026-01-31-worktree-claude-code-best-practices.md for evidence.
-
 ## Key Rules
 
 ### Directory Awareness
