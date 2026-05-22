@@ -109,6 +109,7 @@ export function AgentTurnsPage() {
   const pageSize = Number(pageSizeStr) || 50
   const statusFilter = statusStr ? statusStr.split(",") : []
   const agentKindFilter = agentKindStr ? agentKindStr.split(",") : []
+  const { data: agentKindsData } = useAgentKinds()
 
   const [selectedId, setSelectedId] = useSearchParamState("selected", "")
   // Anchor (unix seconds) shared alongside `?selected` so a recipient who
@@ -129,9 +130,6 @@ export function AgentTurnsPage() {
     setSelectedAt("")
   }, [setSelectedId, setSelectedAt])
 
-  const agentKindsQuery = useAgentKinds()
-  const agentKindOptions = agentKindsQuery.data?.values ?? []
-
   const { data, isLoading, isError, error } = useAgentTurns({
     page,
     pageSize,
@@ -145,6 +143,13 @@ export function AgentTurnsPage() {
   })
 
   const items = data?.items ?? []
+  const agentKindOptions = Array.from(
+    new Set([
+      ...(agentKindsData?.values ?? []),
+      ...items.map((item) => item.agent_kind),
+      ...agentKindFilter,
+    ]),
+  ).sort()
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1

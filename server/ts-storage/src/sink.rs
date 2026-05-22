@@ -212,12 +212,13 @@ mod tests {
     use super::*;
     use crate::query::{
         AgentActivityPoint, AgentActivityQuery, AgentKindSummary, AgentSummaryQuery, CallDetail,
-        CallsPage, CallsQuery, DistinctFinishReason, FinishReasonTimeseries, FinishReasonsQuery,
-        HttpExchangeDetail, HttpExchangesPage, HttpExchangesQuery, MetricsModelRow,
-        MetricsModelsQuery, MetricsSummaryQuery, MetricsSummaryRow, MetricsTimeseriesQuery,
-        MetricsTimeseriesRow, ServiceRow, ServicesQuery, ServicesTopology, ServicesTopologyQuery,
-        SessionDetail, SessionListQuery, SessionTurnsPage, SessionTurnsQuery, SessionsPage,
-        TurnCallItem, TurnDetail, TurnsPage, TurnsQuery,
+        CallsPage, CallsQuery, DistinctAgentKindsQuery, DistinctFinishReason,
+        FinishReasonTimeseries, FinishReasonsQuery, HttpExchangeDetail, HttpExchangesPage,
+        HttpExchangesQuery, MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery,
+        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, ServiceRow,
+        ServicesQuery, ServicesTopology, ServicesTopologyQuery, SessionDetail, SessionListQuery,
+        SessionTurnsPage, SessionTurnsQuery, SessionsPage, TurnCallItem, TurnDetail, TurnsPage,
+        TurnsQuery,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -392,8 +393,7 @@ mod tests {
         }
         async fn query_distinct_agent_kinds(
             &self,
-            _start_us: i64,
-            _end_us: i64,
+            _query: &DistinctAgentKindsQuery,
         ) -> Result<Vec<String>> {
             Ok(vec![])
         }

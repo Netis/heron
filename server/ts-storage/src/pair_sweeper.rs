@@ -294,8 +294,7 @@ mod tests {
         }
         async fn query_distinct_agent_kinds(
             &self,
-            _start_us: i64,
-            _end_us: i64,
+            _: &DistinctAgentKindsQuery,
         ) -> Result<Vec<String>> {
             Ok(vec![])
         }
