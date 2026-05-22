@@ -1,3 +1,4 @@
+mod apps;
 mod calls;
 #[cfg(test)]
 mod concurrent_tests;
@@ -20,7 +21,7 @@ use ts_common::error::{AppError, Result};
 use ts_llm::model::LlmCall;
 use ts_metrics::model::{LlmFinishMetric, LlmMetric};
 use ts_protocol::HttpExchange;
-use ts_turn::AgentTurn;
+use ts_turn::{AgentTurn, PairCandidate};
 
 use ts_storage::query::*;
 use ts_storage::retention::{RetentionPolicy, RetentionReport};
@@ -163,6 +164,31 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::query_metrics_models(self, query).await
     }
 
+    async fn query_services(&self, query: &ServicesQuery) -> Result<Vec<ServiceRow>> {
+        DuckDbBackend::query_services(self, query).await
+    }
+
+    async fn query_services_topology(
+        &self,
+        query: &ServicesTopologyQuery,
+    ) -> Result<ServicesTopology> {
+        DuckDbBackend::query_services_topology(self, query).await
+    }
+
+    async fn query_agent_summary(
+        &self,
+        query: &AgentSummaryQuery,
+    ) -> Result<Vec<AgentKindSummary>> {
+        DuckDbBackend::query_agent_summary(self, query).await
+    }
+
+    async fn query_agent_activity(
+        &self,
+        query: &AgentActivityQuery,
+    ) -> Result<Vec<AgentActivityPoint>> {
+        DuckDbBackend::query_agent_activity(self, query).await
+    }
+
     async fn query_finish_reasons(
         &self,
         query: &FinishReasonsQuery,
@@ -186,12 +212,20 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::query_turn_by_id(self, turn_id).await
     }
 
-    async fn query_turn_calls(&self, turn_id: &str) -> Result<Vec<TurnCallItem>> {
-        DuckDbBackend::query_turn_calls(self, turn_id).await
+    async fn query_turn_calls(
+        &self,
+        turn_id: &str,
+        include_bodies: bool,
+    ) -> Result<Vec<TurnCallItem>> {
+        DuckDbBackend::query_turn_calls(self, turn_id, include_bodies).await
     }
 
-    async fn query_calls_by_ids(&self, call_ids: &[String]) -> Result<Vec<TurnCallItem>> {
-        DuckDbBackend::query_calls_by_ids(self, call_ids).await
+    async fn query_calls_by_ids(
+        &self,
+        call_ids: &[String],
+        include_bodies: bool,
+    ) -> Result<Vec<TurnCallItem>> {
+        DuckDbBackend::query_calls_by_ids(self, call_ids, include_bodies).await
     }
 
     async fn query_sessions(&self, query: &SessionListQuery) -> Result<SessionsPage> {
@@ -224,10 +258,9 @@ impl StorageBackend for DuckDbBackend {
 
     async fn query_distinct_agent_kinds(
         &self,
-        start_us: i64,
-        end_us: i64,
+        query: &DistinctAgentKindsQuery,
     ) -> Result<Vec<String>> {
-        DuckDbBackend::query_distinct_agent_kinds(self, start_us, end_us).await
+        DuckDbBackend::query_distinct_agent_kinds(self, query).await
     }
 
     async fn query_distinct_finish_reasons(&self) -> Result<Vec<DistinctFinishReason>> {
@@ -236,5 +269,21 @@ impl StorageBackend for DuckDbBackend {
 
     async fn apply_retention(&self, policy: RetentionPolicy) -> Result<RetentionReport> {
         DuckDbBackend::apply_retention(self, policy).await
+    }
+
+    async fn query_pair_candidates(
+        &self,
+        start_us: i64,
+        end_us: i64,
+    ) -> Result<Vec<PairCandidate>> {
+        DuckDbBackend::query_pair_candidates(self, start_us, end_us).await
+    }
+
+    async fn update_turn_metadata(
+        &self,
+        turn_id: &str,
+        patch: serde_json::Value,
+    ) -> Result<()> {
+        DuckDbBackend::update_turn_metadata(self, turn_id, patch).await
     }
 }

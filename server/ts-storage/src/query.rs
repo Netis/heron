@@ -38,12 +38,156 @@ pub struct MetricsModelsQuery {
 }
 
 #[derive(Debug, Clone)]
+pub struct ServicesQuery {
+    pub time_range: TimeRange,
+    pub sort_by: String,
+    pub sort_order: String,
+    pub limit: u32,
+}
+
+/// One row of the "Services" view: a unique `(server_ip, server_port)`
+/// endpoint with the models it served, error/perf stats, and the time
+/// window where it appeared. Computed directly off `llm_calls` because
+/// the pre-aggregated `llm_metrics` table doesn't carry `server_port`
+/// (its grouping sets stop at `server_ip`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceRow {
+    pub server_ip: String,
+    pub server_port: u16,
+    /// Distinct models seen on this endpoint. Capped at 32 in SQL via
+    /// `list_distinct(... )[:32]` so a misbehaving client that sends
+    /// thousands of made-up model strings doesn't bloat a single row.
+    pub models: Vec<String>,
+    pub wire_apis: Vec<String>,
+    /// Distinct request paths seen at this endpoint. Used by the
+    /// classifier to spot Ollama (`/api/chat`) and llama.cpp
+    /// (`/completion`, `/tokenize`) from their native non-OpenAI
+    /// surface. Capped at 8 in SQL.
+    pub request_paths: Vec<String>,
+    pub call_count: u64,
+    pub error_count: u64,
+    pub stream_count: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub ttft_avg_ms: Option<f64>,
+    pub ttft_p95_ms: Option<f64>,
+    pub e2e_avg_ms: Option<f64>,
+    pub e2e_p95_ms: Option<f64>,
+    /// Unix-epoch milliseconds of the first / last call seen in the
+    /// query window. Useful for "is this endpoint still live?".
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
+    /// Best-effort serving-software identification — one of
+    /// `vllm`, `sglang`, `ollama`, `llamacpp`, `litellm`,
+    /// `openai-compat`, `openai`, `anthropic`, or `None` (unknown).
+    /// vLLM / SGLang both run under uvicorn and can't yet be told
+    /// apart from headers alone; both show up as `openai-compat`
+    /// today. See `apps::classify_app`.
+    pub app: Option<String>,
+    /// Raw `Server` HTTP response header — surfaced in the UI as a
+    /// tooltip so the user can override the classifier visually.
+    pub server_header: Option<String>,
+}
+
+/// Query for the Services *topology* — the directed
+/// service→service / clients→service graph used by the Services page's
+/// Path view. Reuses the same window as `ServicesQuery`; node selection
+/// follows the same `(server_ip, server_port)` grouping as the table.
+#[derive(Debug, Clone)]
+pub struct ServicesTopologyQuery {
+    pub time_range: TimeRange,
+}
+
+/// One node in the service topology graph. The synthetic `__clients__`
+/// node uses `server_ip = "__clients__"`, `server_port = 0`, app =
+/// `Some("clients")`, and models empty — the UI uses these sentinels to
+/// render it differently from real endpoints.
+#[derive(Debug, Clone, Serialize)]
+pub struct TopologyNode {
+    pub server_ip: String,
+    pub server_port: u16,
+    pub app: Option<String>,
+    pub models: Vec<String>,
+    pub call_count: u64,
+}
+
+/// One directed edge in the service topology graph.
+///
+/// * `kind = "proxy"` — pairs found by `pair_sweeper`. Definitive: we
+///   observed both sides of the same turn group on the wire.
+/// * `kind = "inferred"` — heuristic edge. The inbound call's
+///   `client_ip` matches the `server_ip` of an existing service node
+///   (typical pattern: LiteLLM accepts the user's call, then makes
+///   outgoing calls that hit upstream as `client_ip=<litellm host>`).
+///   We attribute the hop to the litellm/proxy service on that host
+///   when there is one, else the most-active service. Less certain
+///   than `proxy` — source ports are ephemeral so we can't pinpoint
+///   when multiple services share a host.
+/// * `kind = "client"` — synthetic edges from the `__clients__`
+///   super-node into entry-point services whose inbound `client_ip`
+///   doesn't resolve to any known service.
+#[derive(Debug, Clone, Serialize)]
+pub struct TopologyEdge {
+    pub from_ip: String,
+    pub from_port: u16,
+    pub to_ip: String,
+    pub to_port: u16,
+    pub turn_count: u64,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServicesTopology {
+    pub nodes: Vec<TopologyNode>,
+    pub edges: Vec<TopologyEdge>,
+}
+
+/// Per-agent-kind aggregate over a time window, used by the Overview
+/// distribution chart.
+#[derive(Debug, Clone)]
+pub struct AgentSummaryQuery {
+    pub time_range: TimeRange,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentKindSummary {
+    pub agent_kind: String,
+    pub turn_count: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub avg_duration_ms: Option<f64>,
+    /// Unix-epoch ms of the most recent turn for this agent.
+    pub last_seen_ms: i64,
+}
+
+/// Per-bucket agent_kind counts, used by the Overview activity chart.
+/// `bucket_seconds` is an optional client hint; the server picks a
+/// sensible default based on the window size when omitted.
+#[derive(Debug, Clone)]
+pub struct AgentActivityQuery {
+    pub time_range: TimeRange,
+    pub bucket_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentActivityPoint {
+    /// Unix-epoch ms of the bucket start.
+    pub timestamp_ms: i64,
+    pub agent_kind: String,
+    pub turn_count: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct CallsQuery {
     pub time_range: TimeRange,
     pub filter: DimensionFilter,
     pub status_codes: Vec<u16>,
     pub finish_reasons: Vec<String>,
     pub client_ips: Vec<String>,
+    /// Per-call server port filter (matches `llm_calls.server_port` directly).
+    /// Lives outside `DimensionFilter` for the same reason `client_ips` does:
+    /// `llm_metrics` doesn't carry server_port, only `llm_calls` does.
+    pub server_ports: Vec<u16>,
     pub request_path_contains: Option<String>,
     /// Optional stream-mode filter. `None` keeps everything; `Some(true)` /
     /// `Some(false)` narrows to streaming-only / non-streaming-only.
@@ -82,6 +226,13 @@ pub struct FinishReasonsQuery {
     pub wire_apis: Vec<String>,
     pub models: Vec<String>,
     pub server_ips: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DistinctAgentKindsQuery {
+    pub time_range: TimeRange,
+    pub filter: DimensionFilter,
+    pub include_proxy_hops: bool,
 }
 
 /// One distinct `(wire_api, finish_reason)` pair observed in the
@@ -213,12 +364,22 @@ pub struct TurnsQuery {
     /// (the metrics-pre-aggregated dimension); client IP lives outside the
     /// filter, parallel to `CallsQuery.client_ips`.
     pub client_ips: Vec<String>,
+    /// Per-call server port filter. `agent_turns` doesn't carry `server_port`
+    /// — we resolve it through the turn's first `call_ids` entry against
+    /// `llm_calls`, same shortcut the topology query uses.
+    pub server_ports: Vec<u16>,
     pub statuses: Vec<String>,
     pub agent_kinds: Vec<String>,
     pub sort_by: String,
     pub sort_order: String,
     pub page: u32,
     pub page_size: u32,
+    /// When `false` (default), hide turns the pair sweeper has marked as
+    /// `proxy_out` or `mirror_secondary`. The folded leg is still
+    /// reachable by `turn_id` lookup. When `true`, return every row,
+    /// useful for diagnostics or for users who want to see the raw
+    /// captured topology.
+    pub include_proxy_hops: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -242,6 +403,25 @@ pub struct TurnListItem {
     pub final_finish_reason: Option<String>,
     pub user_input_preview: Option<String>,
     pub final_answer_preview: Option<String>,
+    /// `"proxy_in"` / `"proxy_out"` / `"mirror_primary"` /
+    /// `"mirror_secondary"` when the pair sweeper has classified this
+    /// turn. Absent on direct (un-proxied) turns and on turns the
+    /// sweeper hasn't reached yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_role: Option<String>,
+    /// `turn_id` of the matched peer leg, for navigation. Absent when
+    /// `proxy_role` is absent. For groups of >2 turns (the haproxy
+    /// 3-leg case) this surfaces only the first peer for backward
+    /// compatibility — clients should read `proxy_peer_turn_ids` to
+    /// see the full set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_peer_turn_id: Option<String>,
+    /// Every other member of this turn's proxy group (excludes self),
+    /// sorted lex. Empty/absent on direct turns. Two-member groups
+    /// have one entry here; three-member groups (haproxy_glm5: host
+    /// view + docker view + upstream hop) have two.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_peer_turn_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -564,6 +744,104 @@ pub struct SessionTurnsQuery {
     pub session_id: String,
     pub cursor: Option<SessionTurnsCursor>,
     pub page_size: u32,
+}
+
+// ---- Proxy view (multi-leg fold) ----
+
+/// Per-leg snapshot returned in a `ProxyViewResponse`. Each row is one
+/// captured vantage point of the same logical call. The list is ordered
+/// canonical-first (proxy_in / mirror_primary), then the hops.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProxyViewMember {
+    pub turn_id: String,
+    pub role: String,
+    pub client_ip: String,
+    pub client_port: Option<u16>,
+    pub server_ip: String,
+    pub server_port: Option<u16>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub duration_ms: u64,
+    pub ttft_ms: Option<f64>,
+    pub e2e_latency_ms: Option<f64>,
+    pub request_model: Option<String>,
+    pub wire_api: String,
+    pub request_path: Option<String>,
+    pub status_code: Option<u16>,
+    /// Parsed request headers as `Vec<(name, value)>`. Empty when the
+    /// leg's first call had no captured request_headers blob.
+    pub request_headers: Vec<(String, String)>,
+    pub response_headers: Vec<(String, String)>,
+}
+
+/// One header line in the multi-leg diff. The same `name` may appear in
+/// multiple entries if the proxy adds *and* removes the same header
+/// across legs (the leg dimension is captured via `values[i].turn_id`).
+#[derive(Debug, Clone, Serialize)]
+pub struct HeaderDiffEntry {
+    pub name: String,
+    pub kind: HeaderDiffKind,
+    pub values: Vec<HeaderValueByLeg>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeaderDiffKind {
+    /// Same `(name, value)` in every member of the group. UI dims these.
+    Common,
+    /// All members have the header but with different values — the
+    /// proxy rewrote it. Classic example: `Host`.
+    Modified,
+    /// Only some members have the header. The non-listed members
+    /// stripped or never carried it. Classic example:
+    /// `x-litellm-call-id` (added by proxy_in side only) or
+    /// `anthropic-request-id` (returned only by the upstream provider).
+    PerLeg,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HeaderValueByLeg {
+    pub turn_id: String,
+    pub role: String,
+    pub value: String,
+}
+
+/// Optional model-name rewrite the proxy applied. `None` when every
+/// leg's request body had the same `model` field (or none of them did).
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelRewrite {
+    /// Model name the client *sent*. Taken from the canonical leg's
+    /// (proxy_in / mirror_primary) request body.
+    pub client_requested: Option<String>,
+    /// Model name the upstream provider *received*. Taken from the
+    /// proxy_out leg's request body.
+    pub upstream_received: Option<String>,
+}
+
+/// Latency breakdown across legs. `proxy_overhead_ms` is the difference
+/// between the client-facing leg's e2e and the upstream-facing leg's
+/// e2e — what the proxy itself spent dispatching / serializing /
+/// running its callbacks.
+#[derive(Debug, Clone, Serialize)]
+pub struct LatencyBreakdown {
+    pub client_observed_ms: Option<f64>,
+    pub upstream_observed_ms: Option<f64>,
+    pub proxy_overhead_ms: Option<f64>,
+}
+
+/// Response from `GET /api/agent-turns/{id}/proxy-view`. Aggregates the
+/// requested turn plus every peer in its `metadata.proxy.peer_turn_ids`
+/// group, then produces a header diff and latency breakdown.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProxyViewResponse {
+    /// `metadata.proxy.pair_id` shared by every member.
+    pub group_id: String,
+    pub members: Vec<ProxyViewMember>,
+    pub request_header_diff: Vec<HeaderDiffEntry>,
+    pub response_header_diff: Vec<HeaderDiffEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_rewrite: Option<ModelRewrite>,
+    pub latency_breakdown: LatencyBreakdown,
 }
 
 #[derive(Debug, Clone, Serialize)]
