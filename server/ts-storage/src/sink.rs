@@ -211,12 +211,14 @@ pub fn spawn_storage_sink_stage(
 mod tests {
     use super::*;
     use crate::query::{
-        CallDetail, CallsPage, CallsQuery, DistinctAgentKindsQuery, DistinctFinishReason,
+        AgentActivityPoint, AgentActivityQuery, AgentKindSummary, AgentSummaryQuery, CallDetail,
+        CallsPage, CallsQuery, DistinctAgentKindsQuery, DistinctFinishReason,
         FinishReasonTimeseries, FinishReasonsQuery, HttpExchangeDetail, HttpExchangesPage,
         HttpExchangesQuery, MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery,
-        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, SessionDetail,
-        SessionListQuery, SessionTurnsPage, SessionTurnsQuery, SessionsPage, TurnCallItem,
-        TurnDetail, TurnsPage, TurnsQuery,
+        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, ServiceRow,
+        ServicesQuery, ServicesTopology, ServicesTopologyQuery, SessionDetail, SessionListQuery,
+        SessionTurnsPage, SessionTurnsQuery, SessionsPage, TurnCallItem, TurnDetail, TurnsPage,
+        TurnsQuery,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -299,6 +301,27 @@ mod tests {
         ) -> Result<Vec<MetricsModelRow>> {
             Ok(vec![])
         }
+        async fn query_services(&self, _query: &ServicesQuery) -> Result<Vec<ServiceRow>> {
+            Ok(vec![])
+        }
+        async fn query_services_topology(
+            &self,
+            _query: &ServicesTopologyQuery,
+        ) -> Result<ServicesTopology> {
+            Ok(ServicesTopology { nodes: vec![], edges: vec![] })
+        }
+        async fn query_agent_summary(
+            &self,
+            _query: &AgentSummaryQuery,
+        ) -> Result<Vec<AgentKindSummary>> {
+            Ok(vec![])
+        }
+        async fn query_agent_activity(
+            &self,
+            _query: &AgentActivityQuery,
+        ) -> Result<Vec<AgentActivityPoint>> {
+            Ok(vec![])
+        }
         async fn query_finish_reasons(
             &self,
             _query: &FinishReasonsQuery,
@@ -323,10 +346,18 @@ mod tests {
         async fn query_turn_by_id(&self, _turn_id: &str) -> Result<Option<TurnDetail>> {
             Ok(None)
         }
-        async fn query_turn_calls(&self, _turn_id: &str) -> Result<Vec<TurnCallItem>> {
+        async fn query_turn_calls(
+            &self,
+            _turn_id: &str,
+            _include_bodies: bool,
+        ) -> Result<Vec<TurnCallItem>> {
             Ok(vec![])
         }
-        async fn query_calls_by_ids(&self, _call_ids: &[String]) -> Result<Vec<TurnCallItem>> {
+        async fn query_calls_by_ids(
+            &self,
+            _call_ids: &[String],
+            _include_bodies: bool,
+        ) -> Result<Vec<TurnCallItem>> {
             Ok(vec![])
         }
         async fn query_sessions(&self, _query: &SessionListQuery) -> Result<SessionsPage> {

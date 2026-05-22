@@ -1,11 +1,12 @@
 import { useState } from "react"
-import { ChevronRight, ChevronDown } from "lucide-react"
+import { ChevronRight, ChevronDown, Layers, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatMs, formatNumber } from "@/lib/format"
 import { Markdown } from "@/components/ui/markdown"
 import { CallOutputDispatch, CallInputDispatch } from "@/components/call-renderers/dispatch"
 import { CallChipDispatch } from "@/components/call-renderers/chips/dispatch"
 import { finishTone } from "@/lib/finish-tone"
+import { useLlmCallDetail } from "@/hooks/use-llm-call-detail"
 import type { AgentTurnCallItem, AgentTurnDetail } from "@/types/api"
 import type { ToolIndex } from "@/lib/turn-index"
 
@@ -28,6 +29,11 @@ interface Props {
   active?: boolean
   defaultExpanded?: boolean
   onOpenDetail?: (id: string) => void
+  /** When this call is the canonical leg of a folded proxy duplicate
+   * pair (e.g. one captured copy of a LiteLLM→upstream hop is hidden
+   * under it), >0 number of hops folded into this row. Renders a
+   * small "+N hop" chip in the header so the fold is discoverable. */
+  hopCount?: number
 }
 
 export function CallCard({
@@ -38,11 +44,27 @@ export function CallCard({
   active,
   defaultExpanded,
   onOpenDetail,
+  hopCount = 0,
 }: Props) {
   const [expanded, setExpanded] = useState(Boolean(defaultExpanded))
   const speed = classify(call)
   const isFinalCall = call.id === turn.final_call_id
   const userInput = isFirstCall ? turn.user_input : null
+
+  // Lite-mode lazy load: when the parent fetched the calls list with
+  // `?lite=1`, request_body and response_body are NULL on the inline
+  // item. Once the user expands this specific card, fetch the full
+  // bodies for THIS call only via `/api/llm-calls/{id}`. The fetch is
+  // gated on `expanded` so a mega-turn with 800 collapsed cards doesn't
+  // fire 800 background requests.
+  const needsLazyBody =
+    expanded && call.request_body == null && call.response_body == null
+  const { data: lazyDetail, isLoading: lazyLoading } = useLlmCallDetail(
+    needsLazyBody ? call.id : null,
+  )
+  const effectiveRequestBody = call.request_body ?? lazyDetail?.request_body ?? null
+  const effectiveResponseBody = call.response_body ?? lazyDetail?.response_body ?? null
+  const bodiesPending = needsLazyBody && lazyLoading
 
   return (
     <div
@@ -67,10 +89,19 @@ export function CallCard({
           <CallChipDispatch
             wireApi={call.wire_api}
             callId={call.id}
-            responseBody={call.response_body}
+            responseBody={effectiveResponseBody}
             finalCallId={turn.final_call_id}
           />
           <span className="flex-1 truncate text-xs text-muted-foreground">{call.model}</span>
+          {hopCount > 0 && (
+            <span
+              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-300"
+              title={`${hopCount} proxy hop call(s) folded under this leg — toggle "Show proxy hops" to reveal`}
+            >
+              <Layers className="size-3" />
+              +{hopCount}
+            </span>
+          )}
           <span className={cn(
             "shrink-0 text-xs tabular-nums",
             (speed === "slow" || speed === "warn") && "text-amber-600",
@@ -106,7 +137,12 @@ export function CallCard({
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               Input · request body
             </div>
-            {userInput != null ? (
+            {bodiesPending ? (
+              <div className="flex items-center gap-2 rounded-md border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                <Loader2 className="size-3 animate-spin" />
+                Loading body…
+              </div>
+            ) : userInput != null ? (
               <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3 dark:border-blue-900/40 dark:bg-blue-900/10">
                 <Markdown text={userInput} />
               </div>
@@ -114,7 +150,7 @@ export function CallCard({
               <CallInputDispatch
                 wireApi={call.wire_api}
                 agentKind={turn.agent_kind ?? null}
-                requestBody={call.request_body}
+                requestBody={effectiveRequestBody}
                 toolIndex={toolIndex}
               />
             )}
@@ -125,13 +161,20 @@ export function CallCard({
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
               Output · response body
             </div>
-            <CallOutputDispatch
-              wireApi={call.wire_api}
-              agentKind={turn.agent_kind ?? null}
-              responseBody={call.response_body}
-              toolIndex={toolIndex}
-              callId={call.id}
-            />
+            {bodiesPending ? (
+              <div className="flex items-center gap-2 rounded-md border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                <Loader2 className="size-3 animate-spin" />
+                Loading body…
+              </div>
+            ) : (
+              <CallOutputDispatch
+                wireApi={call.wire_api}
+                agentKind={turn.agent_kind ?? null}
+                responseBody={effectiveResponseBody}
+                toolIndex={toolIndex}
+                callId={call.id}
+              />
+            )}
           </section>
 
           <div className="text-[10px] text-muted-foreground font-mono">

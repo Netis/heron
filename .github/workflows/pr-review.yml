@@ -7,10 +7,10 @@ name: pr-review
 #
 # Manual `workflow_dispatch` is kept as a fallback for re-runs.
 #
-# Runs on the wuneng self-hosted runner. Reaches LiteLLM at
-# 172.16.103.81:4200 over the internal libvirt bridge; LiteLLM
-# rewrites the Anthropic-shaped request onto the GLM-5 backend
-# (SGLang :9000). See docs/pr-review-agent.md.
+# Runs on the self-hosted runner. Reaches LiteLLM via the
+# `LITELLM_*` repo secrets; LiteLLM rewrites the Anthropic-shaped
+# request onto the locally-served backend. See
+# docs/pr-review-agent.md.
 
 on:
   workflow_run:
@@ -47,12 +47,31 @@ jobs:
     runs-on: [self-hosted, tokenscope]
     timeout-minutes: 30
     env:
-      # Agent → LiteLLM → GLM-5. LiteLLM is configured to rewrite
-      # claude-3-5-sonnet-20241022 onto the GLM-5 backend.
-      ANTHROPIC_BASE_URL: http://172.16.103.81:4200
-      ANTHROPIC_API_KEY: dummy
+      # Agent endpoint + key live in repo secrets so this workflow
+      # is portable across deployments without exposing internal
+      # addressing. The LiteLLM proxy at LITELLM_BASE_URL maps
+      # `claude-3-5-sonnet-20241022` onto whatever local backend
+      # is configured.
+      ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.LITELLM_API_KEY }}
       ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
+      # actions/checkout@v4 ships a Node 20 runtime; GitHub is
+      # deprecating Node 20 on runners. Opt the JS actions into the
+      # Node 24 runtime so the workflow doesn't annotate every run
+      # with a deprecation warning.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
     steps:
+      - name: Configure no_proxy for LiteLLM
+        # See pr-review-probe.yml. We keep the cloud-init-installed
+        # http_proxy intact (gh CLI needs it to reach api.github.com)
+        # and only ensure no_proxy lists the in-cluster LiteLLM host
+        # so curl / claude CLI go direct there.
+        run: |
+          {
+            echo "no_proxy=${{ secrets.LITELLM_NO_PROXY }}"
+            echo "NO_PROXY=${{ secrets.LITELLM_NO_PROXY }}"
+          } >> "$GITHUB_ENV"
+
       - name: Resolve PR + head SHA
         id: pr
         env:
@@ -85,6 +104,17 @@ jobs:
 
       - name: Fetch base for diff
         run: git fetch origin "${{ steps.pr.outputs.base_ref }}" --depth 200
+
+      - name: Overlay reviewer scripts from default branch
+        # PRs older than the AI-reviewer feature don't carry
+        # scripts/pr-review/ on their head. Always overlay the latest
+        # reviewer scripts from the default branch so we run a single
+        # canonical reviewer regardless of PR vintage. The PR head's
+        # source tree is left otherwise untouched — the agent still
+        # sees the code under review, not main's code.
+        run: |
+          git fetch origin "${{ github.event.repository.default_branch }}" --depth 1
+          git checkout "origin/${{ github.event.repository.default_branch }}" -- scripts/pr-review
 
       - name: Run review agent
         id: review

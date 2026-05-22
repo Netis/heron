@@ -73,14 +73,6 @@ TokenScope is designed to answer questions at every layer of the stack. A select
 - How often does the agent loop without progress?
 - Which sessions stall at the same tool call repeatedly?
 
-## Netis origin, vendor-neutral ambition
-
-TokenScope is an open-source project from Netis Systems, a Shenzhen-based network and business performance management company (part of the Netcore Group, founded 2000). Netis has spent two decades building packet-evidence NPM/BPC/AIOps for regulated enterprise — finance, securities, telecom — and the TokenScope methodology inherits that lineage: passive out-of-band capture, no agents in the request path, one evidence chain.
-
-But TokenScope's ambition is Wireshark-class, not Netis-class. The tool is built to be useful to anyone operating LLM API traffic — SaaS LLM providers, enterprise AI platforms, agent-platform operators, dev-tool vendors, researchers — regardless of relationship with Netis. Netis's own `cloud-probe` project (`github.com/Netis/cloud-probe`) is one supported ingress, appropriate where SPAN/ERSPAN/TAP is unavailable (cloud, Kubernetes, virtualized). It is not a requirement.
-
-Contributions from outside the Netis orbit are welcome and expected.
-
 ## See also
 
 - [`README.md`](../README.md) — quick overview.

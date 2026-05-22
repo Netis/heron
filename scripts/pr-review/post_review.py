@@ -28,6 +28,15 @@ OUT_PATH = Path(f"/tmp/pr-review-{PR_NUMBER}-out.md")
 RUN_URL = os.environ.get("RUN_URL", "")
 AGENT_EXIT = os.environ.get("AGENT_EXIT", "")  # "success" / "failure" / ""
 
+# Authors whose PRs the AI is allowed to auto-merge on APPROVE. The
+# AI's review still has to land first, and the review still has to
+# go through the same `pick_event` thresholding — but if the verdict
+# is APPROVE and the PR was opened by a trusted author, we squash
+# and delete the branch right after posting.
+AUTO_MERGE_AUTHORS = {
+    a.strip() for a in os.environ.get("AUTO_MERGE_AUTHORS", "vaderyang").split(",") if a.strip()
+}
+
 
 def read_review() -> str:
     if not OUT_PATH.exists():
@@ -53,11 +62,27 @@ def pick_event(body: str) -> str:
     """Choose the gh-review event from section presence.
 
     Priority:
+      * agent run failed OR body has no markdown structure → COMMENT
+        (never approve a failed run)
       * agent explicitly said "REQUEST_CHANGES" / "APPROVE" / "COMMENT"
         in the Summary → trust the agent
       * else: Blocking → REQUEST_CHANGES; Suggestions/Questions only →
         COMMENT; nothing → APPROVE.
     """
+    # Hard guard: if the agent itself bailed out (workflow step failed)
+    # or wrote a bare ERROR line, do NOT issue an APPROVE — the body
+    # may not have any of the structured sections below and would
+    # otherwise fall through to the default-APPROVE branch.
+    if AGENT_EXIT == "failure":
+        return "COMMENT"
+    stripped = body.lstrip()
+    if stripped.startswith("ERROR:") or stripped.startswith("ERROR "):
+        return "COMMENT"
+    if "### " not in body:
+        # No markdown headings at all — treat as a free-form note,
+        # not a verdict.
+        return "COMMENT"
+
     summary_pat = re.compile(
         r"^###\s+Summary\s*\n(.*?)(?=^###\s+|\Z)",
         re.MULTILINE | re.DOTALL,
@@ -103,22 +128,59 @@ def post_via_comment(number: str, body: str) -> int:
     return proc.returncode
 
 
+def pr_author(number: str) -> str | None:
+    proc = subprocess.run(
+        ["gh", "pr", "view", number, "--json", "author", "--jq", ".author.login"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(f"gh pr view (author) failed: {proc.stderr}\n")
+        return None
+    return proc.stdout.strip() or None
+
+
+def auto_merge(number: str) -> None:
+    """Squash-merge with admin bypass. Repo doesn't have native
+    `--auto` enabled, so we squash inline. Branch is deleted on
+    success. Any failure (merge conflict, branch protection
+    surprise, etc.) is logged but doesn't fail the workflow — the
+    review is already posted, the operator can finish merging by
+    hand."""
+    cmd = ["gh", "pr", "merge", number, "--admin", "--squash", "--delete-branch"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.stderr.write(
+            f"auto-merge failed (left for manual merge): {proc.stderr}\n"
+        )
+    else:
+        print(f"auto-merged PR #{number}")
+
+
 def main() -> int:
+    # Agent-failure path: keep failure details out of the PR entirely.
+    # Operators read workflow logs for diagnostics; PR readers should
+    # never see "Agent run failed" / "agent unavailable" / etc. — those
+    # comments are noise to anyone watching the PR and leak nothing
+    # useful to authors.
+    if AGENT_EXIT == "failure":
+        print("agent run failed — not posting to PR (see workflow log)")
+        return 0
+
     body = read_review()
     if not body:
-        if AGENT_EXIT == "failure":
-            body = (
-                "### Summary\n"
-                "Agent run failed before producing output. "
-                f"See [workflow run]({RUN_URL}) for the agent log."
-            )
-        else:
-            print("no review body — skipping post")
-            return 0
+        print("no review body — skipping post")
+        return 0
+
+    # Bare body if it starts with ERROR — that's a pre-flight signal,
+    # also belongs in workflow logs only.
+    if body.lstrip().startswith("ERROR"):
+        print("agent reported pre-flight error — not posting to PR")
+        return 0
 
     footer = (
         "\n\n---\n"
-        "🤖 Reviewed by **glm-5** via LiteLLM • "
+        "🤖 Reviewed by **vivi** • "
         f"[workflow run]({RUN_URL})"
     )
     full = body + footer
@@ -132,6 +194,19 @@ def main() -> int:
     if rc != 0:
         sys.stderr.write("falling back to plain comment\n")
         post_via_comment(PR_NUMBER, full)
+
+    # Auto-merge gate: only fires on APPROVE, only for PRs opened by
+    # a trusted author (see AUTO_MERGE_AUTHORS). The thinking is
+    # that an APPROVE from the AI is enough signal for low-stakes
+    # changes by the project maintainer, but anyone else's PR
+    # still gets human review.
+    if event == "APPROVE":
+        author = pr_author(PR_NUMBER)
+        if author and author in AUTO_MERGE_AUTHORS:
+            print(f"author={author} in AUTO_MERGE_AUTHORS — squash-merging")
+            auto_merge(PR_NUMBER)
+        else:
+            print(f"author={author} not in AUTO_MERGE_AUTHORS={AUTO_MERGE_AUTHORS} — left for human")
 
     return 0
 

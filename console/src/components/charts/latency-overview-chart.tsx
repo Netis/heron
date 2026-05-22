@@ -8,7 +8,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts"
-import { formatMs } from "@/lib/format"
+import { formatMs, formatAxisTime } from "@/lib/format"
 import type { TimeseriesData } from "@/types/api"
 
 const SERIES_CONFIG = [
@@ -17,11 +17,6 @@ const SERIES_CONFIG = [
   { key: "e2e_avg", label: "E2E avg", color: "#3b82f6", dash: undefined },
   { key: "e2e_p95", label: "E2E p95", color: "#3b82f6", dash: "5 3" },
 ]
-
-function formatAxisTime(epoch: number): string {
-  const d = new Date(epoch * 1000)
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
-}
 
 interface Props {
   data: TimeseriesData | null
@@ -44,6 +39,10 @@ export function LatencyOverviewChart({ data }: Props) {
     }
     return point
   })
+  const spanSec =
+    data.timestamps.length > 1
+      ? data.timestamps[data.timestamps.length - 1] - data.timestamps[0]
+      : 0
 
   return (
     <ResponsiveContainer width="100%" height={240}>
@@ -51,7 +50,7 @@ export function LatencyOverviewChart({ data }: Props) {
         <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
         <XAxis
           dataKey="time"
-          tickFormatter={formatAxisTime}
+          tickFormatter={(v: number) => formatAxisTime(v, spanSec)}
           className="text-[11px] fill-muted-foreground"
           tickLine={false}
           axisLine={false}

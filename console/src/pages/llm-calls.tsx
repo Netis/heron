@@ -137,6 +137,7 @@ export function LlmCallsPage() {
   const [statusStr, setStatusStr] = useSearchParamState("status", "")
   const [finishStr, setFinishStr] = useSearchParamState("finish", "")
   const [clientIpStr, setClientIpStr] = useSearchParamState("client_ip", "")
+  const [serverPortStr, setServerPortStr] = useSearchParamState("server_port", "")
   const [pathStr, setPathStr] = useSearchParamState("path", "")
   const [streamStr, setStreamStr] = useSearchParamState("is_stream", "")
 
@@ -167,6 +168,10 @@ export function LlmCallsPage() {
   }, [finishReasonsData])
 
   const [selectedId, setSelectedId] = useSearchParamState("selected", "")
+  // Anchor (unix seconds) shared alongside `?selected` so a recipient who
+  // opens this URL with a stale relative preset still lands on the call's
+  // window — see use-url-sync.ts for the override logic.
+  const [, setSelectedAt] = useSearchParamState("selected_at", "")
 
   // Stream filter accepts "stream" / "non-stream" / "" (= all).
   const streamFilter =
@@ -180,6 +185,7 @@ export function LlmCallsPage() {
     statusCode: statusQuery,
     finishReason: finishQuery,
     clientIp: clientIpStr || undefined,
+    serverPort: serverPortStr || undefined,
     requestPath: pathStr || undefined,
     isStream: streamFilter || undefined,
   })
@@ -211,26 +217,37 @@ export function LlmCallsPage() {
     ? items.findIndex((i) => i.id === selectedId)
     : -1
 
+  const selectItemById = useCallback(
+    (id: string) => {
+      const item = items.find((i) => i.id === id)
+      setSelectedId(id)
+      // request_time is unix ms — convert to seconds for the anchor.
+      setSelectedAt(item ? String(Math.floor(item.request_time / 1000)) : "")
+    },
+    [items, setSelectedId, setSelectedAt],
+  )
+
   const handleRowClick = useCallback(
     (id: string, _index: number) => {
-      setSelectedId(id)
+      selectItemById(id)
     },
-    [setSelectedId],
+    [selectItemById],
   )
 
   const handleNavigate = useCallback(
     (direction: "prev" | "next") => {
       const newIndex = direction === "prev" ? selectedIndex - 1 : selectedIndex + 1
       if (newIndex >= 0 && newIndex < items.length) {
-        setSelectedId(items[newIndex].id)
+        selectItemById(items[newIndex].id)
       }
     },
-    [selectedIndex, items, setSelectedId],
+    [selectedIndex, items, selectItemById],
   )
 
   const handleClose = useCallback(() => {
     setSelectedId("")
-  }, [setSelectedId])
+    setSelectedAt("")
+  }, [setSelectedId, setSelectedAt])
 
   return (
     <div className="relative flex h-full flex-col">
@@ -255,6 +272,13 @@ export function LlmCallsPage() {
           onChange={(e) => { setClientIpStr(e.target.value); setPageStr("1") }}
           placeholder="Client IP (CSV)"
           className="w-[180px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
+        />
+        <input
+          value={serverPortStr}
+          onChange={(e) => { setServerPortStr(e.target.value); setPageStr("1") }}
+          placeholder="Server Port (CSV)"
+          inputMode="numeric"
+          className="w-[140px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
         />
         <input
           value={pathStr}

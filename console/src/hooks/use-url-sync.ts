@@ -7,6 +7,7 @@ import {
   isValidPreset,
 } from "@/stores/toolbar"
 import { getSpecForPath, type DimensionKey } from "@/stores/page-filter-specs"
+import { applySelectedAtAnchor } from "./selected-at-anchor"
 
 function nowSeconds() {
   return Math.floor(Date.now() / 1000)
@@ -24,6 +25,13 @@ const P = {
 } as const
 
 /**
+ * Page-level "selected item" anchor — written by list pages alongside
+ * `?selected=<id>` so the recipient of a shared link can recover the
+ * window the item was in, not just the most-recent N minutes.
+ */
+const SELECTED_AT_PARAM = "selected_at"
+
+/**
  * Bidirectional sync between the toolbar Zustand store and URL search params.
  * Mount once in AppLayout.
  *
@@ -38,6 +46,15 @@ export function useToolbarUrlSync() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { pathname } = useLocation()
   const skipUrlUpdate = useRef(false)
+  // The selected_at anchor exists to rescue a STALE shared link — when
+  // the recipient opens a URL whose relative preset has moved past the
+  // selected item, shift the window so the item is in view. Applying
+  // it on every searchParams change wrecks the live page: every click
+  // updates ?selected_at=, the URL→store effect re-runs, and the helper
+  // sees the (slightly newer) window boundary as having drifted past
+  // the just-clicked item — shifting unexpectedly. Gate the anchor to
+  // the very first hydration in this tab.
+  const anchorAppliedOnce = useRef(false)
 
   // ── URL → Store (on mount & on searchParams change from popstate) ──
   useEffect(() => {
@@ -59,6 +76,12 @@ export function useToolbarUrlSync() {
         hydratePatch.start = now - PRESET_SECONDS[urlPreset]
         hydratePatch.end = now
       }
+    }
+
+    if (!anchorAppliedOnce.current) {
+      const selectedAtRaw = searchParams.get(SELECTED_AT_PARAM)
+      applySelectedAtAnchor(hydratePatch, selectedAtRaw, nowSeconds())
+      anchorAppliedOnce.current = true
     }
 
     const wireApi = searchParams.get(P.wireApi)

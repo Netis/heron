@@ -4,17 +4,17 @@ import {
   Gauge,
   BarChart3,
   AlertTriangle,
-  Cpu,
+  Server,
   Sparkles,
   MessageSquare,
   MessagesSquare,
   Network,
   PanelLeftClose,
-  PanelLeftOpen,
   Settings,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useSidebarStore } from "@/stores/sidebar"
+import { Logo } from "@/components/ui/logo"
 
 /** Toolbar-level param keys that should be preserved across page navigation */
 const TOOLBAR_KEYS = ["preset", "start", "end", "wire_api", "model", "server_ip", "refresh"]
@@ -22,9 +22,11 @@ const TOOLBAR_KEYS = ["preset", "start", "end", "wire_api", "model", "server_ip"
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Overview" },
   { to: "/performance", icon: Gauge, label: "Performance" },
-  { to: "/traffic", icon: BarChart3, label: "Traffic" },
+  // Models view is now a tab inside Services; route /models still
+  // resolves for shared links but the sidebar entry was redundant.
+  { to: "/traffic", icon: BarChart3, label: "Usage" },
   { to: "/errors", icon: AlertTriangle, label: "Errors" },
-  { to: "/models", icon: Cpu, label: "Models" },
+  { to: "/services", icon: Server, label: "Services" },
   { to: "/agent-sessions", icon: MessageSquare, label: "Agent Sessions" },
   { to: "/agent-turns", icon: MessagesSquare, label: "Agent Turns" },
   { to: "/llm-calls", icon: Sparkles, label: "LLM Calls" },
@@ -54,13 +56,36 @@ export function Sidebar() {
         expanded ? "w-[200px]" : "w-[44px]",
       )}
     >
-      <div className="flex h-12 items-center justify-center border-b border-border px-2">
-        <button
-          onClick={toggle}
-          className="flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        >
-          {expanded ? <PanelLeftClose className="size-4" /> : <PanelLeftOpen className="size-4" />}
-        </button>
+      <div
+        className={cn(
+          "flex h-12 items-center border-b border-border",
+          expanded ? "justify-between pl-3 pr-2" : "justify-center px-2",
+        )}
+      >
+        {expanded ? (
+          <>
+            <Logo variant="wordmark" className="h-5 text-foreground" />
+            <button
+              onClick={toggle}
+              aria-label="Collapse sidebar"
+              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <PanelLeftClose className="size-4" />
+            </button>
+          </>
+        ) : (
+          // Collapsed: the icon doubles as the expand affordance — saves a
+          // row and is the most discoverable place to put the toggle when
+          // there's no room for a second button.
+          <button
+            onClick={toggle}
+            aria-label="Expand sidebar"
+            title="TokenScope — click to expand"
+            className="flex size-8 items-center justify-center rounded-md text-foreground transition-colors hover:bg-muted"
+          >
+            <Logo variant="icon" className="size-5" />
+          </button>
+        )}
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 p-1.5">

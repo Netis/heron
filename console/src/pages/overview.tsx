@@ -2,12 +2,15 @@ import { Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatMs, formatNumber } from "@/lib/format"
 import { useMetricsSummary, useTimeseries, useModels } from "@/hooks/use-metrics"
+import { useAgentActivity, useAgentSummary } from "@/hooks/use-agent-overview"
 import { useInternalMetricsSeries } from "@/hooks/use-internal-metrics"
 import { useToolbarStore } from "@/stores/toolbar"
 import { RequestVolumeChart } from "@/components/charts/request-volume-chart"
 import { LatencyOverviewChart } from "@/components/charts/latency-overview-chart"
 import { ModelBreakdownChart } from "@/components/charts/model-breakdown-chart"
 import { ErrorByModelChart } from "@/components/charts/error-by-model-chart"
+import { AgentActivityChart } from "@/components/charts/agent-activity-chart"
+import { AgentDistributionChart } from "@/components/charts/agent-distribution-chart"
 import { ActiveGaugeChart } from "@/components/charts/active-gauge-chart"
 
 function KpiCard({
@@ -50,6 +53,8 @@ export function OverviewPage() {
   const { data: volumeTs } = useTimeseries("call_count", { groupBy: "wire_api" })
   const { data: latencyTs } = useTimeseries("ttft_avg,ttft_p95,e2e_avg,e2e_p95")
   const { data: modelsData } = useModels()
+  const { data: agentActivity } = useAgentActivity()
+  const { data: agentSummary } = useAgentSummary()
   // Toolbar exposes `start` as unix-seconds; convert to ms for the series API.
   const start = useToolbarStore((s) => s.start)
   const { data: gauges } = useInternalMetricsSeries({
@@ -99,9 +104,13 @@ export function OverviewPage() {
           subtext={`${formatNumber(summary?.total_input_tokens)} in / ${formatNumber(summary?.total_output_tokens)} out`}
         />
         <KpiCard
-          title="Avg TPOT"
-          value={summary?.tpot_avg != null ? `${summary.tpot_avg.toFixed(1)} ms/tok` : "—"}
-          subtext="streaming only"
+          title="Avg TPS"
+          value={
+            summary?.tpot_avg != null && summary.tpot_avg > 0
+              ? `${(1000 / summary.tpot_avg).toFixed(1)} tok/s`
+              : "—"
+          }
+          subtext="streaming only · generation speed"
         />
       </div>
 
@@ -114,6 +123,18 @@ export function OverviewPage() {
         <div className="rounded-lg border border-border bg-card p-4">
           <h3 className="mb-3 text-sm font-medium">Latency Overview</h3>
           <LatencyOverviewChart data={latencyTs ?? null} />
+        </div>
+      </div>
+
+      {/* Agent row — activity timeseries + distribution */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="rounded-lg border border-border bg-card p-4">
+          <h3 className="mb-3 text-sm font-medium">Agent Activity</h3>
+          <AgentActivityChart points={agentActivity?.points ?? []} />
+        </div>
+        <div className="rounded-lg border border-border bg-card p-4">
+          <h3 className="mb-3 text-sm font-medium">Agent Distribution</h3>
+          <AgentDistributionChart rows={agentSummary?.summary ?? []} />
         </div>
       </div>
 

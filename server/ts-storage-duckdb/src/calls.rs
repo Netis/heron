@@ -92,6 +92,7 @@ fn prepare_call(call: LlmCall) -> PreparedCall {
 fn read_calls_by_ids_sync(
     conn: &Connection,
     call_ids: &[String],
+    include_bodies: bool,
 ) -> Result<Vec<TurnCallItem>> {
     if call_ids.is_empty() {
         return Ok(Vec::new());
@@ -99,6 +100,20 @@ fn read_calls_by_ids_sync(
     let placeholders = std::iter::repeat_n("?", call_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
+    // Lite mode (`include_bodies = false`) selects `NULL` for the four
+    // heavy fields directly in SQL, so DuckDB never reads the body
+    // pages off disk and the rows never need to be transferred to
+    // Rust as Strings. The downstream `tokens_estimated` derivation
+    // falls back to `false` when response_body is missing — documented
+    // on `StorageBackend::query_turn_calls`.
+    let body_columns: &str = if include_bodies {
+        "request_body, response_body, request_headers, response_headers"
+    } else {
+        "NULL::VARCHAR AS request_body, \
+         NULL::VARCHAR AS response_body, \
+         NULL::VARCHAR AS request_headers, \
+         NULL::VARCHAR AS response_headers"
+    };
     let sql = format!(
         "SELECT
             id,
@@ -110,8 +125,7 @@ fn read_calls_by_ids_sync(
             input_tokens, output_tokens,
             request_path, client_ip, client_port,
             server_ip, server_port,
-            request_body, response_body,
-            request_headers, response_headers
+            {body_columns}
         FROM llm_calls
         WHERE id IN ({placeholders})
         ORDER BY request_time ASC, complete_time ASC"
@@ -360,6 +374,14 @@ impl DuckDbBackend {
                     .collect();
                 where_parts.push(format!("client_ip IN ({})", list.join(", ")));
             }
+            if !query.server_ports.is_empty() {
+                let list: Vec<String> = query
+                    .server_ports
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect();
+                where_parts.push(format!("server_port IN ({})", list.join(", ")));
+            }
             if let Some(substr) = query
                 .request_path_contains
                 .as_deref()
@@ -554,7 +576,11 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    pub(crate) async fn query_turn_calls(&self, turn_id: &str) -> Result<Vec<TurnCallItem>> {
+    pub(crate) async fn query_turn_calls(
+        &self,
+        turn_id: &str,
+        include_bodies: bool,
+    ) -> Result<Vec<TurnCallItem>> {
         let conn = self.read_pool.acquire().await?;
         let turn_id = turn_id.to_string();
 
@@ -584,7 +610,7 @@ impl DuckDbBackend {
             // Step 2 lives in a shared helper so `query_calls_by_ids` (used
             // by the API for in-progress turns whose call_ids come from
             // the in-memory registry) can reuse the exact same projection.
-            read_calls_by_ids_sync(&conn, &call_ids)
+            read_calls_by_ids_sync(&conn, &call_ids, include_bodies)
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
@@ -593,15 +619,18 @@ impl DuckDbBackend {
     pub(crate) async fn query_calls_by_ids(
         &self,
         call_ids: &[String],
+        include_bodies: bool,
     ) -> Result<Vec<TurnCallItem>> {
         if call_ids.is_empty() {
             return Ok(Vec::new());
         }
         let conn = self.read_pool.acquire().await?;
         let call_ids: Vec<String> = call_ids.to_vec();
-        tokio::task::spawn_blocking(move || read_calls_by_ids_sync(&conn, &call_ids))
-            .await
-            .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+        tokio::task::spawn_blocking(move || {
+            read_calls_by_ids_sync(&conn, &call_ids, include_bodies)
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 }
 
@@ -756,6 +785,7 @@ mod tests {
             status_codes: vec![],
             finish_reasons: vec![],
             client_ips: vec![],
+            server_ports: vec![],
             request_path_contains: None,
             is_stream: None,
             sort_by: "request_time".to_string(),
@@ -799,6 +829,7 @@ mod tests {
             status_codes: vec![429],
             finish_reasons: vec![],
             client_ips: vec![],
+            server_ports: vec![],
             request_path_contains: None,
             is_stream: None,
             sort_by: "request_time".to_string(),

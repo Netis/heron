@@ -7,6 +7,7 @@ import { useSearchParamState } from "@/hooks/use-search-param-state"
 import { formatDateTimeMs, formatNumber, formatDuration } from "@/lib/format"
 import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
+import { ProxyBadge } from "@/components/ui/proxy-badge"
 import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
 import type { AgentTurnListItem } from "@/types/api"
 
@@ -14,17 +15,22 @@ const STATUS_OPTIONS = ["in_progress", "complete", "incomplete"]
 
 const PAGE_SIZES = [20, 50, 100] as const
 
+// Identity columns (Agent / Client) sit immediately after Time; coarse
+// shape (Calls / Status) and per-turn token counters (In / Out) follow
+// — that's the order operators reach for first when triaging a turn.
+// Less-frequently-scanned dimensions (Model / Wire API / Server) and
+// the long preview column trail.
 const columns = [
   { key: "start_time", label: "Time", width: "w-[210px]", sortable: true, align: "left" as const },
-  { key: "wire_api", label: "Wire API", width: "w-[120px]", sortable: false, align: "left" as const },
-  { key: "primary_model", label: "Model", width: "w-[180px]", sortable: false, align: "left" as const },
   { key: "agent_kind", label: "Agent", width: "w-[100px]", sortable: false, align: "left" as const },
   { key: "client_ip", label: "Client", width: "w-[130px]", sortable: false, align: "left" as const },
-  { key: "server_ip", label: "Server", width: "w-[130px]", sortable: false, align: "left" as const },
-  { key: "status", label: "Status", width: "w-[100px]", sortable: false, align: "left" as const },
   { key: "call_count", label: "Calls", width: "w-[60px]", sortable: true, align: "right" as const },
+  { key: "status", label: "Status", width: "w-[100px]", sortable: false, align: "left" as const },
   { key: "total_input_tokens", label: "In", width: "w-[70px]", sortable: true, align: "right" as const },
   { key: "total_output_tokens", label: "Out", width: "w-[70px]", sortable: true, align: "right" as const },
+  { key: "primary_model", label: "Model", width: "w-[180px]", sortable: false, align: "left" as const },
+  { key: "wire_api", label: "Wire API", width: "w-[120px]", sortable: false, align: "left" as const },
+  { key: "server_ip", label: "Server", width: "w-[130px]", sortable: false, align: "left" as const },
   { key: "duration_ms", label: "Duration", width: "w-[90px]", sortable: true, align: "right" as const },
   { key: "preview", label: "User Input", width: "", sortable: false, align: "left" as const },
 ] as const
@@ -37,7 +43,12 @@ function SortIcon({ column, sortBy, sortOrder }: { column: string; sortBy: strin
 function CellValue({ item, column }: { item: AgentTurnListItem; column: (typeof columns)[number]["key"] }) {
   switch (column) {
     case "start_time":
-      return <span className="tabular-nums">{formatDateTimeMs(item.start_time)}</span>
+      return (
+        <span className="inline-flex items-center gap-2">
+          <span className="tabular-nums">{formatDateTimeMs(item.start_time)}</span>
+          <ProxyBadge item={item} />
+        </span>
+      )
     case "wire_api":
       return (
         <span className="truncate" title={item.wire_api}>
@@ -87,6 +98,12 @@ export function AgentTurnsPage() {
   const [statusStr, setStatusStr] = useSearchParamState("status", "")
   const [agentKindStr, setAgentKindStr] = useSearchParamState("agent_kind", "")
   const [clientIpStr, setClientIpStr] = useSearchParamState("client_ip", "")
+  const [serverPortStr, setServerPortStr] = useSearchParamState("server_port", "")
+  // Default off — the user wanted the folded view as the primary
+  // experience. URL serialization keeps "show hops" sticky on a
+  // shared link.
+  const [showHopsStr, setShowHopsStr] = useSearchParamState("show_hops", "")
+  const includeProxyHops = showHopsStr === "1"
 
   const page = Number(pageStr) || 1
   const pageSize = Number(pageSizeStr) || 50
@@ -95,6 +112,23 @@ export function AgentTurnsPage() {
   const { data: agentKindsData } = useAgentKinds()
 
   const [selectedId, setSelectedId] = useSearchParamState("selected", "")
+  // Anchor (unix seconds) shared alongside `?selected` so a recipient who
+  // opens this URL with a stale relative preset still lands on the item's
+  // window — see use-url-sync.ts for the override logic.
+  const [, setSelectedAt] = useSearchParamState("selected_at", "")
+
+  const selectItem = useCallback(
+    (turnId: string, startTimeUs: number) => {
+      setSelectedId(turnId)
+      setSelectedAt(String(Math.floor(startTimeUs / 1_000_000)))
+    },
+    [setSelectedId, setSelectedAt],
+  )
+
+  const clearSelection = useCallback(() => {
+    setSelectedId("")
+    setSelectedAt("")
+  }, [setSelectedId, setSelectedAt])
 
   const { data, isLoading, isError, error } = useAgentTurns({
     page,
@@ -104,6 +138,8 @@ export function AgentTurnsPage() {
     status: statusStr || undefined,
     agentKind: agentKindStr || undefined,
     clientIp: clientIpStr || undefined,
+    serverPort: serverPortStr || undefined,
+    includeProxyHops,
   })
 
   const items = data?.items ?? []
@@ -163,6 +199,28 @@ export function AgentTurnsPage() {
           placeholder="Client IP (CSV)"
           className="w-[180px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
         />
+        <input
+          value={serverPortStr}
+          onChange={(e) => { setServerPortStr(e.target.value); setPageStr("1") }}
+          placeholder="Server Port (CSV)"
+          inputMode="numeric"
+          className="w-[140px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none"
+        />
+        <label
+          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-muted"
+          title="Show the upstream/mirror leg of llmproxy duplicates (hidden by default)"
+        >
+          <input
+            type="checkbox"
+            checked={includeProxyHops}
+            onChange={(e) => {
+              setShowHopsStr(e.target.checked ? "1" : "")
+              setPageStr("1")
+            }}
+            className="size-3"
+          />
+          Show proxy hops
+        </label>
       </div>
 
       {/* Table */}
@@ -219,7 +277,7 @@ export function AgentTurnsPage() {
               items.map((item) => (
                 <tr
                   key={item.turn_id}
-                  onClick={() => setSelectedId(item.turn_id)}
+                  onClick={() => selectItem(item.turn_id, item.start_time)}
                   className={cn(
                     "cursor-pointer border-b border-border/50 transition-colors hover:bg-muted/50",
                     selectedId === item.turn_id && "bg-muted",
@@ -291,7 +349,7 @@ export function AgentTurnsPage() {
 
       {/* Slide-over detail panel */}
       {selectedId && (
-        <AgentTurnDetailPanel id={selectedId} onClose={() => setSelectedId("")} />
+        <AgentTurnDetailPanel id={selectedId} onClose={clearSelection} />
       )}
     </div>
   )

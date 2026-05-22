@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
 import { useToolbarStore } from "@/stores/toolbar"
 import { useSupportedFilterParams } from "@/hooks/use-supported-filters"
-import type { AgentTurnsPage, AgentTurnDetail, AgentTurnCallItem } from "@/types/api"
+import type { AgentTurnsPage, AgentTurnDetail, AgentTurnCallItem, ProxyViewResponse } from "@/types/api"
 
 interface UseAgentTurnsParams {
   page: number
@@ -15,9 +15,14 @@ interface UseAgentTurnsParams {
   agentKind?: string
   /** CSV of client IPs e.g. "10.0.0.1,10.0.0.2" */
   clientIp?: string
+  /** CSV of u16 server ports e.g. "4210,9000" */
+  serverPort?: string
+  /** When true, return turns the pair sweeper marked hidden
+   * (`proxy_out` / `mirror_secondary`). Default false. */
+  includeProxyHops?: boolean
 }
 
-export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agentKind, clientIp }: UseAgentTurnsParams) {
+export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agentKind, clientIp, serverPort, includeProxyHops }: UseAgentTurnsParams) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
   const { params: fp } = useSupportedFilterParams()
@@ -26,7 +31,7 @@ export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agent
     queryKey: ["agent-turns", {
       start, end, page, pageSize, sortBy, sortOrder,
       ...fp,
-      status, agentKind, clientIp,
+      status, agentKind, clientIp, serverPort, includeProxyHops,
     }],
     queryFn: () =>
       apiFetch<AgentTurnsPage>("/api/agent-turns", {
@@ -40,6 +45,8 @@ export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agent
         status: status || undefined,
         agent_kind: agentKind || undefined,
         client_ip: clientIp || undefined,
+        server_port: serverPort || undefined,
+        include_proxy_hops: includeProxyHops ? "true" : undefined,
       }),
     placeholderData: (prev) => prev,
   })
@@ -53,10 +60,34 @@ export function useAgentTurnDetail(id: string | null) {
   })
 }
 
-export function useAgentTurnCalls(id: string | null) {
+/**
+ * Fetch the calls list for one turn.
+ *
+ * `lite=true` asks the server to NULL the four heavy fields
+ * (request_body, response_body, request_headers, response_headers) so
+ * a mega-turn (878 agentic iterations × ~190 KB request_body each ≈
+ * 168 MB JSON) doesn't freeze the browser. Callers that render an
+ * expanded call body in lite mode should fall back to
+ * `useLlmCallDetail(callId)` to fetch that one call's full bodies on
+ * demand.
+ */
+export function useAgentTurnCalls(id: string | null, lite = false) {
   return useQuery({
-    queryKey: ["agent-turn-calls", id],
-    queryFn: () => apiFetch<AgentTurnCallItem[]>(`/api/agent-turns/${id}/calls`),
+    queryKey: ["agent-turn-calls", id, lite],
+    queryFn: () =>
+      apiFetch<AgentTurnCallItem[]>(`/api/agent-turns/${id}/calls`, lite ? { lite: 1 } : {}),
     enabled: id != null,
+  })
+}
+
+/** Fetches the multi-leg fold for a turn that's part of a proxy group.
+ * Returns a 404 (and a useQuery error) when the turn is not part of any
+ * group — callers gate on `turn.proxy_role` being set before showing
+ * the proxy-view tab. */
+export function useAgentTurnProxyView(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["agent-turn-proxy-view", id],
+    queryFn: () => apiFetch<ProxyViewResponse>(`/api/agent-turns/${id}/proxy-view`),
+    enabled: id != null && enabled,
   })
 }
