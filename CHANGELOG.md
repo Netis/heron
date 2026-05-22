@@ -6,6 +6,61 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Capture
+
+- Default live-capture configuration now covers common LLM-serving ports,
+  reducing the need for explicit CLI capture filters in quickstart flows.
+
+### LLM wire-API support
+
+- OpenAI Chat streaming now captures `delta.reasoning_content` and
+  `delta.reasoning`, with console rendering before normal content.
+- OpenCode agent profile detection added for clients that expose a stable
+  `x-session-affinity` anchor.
+
+### Agent turn tracking
+
+- Generic fallback turn grouping now requires a tool/function-call anchor, so
+  text-only SDK calls stay on the LLM Calls page instead of producing
+  synthetic one-call Agent Turns.
+
+### Metrics
+
+- TTFT handling now distinguishes streaming and non-streaming calls, with
+  stream-only TTFT charts and backfilled rollups from stored call data.
+- Dashboard active-resource history added for TCP connections and agent
+  turns.
+- Long-range chart axes use date-aware labels for multi-day windows.
+
+### Console
+
+- Settings page added for capture sources, including interface discovery,
+  source editing, grouped source-type controls, and restart flow.
+- LLM Calls gained stream/non-stream filtering.
+- List pages persist the selected item in the URL.
+- Agent-kind filter options are derived from observed data in the active
+  window instead of a fixed list.
+
+### API
+
+- `GET /api/capture/interfaces` lists available capture interfaces.
+- `PUT /api/capture/sources` updates capture-source configuration and
+  restarts the process when needed.
+
+### Documentation
+
+- README reframed around agent observability with refreshed screenshots.
+- README quickstart now uses the default live-capture command and no longer
+  includes an explicit capture-filter example.
+- Removed the LLM call detail screenshot and its README reference.
+- Removed project-origin/company copy from public docs.
+
+### Development
+
+- Headless PR review workflow added for CI.
+- Repository instructions now require PR text to scrub private environment
+  details before publication.
+
 ## [0.2.0] — 2026-05-09
 
 ### Capture

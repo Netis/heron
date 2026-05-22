@@ -31,6 +31,12 @@ export function useAgentSessions({ agentKind, pageSize = DEFAULT_PAGE_SIZE }: Us
         cursor: pageParam || undefined,
       }),
     getNextPageParam: (last) => last.next_cursor ?? undefined,
+    // Keep the previously-loaded pages visible while a background
+    // refetch (auto-refresh, window-focus, query-key churn) is in
+    // flight. Every other list hook in the app does this — without
+    // it the Sessions page blanks out and re-renders the whole list
+    // each refresh tick, while other pages do a frame-perfect swap.
+    placeholderData: (prev) => prev,
   })
 }
 
@@ -42,6 +48,7 @@ export function useAgentSessionDetail(sourceId: string | null, sessionId: string
         `/api/agent-sessions/${encodeURIComponent(sourceId!)}/${encodeURIComponent(sessionId!)}`,
       ),
     enabled: sourceId != null && sessionId != null,
+    placeholderData: (prev) => prev,
   })
 }
 
@@ -63,5 +70,6 @@ export function useSessionTurns(
         },
       ),
     getNextPageParam: (last) => last.next_cursor ?? undefined,
+    placeholderData: (prev) => prev,
   })
 }

@@ -148,10 +148,22 @@ pub fn router(
     };
     let agent_turns_routes = Router::new()
         .route("/api/agent-turns", get(routes::agent_turns::list))
+        .route(
+            "/api/agent-turns/summary",
+            get(routes::agent_turns::summary),
+        )
+        .route(
+            "/api/agent-turns/activity",
+            get(routes::agent_turns::activity),
+        )
         .route("/api/agent-turns/{id}", get(routes::agent_turns::detail))
         .route(
             "/api/agent-turns/{id}/calls",
             get(routes::agent_turns::calls),
+        )
+        .route(
+            "/api/agent-turns/{id}/proxy-view",
+            get(routes::agent_turns::proxy_view),
         )
         .with_state(agent_turns_state);
 
@@ -175,6 +187,11 @@ pub fn router(
         .route("/api/metrics/timeseries", get(routes::metrics::timeseries))
         .route("/api/metrics/summary", get(routes::metrics::summary))
         .route("/api/metrics/models", get(routes::metrics::models))
+        .route("/api/services", get(routes::services::services))
+        .route(
+            "/api/services/topology",
+            get(routes::services::services_topology),
+        )
         .route(
             "/api/metrics/finish-reasons",
             get(routes::metrics::finish_reasons),

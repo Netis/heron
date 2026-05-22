@@ -63,6 +63,99 @@ export interface ModelsData {
   models: MetricsModelRow[]
 }
 
+export interface ServicesData {
+  services: ServiceRow[]
+}
+
+export interface ServiceRow {
+  server_ip: string
+  server_port: number
+  models: string[]
+  wire_apis: string[]
+  request_paths: string[]
+  call_count: number
+  error_count: number
+  stream_count: number
+  total_input_tokens: number
+  total_output_tokens: number
+  ttft_avg_ms: number | null
+  ttft_p95_ms: number | null
+  e2e_avg_ms: number | null
+  e2e_p95_ms: number | null
+  first_seen_ms: number
+  last_seen_ms: number
+  /** Server software label — "vllm" / "sglang" / "ollama" /
+   * "llamacpp" / "litellm" / "openai-compat" / "openai" / "anthropic"
+   * / "gemini" / null (unknown). vLLM and SGLang both run on uvicorn
+   * so they're currently bucketed as "openai-compat". */
+  app: string | null
+  /** Raw `Server` HTTP response header value, for the badge tooltip. */
+  server_header: string | null
+}
+
+/** One node in the service-topology graph powering the Path view.
+ * The synthetic clients aggregate uses `server_ip = "__clients__"` and
+ * `server_port = 0` — the UI should treat those as a single
+ * left-anchored super-node, not as a real endpoint. */
+export interface TopologyNode {
+  server_ip: string
+  server_port: number
+  app: string | null
+  models: string[]
+  call_count: number
+}
+
+/** One directed edge.
+ *  - `kind: "proxy"` — pair-sweeper-confirmed hop, real service →
+ *    real service.
+ *  - `kind: "inferred"` — heuristic edge: caller_ip matches a known
+ *    service's server_ip (typically LiteLLM forwarding to a real
+ *    backend) but pair_sweeper hasn't paired the turn. Drawn as
+ *    a dashed blue line so users can tell it apart from confirmed
+ *    proxy hops.
+ *  - `kind: "client"` — synthetic edge from `__clients__` into an
+ *    entry-point service whose caller_ip doesn't resolve to any
+ *    known service. */
+export interface TopologyEdge {
+  from_ip: string
+  from_port: number
+  to_ip: string
+  to_port: number
+  turn_count: number
+  kind: "proxy" | "inferred" | "client"
+}
+
+export interface ServicesTopology {
+  nodes: TopologyNode[]
+  edges: TopologyEdge[]
+}
+
+/** One aggregate row per agent_kind over a time window. */
+export interface AgentKindSummary {
+  agent_kind: string
+  turn_count: number
+  total_input_tokens: number
+  total_output_tokens: number
+  avg_duration_ms: number | null
+  last_seen_ms: number
+}
+
+export interface AgentSummaryData {
+  summary: AgentKindSummary[]
+}
+
+/** One bucket-row of `(timestamp, agent_kind, count)` for the
+ *  Overview activity chart. */
+export interface AgentActivityPoint {
+  timestamp_ms: number
+  agent_kind: string
+  turn_count: number
+}
+
+export interface AgentActivityData {
+  points: AgentActivityPoint[]
+}
+
 export interface MetricsModelRow {
   wire_api: string
   model: string
@@ -106,6 +199,73 @@ export interface AgentTurnListItem {
   final_finish_reason: string | null
   user_input_preview: string | null
   final_answer_preview: string | null
+  /** Set by the backend pair sweeper when this turn is one leg of a
+   * llmproxy duplicate pair. `"proxy_in"` / `"mirror_primary"` legs are
+   * the canonical (visible) members; `"proxy_out"` / `"mirror_secondary"`
+   * are hidden by default and only returned when the API is asked with
+   * `include_proxy_hops=true`. Absent on direct (non-proxied) turns. */
+  proxy_role?: "proxy_in" | "proxy_out" | "mirror_primary" | "mirror_secondary"
+  /** `turn_id` of the first matched peer leg (for backward compat).
+   * For groups of >2 turns (haproxy 3-leg case), read
+   * `proxy_peer_turn_ids` for the full list. */
+  proxy_peer_turn_id?: string
+  /** Every other member of this turn's proxy group, sorted lex. The
+   * haproxy 3-leg case shows 2 peers here (br0 mirror + upstream hop). */
+  proxy_peer_turn_ids?: string[]
+}
+
+// ---- Proxy view (multi-leg fold detail) ----
+
+export interface ProxyViewMember {
+  turn_id: string
+  role: "proxy_in" | "proxy_out" | "mirror_primary" | "mirror_secondary" | string
+  client_ip: string
+  client_port: number | null
+  server_ip: string
+  server_port: number | null
+  start_time: number
+  end_time: number
+  duration_ms: number
+  ttft_ms: number | null
+  e2e_latency_ms: number | null
+  request_model: string | null
+  wire_api: string
+  request_path: string | null
+  status_code: number | null
+  request_headers: [string, string][]
+  response_headers: [string, string][]
+}
+
+export interface HeaderValueByLeg {
+  turn_id: string
+  role: string
+  value: string
+}
+
+export interface HeaderDiffEntry {
+  name: string
+  kind: "common" | "modified" | "per_leg"
+  values: HeaderValueByLeg[]
+}
+
+export interface ModelRewrite {
+  client_requested: string | null
+  upstream_received: string | null
+}
+
+export interface LatencyBreakdown {
+  client_observed_ms: number | null
+  upstream_observed_ms: number | null
+  proxy_overhead_ms: number | null
+}
+
+export interface ProxyViewResponse {
+  group_id: string
+  members: ProxyViewMember[]
+  request_header_diff: HeaderDiffEntry[]
+  response_header_diff: HeaderDiffEntry[]
+  model_rewrite?: ModelRewrite
+  latency_breakdown: LatencyBreakdown
 }
 
 export interface AgentTurnDetail {

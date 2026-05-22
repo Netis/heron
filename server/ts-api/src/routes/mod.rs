@@ -10,3 +10,4 @@ pub mod llm_calls;
 pub mod metrics;
 pub mod pcap_extract;
 pub mod runtime_config;
+pub mod services;

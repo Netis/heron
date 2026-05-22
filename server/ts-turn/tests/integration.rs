@@ -710,18 +710,15 @@ async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
 /// `cronjob` in `tools[]`).
 ///
 /// The fixture contains one user-facing conversation followed by Hermes's
-/// chat-title-generation one-shot. The two are independent on the wire and
-/// emit as two separate AgentTurns by design (independent session_ids,
-/// independent user-start, independent terminal). Asserts:
-///   1. Exactly two OpenAI Chat turns.
+/// chat-title-generation one-shot. The title one-shot has no tool-call anchor,
+/// so it remains an LLM call and does not become a synthetic generic turn.
+/// Asserts:
+///   1. Exactly one OpenAI Chat turn.
 ///   2. The 4-call main conversation classifies as `hermes`. Its
 ///      `user_input_preview` is the user's prompt verbatim — the title-gen
 ///      prompt MUST NOT leak in here.
-///   3. The 1-call title-generation call falls through to `generic` (no
-///      Hermes tool markers in its body). Its `final_answer_preview`
-///      matches the synthesized title.
 #[tokio::test]
-async fn hermes_openai_expects_hermes_main_and_generic_title_gen() {
+async fn hermes_openai_expects_hermes_main_only() {
     let Some(turns) = run_pcap("hermes-openai.pcap").await else {
         eprintln!("skip: fixture not present");
         return;
@@ -741,16 +738,14 @@ async fn hermes_openai_expects_hermes_main_and_generic_title_gen() {
             t.final_answer_preview.as_deref().unwrap_or(""),
         );
     }
-    assert_eq!(chat.len(), 2, "expected 2 turns; got {}", chat.len());
+    assert_eq!(chat.len(), 1, "expected 1 turn; got {}", chat.len());
     assert!(
         chat.iter().all(|t| t.status == TurnStatus::Complete),
-        "all turns expected Complete (both end with finish_reason=stop)",
+        "main turn expected Complete",
     );
 
-    let main = chat
-        .iter()
-        .find(|t| t.agent_kind == "hermes")
-        .expect("expected one hermes-classified turn (main conversation)");
+    let main = chat[0];
+    assert_eq!(main.agent_kind, "hermes");
     assert_eq!(
         main.call_count, 4,
         "main conversation has 4 LLM calls (3 tool roundtrips + 1 final answer)",
@@ -760,28 +755,6 @@ async fn hermes_openai_expects_hermes_main_and_generic_title_gen() {
         main_user.starts_with("检查当前tokenscope"),
         "hermes turn user_input must be the user's prompt verbatim, got {main_user:?}",
     );
-
-    let title = chat
-        .iter()
-        .find(|t| t.agent_kind == "generic")
-        .expect("title-gen call must fall through to generic (no Hermes markers)");
-    assert_eq!(
-        title.call_count, 1,
-        "title generation is a single one-shot call",
-    );
-    let title_final = title.final_answer_preview.as_deref().unwrap_or_default();
-    assert!(
-        title_final.contains("tokenscope"),
-        "title-gen final_answer must reference the conversation topic, got {title_final:?}",
-    );
-    // The two turns must live in distinct session buckets — that's why
-    // they're separate turns in the first place. If they collapsed into one
-    // session, the tracker would partition them but this assertion guards
-    // against any future session-id heuristic that accidentally fuses them.
-    assert_ne!(
-        main.session_id, title.session_id,
-        "main conversation and title-gen call must occupy distinct session buckets",
-    );
 }
 
 #[tokio::test]
@@ -790,9 +763,7 @@ async fn hermes_openai_pcap_shard_parity() {
         eprintln!("skip: fixture not present");
         return;
     };
-    let multi = run_pcap_sharded("hermes-openai.pcap", 4, 4)
-        .await
-        .unwrap();
+    let multi = run_pcap_sharded("hermes-openai.pcap", 4, 4).await.unwrap();
 
     let single_keys: std::collections::BTreeSet<_> = single
         .iter()
@@ -1022,11 +993,8 @@ async fn generic_profile_anthropic_two_call_session() {
 ///      is emitted at all.
 ///   2. Sig variant correctness: `first_assistant_sig_from_*` must return
 ///      `ToolId(_)` (not `Text(_)`) when the model turn carries any
-///      functionCall, otherwise `generic` profile's helper-shape one-shot
-///      gate spuriously fires on call 1 (sig=Text + system_text non-empty
-///      + no model history) and gives it a `gen-<helper_hash>` session_id
-///      distinct from calls 2..7's `gen-<text_hash>`. The pcap then
-///      shatters into 1 + N turns instead of 4 + 3.
+///      functionCall, otherwise `generic` profile will not associate the
+///      call and the pcap will fail to reconstruct the 4 + 3 turn split.
 #[tokio::test]
 async fn gemini_cli_apikey_expects_two_turns_4_and_3() {
     let Some(turns) = run_pcap("gemini-cli-apikey.pcap").await else {
@@ -1055,8 +1023,7 @@ async fn gemini_cli_apikey_expects_two_turns_4_and_3() {
     );
 
     // All 7 calls must share one session_id — proves the sig algorithm is
-    // stable across the resp/req-history boundary AND the helper-shape
-    // gate is correctly skipped for tools-bearing first calls.
+    // stable across the resp/req-history boundary for tools-bearing calls.
     let sessions: std::collections::BTreeSet<_> =
         gemini.iter().map(|t| t.session_id.as_str()).collect();
     assert_eq!(

@@ -1,7 +1,6 @@
-//! Generic agent profile — synthesizes a session id from the request /
-//! response payload alone, so TokenScope produces `AgentTurn`s for header-less
-//! LLM traffic across all three supported wire APIs (Anthropic Messages,
-//! OpenAI Chat Completions, OpenAI Responses).
+//! Generic agent profile — synthesizes a session id from request / response
+//! payload tool-call anchors, so TokenScope can still produce `AgentTurn`s for
+//! header-less tool-using LLM traffic across supported wire APIs.
 //!
 //! `agent_kind == "generic"` is wire-api-agnostic; downstream consumers read
 //! `wire_api` separately. Per-shape parsing lives in `wire_apis::{anthropic,
@@ -12,10 +11,85 @@ use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
 
-use super::session_id::{compose_session_id_tracked, synth_helper_session_id};
+use super::session_id::compose_session_id_tracked;
 use crate::wire_apis::AssistantSig;
 
 pub struct GenericProfile;
+
+fn extract_tool_anchored_sig(ctx: &CallCtx<'_>) -> Option<(String, AssistantSig)> {
+    let req = ctx.req?;
+    // Track three pieces per wire api:
+    //   * user_text   — first user message; required to compose stable
+    //                   tool-call session ids.
+    //   * sig_in_req  — Some(sig) if an assistant message already lives
+    //                   inside `req.messages[*]` / `req.input[*]`. This
+    //                   tells us the call belongs to a multi-turn
+    //                   conversation; the caller has already established
+    //                   a stable anchor we can hash.
+    //   * sig_in_resp — Some(sig) only when sig_in_req is None and the
+    //                   response carries the assistant turn for the
+    //                   first user message.
+    let (user_text, sig_in_req, sig_in_resp) = match ctx.call.wire_api {
+        wa::ANTHROPIC => {
+            let user_text = wa::anthropic::first_user_text(req)?;
+            let sig_in_req = wa::anthropic::first_assistant_sig_from_request(req);
+            let sig_in_resp = if sig_in_req.is_none() {
+                ctx.resp
+                    .and_then(wa::anthropic::first_assistant_sig_from_response_value)
+            } else {
+                None
+            };
+            (user_text, sig_in_req, sig_in_resp)
+        }
+        wa::OPENAI_CHAT => {
+            let user_text = wa::openai::chat::first_user_text(req)?;
+            let sig_in_req = wa::openai::chat::first_assistant_sig_from_request(req);
+            let sig_in_resp = if sig_in_req.is_none() {
+                ctx.resp
+                    .and_then(wa::openai::chat::first_assistant_sig_from_response_value)
+            } else {
+                None
+            };
+            (user_text, sig_in_req, sig_in_resp)
+        }
+        wa::OPENAI_RESPONSES => {
+            let (user_text, sig_in_req) = match req.get("input")? {
+                serde_json::Value::Array(items) => (
+                    wa::openai::responses::first_user_text(items),
+                    wa::openai::responses::first_assistant_sig_from_input(items),
+                ),
+                serde_json::Value::String(s) if !s.trim().is_empty() => (Some(s.clone()), None),
+                _ => (None, None),
+            };
+            let user_text = user_text?;
+            let sig_in_resp = if sig_in_req.is_none() {
+                ctx.resp
+                    .and_then(wa::openai::responses::first_assistant_sig_from_response_value)
+            } else {
+                None
+            };
+            (user_text, sig_in_req, sig_in_resp)
+        }
+        wa::GEMINI_AISTUDIO => {
+            let user_text = wa::gemini_aistudio::first_user_text(req)?;
+            let sig_in_req = wa::gemini_aistudio::first_assistant_sig_from_request(req);
+            let sig_in_resp = if sig_in_req.is_none() {
+                ctx.resp
+                    .and_then(wa::gemini_aistudio::first_assistant_sig_from_response_value)
+            } else {
+                None
+            };
+            (user_text, sig_in_req, sig_in_resp)
+        }
+        _ => return None,
+    };
+
+    let sig = sig_in_req.or(sig_in_resp)?;
+    if !matches!(sig, AssistantSig::ToolId(_)) {
+        return None;
+    }
+    Some((user_text, sig))
+}
 
 impl AgentProfile for GenericProfile {
     fn name(&self) -> &'static str {
@@ -26,105 +100,11 @@ impl AgentProfile for GenericProfile {
         matches!(
             ctx.call.wire_api,
             wa::ANTHROPIC | wa::OPENAI_CHAT | wa::OPENAI_RESPONSES | wa::GEMINI_AISTUDIO
-        )
+        ) && extract_tool_anchored_sig(ctx).is_some()
     }
 
     fn extract_session_id(&self, ctx: &CallCtx<'_>) -> Option<SessionIdExtraction> {
-        let req = ctx.req?;
-        // Track three pieces per wire api:
-        //   * user_text   — first user message (used for the conversation
-        //                   text-hash path; required for everything below).
-        //   * sig_in_req  — Some(sig) if an assistant message already lives
-        //                   inside `req.messages[*]` / `req.input[*]`. This
-        //                   tells us the call belongs to a multi-turn
-        //                   conversation; the caller has already established
-        //                   a stable anchor we can hash.
-        //   * sig_in_resp — Some(sig) only when sig_in_req is None and the
-        //                   response carries the assistant turn for the
-        //                   first user message. Used both for text-hash
-        //                   fallback and for routing helper-shape one-shots
-        //                   to the system+time bucket.
-        //   * system_text — first system message; the only signal a
-        //                   helper-shape one-shot ever has that's stable
-        //                   across replays of the same helper sub-agent.
-        let (user_text, sig_in_req, sig_in_resp, system_text) = match ctx.call.wire_api {
-            wa::ANTHROPIC => {
-                let user_text = wa::anthropic::first_user_text(req)?;
-                let sig_in_req = wa::anthropic::first_assistant_sig_from_request(req);
-                let sig_in_resp = if sig_in_req.is_none() {
-                    ctx.resp
-                        .and_then(wa::anthropic::first_assistant_sig_from_response_value)
-                } else {
-                    None
-                };
-                let system_text = wa::anthropic::first_system_text(req);
-                (user_text, sig_in_req, sig_in_resp, system_text)
-            }
-            wa::OPENAI_CHAT => {
-                let user_text = wa::openai::chat::first_user_text(req)?;
-                let sig_in_req = wa::openai::chat::first_assistant_sig_from_request(req);
-                let sig_in_resp = if sig_in_req.is_none() {
-                    ctx.resp
-                        .and_then(wa::openai::chat::first_assistant_sig_from_response_value)
-                } else {
-                    None
-                };
-                let system_text = wa::openai::chat::first_system_text(req);
-                (user_text, sig_in_req, sig_in_resp, system_text)
-            }
-            wa::OPENAI_RESPONSES => {
-                let (user_text, sig_in_req) = match req.get("input")? {
-                    serde_json::Value::Array(items) => (
-                        wa::openai::responses::first_user_text(items),
-                        wa::openai::responses::first_assistant_sig_from_input(items),
-                    ),
-                    serde_json::Value::String(s) if !s.trim().is_empty() => (Some(s.clone()), None),
-                    _ => (None, None),
-                };
-                let user_text = user_text?;
-                let sig_in_resp = if sig_in_req.is_none() {
-                    ctx.resp
-                        .and_then(wa::openai::responses::first_assistant_sig_from_response_value)
-                } else {
-                    None
-                };
-                let system_text = wa::openai::responses::first_system_text(req);
-                (user_text, sig_in_req, sig_in_resp, system_text)
-            }
-            wa::GEMINI_AISTUDIO => {
-                let user_text = wa::gemini_aistudio::first_user_text(req)?;
-                let sig_in_req = wa::gemini_aistudio::first_assistant_sig_from_request(req);
-                let sig_in_resp = if sig_in_req.is_none() {
-                    ctx.resp
-                        .and_then(wa::gemini_aistudio::first_assistant_sig_from_response_value)
-                } else {
-                    None
-                };
-                let system_text = wa::gemini_aistudio::first_system_text(req);
-                (user_text, sig_in_req, sig_in_resp, system_text)
-            }
-            _ => return None,
-        };
-
-        // Helper-shape one-shot detection: the request has no assistant turn
-        // baked in (`sig_in_req` is None) AND the response side is plain
-        // text rather than a tool call (a tool id would already be a
-        // perfectly stable session anchor on its own). Hash the system
-        // prompt + a coarse time bucket so all replays of the same helper
-        // sub-agent within one agent run collapse into one session_id.
-        if sig_in_req.is_none() {
-            if let (Some(AssistantSig::Text(_)), Some(sys)) = (&sig_in_resp, &system_text) {
-                if !sys.is_empty() {
-                    let session_id = synth_helper_session_id(sys, ctx.call.request_time);
-                    return Some(SessionIdExtraction {
-                        session_id: format!("gen-{session_id}"),
-                        tool_id_canonicalized: false,
-                    });
-                }
-            }
-        }
-
-        let sig = sig_in_req.or(sig_in_resp)?;
+        let (user_text, sig) = extract_tool_anchored_sig(ctx)?;
         let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
         Some(SessionIdExtraction {
             session_id,
@@ -258,16 +238,41 @@ mod tests {
     // ── Cross-wire-api: matches() ───────────────────────────────────────────
 
     #[test]
-    fn matches_all_supported_wire_apis() {
-        for &wire in &[
-            wa::ANTHROPIC,
-            wa::OPENAI_CHAT,
-            wa::OPENAI_RESPONSES,
-            wa::GEMINI_AISTUDIO,
-        ] {
-            let c = call_with(wire, vec![], None, None);
+    fn matches_supported_wire_apis_with_tool_anchor() {
+        let cases = [
+            (
+                wa::ANTHROPIC,
+                r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#,
+                r#"{"content":[{"type":"tool_use","id":"toolu_a","name":"Read","input":{}}]}"#,
+            ),
+            (
+                wa::OPENAI_CHAT,
+                r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+                r#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_a","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}"#,
+            ),
+            (
+                wa::OPENAI_RESPONSES,
+                r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#,
+                r#"{"output":[{"type":"function_call","name":"f","arguments":"{}","call_id":"fc_a"}]}"#,
+            ),
+            (
+                wa::GEMINI_AISTUDIO,
+                r#"{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#,
+                r#"{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"f","args":{}}}]}}]}"#,
+            ),
+        ];
+        for &(wire, req, resp) in &cases {
+            let c = call_with(wire, vec![], Some(req), Some(resp));
             assert!(GenericProfile.matches(&c.ctx()), "should match {wire}");
         }
+    }
+
+    #[test]
+    fn does_not_match_plain_text_openai_chat() {
+        let req = r#"{"messages":[{"role":"user","content":"hi"}]}"#;
+        let resp = r#"{"choices":[{"message":{"role":"assistant","content":"hello"}}]}"#;
+        let c = call_with(wa::OPENAI_CHAT, vec![], Some(req), Some(resp));
+        assert!(!GenericProfile.matches(&c.ctx()));
     }
 
     // ───────────────────── Gemini AI Studio (gemini-aistudio) ──────────────
@@ -297,7 +302,10 @@ mod tests {
             }"#;
             let c = g(Some(req), None);
             let extracted = GenericProfile.extract_session_id(&c.ctx());
-            assert!(extracted.is_some(), "should extract session_id from request history");
+            assert!(
+                extracted.is_some(),
+                "should extract session_id from request history"
+            );
         }
 
         #[test]
@@ -388,11 +396,8 @@ mod tests {
         // What matters: identical bytes for the same content across calls.
         // The real pcap also carries a 24KB systemInstruction (Gemini CLI
         // persona). We include a non-empty system here on every request so
-        // the test exercises the helper-shape one-shot gate in
-        // `extract_session_id` — historically that gate triggered
-        // incorrectly on call 1 (sig_in_req=None + sig_in_resp=Text +
-        // system non-empty), splitting the session and producing
-        // 1+6 / 1+3+3 turn breakdowns instead of 4+3.
+        // call 1 must still anchor on the response-side functionCall instead
+        // of being mistaken for a plain text one-shot.
         const SYSTEM_PROMPT: &str = "You are an interactive CLI agent.";
         const SESSION_CTX: &str = "<session_context>scaffold";
         const ORIGINAL_PROMPT: &str = "original prompt about ts-turn";
@@ -685,15 +690,15 @@ mod tests {
                     .map(|x| x.session_id)
                     .unwrap_or_else(|| panic!("call {} should produce a session_id", i + 1));
                 session_ids.push(sid);
-                user_starts
-                    .push(GenericProfile.is_user_turn_start(&c.ctx()).unwrap_or(false));
+                user_starts.push(GenericProfile.is_user_turn_start(&c.ctx()).unwrap_or(false));
                 terminals.push(GenericProfile.is_turn_terminal(&c.ctx(), &wires));
             }
 
             // (1) All 7 calls land in the same session.
             for (i, sid) in session_ids.iter().enumerate().skip(1) {
                 assert_eq!(
-                    sid, &session_ids[0],
+                    sid,
+                    &session_ids[0],
                     "call {} session_id diverged from call 1",
                     i + 1,
                 );
@@ -736,16 +741,14 @@ mod tests {
         }
 
         #[test]
-        fn extract_session_id_call_n_with_text_only_history() {
+        fn extract_session_id_none_for_text_only_history() {
             let req = r#"{"messages":[
                 {"role":"user","content":[{"type":"text","text":"hi"}]},
                 {"role":"assistant","content":[{"type":"text","text":"hello there"}]},
                 {"role":"user","content":[{"type":"text","text":"more"}]}
             ]}"#;
             let c = ant(vec![], Some(req), None);
-            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
-            assert!(ids.session_id.starts_with("gen-"));
-            assert_eq!(ids.session_id.len(), "gen-".len() + 16);
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
@@ -759,12 +762,11 @@ mod tests {
         }
 
         #[test]
-        fn extract_session_id_call_1_text_in_response() {
+        fn extract_session_id_none_for_call_1_text_response() {
             let req = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#;
             let resp = r#"{"content":[{"type":"text","text":"hello there"}]}"#;
             let c = ant(vec![], Some(req), Some(resp));
-            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
-            assert!(ids.session_id.starts_with("gen-"));
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
@@ -896,41 +898,28 @@ mod tests {
         }
 
         #[test]
-        fn extract_session_id_call_n_with_text_only_history() {
+        fn extract_session_id_none_for_text_only_history() {
             let req = r#"{"messages":[
                 {"role":"user","content":"hi"},
                 {"role":"assistant","content":"hello"},
                 {"role":"user","content":"more"}
             ]}"#;
             let c = oai(Some(req), None);
-            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
-            assert!(ids.session_id.starts_with("gen-"));
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
-        fn extract_session_id_call_1_text_in_response() {
+        fn extract_session_id_none_for_call_1_text_response() {
             let req = r#"{"messages":[{"role":"user","content":"hi"}]}"#;
             let resp = r#"{"choices":[{"message":{"role":"assistant","content":"hello"}}]}"#;
             let c = oai(Some(req), Some(resp));
-            assert!(GenericProfile
-                .extract_session_id(&c.ctx())
-                .unwrap()
-                .session_id
-                .starts_with("gen-"));
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
-        /// Helper-shape one-shot calls (request = [system, user] only, response
-        /// = assistant text) coming from a Claude-Agent-SDK helper sub-agent
-        /// like the Bash permission gate or path-extractor: each call has the
-        /// SAME system message but a DIFFERENT user message (different
-        /// command being checked). Without a system+time fallback, every
-        /// call gets a unique gen-<hash> id and the agent_turns view shows
-        /// each helper as its own 1-call turn.
-        ///
-        /// With the fallback, all helpers within the time-bucket window share
-        /// a session_id and group into a single agent_turn.
+        /// Helper-shape one-shots have no tool-call anchor. They should stay
+        /// visible as LLM calls but must not become synthetic generic turns.
         #[test]
-        fn extract_session_id_helper_oneshots_share_session_id_via_system_msg() {
+        fn extract_session_id_none_for_helper_oneshots() {
             let sys = "You are a Claude agent built on Anthropic's Claude Agent SDK. \
                        Your task is to process Bash commands.";
             let resp = r#"{"choices":[{"message":{"role":"assistant","content":"allow"}}]}"#;
@@ -956,63 +945,25 @@ mod tests {
                 make("Command: rm temp.log", bucket_start + 30_000_000),
                 make("Command: grep error log", bucket_start + 55_000_000),
             ];
-            let ids: Vec<String> = calls
-                .iter()
-                .map(|c| {
-                    GenericProfile
-                        .extract_session_id(&c.ctx())
-                        .unwrap()
-                        .session_id
-                })
-                .collect();
-            // All 5 must share the same session_id (they're the same helper
-            // sub-agent firing repeatedly within one agent run).
-            let first = &ids[0];
-            for (i, id) in ids.iter().enumerate() {
-                assert_eq!(
-                    id, first,
-                    "call {} session_id={} differs from first={}; all helpers must share id",
-                    i, id, first
-                );
+            for c in &calls {
+                assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
             }
-            // Sanity: still a `gen-` synthesised id (not a tool id leak).
-            assert!(first.starts_with("gen-"));
         }
 
-        /// Two helper batches separated by a long idle gap (> bucket window)
-        /// must split into two distinct session_ids — otherwise running the
-        /// same agent twice in a day collapses both runs' helpers into one
-        /// turn.
         #[test]
-        fn extract_session_id_helper_oneshots_split_across_idle_gap() {
+        fn extract_session_id_none_for_plain_openai_python_call() {
             let sys = "You are a Claude agent. Your task is to process Bash commands.";
             let resp = r#"{"choices":[{"message":{"role":"assistant","content":"allow"}}]}"#;
-            let make = |user: &str, ts_us: i64| {
-                let req = serde_json::json!({
-                    "messages": [
-                        {"role": "system", "content": sys},
-                        {"role": "user", "content": user},
-                    ],
-                })
-                .to_string();
-                let mut tc = oai(Some(&req), Some(resp));
-                tc.call.request_time = ts_us;
-                tc
-            };
-            let early = make("Command: ls", 1_000_000_000);
-            let late = make("Command: ls", 1_000_000_000 + 5 * 60_000_000);
-            let id1 = GenericProfile
-                .extract_session_id(&early.ctx())
-                .unwrap()
-                .session_id;
-            let id2 = GenericProfile
-                .extract_session_id(&late.ctx())
-                .unwrap()
-                .session_id;
-            assert_ne!(
-                id1, id2,
-                "calls 5 minutes apart on same helper must be different sessions"
-            );
+            let req = serde_json::json!({
+                "messages": [
+                    {"role": "system", "content": sys},
+                    {"role": "user", "content": "Choose one candidate."},
+                ],
+                "model": "qwen3.5-35b"
+            })
+            .to_string();
+            let c = oai(Some(&req), Some(resp));
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
@@ -1109,14 +1060,13 @@ mod tests {
         }
 
         #[test]
-        fn extract_session_id_call_n_with_text_only_assistant() {
+        fn extract_session_id_none_for_text_only_assistant() {
             let req = r#"{"input":[
                 {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
                 {"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}
             ]}"#;
             let c = resp(Some(req), None);
-            let ids = GenericProfile.extract_session_id(&c.ctx()).unwrap();
-            assert!(ids.session_id.starts_with("gen-"));
+            assert!(GenericProfile.extract_session_id(&c.ctx()).is_none());
         }
 
         #[test]
