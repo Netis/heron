@@ -52,7 +52,7 @@ code_review:
 - Get all configured languages from project.yaml
 - Run reviews sequentially for each
 
-**Language ID mapping**: Read from `project.yaml`'s `code_review.languages[]` entries. Each entry has `id`, `name`, `skill`, `paths`, and `quality_cmd`. Available review skills include: `js`, `py`, `ts`, `rs`, `an`. Only review languages configured for this project.
+**Language ID mapping**: Read from `project.yaml`'s `code_review.languages[]` entries. Each entry has `id`, `name`, `skill`, `paths`, and `quality_cmd`. This project ships `rs` (Rust) and `ts` (TypeScript) review skills. Only review languages configured for this project.
 
 ## Step 2: Pre-flight Check
 

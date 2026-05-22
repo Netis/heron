@@ -81,9 +81,6 @@ To start working, open a NEW terminal and run:
 
   cd $worktree_path && claude
 
-[If test-related task detected:]
-Tip: Use /test-pdca <scope> for structured test development
-
 Workflow:
 1. Work in the new session (commits stay in worktree branch)
 2. Use /dev-worktree merge when done (works from either session)
