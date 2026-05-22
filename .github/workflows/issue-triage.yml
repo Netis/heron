@@ -1,0 +1,55 @@
+name: issue-triage
+
+# Triage agent. Fires only when a human (or repo automation) adds the
+# `agent:assess` label to an issue. The triage agent decides whether
+# the issue is small/safe enough for the dev agent **wiwi** to attempt
+# unattended. Strict 5-gate verdict — see scripts/agent-bot/run_triage.sh.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: triage-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  triage:
+    if: ${{ github.event.label.name == 'agent:assess' }}
+    runs-on: [self-hosted, tokenscope]
+    timeout-minutes: 10
+    env:
+      ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+      ANTHROPIC_API_KEY:  ${{ secrets.LITELLM_API_KEY }}
+      ANTHROPIC_MODEL:    claude-3-5-sonnet-20241022
+    steps:
+      - name: Configure no_proxy for LiteLLM
+        run: |
+          {
+            echo "no_proxy=${{ secrets.LITELLM_NO_PROXY }}"
+            echo "NO_PROXY=${{ secrets.LITELLM_NO_PROXY }}"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Triage issue
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE:  ${{ github.event.issue.title }}
+          ISSUE_BODY:   ${{ github.event.issue.body }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/agent-bot/run_triage.sh
+
+      - name: Cleanup transient files
+        if: always()
+        run: rm -f /tmp/triage-*.md /tmp/triage-*.log /tmp/triage-*.json || true
