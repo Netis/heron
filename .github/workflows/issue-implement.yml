@@ -1,0 +1,65 @@
+name: issue-implement
+
+# Dev agent **wiwi**. Fires only when label `agent:try` lands on an
+# issue — typically added by the triage agent when verdict=do, or by
+# a human bypassing triage. wiwi branches off main, implements the
+# change, runs the build, and opens a DRAFT PR labelled `auto-agent`.
+# Downstream auto-merge gating happens in pr-review.yml.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  # Re-labelling `agent:try` on the same issue cancels any in-flight
+  # wiwi run and starts a fresh attempt. Useful when an operator
+  # spots a stuck run and wants to retry without manual cleanup.
+  group: implement-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  implement:
+    if: ${{ github.event.label.name == 'agent:try' }}
+    runs-on: [self-hosted, tokenscope]
+    timeout-minutes: 45
+    env:
+      ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+      ANTHROPIC_API_KEY:  ${{ secrets.LITELLM_API_KEY }}
+      ANTHROPIC_MODEL:    claude-3-5-sonnet-20241022
+    steps:
+      - name: Configure no_proxy for LiteLLM
+        run: |
+          {
+            echo "no_proxy=${{ secrets.LITELLM_NO_PROXY }}"
+            echo "NO_PROXY=${{ secrets.LITELLM_NO_PROXY }}"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # AGENT_GH_TOKEN is a PAT (not GITHUB_TOKEN) so wiwi's
+          # `gh pr create` actually triggers the downstream `ci` and
+          # `pr-review` workflows. With the default GITHUB_TOKEN the
+          # spawned PR's check runs would be skipped.
+          token: ${{ secrets.AGENT_GH_TOKEN }}
+
+      - name: Implement issue
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE:  ${{ github.event.issue.title }}
+          ISSUE_BODY:   ${{ github.event.issue.body }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          GH_TOKEN:     ${{ secrets.AGENT_GH_TOKEN }}
+        run: bash scripts/agent-bot/run_wiwi.sh
+
+      - name: Cleanup transient files
+        if: always()
+        run: rm -f /tmp/wiwi-*.md /tmp/wiwi-*.log /tmp/wiwi-*.txt || true

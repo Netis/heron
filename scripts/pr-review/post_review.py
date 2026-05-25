@@ -140,6 +140,19 @@ def pr_author(number: str) -> str | None:
     return proc.stdout.strip() or None
 
 
+def pr_has_label(number: str, name: str) -> bool:
+    proc = subprocess.run(
+        ["gh", "pr", "view", number, "--json", "labels", "--jq",
+         f'any(.labels[]; .name == "{name}")'],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(f"gh pr view (labels) failed: {proc.stderr}\n")
+        return False
+    return proc.stdout.strip() == "true"
+
+
 def auto_merge(number: str) -> None:
     """Squash-merge with admin bypass. Repo doesn't have native
     `--auto` enabled, so we squash inline. Branch is deleted on
@@ -200,13 +213,21 @@ def main() -> int:
     # that an APPROVE from the AI is enough signal for low-stakes
     # changes by the project maintainer, but anyone else's PR
     # still gets human review.
+    #
+    # PRs labelled `auto-agent` are wiwi-spawned; their auto-merge
+    # decision is owned by scripts/agent-bot/auto_merge.sh (different
+    # gates: linked-issue author, not PR author). Skip here so the
+    # two paths never race on the same PR.
     if event == "APPROVE":
-        author = pr_author(PR_NUMBER)
-        if author and author in AUTO_MERGE_AUTHORS:
-            print(f"author={author} in AUTO_MERGE_AUTHORS — squash-merging")
-            auto_merge(PR_NUMBER)
+        if pr_has_label(PR_NUMBER, "auto-agent"):
+            print("PR has `auto-agent` label — leaving auto-merge to agent-bot/auto_merge.sh")
         else:
-            print(f"author={author} not in AUTO_MERGE_AUTHORS={AUTO_MERGE_AUTHORS} — left for human")
+            author = pr_author(PR_NUMBER)
+            if author and author in AUTO_MERGE_AUTHORS:
+                print(f"author={author} in AUTO_MERGE_AUTHORS — squash-merging")
+                auto_merge(PR_NUMBER)
+            else:
+                print(f"author={author} not in AUTO_MERGE_AUTHORS={AUTO_MERGE_AUTHORS} — left for human")
 
     return 0
 
