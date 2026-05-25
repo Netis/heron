@@ -48,10 +48,13 @@ claude --print \
     exit 1
 }
 
-# Strict JSON parse: take last non-empty line, must parse, must contain verdict.
-LAST=$(grep -E '^\{.*"verdict"' "$OUT" | tail -1 || true)
+# Strict JSON parse: scan every line, keep ones that are valid JSON AND
+# carry a `verdict` field, take the last. This rejects lines inside
+# code fences, partial fragments, and lines that merely *mention*
+# "verdict" in prose — only a parsable JSON object survives.
+LAST=$(jq -Rrc 'fromjson? | select(.verdict)' "$OUT" 2>/dev/null | tail -1)
 if [ -z "$LAST" ]; then
-  echo "triage agent produced no JSON verdict; aborting" >&2
+  echo "triage agent produced no parsable JSON verdict; aborting" >&2
   cat "$OUT" >&2
   exit 1
 fi

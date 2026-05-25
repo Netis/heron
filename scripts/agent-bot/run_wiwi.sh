@@ -4,14 +4,18 @@
 # downstream in pr-review.yml.
 set -euo pipefail
 
-TEAM='vaderyang william timmy'
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+TEAM=$(grep -vE '^\s*(#|$)' "$HERE/TEAM" | tr '\n' ' ')
 is_team_member() {
   local who="$1"
   for m in $TEAM; do [ "$m" = "$who" ] && return 0; done
   return 1
 }
 
-BRANCH="agent/wiwi/issue-${ISSUE_NUMBER}"
+# Branch name includes a short UTC timestamp so re-runs against the
+# same issue don't collide with leftover branches from prior attempts.
+STAMP=$(date -u +%Y%m%d-%H%M%S)
+BRANCH="agent/wiwi/issue-${ISSUE_NUMBER}-${STAMP}"
 git config user.email "wiwi-agent@noreply.local"
 git config user.name  "wiwi"
 git fetch origin main

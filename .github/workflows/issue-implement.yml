@@ -16,8 +16,11 @@ permissions:
   pull-requests: write
 
 concurrency:
+  # Re-labelling `agent:try` on the same issue cancels any in-flight
+  # wiwi run and starts a fresh attempt. Useful when an operator
+  # spots a stuck run and wants to retry without manual cleanup.
   group: implement-${{ github.event.issue.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
