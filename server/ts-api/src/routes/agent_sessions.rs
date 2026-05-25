@@ -5,11 +5,11 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 use ts_storage::query::{
     decode_session_cursor, decode_session_turns_cursor, SessionListQuery, SessionTurnsQuery,
-    TimeRange,
 };
 use ts_storage::StorageBackend;
 
 use crate::extractors::{Path, Query};
+use crate::params::to_time_range;
 use crate::response::{ApiError, ApiResponse};
 
 #[derive(Debug, Deserialize)]
@@ -55,10 +55,7 @@ pub async fn list(
     };
 
     let query = SessionListQuery {
-        time_range: TimeRange {
-            start_us: params.start * 1_000_000,
-            end_us: params.end * 1_000_000,
-        },
+        time_range: to_time_range(params.start, params.end)?,
         source_id: params.source_id.filter(|s| !s.is_empty()),
         agent_kind: params.agent_kind.filter(|s| !s.is_empty()),
         cursor,

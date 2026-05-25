@@ -70,10 +70,62 @@ pub fn parse_csv(s: &Option<String>) -> Vec<String> {
     }
 }
 
-pub fn to_time_range(start: i64, end: i64) -> TimeRange {
-    TimeRange {
+/// Upper bound for `start` / `end` query params expressed in **seconds since
+/// epoch**. 4_102_444_800 = 2100-01-01T00:00:00Z. Anything larger is almost
+/// certainly the caller passing milliseconds (or microseconds) by mistake —
+/// e.g., a bookmarked URL copied from a tool that uses ms. Multiplying such
+/// a value by 1_000_000 below would push the resulting timestamp past the
+/// year DuckDB's SQL parser accepts and yield strings like
+/// "+58346-09-15 01:12:57" which crash the count/list queries with a
+/// Conversion Error.
+const MAX_SECONDS_SINCE_EPOCH: i64 = 4_102_444_800;
+
+pub fn to_time_range(start: i64, end: i64) -> Result<TimeRange, crate::response::ApiError> {
+    use crate::response::ApiError;
+    for (name, v) in [("start", start), ("end", end)] {
+        if v < 0 {
+            return Err(ApiError::InvalidParam(format!(
+                "{name}={v}: negative seconds-since-epoch not allowed"
+            )));
+        }
+        if v > MAX_SECONDS_SINCE_EPOCH {
+            return Err(ApiError::InvalidParam(format!(
+                "{name}={v}: value exceeds {MAX_SECONDS_SINCE_EPOCH} \
+                 (year 2100 in seconds-since-epoch). The API expects seconds, \
+                 not milliseconds or microseconds."
+            )));
+        }
+    }
+    Ok(TimeRange {
         start_us: start * 1_000_000,
         end_us: end * 1_000_000,
+    })
+}
+
+#[cfg(test)]
+mod to_time_range_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_sane_seconds() {
+        let r = to_time_range(1_700_000_000, 1_700_000_060).unwrap();
+        assert_eq!(r.start_us, 1_700_000_000_000_000);
+        assert_eq!(r.end_us, 1_700_000_060_000_000);
+    }
+
+    #[test]
+    fn rejects_milliseconds_passed_as_seconds() {
+        // 1_747_000_000_000 = May 2025 in *milliseconds*; far past year 2100
+        // in seconds. The previous code would silently multiply by 1e6,
+        // overflow into year 58000+, and corrupt the SQL count query.
+        let err = to_time_range(1_747_000_000_000, 1_747_000_001_000).unwrap_err();
+        assert!(matches!(err, crate::response::ApiError::InvalidParam(_)));
+    }
+
+    #[test]
+    fn rejects_negative_seconds() {
+        let err = to_time_range(-1, 1_700_000_000).unwrap_err();
+        assert!(matches!(err, crate::response::ApiError::InvalidParam(_)));
     }
 }
 

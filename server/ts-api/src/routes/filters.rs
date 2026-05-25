@@ -59,7 +59,7 @@ pub async fn agent_kinds(
     Query(params): Query<AgentKindsParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = DistinctAgentKindsQuery {
-        time_range: to_time_range(params.start, params.end),
+        time_range: to_time_range(params.start, params.end)?,
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         include_proxy_hops: params.include_proxy_hops,
     };

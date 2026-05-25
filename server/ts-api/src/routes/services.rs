@@ -59,7 +59,7 @@ pub async fn services(
     Query(params): Query<ServicesParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = ServicesQuery {
-        time_range: to_time_range(params.start, params.end),
+        time_range: to_time_range(params.start, params.end)?,
         sort_by: params.sort_by,
         sort_order: params.sort_order,
         limit: params.limit.min(500),
@@ -79,7 +79,7 @@ pub async fn services_topology(
     Query(params): Query<ServicesTopologyParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = ServicesTopologyQuery {
-        time_range: to_time_range(params.start, params.end),
+        time_range: to_time_range(params.start, params.end)?,
     };
     let topology = storage.query_services_topology(&query).await?;
     Ok(ApiResponse::ok(topology))
