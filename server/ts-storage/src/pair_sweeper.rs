@@ -78,8 +78,40 @@ pub fn spawn_pair_sweeper(
         // service start (the DB may still be empty / cold).
         tokio::time::sleep(cfg.interval).await;
         loop {
-            if let Err(e) = sweep_once(&storage, cfg.lookback).await {
-                tracing::warn!(error = %e, "pair-sweeper: sweep failed; continuing");
+            match sweep_once(&storage, cfg.lookback).await {
+                Ok(_) => {
+                    // CHECKPOINT after each successful batch so the
+                    // MVCC tombstone chain doesn't grow into the
+                    // DuckDB "Failed to delete all rows from index"
+                    // FATAL trap. Cheap when nothing to compact.
+                    if let Err(e) = storage.checkpoint_turns_writer().await {
+                        tracing::warn!(error = %e, "pair-sweeper: post-sweep CHECKPOINT failed");
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("{e}");
+                    tracing::warn!(error = %e, "pair-sweeper: sweep failed; continuing");
+                    // The DuckDB invalidation FATAL is global to the
+                    // connection — every subsequent query in the
+                    // process returns 500 until the connection is
+                    // dropped. Detect by message substring (DuckDB
+                    // doesn't surface a typed code) and swap the
+                    // writer in place so the rest of the process
+                    // recovers without an external restart.
+                    if msg.contains("database has been invalidated")
+                        || msg.contains("must be restarted prior to being used")
+                    {
+                        match storage.reopen_turns_writer().await {
+                            Ok(()) => tracing::info!(
+                                "pair-sweeper: reopened agent_turns writer after invalidation"
+                            ),
+                            Err(re) => tracing::error!(
+                                error = %re,
+                                "pair-sweeper: failed to reopen turns writer after invalidation"
+                            ),
+                        }
+                    }
+                }
             }
             tokio::time::sleep(cfg.interval).await;
         }
