@@ -78,7 +78,7 @@ pub async fn list(
         .collect::<Result<Vec<_>, _>>()?;
 
     let query = TurnsQuery {
-        time_range: to_time_range(params.start, params.end),
+        time_range: to_time_range(params.start, params.end)?,
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         client_ips: parse_csv(&params.client_ip),
         server_ports,
@@ -598,7 +598,7 @@ pub async fn summary(
     Query(params): Query<AgentSummaryParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = AgentSummaryQuery {
-        time_range: to_time_range(params.start, params.end),
+        time_range: to_time_range(params.start, params.end)?,
     };
     let summary = ctx.storage.query_agent_summary(&query).await?;
     Ok(ApiResponse::ok(AgentSummaryResp { summary }))
@@ -622,7 +622,7 @@ pub async fn activity(
     Query(params): Query<AgentActivityParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = AgentActivityQuery {
-        time_range: to_time_range(params.start, params.end),
+        time_range: to_time_range(params.start, params.end)?,
         bucket_seconds: params.bucket,
     };
     let points = ctx.storage.query_agent_activity(&query).await?;

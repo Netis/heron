@@ -70,11 +70,49 @@ pub(crate) fn headers_to_json(headers: &[(String, String)]) -> String {
 }
 
 /// Convert microseconds since epoch to a string DuckDB can parse as TIMESTAMP.
+///
+/// DuckDB's SQL TIMESTAMP parser only accepts 4-digit years (`YYYY-MM-DD`);
+/// anything year >9999 formatted by chrono comes out as `+58346-09-15...`
+/// which the parser then rejects with a Conversion Error and crashes the
+/// whole query. Defense-in-depth: clamp `us` to the year-9999 boundary so
+/// a stray over-large value (already validated at the API boundary, but
+/// this is the last line of defense before the SQL string is built) can't
+/// produce a parse-failing SQL literal.
+const MAX_DUCKDB_PARSABLE_US: i64 = 253_402_300_799_000_000; // 9999-12-31 23:59:59 UTC
+
 pub(crate) fn us_to_timestamp(us: i64) -> String {
+    let us = us.clamp(0, MAX_DUCKDB_PARSABLE_US);
     let secs = us / 1_000_000;
     let micros = (us.rem_euclid(1_000_000)) as u32;
     let dt = chrono::DateTime::from_timestamp(secs, micros * 1000).unwrap_or_default();
     dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
+}
+
+#[cfg(test)]
+mod us_to_timestamp_tests {
+    use super::us_to_timestamp;
+
+    #[test]
+    fn normal_value_formats_ok() {
+        // 1747000000000000 us = 2025-05-12 02:13:20 UTC
+        assert_eq!(
+            us_to_timestamp(1_747_000_000_000_000),
+            "2025-05-12 02:13:20.000000"
+        );
+    }
+
+    #[test]
+    fn over_year_9999_clamped_not_corrupted() {
+        // Caller bug: passed something like ns where us was expected.
+        // Year ~58000 would crash DuckDB's parser; clamp to 9999 instead.
+        let out = us_to_timestamp(1_842_000_000_000_000_000);
+        assert!(out.starts_with("9999-"), "expected clamp, got {out}");
+    }
+
+    #[test]
+    fn negative_clamped_to_epoch() {
+        assert_eq!(us_to_timestamp(-1), "1970-01-01 00:00:00.000000");
+    }
 }
 
 /// Parse a JSON-encoded array-of-strings (as stored in agent_turns.models_used /

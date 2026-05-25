@@ -66,7 +66,7 @@ pub async fn timeseries(
     }
 
     let query = MetricsTimeseriesQuery {
-        time_range: to_time_range(params.start, params.end),
+        time_range: to_time_range(params.start, params.end)?,
         granularity: params.granularity,
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         fields: fields.clone(),
@@ -135,7 +135,7 @@ pub async fn summary(
     Query(params): Query<SummaryParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = MetricsSummaryQuery {
-        time_range: to_time_range(params.start, params.end),
+        time_range: to_time_range(params.start, params.end)?,
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
     };
     let row = storage.query_metrics_summary(&query).await?;
@@ -152,7 +152,7 @@ pub async fn models(
     Query(params): Query<ModelsParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = MetricsModelsQuery {
-        time_range: to_time_range(params.start, params.end),
+        time_range: to_time_range(params.start, params.end)?,
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
         sort_by: params.sort_by,
         sort_order: params.sort_order,
@@ -203,7 +203,7 @@ pub async fn finish_reasons(
     }
 
     let query = FinishReasonsQuery {
-        time_range: to_time_range(params.start, params.end),
+        time_range: to_time_range(params.start, params.end)?,
         granularity: params.granularity,
         wire_apis: parse_csv(&params.wire_api),
         models: parse_csv(&params.model),

@@ -74,7 +74,7 @@ pub async fn list(
         .collect::<Result<Vec<_>, _>>()?;
 
     let query = HttpExchangesQuery {
-        time_range: to_time_range(params.start, params.end),
+        time_range: to_time_range(params.start, params.end)?,
         server_ips: parse_csv(&params.server_ip),
         client_ips: parse_csv(&params.client_ip),
         methods,
