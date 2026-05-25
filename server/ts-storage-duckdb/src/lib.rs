@@ -49,6 +49,9 @@ pub struct DuckDbBackend {
     pub(crate) write_metrics_conn: Arc<StdMutex<Connection>>,
     pub(crate) write_exchanges_conn: Arc<StdMutex<Connection>>,
     pub(crate) read_pool: ReadPool,
+    /// Kept so we can re-`Connection::open` a poisoned writer in place.
+    /// See `reopen_turns_writer`.
+    pub(crate) db_path: String,
 }
 
 impl DuckDbBackend {
@@ -100,6 +103,7 @@ impl DuckDbBackend {
             write_metrics_conn: Arc::new(StdMutex::new(metrics_writer)),
             write_exchanges_conn: Arc::new(StdMutex::new(exchanges_writer)),
             read_pool: ReadPool::new(readers),
+            db_path: path.to_string(),
         })
     }
 
@@ -285,5 +289,39 @@ impl StorageBackend for DuckDbBackend {
         patch: serde_json::Value,
     ) -> Result<()> {
         DuckDbBackend::update_turn_metadata(self, turn_id, patch).await
+    }
+
+    async fn checkpoint_turns_writer(&self) -> Result<()> {
+        let conn = self.write_turns_conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| AppError::Storage(format!("lock turns writer: {e}")))?;
+            conn.execute_batch("CHECKPOINT")
+                .map_err(|e| AppError::Storage(format!("CHECKPOINT failed: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    async fn reopen_turns_writer(&self) -> Result<()> {
+        let path = self.db_path.clone();
+        let conn_arc = self.write_turns_conn.clone();
+        tokio::task::spawn_blocking(move || {
+            // Try to reach the existing DB file. If the on-disk DB is
+            // also unhealthy we'll surface that error to the caller and
+            // it'll just retry on the next sweep.
+            let fresh = Connection::open(&path)
+                .map_err(|e| AppError::Storage(format!("reopen duckdb: {e}")))?;
+            let mut guard = conn_arc
+                .lock()
+                .map_err(|e| AppError::Storage(format!("lock turns writer: {e}")))?;
+            *guard = fresh;
+            info!("reopened agent_turns writer after FATAL invalidation");
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 }

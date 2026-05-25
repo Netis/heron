@@ -202,4 +202,24 @@ pub trait StorageBackend: Send + Sync {
     ) -> Result<()> {
         Ok(())
     }
+
+    /// Compact pending MVCC tombstones on the agent_turns writer.
+    /// Called by the pair sweeper after each batch of
+    /// `update_turn_metadata` so the version chain stays short —
+    /// high-frequency UPDATEs on an indexed table (PRIMARY KEY on
+    /// `turn_id`) without checkpoints can hit a "Failed to delete all
+    /// rows from index" FATAL inside DuckDB that poisons the entire
+    /// process's connection. Default no-op for mock backends.
+    async fn checkpoint_turns_writer(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Replace the agent_turns writer connection with a freshly-opened
+    /// one. Called by the pair sweeper after a sweep failure that
+    /// looks like the DuckDB "database has been invalidated" FATAL —
+    /// without this, every subsequent query in the process returns
+    /// 500 until external restart. Default no-op for mock backends.
+    async fn reopen_turns_writer(&self) -> Result<()> {
+        Ok(())
+    }
 }
