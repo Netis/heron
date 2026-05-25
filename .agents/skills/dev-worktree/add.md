@@ -65,7 +65,7 @@ just dev setup    # or: npm install, uv sync, etc.
 
 **IMPORTANT**: Do NOT switch to the worktree in this session. Always direct user to start a new terminal.
 
-**Why**: Claude Code has documented issues with multi-process lock acquisition and directory confusion when operating across worktree boundaries (see Research #0006).
+**Why**: Claude Code has documented issues with multi-process lock acquisition and directory confusion when operating across worktree boundaries.
 
 Analyze the original task description for test-related keywords: fix test, test fix, failing test, etc.
 

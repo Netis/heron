@@ -26,8 +26,6 @@ Codex has documented issues when operating across worktree boundaries:
 - [#12932](https://github.com/anthropics/Codex/issues/12932): Worktree sync problems
 - [#10105](https://github.com/anthropics/Codex/issues/10105): Directory confusion
 
-See Research #0006 for full analysis.
-
 **Correct Workflow**:
 ```
 Root Codex:  /dev-worktree add foo

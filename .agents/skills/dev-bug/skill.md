@@ -75,7 +75,7 @@ If information is insufficient, use `AskUserQuestion` to fill in gaps. **Never i
 
 ### Step 2: Determine Index
 
-Take the **maximum index across both stores** (human and AI), then +1. This guarantees uniqueness even when the two stores are out of sync (e.g. immediately after `/dev-target port-bugs` backfilled one but not the other).
+Take the **maximum index across both stores** (human and AI), then +1. This guarantees uniqueness even when the two stores are out of sync (e.g. one was backfilled manually but not the other).
 
 ```bash
 human_max=$(ls {scope}/{bug.dir}/[0-9][0-9][0-9][0-9]-*.md 2>/dev/null \
@@ -87,7 +87,7 @@ next=$(printf "%04d" $((10#${human_max:-0000} > 10#${ai_max:-0000} ? 10#${human_
 
 If both stores are empty, start at `0001`. Format: `NNNN` (4-digit zero-padded).
 
-**Consistency check**: if `human_max != ai_max` and both are non-empty, surface a warning ("human store at 0019, AI store at 0015 — run `/dev-target port-bugs <target>` to reconcile"). Continue with the computed `next` regardless.
+**Consistency check**: if `human_max != ai_max` and both are non-empty, surface a warning ("human store at 0019, AI store at 0015 — reconcile manually"). Continue with the computed `next` regardless.
 
 ### Step 3: Write AI Compact File
 
@@ -221,7 +221,7 @@ test -s {scope}/{bug.ai_readme}
 - **If missing/empty** but `{scope}/{bug.readme}` exists and has rows → report:
   ```
   Human bug history exists at {bug.dir} but AI-compact store at {bug.ai_dir} is missing.
-  Run `/dev-target port-bugs <this_project>` to backfill before running review.
+  Backfill AI-compact records from the human store before running review.
   ```
   Exit.
 - **If both missing** → report "no bug records" and exit.
@@ -373,6 +373,6 @@ Review: pattern no longer matches
 - AI context files are designed for token efficiency, used by automated scanning and gate workflows
 - Human-readable files maintain detailed format for developer learning and reference
 - Both file types are cross-linked via `ref` / `Related` sections
-- **Both stores must stay in sync.** If they drift (e.g. a human bug was added manually without the AI mirror), use `/dev-target port-bugs <project>` to reconcile
+- **Both stores must stay in sync.** If they drift (e.g. a human bug was added manually without the AI mirror), reconcile by manually creating the missing AI-compact record
 - **Patterns are authoritative.** `review` trusts `pattern` regexes as recorded; mark `TODO` if uncertain rather than guessing
 - **Scan roots are adaptive.** Review never hardcodes `src/` — it derives scan surfaces from each bug's recorded `location` field, which naturally adjusts to whatever directory layout the target project uses
