@@ -126,7 +126,14 @@ jobs:
       - name: Post review
         if: always()
         env:
+          # GITHUB_TOKEN posts the review/comment as the GitHub Actions
+          # bot (preferred — keeps vivi's footer attribution clean).
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ADMIN_GH_TOKEN is used ONLY for the auto-merge fallback
+          # inside post_review.py; GITHUB_TOKEN can't `gh pr merge --admin`
+          # because it lacks branch-protection bypass. With AGENT_GH_TOKEN
+          # (a PAT owned by a repo admin) the call succeeds.
+          ADMIN_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           AGENT_EXIT: ${{ steps.review.outcome }}
