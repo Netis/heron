@@ -159,9 +159,19 @@ def auto_merge(number: str) -> None:
     success. Any failure (merge conflict, branch protection
     surprise, etc.) is logged but doesn't fail the workflow — the
     review is already posted, the operator can finish merging by
-    hand."""
+    hand.
+
+    `--admin` requires a token whose owner has admin rights on the
+    repo; the default GITHUB_TOKEN does NOT and the call errors out
+    with "Required status check 'test' is expected (mergePullRequest)".
+    If ADMIN_GH_TOKEN is set, swap GH_TOKEN to it for this call only.
+    """
     cmd = ["gh", "pr", "merge", number, "--admin", "--squash", "--delete-branch"]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    env = os.environ.copy()
+    admin_tok = os.environ.get("ADMIN_GH_TOKEN", "").strip()
+    if admin_tok:
+        env["GH_TOKEN"] = admin_tok
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
         sys.stderr.write(
             f"auto-merge failed (left for manual merge): {proc.stderr}\n"
