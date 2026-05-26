@@ -119,6 +119,11 @@ fn anthropic_call(
             ("X-Claude-Code-Session-Id".into(), session.into()),
         ],
         response_headers: vec![],
+        is_agent_request: false,
+        tool_surface: None,
+        agent_topology: None,
+        tool_call_count: 0,
+        tool_names: vec![],
     }
 }
 
@@ -131,7 +136,14 @@ fn agent_call(call: LlmCall) -> AgentCall {
     let reg = agents::build_default_registry();
     let wa_reg = ts_llm::wire_apis::build_default_wire_api_registry();
     let metrics = llm_test_metrics();
-    let agent = ts_llm::build_agent_call_info(&call, &reg, &wa_reg, &ts_llm::agent_classifier::ClassifierConfig::default(), &metrics).expect("call info");
+    let agent = ts_llm::build_agent_call_info(
+        &call,
+        &reg,
+        &wa_reg,
+        &ts_llm::agent_classifier::ClassifierConfig::default(),
+        &metrics,
+    )
+    .expect("call info");
     AgentCall {
         call: Arc::new(call),
         agent,

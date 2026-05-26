@@ -94,6 +94,11 @@ mod priority_tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             response_headers: vec![],
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         }
     }
 

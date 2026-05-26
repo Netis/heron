@@ -205,6 +205,11 @@ pub(crate) fn extract_full_text(
         response_id: None,
         request_headers: Vec::new(),
         response_headers: Vec::new(),
+        is_agent_request: false,
+        tool_surface: None,
+        agent_topology: None,
+        tool_call_count: 0,
+        tool_names: vec![],
     };
     let (req, resp) = parse_bodies(&call);
     let ctx = CallCtx::new(&call, req.as_ref(), resp.as_ref());
@@ -310,6 +315,11 @@ pub(crate) fn extract_full_text_batch(
             response_id: None,
             request_headers: Vec::new(),
             response_headers: Vec::new(),
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         };
         let (req, resp) = parse_bodies(&call);
         let ctx = CallCtx::new(&call, req.as_ref(), resp.as_ref());
@@ -386,10 +396,7 @@ pub(crate) fn build_dimension_where(filter: &DimensionFilter) -> String {
 /// remaining dimensions follow the same filter/tier rules as
 /// [`build_dimension_where`]. Any non-recognized `group_by` falls through to
 /// the ungrouped builder.
-pub(crate) fn build_dimension_where_for_group(
-    filter: &DimensionFilter,
-    group_by: &str,
-) -> String {
+pub(crate) fn build_dimension_where_for_group(filter: &DimensionFilter, group_by: &str) -> String {
     match group_by {
         "wire_api" | "model" => {
             let wire_clause = if !filter.wire_apis.is_empty() {
@@ -441,11 +448,7 @@ mod derive_tokens_estimated_tests {
 
     #[test]
     fn malformed_body_with_tokens_returns_true() {
-        assert!(derive_tokens_estimated(
-            Some(10),
-            Some(5),
-            Some("not json")
-        ));
+        assert!(derive_tokens_estimated(Some(10), Some(5), Some("not json")));
     }
 
     #[test]
@@ -598,5 +601,4 @@ mod build_dimension_where_tests {
             "wire_api != '*' AND model != '*' AND server_ip IN ('10.0.0.1')"
         );
     }
-
 }

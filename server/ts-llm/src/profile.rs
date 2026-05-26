@@ -244,6 +244,11 @@ mod tests {
             response_id: None,
             request_headers: vec![("User-Agent".into(), ua.into())],
             response_headers: vec![],
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         }
     }
 

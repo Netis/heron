@@ -43,6 +43,11 @@ struct PreparedCall {
     response_id: Option<String>,
     request_headers: String,
     response_headers: String,
+    is_agent_request: bool,
+    tool_surface: Option<String>,
+    agent_topology: Option<String>,
+    tool_call_count: u32,
+    tool_names_json: String,
 }
 
 fn prepare_call(call: LlmCall) -> PreparedCall {
@@ -79,6 +84,12 @@ fn prepare_call(call: LlmCall) -> PreparedCall {
         response_id: call.response_id,
         request_headers: headers_to_json(&call.request_headers),
         response_headers: headers_to_json(&call.response_headers),
+        is_agent_request: call.is_agent_request,
+        tool_surface: call.tool_surface.map(|s| s.to_string()),
+        agent_topology: call.agent_topology.map(|s| s.to_string()),
+        tool_call_count: call.tool_call_count,
+        tool_names_json: serde_json::to_string(&call.tool_names)
+            .unwrap_or_else(|_| "[]".to_string()),
     }
 }
 
@@ -279,6 +290,11 @@ impl DuckDbBackend {
                         p.response_id,
                         p.request_headers,
                         p.response_headers,
+                        p.is_agent_request,
+                        p.tool_surface,
+                        p.agent_topology,
+                        p.tool_call_count,
+                        p.tool_names_json,
                     ])
                     .map_err(|e| AppError::Storage(format!("failed to append call: {e}")))?;
             }
@@ -517,7 +533,9 @@ impl DuckDbBackend {
                     response_id,
                     client_ip, client_port, server_ip, server_port,
                     request_body, response_body,
-                    request_headers, response_headers
+                    request_headers, response_headers,
+                    is_agent_request, tool_surface, agent_topology,
+                    tool_call_count, tool_names_json
                 FROM llm_calls
                 WHERE id = ?
                 LIMIT 1
@@ -533,6 +551,11 @@ impl DuckDbBackend {
                 let response_body: Option<String> = row.get(23)?;
                 let tokens_estimated =
                     derive_tokens_estimated(input_tokens, output_tokens, response_body.as_deref());
+                let tool_names_json: Option<String> = row.get(30)?;
+                let tool_names: Vec<String> = tool_names_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default();
                 Ok(CallDetail {
                     id: row.get(0)?,
                     source_id: row.get(1)?,
@@ -561,6 +584,11 @@ impl DuckDbBackend {
                     response_body,
                     request_headers: row.get(24)?,
                     response_headers: row.get(25)?,
+                    is_agent_request: row.get::<_, Option<bool>>(26)?.unwrap_or(false),
+                    tool_surface: row.get(27)?,
+                    agent_topology: row.get(28)?,
+                    tool_call_count: row.get::<_, Option<u32>>(29)?.unwrap_or(0),
+                    tool_names,
                 })
             });
 
@@ -683,6 +711,11 @@ mod tests {
                 ("content-type".to_string(), "application/json".to_string()),
                 ("x-request-id".to_string(), "req_abc123".to_string()),
             ],
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         }
     }
 
@@ -876,5 +909,4 @@ mod tests {
         let not_found = backend.query_call_by_id("does-not-exist").await.unwrap();
         assert!(not_found.is_none());
     }
-
 }

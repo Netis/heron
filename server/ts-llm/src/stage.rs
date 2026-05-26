@@ -20,8 +20,8 @@ use tokio::task::JoinHandle;
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_protocol::joiner::HttpJoinerEvent;
 
-use crate::model::{AgentCall, LlmCall, LlmEvent, TurnShardInput};
 use crate::agent_classifier::ClassifierConfig;
+use crate::model::{AgentCall, LlmCall, LlmEvent, TurnShardInput};
 use crate::processor::LlmProcessor;
 use crate::profile::AgentProfileRegistry;
 use crate::wire_api_registry::WireApiRegistry;
@@ -129,6 +129,21 @@ pub fn spawn_llm_stage(
                                 } else {
                                     worker_metrics.counter(Metric::LlmCallsWithoutAgent).inc();
                                 }
+                                // Populate the 5 agent-classification fields on the
+                                // call record before forwarding to storage. When there
+                                // is no agent match, the defaults (false/None/0/vec![])
+                                // are already set by the LlmProcessor.
+                                let call = if let Some(ref id) = agent {
+                                    let mut updated = Arc::unwrap_or_clone(call);
+                                    updated.is_agent_request = id.is_agent_request;
+                                    updated.tool_surface = id.tool_surface;
+                                    updated.agent_topology = id.agent_topology;
+                                    updated.tool_call_count = id.tool_call_count;
+                                    updated.tool_names = id.tool_names.clone();
+                                    Arc::new(updated)
+                                } else {
+                                    call
+                                };
                                 if calls_tx.send(call.clone()).await.is_err() {
                                     break 'main "downstream_closed_calls";
                                 }

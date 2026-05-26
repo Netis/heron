@@ -5,9 +5,7 @@ use ts_common::error::{AppError, Result};
 use ts_storage::query::*;
 use ts_turn::AgentTurn;
 
-use crate::util::{
-    extract_full_text, parse_json_string_list, us_to_timestamp, ExtractKind,
-};
+use crate::util::{extract_full_text, parse_json_string_list, us_to_timestamp, ExtractKind};
 use crate::DuckDbBackend;
 use ts_turn::PairCandidate;
 
@@ -106,7 +104,6 @@ fn prepare_turn(t: AgentTurn) -> PreparedTurn {
         metadata: t.metadata.to_string(),
     }
 }
-
 
 impl DuckDbBackend {
     pub(crate) async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()> {
@@ -249,11 +246,7 @@ impl DuckDbBackend {
                 // shortcut the topology query uses. EXISTS is cheaper
                 // than a JOIN here because we never select from the
                 // joined row.
-                let list: Vec<String> = query
-                    .server_ports
-                    .iter()
-                    .map(|p| p.to_string())
-                    .collect();
+                let list: Vec<String> = query.server_ports.iter().map(|p| p.to_string()).collect();
                 where_parts.push(format!(
                     "EXISTS (SELECT 1 FROM llm_calls c \
                        WHERE c.id = json_extract_string(agent_turns.call_ids, '$[0]') \
@@ -683,8 +676,7 @@ impl DuckDbBackend {
                     if !base.is_object() {
                         base = serde_json::json!({});
                     }
-                    if let (Some(obj), Some(patch_obj)) =
-                        (base.as_object_mut(), patch.as_object())
+                    if let (Some(obj), Some(patch_obj)) = (base.as_object_mut(), patch.as_object())
                     {
                         for (k, v) in patch_obj {
                             obj.insert(k.clone(), v.clone());
@@ -789,6 +781,11 @@ mod tests {
             response_id: None,
             request_headers: vec![],
             response_headers: vec![],
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         }
     }
 
@@ -1529,7 +1526,10 @@ mod tests {
 
         let detail = backend.query_turn_by_id("tA").await.unwrap().unwrap();
         let meta = detail.metadata.expect("metadata json");
-        assert_eq!(meta.get("unrelated"), Some(&serde_json::Value::String("preserve_me".into())));
+        assert_eq!(
+            meta.get("unrelated"),
+            Some(&serde_json::Value::String("preserve_me".into()))
+        );
         assert_eq!(meta["proxy"]["role"], "proxy_in");
         assert_eq!(meta["proxy"]["peer_turn_id"], "tB");
     }
@@ -1594,7 +1594,10 @@ mod tests {
         let ids: Vec<String> = page.items.iter().map(|i| i.turn_id.clone()).collect();
         assert!(ids.contains(&"t_in".to_string()));
         assert!(ids.contains(&"t_direct".to_string()));
-        assert!(!ids.contains(&"t_out".to_string()), "proxy_out must be hidden by default");
+        assert!(
+            !ids.contains(&"t_out".to_string()),
+            "proxy_out must be hidden by default"
+        );
         assert_eq!(page.total, 2);
         // proxy_in row carries the role + peer_turn_id fields.
         let in_item = page.items.iter().find(|i| i.turn_id == "t_in").unwrap();

@@ -35,7 +35,12 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     response_body     VARCHAR,
     response_id       VARCHAR,
     request_headers   VARCHAR,
-    response_headers  VARCHAR
+    response_headers  VARCHAR,
+    is_agent_request  BOOLEAN  NOT NULL DEFAULT FALSE,
+    tool_surface      VARCHAR,
+    agent_topology    VARCHAR,
+    tool_call_count   UINTEGER NOT NULL DEFAULT 0,
+    tool_names_json   VARCHAR
 );
 ";
 
@@ -290,6 +295,30 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
             ),
         }
 
+        // Phase 5 migration: add agent-classification columns to llm_calls.
+        // Each statement is run independently so a failure on one column
+        // does not abort the rest; failures are logged (not propagated) so
+        // the app can start even against an older DuckDB that doesn't support
+        // `ADD COLUMN IF NOT EXISTS`.
+        let agent_columns = [
+            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS is_agent_request BOOLEAN NOT NULL DEFAULT FALSE;",
+            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS tool_surface VARCHAR;",
+            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS agent_topology VARCHAR;",
+            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS tool_call_count UINTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS tool_names_json VARCHAR;",
+        ];
+        for stmt in agent_columns {
+            match conn.execute_batch(stmt) {
+                Ok(()) => tracing::debug!(
+                    sql = stmt,
+                    "phase5 migration: llm_calls agent column added (or already present)"
+                ),
+                Err(e) => tracing::info!(
+                    "phase5 migration: llm_calls agent columns add skipped: {e} (sql: {stmt})"
+                ),
+            }
+        }
+
         info!("storage tables initialized");
         Ok(())
     })
@@ -496,5 +525,4 @@ mod tests {
         backend.init().await.unwrap();
         backend.init().await.unwrap();
     }
-
 }

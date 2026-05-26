@@ -876,6 +876,11 @@ pub struct CallDetail {
     pub response_body: Option<String>,
     pub request_headers: Option<String>,
     pub response_headers: Option<String>,
+    pub is_agent_request: bool,
+    pub tool_surface: Option<String>,
+    pub agent_topology: Option<String>,
+    pub tool_call_count: u32,
+    pub tool_names: Vec<String>,
 }
 
 #[cfg(test)]

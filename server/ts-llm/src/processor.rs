@@ -274,6 +274,13 @@ impl LlmProcessor {
             response_id: resp_info.response_id,
             request_headers: request.headers.clone(),
             response_headers: response.headers.clone(),
+            // Agent-classification fields are populated in the LLM stage
+            // (stage.rs) once the agent match result is known.
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         };
 
         let agent = build_agent_call_info_with_parsed(
@@ -961,6 +968,11 @@ mod tests {
                 ("anthropic-version".into(), "2023-06-01".into()),
             ],
             response_headers: vec![],
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         }
     }
 
@@ -970,7 +982,14 @@ mod tests {
         let wa = crate::wire_apis::build_default_wire_api_registry();
         let body = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"Agent"},{"name":"Bash"}]}"#;
         let call = claude_call(body, Some("tool_use"));
-        let id = build_agent_call_info(&call, &registry, &wa, &ClassifierConfig::default(), &test_metrics()).expect("call info");
+        let id = build_agent_call_info(
+            &call,
+            &registry,
+            &wa,
+            &ClassifierConfig::default(),
+            &test_metrics(),
+        )
+        .expect("call info");
         assert!(id.subagent_name.is_none());
         assert_eq!(id.is_user_turn_start, Some(true));
         assert!(!id.is_turn_terminal, "tool_use is not terminal");
@@ -987,7 +1006,14 @@ mod tests {
         let wa = crate::wire_apis::build_default_wire_api_registry();
         let body = r#"{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}],"tools":[{"name":"Agent"},{"name":"Bash"}]}"#;
         let call = claude_call(body, Some("end_turn"));
-        let id = build_agent_call_info(&call, &registry, &wa, &ClassifierConfig::default(), &test_metrics()).expect("call info");
+        let id = build_agent_call_info(
+            &call,
+            &registry,
+            &wa,
+            &ClassifierConfig::default(),
+            &test_metrics(),
+        )
+        .expect("call info");
         assert!(id.subagent_name.is_none());
         assert_eq!(id.is_user_turn_start, Some(false));
         assert!(id.is_turn_terminal, "end_turn is wire-terminal");
@@ -1005,7 +1031,14 @@ mod tests {
         let wa = crate::wire_apis::build_default_wire_api_registry();
         let body = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"do research"}]}],"tools":[{"name":"Read"},{"name":"Grep"}]}"#;
         let call = claude_call(body, Some("end_turn"));
-        let id = build_agent_call_info(&call, &registry, &wa, &ClassifierConfig::default(), &test_metrics()).expect("call info");
+        let id = build_agent_call_info(
+            &call,
+            &registry,
+            &wa,
+            &ClassifierConfig::default(),
+            &test_metrics(),
+        )
+        .expect("call info");
         assert_eq!(id.subagent_name.as_deref(), Some("task"));
         assert_eq!(id.is_user_turn_start, Some(true));
         assert!(
@@ -1026,7 +1059,14 @@ mod tests {
         let wa = crate::wire_apis::build_default_wire_api_registry();
         let body = r#"{"messages":[{"role":"user","content":"generate title"}],"tools":[]}"#;
         let call = claude_call(body, Some("end_turn"));
-        let id = build_agent_call_info(&call, &registry, &wa, &ClassifierConfig::default(), &test_metrics()).expect("call info");
+        let id = build_agent_call_info(
+            &call,
+            &registry,
+            &wa,
+            &ClassifierConfig::default(),
+            &test_metrics(),
+        )
+        .expect("call info");
         assert!(id.is_auxiliary, "tools=[] flags auxiliary one-shot");
     }
 

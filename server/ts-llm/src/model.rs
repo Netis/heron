@@ -57,6 +57,17 @@ pub struct LlmCall {
     pub request_headers: Vec<(String, String)>,
     /// Raw HTTP response headers. Serialization format is decided by each storage backend.
     pub response_headers: Vec<(String, String)>,
+    /// True when this call is part of an agent loop. Copied from
+    /// `AgentCallInfo.is_agent_request` in the LLM stage for storage.
+    pub is_agent_request: bool,
+    /// Tool-invocation surface for this call. Copied from `AgentCallInfo`.
+    pub tool_surface: Option<ts_common::agent::ToolSurface>,
+    /// Agent topology role for this call. Copied from `AgentCallInfo`.
+    pub agent_topology: Option<ts_common::agent::AgentTopology>,
+    /// Count of tool calls in this call. Copied from `AgentCallInfo`.
+    pub tool_call_count: u32,
+    /// Distinct tool names referenced in this call. Copied from `AgentCallInfo`.
+    pub tool_names: Vec<String>,
 }
 
 /// Per-call agent-side info produced once an `AgentProfile` has matched —
@@ -369,6 +380,11 @@ mod extension_tests {
             response_id: None,
             request_headers: vec![],
             response_headers: vec![],
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         };
         let arc = Arc::new(call);
         let id = AgentCallInfo {
@@ -427,6 +443,11 @@ mod extension_tests {
             response_id: None,
             request_headers: vec![],
             response_headers: vec![],
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         };
         assert!(call.finish_reason.is_none());
     }

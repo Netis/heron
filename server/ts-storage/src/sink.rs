@@ -215,10 +215,9 @@ mod tests {
         CallsPage, CallsQuery, DistinctAgentKindsQuery, DistinctFinishReason,
         FinishReasonTimeseries, FinishReasonsQuery, HttpExchangeDetail, HttpExchangesPage,
         HttpExchangesQuery, MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery,
-        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, ServiceRow,
-        ServicesQuery, ServicesTopology, ServicesTopologyQuery, SessionDetail, SessionListQuery,
-        SessionTurnsPage, SessionTurnsQuery, SessionsPage, TurnCallItem, TurnDetail, TurnsPage,
-        TurnsQuery,
+        MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, ServiceRow, ServicesQuery,
+        ServicesTopology, ServicesTopologyQuery, SessionDetail, SessionListQuery, SessionTurnsPage,
+        SessionTurnsQuery, SessionsPage, TurnCallItem, TurnDetail, TurnsPage, TurnsQuery,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -308,7 +307,10 @@ mod tests {
             &self,
             _query: &ServicesTopologyQuery,
         ) -> Result<ServicesTopology> {
-            Ok(ServicesTopology { nodes: vec![], edges: vec![] })
+            Ok(ServicesTopology {
+                nodes: vec![],
+                edges: vec![],
+            })
         }
         async fn query_agent_summary(
             &self,
@@ -549,6 +551,11 @@ mod tests {
             response_id: None,
             request_headers: vec![],
             response_headers: vec![],
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         }
     }
 

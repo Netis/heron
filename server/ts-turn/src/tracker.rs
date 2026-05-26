@@ -963,14 +963,28 @@ mod tests {
         let reg = agents::build_default_registry();
         let wa_reg = ts_llm::wire_apis::build_default_wire_api_registry();
         let metrics = llm_test_metrics();
-        ts_llm::build_agent_call_info(call, &reg, &wa_reg, &ts_llm::agent_classifier::ClassifierConfig::default(), &metrics).expect("claude-cli call info")
+        ts_llm::build_agent_call_info(
+            call,
+            &reg,
+            &wa_reg,
+            &ts_llm::agent_classifier::ClassifierConfig::default(),
+            &metrics,
+        )
+        .expect("claude-cli call info")
     }
 
     fn call_info_for_codex(call: &LlmCall) -> AgentCallInfo {
         let reg = agents::build_default_registry();
         let wa_reg = ts_llm::wire_apis::build_default_wire_api_registry();
         let metrics = llm_test_metrics();
-        ts_llm::build_agent_call_info(call, &reg, &wa_reg, &ts_llm::agent_classifier::ClassifierConfig::default(), &metrics).expect("codex-cli call info")
+        ts_llm::build_agent_call_info(
+            call,
+            &reg,
+            &wa_reg,
+            &ts_llm::agent_classifier::ClassifierConfig::default(),
+            &metrics,
+        )
+        .expect("codex-cli call info")
     }
 
     fn anthropic_call(
@@ -1019,6 +1033,11 @@ mod tests {
                 ("X-Claude-Code-Session-Id".into(), session.into()),
             ],
             response_headers: vec![],
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         }
     }
 
@@ -1062,6 +1081,11 @@ mod tests {
                 ("X-Codex-Turn-Metadata".into(), meta),
             ],
             response_headers: vec![],
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_call_count: 0,
+            tool_names: vec![],
         }
     }
 

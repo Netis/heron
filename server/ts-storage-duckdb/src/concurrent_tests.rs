@@ -40,6 +40,11 @@ fn mk_call(i: usize) -> LlmCall {
         response_id: None,
         request_headers: vec![],
         response_headers: vec![],
+        is_agent_request: false,
+        tool_surface: None,
+        agent_topology: None,
+        tool_call_count: 0,
+        tool_names: vec![],
     }
 }
 
