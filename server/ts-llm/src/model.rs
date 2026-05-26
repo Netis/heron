@@ -103,6 +103,23 @@ pub struct AgentCallInfo {
     /// Full assistant text extracted from the response body. `None` when
     /// body is absent or yields no assistant text.
     pub assistant_text: Option<String>,
+    /// True when this call shows signs of being part of an agent loop
+    /// (tool calls present, sub-agent marker, or agent-shaped system prompt).
+    /// Set by `agent_classifier::classify` from extractor-emitted primitives.
+    pub is_agent_request: bool,
+    /// Tool-invocation surface for this call, or None when no tool calls present.
+    pub tool_surface: Option<ts_common::agent::ToolSurface>,
+    /// This call's role in its turn's agent topology. None when not an agent request.
+    pub agent_topology: Option<ts_common::agent::AgentTopology>,
+    /// Distinct tool names referenced in this call (preserved in order of first
+    /// appearance). Empty when no tool calls present.
+    pub tool_names: Vec<String>,
+    /// Count of tool calls in this call. Mirrors `tool_names.len()` after dedup
+    /// when extractors are well-behaved; stored independently because some
+    /// profiles can count calls without naming them.
+    pub tool_call_count: u32,
+    /// Suspicious-skill signals detected for this call.
+    pub suspicious_signals: Vec<crate::agent_classifier::SuspiciousSignal>,
 }
 
 /// An LlmCall attributed to a specific agent. The `call` is an `Arc` because
@@ -309,6 +326,12 @@ mod extension_tests {
             is_auxiliary: false,
             user_input: None,
             assistant_text: None,
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_names: Vec::new(),
+            tool_call_count: 0,
+            suspicious_signals: Vec::new(),
         };
         assert_eq!(id.agent_kind, "claude-cli");
         assert_eq!(id.session_id, "sess-1");
@@ -357,6 +380,12 @@ mod extension_tests {
             is_auxiliary: false,
             user_input: None,
             assistant_text: None,
+            is_agent_request: false,
+            tool_surface: None,
+            agent_topology: None,
+            tool_names: Vec::new(),
+            tool_call_count: 0,
+            suspicious_signals: Vec::new(),
         };
         let ic = AgentCall {
             call: Arc::clone(&arc),

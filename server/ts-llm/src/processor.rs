@@ -353,6 +353,12 @@ pub fn build_agent_call_info_with_parsed(
         is_auxiliary: profile.is_auxiliary(&ctx),
         user_input: profile.extract_user_input(&ctx),
         assistant_text: profile.extract_assistant_text(&ctx),
+        is_agent_request: false,
+        tool_surface: None,
+        agent_topology: None,
+        tool_names: Vec::new(),
+        tool_call_count: 0,
+        suspicious_signals: Vec::new(),
     })
 }
 
