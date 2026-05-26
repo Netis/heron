@@ -659,7 +659,10 @@ async fn metrics_filters_by_tool_surface() {
     assert_eq!(series.len(), 1, "one field, ungrouped → one series");
     let values = series[0]["values"].as_array().unwrap();
     let total: f64 = values.iter().filter_map(|x| x.as_f64()).sum();
-    assert_eq!(total, 75.0, "expected 50 (mcp) + 25 (cli), excluding function_call");
+    assert_eq!(
+        total, 75.0,
+        "expected 50 (mcp) + 25 (cli), excluding function_call"
+    );
 
     // Sanity: no filter sums all three surfaces.
     let uri_all = format!(
@@ -668,7 +671,12 @@ async fn metrics_filters_by_tool_surface() {
     );
     let resp_all = app
         .clone()
-        .oneshot(Request::builder().uri(&uri_all).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(&uri_all)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp_all.status(), StatusCode::OK);
@@ -688,7 +696,12 @@ async fn metrics_filters_by_tool_surface() {
          &granularity=10s&fields=call_count&tool_surface=foo"
     );
     let resp_bad = app
-        .oneshot(Request::builder().uri(&uri_bad).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(&uri_bad)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp_bad.status(), StatusCode::BAD_REQUEST);

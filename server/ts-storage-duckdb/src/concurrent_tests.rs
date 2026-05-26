@@ -223,5 +223,8 @@ async fn llm_call_round_trip_with_agent_fields() {
     assert_eq!(back.tool_surface.as_deref(), Some("function_call"));
     assert_eq!(back.agent_topology.as_deref(), Some("single_agent"));
     assert_eq!(back.tool_call_count, 3);
-    assert_eq!(back.tool_names, vec!["Read".to_string(), "Edit".to_string()]);
+    assert_eq!(
+        back.tool_names,
+        vec!["Read".to_string(), "Edit".to_string()]
+    );
 }

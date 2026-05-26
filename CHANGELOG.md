@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — Agent-era observer (H002)
+
+- Agent traffic classification: every LlmCall carries `is_agent_request`,
+  `tool_surface`, `agent_topology`, `tool_call_count`, `tool_names`. Every
+  AgentTurn rolls up `tool_surfaces`, `tool_call_total`, `agent_topology`,
+  `suspicious_skills`. New `tool_surface` dimension on `llm_metrics`.
+- Console: agent-aware columns and filters on Agent Turns; Agent breakdown
+  section on turn detail; tool-surface facet on Performance.
+- Config: `[agent_classifier]` block in `default.toml` for tool taxonomy.
+- Internal metrics: `agent_classifier.unknown_count`,
+  `classifier_mixed_count`.
+
 ### Capture
 
 - Default live-capture configuration now covers common LLM-serving ports,

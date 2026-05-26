@@ -107,7 +107,10 @@ pub fn make_call(
 /// role and the last into the terminal role so the partition closes exactly
 /// once, no matter how the caller built each `AgentCall`.
 pub fn feed_session_and_finalize(session_id: &str, calls: &[AgentCall]) -> AgentTurn {
-    assert!(!calls.is_empty(), "need at least one call to finalize a turn");
+    assert!(
+        !calls.is_empty(),
+        "need at least one call to finalize a turn"
+    );
     let mut tracker = TurnTracker::new(
         TrackerConfig {
             grace: Duration::ZERO,
