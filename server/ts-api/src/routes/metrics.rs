@@ -17,6 +17,24 @@ use crate::response::{ApiError, ApiResponse};
 
 const VALID_GRANULARITIES: &[&str] = &["10s", "1m", "5m", "1h"];
 
+/// Accepted values for the `tool_surface=` filter on `/api/metrics/*`. Mirrors
+/// `ts_common::agent::ToolSurface`'s serde representation (`snake_case`). The
+/// validator rejects any unknown token with a 400 so a typo doesn't silently
+/// degrade to an empty result set — same pattern as `granularity` validation.
+const VALID_TOOL_SURFACES: &[&str] = &["function_call", "mcp", "cli", "mixed", "unknown"];
+
+fn validate_tool_surfaces(values: &[String]) -> Result<(), ApiError> {
+    for v in values {
+        if !VALID_TOOL_SURFACES.contains(&v.as_str()) {
+            return Err(ApiError::InvalidParam(format!(
+                "tool_surface={v}: must be one of: {}",
+                VALID_TOOL_SURFACES.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Map a granularity label to its window length in seconds. Mirrors
 /// `ts_metrics::aggregator::GRANULARITIES`. Caller has already validated the
 /// label against `VALID_GRANULARITIES`, so this is infallible at the call site.
@@ -64,11 +82,18 @@ pub async fn timeseries(
             ));
         }
     }
+    let tool_surfaces = parse_csv(&params.tool_surface);
+    validate_tool_surfaces(&tool_surfaces)?;
 
     let query = MetricsTimeseriesQuery {
         time_range: to_time_range(params.start, params.end)?,
         granularity: params.granularity,
-        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
+        filter: to_dimension_filter(
+            &params.wire_api,
+            &params.model,
+            &params.server_ip,
+            &params.tool_surface,
+        ),
         fields: fields.clone(),
         group_by: params.group_by,
     };
@@ -134,9 +159,16 @@ pub async fn summary(
     State(storage): State<Arc<dyn StorageBackend>>,
     Query(params): Query<SummaryParams>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let tool_surfaces = parse_csv(&params.tool_surface);
+    validate_tool_surfaces(&tool_surfaces)?;
     let query = MetricsSummaryQuery {
         time_range: to_time_range(params.start, params.end)?,
-        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
+        filter: to_dimension_filter(
+            &params.wire_api,
+            &params.model,
+            &params.server_ip,
+            &params.tool_surface,
+        ),
     };
     let row = storage.query_metrics_summary(&query).await?;
     Ok(ApiResponse::ok(row))
@@ -151,9 +183,16 @@ pub async fn models(
     State(storage): State<Arc<dyn StorageBackend>>,
     Query(params): Query<ModelsParams>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let tool_surfaces = parse_csv(&params.tool_surface);
+    validate_tool_surfaces(&tool_surfaces)?;
     let query = MetricsModelsQuery {
         time_range: to_time_range(params.start, params.end)?,
-        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
+        filter: to_dimension_filter(
+            &params.wire_api,
+            &params.model,
+            &params.server_ip,
+            &params.tool_surface,
+        ),
         sort_by: params.sort_by,
         sort_order: params.sort_order,
         limit: params.limit,

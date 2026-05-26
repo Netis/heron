@@ -60,7 +60,7 @@ pub async fn agent_kinds(
 ) -> Result<impl IntoResponse, ApiError> {
     let query = DistinctAgentKindsQuery {
         time_range: to_time_range(params.start, params.end)?,
-        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
+        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip, &None),
         include_proxy_hops: params.include_proxy_hops,
     };
     let values = storage.query_distinct_agent_kinds(&query).await?;

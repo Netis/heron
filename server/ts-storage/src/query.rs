@@ -11,6 +11,11 @@ pub struct DimensionFilter {
     pub wire_apis: Vec<String>,
     pub models: Vec<String>,
     pub server_ips: Vec<String>,
+    /// Optional filter on `llm_metrics.tool_surface`. When non-empty, the read
+    /// path adds `AND tool_surface IN (...)`; when empty, the query is left
+    /// unchanged and returns rows for all surfaces (including NULL — Start
+    /// events bucket-keyed without a classified surface).
+    pub tool_surfaces: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -548,3 +548,148 @@ async fn contains_params_parse() {
 
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+/// `/api/metrics/timeseries?tool_surface=...` must SUM only the rows whose
+/// `tool_surface` column matches one of the CSV values, excluding other
+/// surfaces. An invalid value returns 400 instead of silently degrading to
+/// an empty result.
+#[tokio::test]
+async fn metrics_filters_by_tool_surface() {
+    use ts_metrics::model::LlmMetric;
+
+    fn surface_row(ts_us: i64, surface: &str, call_count: u64) -> LlmMetric {
+        LlmMetric {
+            timestamp_us: ts_us,
+            source_id: String::new(),
+            granularity: "10s",
+            // (*, *, *) tier — the read-path lands here when no
+            // wire_api/model/server_ip filter is supplied.
+            wire_api: "*".to_string(),
+            model: "*".to_string(),
+            server_ip: "*".to_string(),
+            call_count,
+            stream_count: 0,
+            non_stream_count: 0,
+            active_calls_sum: 0,
+            active_calls_sample_count: 0,
+            active_calls_max: 0,
+            total_input_tokens: 0,
+            input_token_count: 0,
+            total_output_tokens: 0,
+            output_token_count: 0,
+            total_cache_read_input_tokens: 0,
+            total_cache_creation_input_tokens: 0,
+            error_count: 0,
+            error_4xx_count: 0,
+            error_429_count: 0,
+            error_5xx_count: 0,
+            ttft_sum: 0.0,
+            ttft_count: 0,
+            ttft_p50: None,
+            ttft_p95: None,
+            ttft_p99: None,
+            ttft_stream_sum: 0.0,
+            ttft_stream_count: 0,
+            ttft_stream_p50: None,
+            ttft_stream_p95: None,
+            ttft_stream_p99: None,
+            ttft_nonstream_sum: 0.0,
+            ttft_nonstream_count: 0,
+            ttft_nonstream_p50: None,
+            ttft_nonstream_p95: None,
+            ttft_nonstream_p99: None,
+            e2e_sum: 0.0,
+            e2e_count: 0,
+            e2e_p50: None,
+            e2e_p95: None,
+            e2e_p99: None,
+            tpot_sum: 0.0,
+            tpot_count: 0,
+            tpot_p50: None,
+            tpot_p95: None,
+            tpot_p99: None,
+            tool_surface: Some(surface.to_string()),
+        }
+    }
+
+    let backend = DuckDbBackend::open(":memory:").unwrap();
+    <DuckDbBackend as ts_storage::StorageBackend>::init(&backend)
+        .await
+        .unwrap();
+
+    let ts: i64 = 1_700_000_000_000_000; // multiple of 10_000_000 us
+    <DuckDbBackend as ts_storage::StorageBackend>::write_metrics(
+        &backend,
+        vec![
+            surface_row(ts, "function_call", 100),
+            surface_row(ts, "mcp", 50),
+            surface_row(ts, "cli", 25),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
+    let app = router(
+        storage,
+        test_metrics_context(),
+        test_runtime_config_context(),
+        test_health_context(),
+        std::sync::Arc::new(vec![]),
+        ts_turn::new_active_turn_registry(),
+    );
+
+    let start_s = ts / 1_000_000;
+    let end_s = start_s + 10;
+
+    // Filter to mcp + cli — function_call's 100 calls must NOT count.
+    let uri = format!(
+        "/api/metrics/timeseries?start={start_s}&end={end_s}\
+         &granularity=10s&fields=call_count&tool_surface=mcp,cli"
+    );
+    let resp = app
+        .clone()
+        .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    let series = v["data"]["series"].as_array().expect("series");
+    assert_eq!(series.len(), 1, "one field, ungrouped → one series");
+    let values = series[0]["values"].as_array().unwrap();
+    let total: f64 = values.iter().filter_map(|x| x.as_f64()).sum();
+    assert_eq!(total, 75.0, "expected 50 (mcp) + 25 (cli), excluding function_call");
+
+    // Sanity: no filter sums all three surfaces.
+    let uri_all = format!(
+        "/api/metrics/timeseries?start={start_s}&end={end_s}\
+         &granularity=10s&fields=call_count"
+    );
+    let resp_all = app
+        .clone()
+        .oneshot(Request::builder().uri(&uri_all).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp_all.status(), StatusCode::OK);
+    let bytes_all = resp_all.into_body().collect().await.unwrap().to_bytes();
+    let v_all: Value = serde_json::from_slice(&bytes_all).unwrap();
+    let total_all: f64 = v_all["data"]["series"][0]["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|x| x.as_f64())
+        .sum();
+    assert_eq!(total_all, 175.0, "no-filter must sum all three surfaces");
+
+    // Invalid surface → 400 (matches granularity validation pattern).
+    let uri_bad = format!(
+        "/api/metrics/timeseries?start={start_s}&end={end_s}\
+         &granularity=10s&fields=call_count&tool_surface=foo"
+    );
+    let resp_bad = app
+        .oneshot(Request::builder().uri(&uri_bad).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp_bad.status(), StatusCode::BAD_REQUEST);
+}

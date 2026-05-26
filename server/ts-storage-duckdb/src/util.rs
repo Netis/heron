@@ -388,7 +388,8 @@ pub(crate) fn build_dimension_where(filter: &DimensionFilter) -> String {
         "server_ip = '*'".to_string()
     };
 
-    format!("{wire_clause} AND {model_clause} AND {server_clause}")
+    let surface_clause = build_tool_surface_clause(&filter.tool_surfaces);
+    format!("{wire_clause} AND {model_clause} AND {server_clause}{surface_clause}")
 }
 
 /// Build WHERE clause for queries that GROUP BY `wire_api` or `model`. The
@@ -414,9 +415,21 @@ pub(crate) fn build_dimension_where_for_group(filter: &DimensionFilter, group_by
             } else {
                 "server_ip = '*'".to_string()
             };
-            format!("{wire_clause} AND {model_clause} AND {server_clause}")
+            let surface_clause = build_tool_surface_clause(&filter.tool_surfaces);
+            format!("{wire_clause} AND {model_clause} AND {server_clause}{surface_clause}")
         }
         _ => build_dimension_where(filter),
+    }
+}
+
+/// Optional `tool_surface IN (...)` segment, prefixed with ` AND ` when
+/// present. Returns an empty string when no filter is set so the query stays
+/// unchanged and rolls up across all surfaces (including NULL).
+fn build_tool_surface_clause(surfaces: &[String]) -> String {
+    if surfaces.is_empty() {
+        String::new()
+    } else {
+        format!(" AND tool_surface IN ({})", sql_in_list(surfaces))
     }
 }
 
@@ -570,6 +583,7 @@ mod build_dimension_where_tests {
             wire_apis: vec!["openai-chat".into()],
             models: vec!["gpt-4".into()],
             server_ips: vec!["10.0.0.1".into()],
+            ..Default::default()
         };
         assert_eq!(
             build_dimension_where(&f),

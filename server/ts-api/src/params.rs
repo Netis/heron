@@ -12,6 +12,8 @@ pub struct TimeseriesParams {
     pub model: Option<String>,
     #[serde(default)]
     pub server_ip: Option<String>,
+    #[serde(default)]
+    pub tool_surface: Option<String>,
     pub fields: String,
     #[serde(default)]
     pub group_by: Option<String>,
@@ -27,6 +29,8 @@ pub struct SummaryParams {
     pub model: Option<String>,
     #[serde(default)]
     pub server_ip: Option<String>,
+    #[serde(default)]
+    pub tool_surface: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +43,8 @@ pub struct ModelsParams {
     pub model: Option<String>,
     #[serde(default)]
     pub server_ip: Option<String>,
+    #[serde(default)]
+    pub tool_surface: Option<String>,
     #[serde(default = "default_model_sort_by")]
     pub sort_by: String,
     #[serde(default = "default_sort_order")]
@@ -133,10 +139,12 @@ pub fn to_dimension_filter(
     wire_api: &Option<String>,
     model: &Option<String>,
     server_ip: &Option<String>,
+    tool_surface: &Option<String>,
 ) -> DimensionFilter {
     DimensionFilter {
         wire_apis: parse_csv(wire_api),
         models: parse_csv(model),
         server_ips: parse_csv(server_ip),
+        tool_surfaces: parse_csv(tool_surface),
     }
 }

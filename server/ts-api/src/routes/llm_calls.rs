@@ -93,7 +93,7 @@ pub async fn list(
 
     let query = CallsQuery {
         time_range: to_time_range(params.start, params.end)?,
-        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
+        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip, &None),
         status_codes,
         finish_reasons: parse_csv(&params.finish_reason),
         client_ips: parse_csv(&params.client_ip),

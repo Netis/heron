@@ -79,7 +79,7 @@ pub async fn list(
 
     let query = TurnsQuery {
         time_range: to_time_range(params.start, params.end)?,
-        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
+        filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip, &None),
         client_ips: parse_csv(&params.client_ip),
         server_ports,
         statuses: parse_csv(&params.status),
