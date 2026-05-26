@@ -45,14 +45,33 @@ the PR body. End it with the literal line:
 Issue title: ${ISSUE_TITLE}
 EOF
 
-claude --print \
+# Stream claude's output to BOTH the workflow log (stdout) and a
+# preserved file. Previously this was `> /tmp/wiwi-run.log 2>&1`,
+# which silenced the GH Actions log entirely for the run — you
+# couldn't tell from outside whether wiwi was making progress,
+# looping, or hung. Streaming is essential when the run can take an
+# hour: a developer watching `gh run watch` should see each tool
+# call land in near-real-time.
+#
+# `stdbuf -oL` forces line-buffered stdout from claude and tee
+# (otherwise the 4KB pipe buffer can hide progress for minutes when
+# claude emits small lines slowly).
+#
+# `tee` always exits 0, so we briefly drop `set -e` and capture
+# claude's actual exit via `${PIPESTATUS[0]}`.
+set +e
+stdbuf -oL claude --print \
   --allowed-tools Bash Read Write Edit Grep Glob \
   --model "${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}" \
-  < "$PROMPT" > /tmp/wiwi-run.log 2>&1 || {
-    echo "wiwi run failed (see /tmp/wiwi-run.log)" >&2
-    gh issue comment "$ISSUE_NUMBER" --body "🤖 wiwi could not complete this task. See workflow log."
-    exit 1
-}
+  < "$PROMPT" 2>&1 | stdbuf -oL tee /tmp/wiwi-run.log
+claude_exit=${PIPESTATUS[0]}
+set -e
+
+if [ "$claude_exit" != "0" ]; then
+  echo "wiwi run failed (claude exit=$claude_exit; see /tmp/wiwi-run.log)" >&2
+  gh issue comment "$ISSUE_NUMBER" --body "🤖 wiwi could not complete this task. See workflow log."
+  exit 1
+fi
 
 if [ -f /tmp/wiwi-abort.txt ]; then
   gh issue comment "$ISSUE_NUMBER" --body "🤖 wiwi aborted: $(cat /tmp/wiwi-abort.txt)"
