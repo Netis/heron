@@ -264,7 +264,10 @@ impl TurnTracker {
             Some(r) => r,
             None => return,
         };
-        let buf = match self.buffers.get(&(source_id.to_string(), session_id.to_string())) {
+        let buf = match self
+            .buffers
+            .get(&(source_id.to_string(), session_id.to_string()))
+        {
             Some(b) => b,
             None => return,
         };
@@ -301,7 +304,11 @@ impl TurnTracker {
             return;
         }
 
-        let mut snap = build_turn(&partition, Some(turn_id.clone()), Some(TurnStatus::InProgress));
+        let mut snap = build_turn(
+            &partition,
+            Some(turn_id.clone()),
+            Some(TurnStatus::InProgress),
+        );
         snap.source_id = source_id.to_string();
         snap.session_id = session_id.to_string();
 
@@ -956,14 +963,14 @@ mod tests {
         let reg = agents::build_default_registry();
         let wa_reg = ts_llm::wire_apis::build_default_wire_api_registry();
         let metrics = llm_test_metrics();
-        ts_llm::build_agent_call_info(call, &reg, &wa_reg, &metrics).expect("claude-cli call info")
+        ts_llm::build_agent_call_info(call, &reg, &wa_reg, &ts_llm::agent_classifier::ClassifierConfig::default(), &metrics).expect("claude-cli call info")
     }
 
     fn call_info_for_codex(call: &LlmCall) -> AgentCallInfo {
         let reg = agents::build_default_registry();
         let wa_reg = ts_llm::wire_apis::build_default_wire_api_registry();
         let metrics = llm_test_metrics();
-        ts_llm::build_agent_call_info(call, &reg, &wa_reg, &metrics).expect("codex-cli call info")
+        ts_llm::build_agent_call_info(call, &reg, &wa_reg, &ts_llm::agent_classifier::ClassifierConfig::default(), &metrics).expect("codex-cli call info")
     }
 
     fn anthropic_call(
@@ -1516,7 +1523,8 @@ mod tests {
 
     fn mk_tracker_with_registry() -> (TurnTracker, crate::model::ActiveTurnRegistry) {
         let reg = crate::model::new_active_turn_registry();
-        let t = TurnTracker::with_registry(TrackerConfig::default(), test_metrics(), Some(reg.clone()));
+        let t =
+            TurnTracker::with_registry(TrackerConfig::default(), test_metrics(), Some(reg.clone()));
         (t, reg)
     }
 
@@ -1666,7 +1674,10 @@ mod tests {
         let _ = t.ingest(ic(c2, id2));
         let snaps = registry_snapshot(&reg);
         assert_eq!(snaps.len(), 1);
-        assert_eq!(snaps[0].call_count, 2, "snapshot includes both buffered calls");
+        assert_eq!(
+            snaps[0].call_count, 2,
+            "snapshot includes both buffered calls"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

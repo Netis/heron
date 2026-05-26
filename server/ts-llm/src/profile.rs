@@ -125,6 +125,14 @@ pub trait AgentProfile: Send + Sync {
         None
     }
 
+    /// Extract primitive facts about this call for the agent classifier.
+    /// Default implementation returns inert primitives — profiles that
+    /// understand their wire shape override this to fill in tool counts,
+    /// names, system-prompt markers, and sub-agent dispatch info.
+    fn extract_primitives(&self, _ctx: &CallCtx<'_>) -> crate::agent_primitives::AgentPrimitives {
+        crate::agent_primitives::AgentPrimitives::default()
+    }
+
     /// Decide whether this call is the agent-turn terminator — i.e., the
     /// model has produced a final answer and no further API call is expected
     /// in this turn.

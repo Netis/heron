@@ -76,7 +76,8 @@ pub fn spawn_turn_stage(
         let registry_clone = active_registry.clone();
         handles.push(tokio::spawn(async move {
             let shard = i;
-            let mut tracker = TurnTracker::with_registry(tracker_cfg, worker_metrics, registry_clone);
+            let mut tracker =
+                TurnTracker::with_registry(tracker_cfg, worker_metrics, registry_clone);
             let reason = 'main: loop {
                 let input = match rx.recv().await {
                     Some(x) => x,
@@ -159,7 +160,7 @@ mod tests {
         let reg = build_default_registry();
         let wa_reg = build_default_wire_api_registry();
         let metrics = llm_test_metrics();
-        ts_llm::build_agent_call_info(call, &reg, &wa_reg, &metrics).expect("call info")
+        ts_llm::build_agent_call_info(call, &reg, &wa_reg, &ts_llm::agent_classifier::ClassifierConfig::default(), &metrics).expect("call info")
     }
 
     /// `is_user_start`: true ⇒ text body (new-turn marker); false ⇒ tool_result body (continuation).

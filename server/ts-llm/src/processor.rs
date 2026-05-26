@@ -6,6 +6,7 @@ use ts_protocol::joiner::HttpJoinerEvent;
 use ts_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
 use uuid::Uuid;
 
+use crate::agent_classifier::{classify, ClassifierConfig};
 use crate::model::{AgentCallInfo, ApiType, LlmCall, LlmCallStart, LlmEvent};
 use crate::parsed_json::ParsedJson;
 use crate::profile::{parse_bodies, AgentProfileRegistry, CallCtx};
@@ -21,6 +22,9 @@ pub struct LlmProcessor {
     /// Fallback tokenizer used when the wire response omits `usage`. Held as
     /// `Arc<dyn>` so tests can inject a deterministic stub.
     estimator: Arc<dyn TokenEstimator>,
+    /// Classifier thresholds and allowlists. Task 8 will wire this from
+    /// `AppConfig`; for now it defaults to the compile-time seeds.
+    classifier_cfg: ClassifierConfig,
 }
 
 impl LlmProcessor {
@@ -49,6 +53,7 @@ impl LlmProcessor {
             registry,
             metrics,
             estimator,
+            classifier_cfg: ClassifierConfig::default(),
         }
     }
 
@@ -270,6 +275,7 @@ impl LlmProcessor {
             resp_body_cache.get(),
             &self.registry,
             &self.wire_apis,
+            &self.classifier_cfg,
             &self.metrics,
         );
         vec![LlmEvent::Complete {
@@ -296,6 +302,7 @@ pub fn build_agent_call_info(
     call: &LlmCall,
     registry: &AgentProfileRegistry,
     wire_apis: &WireApiRegistry,
+    classifier_cfg: &ClassifierConfig,
     metrics: &ts_common::internal_metrics::MetricsWorker,
 ) -> Option<AgentCallInfo> {
     let (req, resp) = parse_bodies(call);
@@ -305,6 +312,7 @@ pub fn build_agent_call_info(
         resp.as_ref(),
         registry,
         wire_apis,
+        classifier_cfg,
         metrics,
     )
 }
@@ -325,6 +333,7 @@ pub fn build_agent_call_info_with_parsed(
     resp: Option<&Value>,
     registry: &AgentProfileRegistry,
     wire_apis: &WireApiRegistry,
+    classifier_cfg: &ClassifierConfig,
     metrics: &ts_common::internal_metrics::MetricsWorker,
 ) -> Option<AgentCallInfo> {
     let ctx = CallCtx::new(call, req, resp);
@@ -344,6 +353,21 @@ pub fn build_agent_call_info_with_parsed(
             .counter(ts_common::internal_metrics::Metric::LlmGenericToolIdCanonicalized)
             .inc();
     }
+
+    let primitives = profile.extract_primitives(&ctx);
+    let classified = classify(&primitives, classifier_cfg);
+
+    if classified.tool_surface == Some(ts_common::agent::ToolSurface::Unknown) {
+        metrics
+            .counter(ts_common::internal_metrics::Metric::AgentClassifierUnknownCount)
+            .inc();
+    }
+    if classified.tool_surface == Some(ts_common::agent::ToolSurface::Mixed) {
+        metrics
+            .counter(ts_common::internal_metrics::Metric::AgentClassifierMixedCount)
+            .inc();
+    }
+
     Some(AgentCallInfo {
         agent_kind: profile.name(),
         session_id: ids.session_id,
@@ -353,12 +377,12 @@ pub fn build_agent_call_info_with_parsed(
         is_auxiliary: profile.is_auxiliary(&ctx),
         user_input: profile.extract_user_input(&ctx),
         assistant_text: profile.extract_assistant_text(&ctx),
-        is_agent_request: false,
-        tool_surface: None,
-        agent_topology: None,
-        tool_names: Vec::new(),
-        tool_call_count: 0,
-        suspicious_signals: Vec::new(),
+        is_agent_request: classified.is_agent_request,
+        tool_surface: classified.tool_surface,
+        agent_topology: classified.agent_topology,
+        tool_names: primitives.tool_names.clone(),
+        tool_call_count: primitives.tool_call_count,
+        suspicious_signals: classified.suspicious_signals,
     })
 }
 
@@ -937,7 +961,7 @@ mod tests {
         let wa = crate::wire_apis::build_default_wire_api_registry();
         let body = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"Agent"},{"name":"Bash"}]}"#;
         let call = claude_call(body, Some("tool_use"));
-        let id = build_agent_call_info(&call, &registry, &wa, &test_metrics()).expect("call info");
+        let id = build_agent_call_info(&call, &registry, &wa, &ClassifierConfig::default(), &test_metrics()).expect("call info");
         assert!(id.subagent_name.is_none());
         assert_eq!(id.is_user_turn_start, Some(true));
         assert!(!id.is_turn_terminal, "tool_use is not terminal");
@@ -954,7 +978,7 @@ mod tests {
         let wa = crate::wire_apis::build_default_wire_api_registry();
         let body = r#"{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}],"tools":[{"name":"Agent"},{"name":"Bash"}]}"#;
         let call = claude_call(body, Some("end_turn"));
-        let id = build_agent_call_info(&call, &registry, &wa, &test_metrics()).expect("call info");
+        let id = build_agent_call_info(&call, &registry, &wa, &ClassifierConfig::default(), &test_metrics()).expect("call info");
         assert!(id.subagent_name.is_none());
         assert_eq!(id.is_user_turn_start, Some(false));
         assert!(id.is_turn_terminal, "end_turn is wire-terminal");
@@ -972,7 +996,7 @@ mod tests {
         let wa = crate::wire_apis::build_default_wire_api_registry();
         let body = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"do research"}]}],"tools":[{"name":"Read"},{"name":"Grep"}]}"#;
         let call = claude_call(body, Some("end_turn"));
-        let id = build_agent_call_info(&call, &registry, &wa, &test_metrics()).expect("call info");
+        let id = build_agent_call_info(&call, &registry, &wa, &ClassifierConfig::default(), &test_metrics()).expect("call info");
         assert_eq!(id.subagent_name.as_deref(), Some("task"));
         assert_eq!(id.is_user_turn_start, Some(true));
         assert!(
@@ -993,7 +1017,7 @@ mod tests {
         let wa = crate::wire_apis::build_default_wire_api_registry();
         let body = r#"{"messages":[{"role":"user","content":"generate title"}],"tools":[]}"#;
         let call = claude_call(body, Some("end_turn"));
-        let id = build_agent_call_info(&call, &registry, &wa, &test_metrics()).expect("call info");
+        let id = build_agent_call_info(&call, &registry, &wa, &ClassifierConfig::default(), &test_metrics()).expect("call info");
         assert!(id.is_auxiliary, "tools=[] flags auxiliary one-shot");
     }
 
