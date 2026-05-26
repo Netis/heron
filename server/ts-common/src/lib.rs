@@ -11,6 +11,7 @@
 //! No stage logic lives here; avoid adding domain types to keep the
 //! compile-time coupling surface small.
 
+pub mod agent;
 pub mod config;
 pub mod config_edit;
 pub mod error;
