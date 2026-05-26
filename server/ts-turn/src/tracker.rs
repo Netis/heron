@@ -6,15 +6,18 @@
 //! terminal and every partition becomes one `AgentTurn`. Partitions that
 //! contain no `is_user_turn_start = Some(true)` call are discarded.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
+use ts_common::agent::{AgentTopology, ToolSurface};
 use ts_common::internal_metrics::{Metric, MetricsWorker};
+use ts_llm::agent_classifier::SuspiciousSignal;
 use ts_llm::model::AgentCall;
 
 use crate::model::{ActiveTurnRegistry, AgentTurn, TurnStatus};
+use crate::SuspiciousSkillRollup;
 
 const FINAL_ANSWER_PREVIEW_CHARS: usize = 500;
 const USER_INPUT_PREVIEW_CHARS: usize = 500;
@@ -866,6 +869,47 @@ fn build_turn(
         None => (None, None, None),
     };
 
+    // Agent-classification rollup across all calls in the partition.
+    // Topology precedence: Orchestrator > SubAgent > SingleAgent.
+    let mut surfaces: BTreeSet<ToolSurface> = BTreeSet::new();
+    let mut tool_call_total: u32 = 0;
+    let mut topology_rank: u8 = 0;
+    let mut topology: Option<AgentTopology> = None;
+    let mut suspicious: Vec<SuspiciousSkillRollup> = Vec::new();
+    for ic in calls {
+        if let Some(s) = ic.agent.tool_surface {
+            surfaces.insert(s);
+        }
+        tool_call_total = tool_call_total.saturating_add(ic.agent.tool_call_count);
+
+        if let Some(t) = ic.agent.agent_topology {
+            let rank = match t {
+                AgentTopology::Orchestrator => 2,
+                AgentTopology::SubAgent => 1,
+                AgentTopology::SingleAgent => 0,
+            };
+            if rank >= topology_rank {
+                topology_rank = rank;
+                topology = Some(t);
+            }
+        }
+
+        for sig in &ic.agent.suspicious_signals {
+            match sig {
+                SuspiciousSignal::UnknownToolName { name } => {
+                    suspicious.push(SuspiciousSkillRollup {
+                        tool_name: name.clone(),
+                        reason: "unknown_tool_name".to_string(),
+                    });
+                }
+            }
+        }
+    }
+    // Deduplicate suspicious by tool_name (keep first occurrence).
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    suspicious.retain(|s| seen.insert(s.tool_name.clone()));
+    let tool_surfaces: Vec<ToolSurface> = surfaces.into_iter().collect();
+
     AgentTurn {
         source_id,
         turn_id,
@@ -893,10 +937,10 @@ fn build_turn(
         final_call_id,
         call_ids,
         metadata: serde_json::json!({}),
-        tool_surfaces: vec![],
-        tool_call_total: 0,
-        agent_topology: None,
-        suspicious_skills: vec![],
+        tool_surfaces,
+        tool_call_total,
+        agent_topology: topology,
+        suspicious_skills: suspicious,
     }
 }
 
