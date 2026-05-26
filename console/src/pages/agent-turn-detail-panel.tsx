@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils"
 import { useAgentTurnDetail, useAgentTurnCalls } from "@/hooks/use-agent-turns"
 import { useTurnUrlState } from "@/hooks/use-turn-url-state"
 import { LlmCallDetailPanel } from "./llm-call-detail-panel"
-import { TopBar, StatsCards, GanttNav, CallCard } from "@/components/turn-detail"
+import { TopBar, StatsCards, GanttNav, CallCard, AgentBreakdown } from "@/components/turn-detail"
 import { ProxyViewTab } from "@/components/turn-detail/proxy-view-tab"
 import { buildToolIndex } from "@/lib/turn-index"
 import { groupCalls } from "@/lib/call-pair"
@@ -75,6 +75,9 @@ function TurnDetailView({
           calls={calls}
           onJumpToSlowest={onSelect}
         />
+      </div>
+      <div className="shrink-0">
+        <AgentBreakdown turn={turn} calls={calls} />
       </div>
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-4">
         {/* Tab bar shows whenever there's ANY pairing — backend
