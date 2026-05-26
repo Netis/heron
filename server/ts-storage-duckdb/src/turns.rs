@@ -72,9 +72,20 @@ struct PreparedTurn {
     final_call_id: Option<String>,
     call_ids: String,
     metadata: String,
+    tool_surfaces_json: String,
+    tool_call_total: u32,
+    agent_topology: Option<String>,
+    suspicious_skills_json: String,
 }
 
 fn prepare_turn(t: AgentTurn) -> PreparedTurn {
+    // Serialize tool_surfaces as a JSON array of snake_case strings.
+    let tool_surfaces_json = {
+        let strings: Vec<String> = t.tool_surfaces.iter().map(|s| s.to_string()).collect();
+        serde_json::to_string(&strings).unwrap_or_else(|_| "[]".to_string())
+    };
+    let suspicious_skills_json =
+        serde_json::to_string(&t.suspicious_skills).unwrap_or_else(|_| "[]".to_string());
     PreparedTurn {
         turn_id: t.turn_id,
         source_id: t.source_id,
@@ -102,6 +113,10 @@ fn prepare_turn(t: AgentTurn) -> PreparedTurn {
         final_call_id: t.final_call_id,
         call_ids: serde_json::to_string(&t.call_ids).unwrap_or_default(),
         metadata: t.metadata.to_string(),
+        tool_surfaces_json,
+        tool_call_total: t.tool_call_total,
+        agent_topology: t.agent_topology.map(|top| top.to_string()),
+        suspicious_skills_json,
     }
 }
 
@@ -149,6 +164,10 @@ impl DuckDbBackend {
                         p.final_call_id,
                         p.call_ids,
                         p.metadata,
+                        p.tool_surfaces_json,
+                        p.tool_call_total,
+                        p.agent_topology,
+                        p.suspicious_skills_json,
                     ])
                     .map_err(|e| AppError::Storage(format!("failed to append turn: {e}")))?;
             }
@@ -748,6 +767,10 @@ mod tests {
             final_call_id: None,
             call_ids: call_ids.into_iter().map(String::from).collect(),
             metadata: serde_json::json!({}),
+            tool_surfaces: vec![],
+            tool_call_total: 0,
+            agent_topology: None,
+            suspicious_skills: vec![],
         }
     }
 

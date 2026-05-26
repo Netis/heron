@@ -15,3 +15,11 @@ pub use proxy_pair::{
 };
 pub use stage::spawn_turn_stage;
 pub use tracker::{TurnEvent, TurnTracker};
+
+/// One suspicious tool flagged during rollup. Serialized into
+/// `agent_turns.suspicious_skills_json` as a JSON array of objects.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SuspiciousSkillRollup {
+    pub tool_name: String,
+    pub reason: String,
+}

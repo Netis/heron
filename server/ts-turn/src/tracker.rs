@@ -893,6 +893,10 @@ fn build_turn(
         final_call_id,
         call_ids,
         metadata: serde_json::json!({}),
+        tool_surfaces: vec![],
+        tool_call_total: 0,
+        agent_topology: None,
+        suspicious_skills: vec![],
     }
 }
 

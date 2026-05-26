@@ -138,7 +138,11 @@ CREATE TABLE IF NOT EXISTS agent_turns (
     final_answer_preview      VARCHAR,
     final_call_id             VARCHAR,
     call_ids                  JSON NOT NULL,
-    metadata                  VARCHAR
+    metadata                  VARCHAR,
+    tool_surfaces_json        VARCHAR,
+    tool_call_total           UINTEGER NOT NULL DEFAULT 0,
+    agent_topology            VARCHAR,
+    suspicious_skills_json    VARCHAR
 );
 ";
 
@@ -315,6 +319,28 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
                 ),
                 Err(e) => tracing::info!(
                     "phase5 migration: llm_calls agent columns add skipped: {e} (sql: {stmt})"
+                ),
+            }
+        }
+
+        // Phase 5 migration (agent_turns): add agent rollup columns to
+        // agent_turns. Same pattern as the llm_calls block above — each
+        // statement runs independently so a failure on one column does not
+        // abort the rest.
+        let turn_agent_columns = [
+            "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS tool_surfaces_json VARCHAR;",
+            "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS tool_call_total UINTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS agent_topology VARCHAR;",
+            "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS suspicious_skills_json VARCHAR;",
+        ];
+        for stmt in turn_agent_columns {
+            match conn.execute_batch(stmt) {
+                Ok(()) => tracing::debug!(
+                    sql = stmt,
+                    "phase5 migration: agent_turns rollup column added (or absent)"
+                ),
+                Err(e) => tracing::info!(
+                    "phase5 migration: agent_turns rollup column add skipped: {e} (sql: {stmt})"
                 ),
             }
         }

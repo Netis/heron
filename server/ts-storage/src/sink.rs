@@ -587,6 +587,10 @@ mod tests {
             final_call_id: None,
             call_ids: vec![format!("c-{i}")],
             metadata: serde_json::json!({}),
+            tool_surfaces: vec![],
+            tool_call_total: 0,
+            agent_topology: None,
+            suspicious_skills: vec![],
         }
     }
 

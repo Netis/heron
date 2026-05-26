@@ -125,6 +125,16 @@ pub struct AgentTurn {
     pub call_ids: Vec<String>,
 
     pub metadata: serde_json::Value, // future extension point; empty object by default
+
+    // --- Agent rollup fields (populated by Task 14; defaults at construction) ---
+    /// Deduplicated set of tool surfaces observed across all calls in this turn.
+    pub tool_surfaces: Vec<ts_common::agent::ToolSurface>,
+    /// Total number of tool calls across all calls in this turn.
+    pub tool_call_total: u32,
+    /// Topology inferred for this turn (single-agent / sub-agent / orchestrator).
+    pub agent_topology: Option<ts_common::agent::AgentTopology>,
+    /// Tool calls flagged as suspicious during rollup analysis.
+    pub suspicious_skills: Vec<crate::SuspiciousSkillRollup>,
 }
 
 impl fmt::Display for AgentTurn {
@@ -200,6 +210,10 @@ mod tests {
             final_call_id: None,
             call_ids: vec![],
             metadata: serde_json::json!({}),
+            tool_surfaces: vec![],
+            tool_call_total: 0,
+            agent_topology: None,
+            suspicious_skills: vec![],
         };
         let s = turn.to_string();
         assert!(s.contains("t1"));
@@ -237,6 +251,10 @@ mod tests {
             final_call_id: None,
             call_ids: vec!["call-1".into(), "call-2".into()],
             metadata: serde_json::json!({}),
+            tool_surfaces: vec![],
+            tool_call_total: 0,
+            agent_topology: None,
+            suspicious_skills: vec![],
         };
         assert_eq!(turn.call_ids.len(), 2);
         assert_eq!(turn.call_ids[0], "call-1");

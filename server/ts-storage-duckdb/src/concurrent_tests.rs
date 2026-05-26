@@ -76,6 +76,10 @@ fn mk_turn(i: usize) -> AgentTurn {
         final_call_id: None,
         call_ids: vec![format!("call-{i:08}")],
         metadata: serde_json::json!({}),
+        tool_surfaces: vec![],
+        tool_call_total: 0,
+        agent_topology: None,
+        suspicious_skills: vec![],
     }
 }
 

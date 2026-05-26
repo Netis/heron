@@ -90,8 +90,7 @@ impl DuckDbBackend {
             let start_ts = us_to_timestamp(query.time_range.start_us);
             let end_ts = us_to_timestamp(query.time_range.end_us);
 
-            let mut where_parts =
-                vec!["start_time >= ?".to_string(), "start_time < ?".to_string()];
+            let mut where_parts = vec!["start_time >= ?".to_string(), "start_time < ?".to_string()];
 
             if !query.filter.wire_apis.is_empty() {
                 where_parts.push(format!(
@@ -248,6 +247,10 @@ mod tests {
             final_call_id: None,
             call_ids: vec!["call-1".into()],
             metadata,
+            tool_surfaces: vec![],
+            tool_call_total: 0,
+            agent_topology: None,
+            suspicious_skills: vec![],
         }
     }
 
