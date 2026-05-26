@@ -6,6 +6,7 @@
 pub mod model;
 pub mod proxy_pair;
 pub mod stage;
+pub mod test_support;
 pub mod tracker;
 
 pub use model::{new_active_turn_registry, ActiveTurnRegistry, AgentTurn, TurnKey, TurnStatus};
