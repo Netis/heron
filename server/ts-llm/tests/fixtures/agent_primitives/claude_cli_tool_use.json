@@ -1,0 +1,16 @@
+{
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01",
+          "name": "Read",
+          "input": {}
+        }
+      ]
+    }
+  ],
+  "system": "You are an agent running in Claude Code. Use tools to complete the task."
+}

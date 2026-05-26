@@ -1,0 +1,26 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "List open issues on the repo."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp__github__list_issues",
+        "description": "List GitHub issues",
+        "parameters": {}
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp__github__create_issue",
+        "description": "Create a GitHub issue",
+        "parameters": {}
+      }
+    }
+  ]
+}

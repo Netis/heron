@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 ts-common.workspace = true
 ts-protocol.workspace = true
@@ -17,6 +20,10 @@ uuid.workspace = true
 tiktoken-rs = "0.11"
 regex = "1"
 bitflags = "2"
+
+[[test]]
+name = "agent_primitives_fixtures"
+required-features = ["test-support"]
 
 [dev-dependencies]
 toml = "0.8"

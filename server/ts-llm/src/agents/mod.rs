@@ -12,6 +12,13 @@ pub mod openclaw;
 pub mod opencode;
 pub mod session_id;
 
+pub use claude_cli::ClaudeCliProfile;
+pub use codex_cli::CodexCliProfile;
+pub use generic::GenericProfile;
+pub use hermes::HermesProfile;
+pub use openclaw::OpenClawProfile;
+pub use opencode::OpencodeProfile;
+
 /// Default registry with all built-in agent profiles.
 ///
 /// Order is priority — first match wins. Specific profiles (claude-cli,
@@ -162,7 +169,10 @@ mod priority_tests {
             wa::ANTHROPIC,
             vec![
                 ("User-Agent", "claude-cli/2.1.98 (cli)"),
-                ("X-Claude-Code-Session-Id", "deadbeef-0000-0000-0000-000000000000"),
+                (
+                    "X-Claude-Code-Session-Id",
+                    "deadbeef-0000-0000-0000-000000000000",
+                ),
             ],
         );
         assert_eq!(find_kind(&reg, &c), Some("claude-cli"));
@@ -443,7 +453,10 @@ mod priority_tests {
             wa::ANTHROPIC,
             vec![
                 ("User-Agent", "claude-cli/2.1.98"),
-                ("X-Claude-Code-Session-Id", "deadbeef-0000-0000-0000-000000000000"),
+                (
+                    "X-Claude-Code-Session-Id",
+                    "deadbeef-0000-0000-0000-000000000000",
+                ),
             ],
             Some(OPENCLAW_ANT_MAIN),
         );

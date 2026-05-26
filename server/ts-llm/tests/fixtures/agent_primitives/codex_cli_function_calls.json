@@ -1,0 +1,16 @@
+{
+  "input": [
+    {
+      "type": "function_call",
+      "name": "Read",
+      "arguments": "{\"path\": \"src/main.rs\"}",
+      "call_id": "fc_01"
+    },
+    {
+      "type": "function_call",
+      "name": "Edit",
+      "arguments": "{\"path\": \"src/main.rs\", \"old\": \"foo\", \"new\": \"bar\"}",
+      "call_id": "fc_02"
+    }
+  ]
+}

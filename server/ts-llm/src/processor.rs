@@ -423,6 +423,8 @@ mod tests {
                 Metric::LlmGenericSessionIdSynthFailed,
                 Metric::LlmHeartbeatsReceived,
                 Metric::LlmTokensEstimated,
+                Metric::AgentClassifierUnknownCount,
+                Metric::AgentClassifierMixedCount,
             ],
         );
         let _svc = sys.start();

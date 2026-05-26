@@ -21,6 +21,7 @@
 //! title generation remains visible as an LLM call without creating a
 //! synthetic agent turn.
 
+use crate::agent_primitives::{AgentPrimitives, SystemPromptMarkers};
 use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
@@ -174,6 +175,63 @@ impl AgentProfile for HermesProfile {
     // `is_auxiliary` left at trait default. Hermes's auxiliary calls
     // (title-gen, etc.) carry no Hermes markers, so they don't match this
     // profile in the first place — they fall through to GenericProfile.
+
+    fn extract_primitives(&self, ctx: &CallCtx<'_>) -> AgentPrimitives {
+        let mut p = AgentPrimitives::default();
+        if let Some(req) = ctx.req {
+            // Tool definitions in tools[].function.name (OpenAI Chat shape)
+            // or tools[].name (Anthropic/Responses flat shape)
+            if let Some(tools) = req.get("tools").and_then(|t| t.as_array()) {
+                for tool in tools {
+                    let name = tool
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|n| n.as_str())
+                        .or_else(|| tool.get("name").and_then(|n| n.as_str()));
+                    if let Some(name) = name {
+                        if !p.tool_names.iter().any(|n| n == name) {
+                            p.tool_names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            // Tool calls in messages[].tool_calls[] (OpenAI Chat)
+            if let Some(messages) = req.get("messages").and_then(|m| m.as_array()) {
+                for msg in messages {
+                    if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+                        for tc in tool_calls {
+                            p.tool_call_count += 1;
+                            if let Some(name) = tc
+                                .get("function")
+                                .and_then(|f| f.get("name"))
+                                .and_then(|n| n.as_str())
+                            {
+                                if !p.tool_names.iter().any(|n| n == name) {
+                                    p.tool_names.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                    // System prompt markers
+                    if msg.get("role").and_then(|r| r.as_str()) == Some("system") {
+                        if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                            if !content.is_empty() {
+                                p.has_system_prompt = true;
+                                let lower = content.to_lowercase();
+                                if lower.contains("you are an agent")
+                                    || lower.contains("you are claude code")
+                                {
+                                    p.system_prompt_markers |= SystemPromptMarkers::AGENT_LOOP;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        p.subagent_marker = self.subagent(ctx);
+        p
+    }
 }
 
 #[cfg(test)]

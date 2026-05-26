@@ -1,3 +1,4 @@
+use crate::agent_primitives::{AgentPrimitives, SystemPromptMarkers};
 use crate::model::LlmCall;
 use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
 use crate::wire_apis as wa;
@@ -202,6 +203,45 @@ impl AgentProfile for ClaudeCliProfile {
             None => false,
         }
     }
+
+    fn extract_primitives(&self, ctx: &CallCtx<'_>) -> AgentPrimitives {
+        let mut p = AgentPrimitives::default();
+        if let Some(req) = ctx.req {
+            // Anthropic: tool_use blocks live in messages[].content[]
+            if let Some(messages) = req.get("messages").and_then(|m| m.as_array()) {
+                for msg in messages {
+                    if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+                        for block in content {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                                p.tool_call_count += 1;
+                                if let Some(name) = block.get("name").and_then(|n| n.as_str()) {
+                                    if !p.tool_names.iter().any(|n| n == name) {
+                                        p.tool_names.push(name.to_string());
+                                    }
+                                    if name == "Task" {
+                                        p.dispatches_to_subagent = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // System prompt markers
+            if let Some(system) = req.get("system").and_then(|s| s.as_str()) {
+                p.has_system_prompt = !system.is_empty();
+                let lower = system.to_lowercase();
+                if lower.contains("you are an agent") || lower.contains("you are claude code") {
+                    p.system_prompt_markers |= SystemPromptMarkers::AGENT_LOOP;
+                }
+                if lower.contains("mcp server") || lower.contains("mcp tool") {
+                    p.system_prompt_markers |= SystemPromptMarkers::MCP_SERVER;
+                }
+            }
+        }
+        p.subagent_marker = self.subagent(ctx);
+        p
+    }
 }
 
 #[cfg(test)]
@@ -256,7 +296,10 @@ mod tests {
             wa::ANTHROPIC,
             vec![
                 ("User-Agent", "claude-cli/2.1.98 (external, cli)"),
-                ("X-Claude-Code-Session-Id", "deadbeef-0000-0000-0000-000000000000"),
+                (
+                    "X-Claude-Code-Session-Id",
+                    "deadbeef-0000-0000-0000-000000000000",
+                ),
             ],
             None,
         );
@@ -269,7 +312,10 @@ mod tests {
             wa::OPENAI_RESPONSES,
             vec![
                 ("User-Agent", "claude-cli/2.1.98 (external, cli)"),
-                ("X-Claude-Code-Session-Id", "deadbeef-0000-0000-0000-000000000000"),
+                (
+                    "X-Claude-Code-Session-Id",
+                    "deadbeef-0000-0000-0000-000000000000",
+                ),
             ],
             None,
         );
@@ -282,7 +328,10 @@ mod tests {
             wa::ANTHROPIC,
             vec![
                 ("User-Agent", "curl/8.1.2"),
-                ("X-Claude-Code-Session-Id", "deadbeef-0000-0000-0000-000000000000"),
+                (
+                    "X-Claude-Code-Session-Id",
+                    "deadbeef-0000-0000-0000-000000000000",
+                ),
             ],
             None,
         );

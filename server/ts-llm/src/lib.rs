@@ -10,6 +10,9 @@ pub mod token_estimator;
 pub mod wire_api_registry;
 pub mod wire_apis;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 pub use model::WireApi;
 pub use parsed_json::ParsedJson;
 pub use processor::build_agent_call_info;

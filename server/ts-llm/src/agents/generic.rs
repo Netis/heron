@@ -7,6 +7,7 @@
 //! openai::chat, openai::responses}` and is shared with `openclaw`; the
 //! profile is a thin dispatcher on `call.wire_api`.
 
+use crate::agent_primitives::{AgentPrimitives, SystemPromptMarkers};
 use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
 use crate::wire_apis as wa;
@@ -166,6 +167,93 @@ impl AgentProfile for GenericProfile {
             };
             api.is_terminal(reason) && !api.is_tool_use(reason)
         }
+    }
+
+    fn extract_primitives(&self, ctx: &CallCtx<'_>) -> AgentPrimitives {
+        let mut p = AgentPrimitives::default();
+        if let Some(req) = ctx.req {
+            // Best-effort: try Anthropic shape (messages[].content[].type=="tool_use")
+            if let Some(messages) = req.get("messages").and_then(|m| m.as_array()) {
+                for msg in messages {
+                    if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+                        for block in content {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                                p.tool_call_count += 1;
+                                if let Some(name) = block.get("name").and_then(|n| n.as_str()) {
+                                    if !p.tool_names.iter().any(|n| n == name) {
+                                        p.tool_names.push(name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // OpenAI Chat shape: messages[].tool_calls[]
+                    if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+                        for tc in tool_calls {
+                            p.tool_call_count += 1;
+                            if let Some(name) = tc
+                                .get("function")
+                                .and_then(|f| f.get("name"))
+                                .and_then(|n| n.as_str())
+                            {
+                                if !p.tool_names.iter().any(|n| n == name) {
+                                    p.tool_names.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // OpenAI Responses: function_call items in input[]
+            if let Some(items) = req.get("input").and_then(|i| i.as_array()) {
+                for item in items {
+                    if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
+                        p.tool_call_count += 1;
+                        if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                            if !p.tool_names.iter().any(|n| n == name) {
+                                p.tool_names.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            // System prompt: Anthropic top-level "system" string
+            if let Some(system) = req.get("system").and_then(|s| s.as_str()) {
+                if !system.is_empty() {
+                    p.has_system_prompt = true;
+                    let lower = system.to_lowercase();
+                    if lower.contains("you are an agent") || lower.contains("you are claude code") {
+                        p.system_prompt_markers |= SystemPromptMarkers::AGENT_LOOP;
+                    }
+                    if lower.contains("mcp server") || lower.contains("mcp tool") {
+                        p.system_prompt_markers |= SystemPromptMarkers::MCP_SERVER;
+                    }
+                }
+            }
+            // System prompt: OpenAI Chat messages[role=system].content
+            if let Some(messages) = req.get("messages").and_then(|m| m.as_array()) {
+                for msg in messages {
+                    if msg.get("role").and_then(|r| r.as_str()) == Some("system") {
+                        if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                            if !content.is_empty() {
+                                p.has_system_prompt = true;
+                                let lower = content.to_lowercase();
+                                if lower.contains("you are an agent")
+                                    || lower.contains("you are claude code")
+                                {
+                                    p.system_prompt_markers |= SystemPromptMarkers::AGENT_LOOP;
+                                }
+                                if lower.contains("mcp server") || lower.contains("mcp tool") {
+                                    p.system_prompt_markers |= SystemPromptMarkers::MCP_SERVER;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        p.subagent_marker = self.subagent(ctx);
+        p
     }
 }
 

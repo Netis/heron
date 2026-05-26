@@ -1,0 +1,18 @@
+{
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_02",
+          "name": "Task",
+          "input": {
+            "prompt": "Implement the feature described in the issue."
+          }
+        }
+      ]
+    }
+  ],
+  "system": "You are an agent with access to subagent dispatch."
+}

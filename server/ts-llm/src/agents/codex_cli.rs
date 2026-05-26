@@ -1,3 +1,4 @@
+use crate::agent_primitives::{AgentPrimitives, SystemPromptMarkers};
 use crate::model::LlmCall;
 use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
 use crate::wire_api_registry::WireApiRegistry;
@@ -195,6 +196,60 @@ impl AgentProfile for CodexCliProfile {
         } else {
             Some(joined)
         }
+    }
+
+    fn extract_primitives(&self, ctx: &CallCtx<'_>) -> AgentPrimitives {
+        let mut p = AgentPrimitives::default();
+        if let Some(req) = ctx.req {
+            // OpenAI Responses shape: function_call items live in input[]
+            if let Some(items) = req.get("input").and_then(|i| i.as_array()) {
+                for item in items {
+                    if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
+                        p.tool_call_count += 1;
+                        if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                            if !p.tool_names.iter().any(|n| n == name) {
+                                p.tool_names.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            // System prompt: in Responses API, developer/system messages in input[]
+            if let Some(items) = req.get("input").and_then(|i| i.as_array()) {
+                for item in items {
+                    if matches!(
+                        item.get("role").and_then(|r| r.as_str()),
+                        Some("developer") | Some("system")
+                    ) {
+                        if let Some(content) = item.get("content") {
+                            let text = match content {
+                                Value::String(s) => s.clone(),
+                                Value::Array(blocks) => blocks
+                                    .iter()
+                                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                    .collect::<Vec<_>>()
+                                    .join(" "),
+                                _ => continue,
+                            };
+                            if !text.is_empty() {
+                                p.has_system_prompt = true;
+                                let lower = text.to_lowercase();
+                                if lower.contains("you are an agent")
+                                    || lower.contains("you are claude code")
+                                {
+                                    p.system_prompt_markers |= SystemPromptMarkers::AGENT_LOOP;
+                                }
+                                if lower.contains("mcp server") || lower.contains("mcp tool") {
+                                    p.system_prompt_markers |= SystemPromptMarkers::MCP_SERVER;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        p.subagent_marker = self.subagent(ctx);
+        p
     }
 }
 
