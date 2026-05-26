@@ -254,6 +254,10 @@ define_metrics! {
     StorageQueueDepthTurns         => { kind: Gauge, group: Storage,  short: "q_turns"              },
     StorageQueueDepthMetrics       => { kind: Gauge, group: Storage,  short: "q_metrics"            },
     StorageQueueDepthHttpExchanges => { kind: Gauge, group: Storage,  short: "q_exchanges"          },
+
+    // -- Agent classifier --
+    AgentClassifierUnknownCount    => { kind: Counter, group: Llm, short: "classifier_unknown"     },
+    AgentClassifierMixedCount      => { kind: Counter, group: Llm, short: "classifier_mixed"       },
 }
 
 impl Metric {
@@ -768,10 +772,7 @@ impl AggregateHistory {
 
     /// Number of samples currently held (test/diag helper).
     pub fn len(&self) -> usize {
-        self.samples
-            .read()
-            .expect("history lock poisoned")
-            .len()
+        self.samples.read().expect("history lock poisoned").len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -820,8 +821,7 @@ impl HistoryRecorder {
     /// Take one synchronous sample. Pub for unit-test reuse — production
     /// callers should let [`start`](Self::start)'s tokio task drive this.
     pub fn record(svcs: &[Arc<MetricsSvc>], history: &AggregateHistory) {
-        let mut sum: BTreeMap<Metric, u64> =
-            history.tracked().iter().map(|&m| (m, 0u64)).collect();
+        let mut sum: BTreeMap<Metric, u64> = history.tracked().iter().map(|&m| (m, 0u64)).collect();
         for svc in svcs {
             svc.sample_probes();
             for &m in history.tracked() {
@@ -1094,8 +1094,7 @@ mod tests {
         sys_b.register_queue_probe(Metric::TurnActive, || 2);
         let svc_b = sys_b.start();
 
-        let history =
-            AggregateHistory::new(vec![Metric::FlowsActive, Metric::TurnActive], 16);
+        let history = AggregateHistory::new(vec![Metric::FlowsActive, Metric::TurnActive], 16);
 
         HistoryRecorder::record(&[svc_a, svc_b], &history);
         HistoryRecorder::record(&[], &history); // empty svcs should yield 0 frame
