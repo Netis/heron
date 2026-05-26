@@ -1,3 +1,4 @@
+pub mod agent_primitives;
 pub mod agents;
 pub mod model;
 pub mod parsed_json;
@@ -14,7 +15,7 @@ pub use processor::build_agent_call_info;
 pub use profile::{AgentProfile, AgentProfileRegistry, SessionIdExtraction};
 pub use stage::spawn_llm_stage;
 pub use token_estimator::{
-    collect_anthropic_assistant_text, collect_chat_assistant_text,
-    collect_responses_output_text, extract_think_blocks, CL100kEstimator, TokenEstimator,
+    collect_anthropic_assistant_text, collect_chat_assistant_text, collect_responses_output_text,
+    extract_think_blocks, CL100kEstimator, TokenEstimator,
 };
 pub use wire_api_registry::WireApiRegistry;

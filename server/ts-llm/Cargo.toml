@@ -16,3 +16,4 @@ thiserror.workspace = true
 uuid.workspace = true
 tiktoken-rs = "0.11"
 regex = "1"
+bitflags = "2"
