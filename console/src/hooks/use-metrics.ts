@@ -18,7 +18,7 @@ export function useMetricsSummary() {
 
 export function useTimeseries(
   fields: string,
-  opts?: { groupBy?: string; granularity?: string },
+  opts?: { groupBy?: string; granularity?: string; toolSurface?: string },
 ) {
   const start = useToolbarStore((s) => s.start)
   const end = useToolbarStore((s) => s.end)
@@ -37,8 +37,10 @@ export function useTimeseries(
           ? "5m"
           : "1h")
 
+  const toolSurface = opts?.toolSurface && opts.toolSurface.length > 0 ? opts.toolSurface : undefined
+
   return useQuery({
-    queryKey: ["timeseries", { start, end, fields, granularity, groupBy: opts?.groupBy, ...fp }],
+    queryKey: ["timeseries", { start, end, fields, granularity, groupBy: opts?.groupBy, toolSurface, ...fp }],
     queryFn: () =>
       apiFetch<TimeseriesData>("/api/metrics/timeseries", {
         start,
@@ -46,6 +48,7 @@ export function useTimeseries(
         granularity,
         fields,
         group_by: opts?.groupBy,
+        tool_surface: toolSurface,
         ...fp,
       }),
     // Include preset in dep tracking for reactivity

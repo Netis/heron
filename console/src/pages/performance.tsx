@@ -1,6 +1,12 @@
+import { Filter } from "lucide-react"
 import { useTimeseries } from "@/hooks/use-metrics"
+import { useSearchParamState } from "@/hooks/use-search-param-state"
 import { formatMs, formatNumber } from "@/lib/format"
 import { TimeseriesLineChart } from "@/components/charts/timeseries-line-chart"
+import { FilterDropdown } from "@/components/ui/filter-dropdown"
+import type { ToolSurface } from "@/types/api"
+
+const SURFACE_OPTIONS: ToolSurface[] = ["function_call", "mcp", "cli", "mixed", "unknown"]
 
 // Stream-only TTFT — non-streaming TTFT collapses to ~e2e because
 // servers buffer the full response, so showing it here is just
@@ -65,17 +71,35 @@ function ChartCard({
 }
 
 export function PerformancePage() {
+  const [surfaceStr, setSurfaceStr] = useSearchParamState("surface", "")
+  const surfaceFilter = surfaceStr ? (surfaceStr.split(",") as ToolSurface[]) : []
+  const toolSurface = surfaceFilter.join(",")
+
   const { data: ttftData } = useTimeseries(
     "ttft_stream_p50,ttft_stream_p95,ttft_stream_p99",
+    { toolSurface },
   )
-  const { data: e2eData } = useTimeseries("e2e_p50,e2e_p95,e2e_p99")
-  const { data: tpotData } = useTimeseries("tpot_p50,tpot_p95")
-  const { data: activeCallsData } = useTimeseries("active_calls_avg,active_calls_max")
-  const { data: cacheTokenData } = useTimeseries("total_cache_read_input_tokens,total_cache_creation_input_tokens")
-  const { data: tokenAvgData } = useTimeseries("input_tokens_avg,output_tokens_avg")
+  const { data: e2eData } = useTimeseries("e2e_p50,e2e_p95,e2e_p99", { toolSurface })
+  const { data: tpotData } = useTimeseries("tpot_p50,tpot_p95", { toolSurface })
+  const { data: activeCallsData } = useTimeseries("active_calls_avg,active_calls_max", { toolSurface })
+  const { data: cacheTokenData } = useTimeseries(
+    "total_cache_read_input_tokens,total_cache_creation_input_tokens",
+    { toolSurface },
+  )
+  const { data: tokenAvgData } = useTimeseries("input_tokens_avg,output_tokens_avg", { toolSurface })
 
   return (
     <div className="flex flex-col gap-4 p-4">
+      <div className="flex items-center gap-2">
+        <Filter className="size-3.5 text-muted-foreground" />
+        <span className="text-xs text-muted-foreground">Filters:</span>
+        <FilterDropdown
+          label="Tool surface"
+          options={SURFACE_OPTIONS}
+          selected={surfaceFilter}
+          onChange={(v) => setSurfaceStr(v.join(","))}
+        />
+      </div>
       {/* Top row: TTFT (stream + non-stream overlaid) + E2E */}
       <div className="grid grid-cols-2 gap-4">
         <ChartCard
