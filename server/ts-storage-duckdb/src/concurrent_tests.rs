@@ -4,6 +4,7 @@ use crate::DuckDbBackend;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tempfile::TempDir;
+use ts_common::agent::{AgentTopology, ToolSurface};
 use ts_llm::model::{ApiType, LlmCall};
 use ts_llm::wire_apis as wa;
 use ts_metrics::model::LlmMetric;
@@ -195,4 +196,32 @@ async fn concurrent_writes_to_three_tables() {
     assert_eq!(calls_count, expected);
     assert_eq!(turns_count, expected);
     assert_eq!(metrics_count, expected);
+}
+
+#[tokio::test]
+async fn llm_call_round_trip_with_agent_fields() {
+    let backend = DuckDbBackend::open(":memory:").unwrap();
+    backend.init().await.unwrap();
+
+    let mut call = mk_call(0);
+    call.is_agent_request = true;
+    call.tool_surface = Some(ToolSurface::FunctionCall);
+    call.agent_topology = Some(AgentTopology::SingleAgent);
+    call.tool_call_count = 3;
+    call.tool_names = vec!["Read".to_string(), "Edit".to_string()];
+    let call_id = call.id.clone();
+
+    backend.write_calls(vec![call]).await.unwrap();
+
+    let back = backend
+        .query_call_by_id(&call_id)
+        .await
+        .unwrap()
+        .expect("call should round-trip");
+
+    assert!(back.is_agent_request);
+    assert_eq!(back.tool_surface.as_deref(), Some("function_call"));
+    assert_eq!(back.agent_topology.as_deref(), Some("single_agent"));
+    assert_eq!(back.tool_call_count, 3);
+    assert_eq!(back.tool_names, vec!["Read".to_string(), "Edit".to_string()]);
 }
