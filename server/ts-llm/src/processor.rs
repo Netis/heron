@@ -57,6 +57,13 @@ impl LlmProcessor {
         }
     }
 
+    /// Builder-style override for the classifier config. Replaces the default
+    /// `ClassifierConfig` with the one loaded from `AppConfig`.
+    pub fn with_classifier_cfg(mut self, cfg: ClassifierConfig) -> Self {
+        self.classifier_cfg = cfg;
+        self
+    }
+
     /// Process a single joiner event. Returns LlmEvents (Start and/or
     /// Complete and/or Heartbeat).
     pub fn process(&mut self, event: HttpJoinerEvent) -> Vec<LlmEvent> {

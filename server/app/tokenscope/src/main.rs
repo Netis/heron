@@ -9,7 +9,9 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::fmt::time::UtcTime;
 use tracing_subscriber::FmtSubscriber;
 
+use tokenscope::create_backend;
 use tokenscope::Pipeline;
+use ts_llm::agent_classifier::ClassifierConfig;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use ts_common::config::{
@@ -18,7 +20,6 @@ use ts_common::config::{
 use ts_common::internal_metrics::{
     AggregateHistory, HistoryRecorder, Metric, MetricsReporter, MetricsSystem,
 };
-use tokenscope::create_backend;
 
 mod cmd;
 
@@ -330,6 +331,7 @@ async fn run_pipeline(cli: Cli) {
             storage: config.storage.clone(),
             internal_metrics: config.internal_metrics.clone(),
             api: config.api.clone(),
+            agent_classifier: config.agent_classifier.clone(),
         }),
         config_path: config_path
             .canonicalize()
@@ -533,6 +535,7 @@ async fn run_pipeline(cli: Cli) {
             });
         }
 
+        let classifier_cfg = ClassifierConfig::from_toml(&config.agent_classifier);
         let Pipeline {
             pipeline_txs,
             pipeline_sources,
@@ -547,6 +550,7 @@ async fn run_pipeline(cli: Cli) {
             &mut per_pipeline_metrics,
             &mut shared_metrics,
             active_turns.clone(),
+            classifier_cfg,
         );
 
         // Start each per-pipeline MetricsSystem and, if enabled, one
@@ -619,11 +623,8 @@ async fn run_pipeline(cli: Cli) {
                 .map(|(_, svc)| svc.clone())
                 .collect();
             svcs.push(api_global_metrics.clone());
-            let handle = HistoryRecorder::start(
-                svcs,
-                history.clone(),
-                Duration::from_secs(interval_secs),
-            );
+            let handle =
+                HistoryRecorder::start(svcs, history.clone(), Duration::from_secs(interval_secs));
             tracing::info!(
                 "internal metrics history recorder started (interval={}s, capacity={})",
                 interval_secs,

@@ -47,6 +47,21 @@ pub fn discover_config_path() -> Option<PathBuf> {
     config_search_paths().into_iter().find(|p| p.is_file())
 }
 
+/// TOML representation of `ClassifierConfig`. Each field is a plain `Vec<String>` so
+/// TOML arrays work naturally. Empty Vec means "use the built-in default for that
+/// field" — see `ClassifierConfig::from_toml` in `ts-llm`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClassifierConfigToml {
+    #[serde(default)]
+    pub cli_tool_allowlist: Vec<String>,
+    #[serde(default)]
+    pub orchestrator_tool_names: Vec<String>,
+    #[serde(default)]
+    pub mcp_tool_prefixes: Vec<String>,
+    #[serde(default)]
+    pub known_tool_registry: Vec<String>,
+}
+
 /// Top-level application configuration.
 ///
 /// Not directly deserializable — use [`AppConfig::load`] or [`AppConfig::from_toml`]
@@ -57,6 +72,8 @@ pub struct AppConfig {
     pub storage: StorageConfig,
     pub internal_metrics: InternalMetricsConfig,
     pub api: ApiConfig,
+    #[serde(default)]
+    pub agent_classifier: ClassifierConfigToml,
 }
 
 /// A single pipeline definition bundling sources and pipeline parameters.
@@ -118,6 +135,8 @@ struct RawAppConfig {
     internal_metrics: InternalMetricsConfig,
     #[serde(default)]
     api: ApiConfig,
+    #[serde(default)]
+    agent_classifier: ClassifierConfigToml,
 }
 
 #[derive(Deserialize)]
@@ -170,6 +189,7 @@ impl RawAppConfig {
             storage,
             internal_metrics: self.internal_metrics,
             api: self.api,
+            agent_classifier: self.agent_classifier,
         }
     }
 }
@@ -1034,9 +1054,7 @@ impl AppConfig {
                     pipeline: def.name.clone(),
                 });
             }
-            if def.pcap_dump.enabled
-                && !crate::path::is_safe_path_component(&def.name)
-            {
+            if def.pcap_dump.enabled && !crate::path::is_safe_path_component(&def.name) {
                 issues.push(ConfigIssue::UnsafePcapDumpPipelineName {
                     pipeline: def.name.clone(),
                 });

@@ -21,6 +21,7 @@ use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_protocol::joiner::HttpJoinerEvent;
 
 use crate::model::{AgentCall, LlmCall, LlmEvent, TurnShardInput};
+use crate::agent_classifier::ClassifierConfig;
 use crate::processor::LlmProcessor;
 use crate::profile::AgentProfileRegistry;
 use crate::wire_api_registry::WireApiRegistry;
@@ -44,6 +45,7 @@ pub fn spawn_llm_stage(
     wire_apis: Arc<WireApiRegistry>,
     registry: Arc<AgentProfileRegistry>,
     metrics_sys: &mut MetricsSystem,
+    classifier_cfg: ClassifierConfig,
 ) -> Vec<JoinHandle<()>> {
     assert!(
         !metrics_shard_txs.is_empty(),
@@ -63,6 +65,7 @@ pub fn spawn_llm_stage(
         let turn_txs = turn_shard_txs.clone();
         let metrics_txs = metrics_shard_txs.clone();
         let calls_tx = calls_tx.clone();
+        let classifier_cfg = classifier_cfg.clone();
         let worker_metrics = metrics_sys.register_worker(
             &format!("llm.{i}"),
             &[
@@ -80,7 +83,8 @@ pub fn spawn_llm_stage(
         );
         handles.push(tokio::spawn(async move {
             let shard = i;
-            let mut processor = LlmProcessor::new(wire_apis, reg, worker_metrics.clone());
+            let mut processor = LlmProcessor::new(wire_apis, reg, worker_metrics.clone())
+                .with_classifier_cfg(classifier_cfg);
             let reason = 'main: loop {
                 let event = match rx.recv().await {
                     Some(e) => e,
@@ -328,6 +332,7 @@ mod tests {
             Arc::new(build_default_wire_api_registry()),
             Arc::new(build_default_registry()),
             &mut metrics_sys,
+            ClassifierConfig::default(),
         );
         let _svc = metrics_sys.start();
 
@@ -386,6 +391,7 @@ mod tests {
             Arc::new(build_default_wire_api_registry()),
             Arc::new(build_default_registry()),
             &mut metrics_sys,
+            ClassifierConfig::default(),
         );
         let _svc = metrics_sys.start();
 
@@ -439,6 +445,7 @@ mod tests {
             Arc::new(build_default_wire_api_registry()),
             Arc::new(build_default_registry()),
             &mut metrics_sys,
+            ClassifierConfig::default(),
         );
         let _svc = metrics_sys.start();
 

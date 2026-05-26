@@ -31,6 +31,7 @@ fn test_runtime_config_context() -> ApiRuntimeConfigContext {
             storage: ts_common::config::StorageConfig::default(),
             internal_metrics: ts_common::config::InternalMetricsConfig::default(),
             api: ts_common::config::ApiConfig::default(),
+            agent_classifier: ts_common::config::ClassifierConfigToml::default(),
         }),
         config_path: "test".to_string(),
         loaded_at_ms: 0,

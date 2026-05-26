@@ -105,6 +105,7 @@ async fn run_pcap_full_sharded(
         wire_api_registry.clone(),
         registry,
         &mut metrics_sys,
+        ts_llm::agent_classifier::ClassifierConfig::default(),
     );
 
     ts_turn::spawn_turn_stage(
@@ -234,6 +235,7 @@ async fn run_pcap_collecting_calls(
         wire_api_registry.clone(),
         registry,
         &mut metrics_sys,
+        ts_llm::agent_classifier::ClassifierConfig::default(),
     );
 
     ts_turn::spawn_turn_stage(

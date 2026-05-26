@@ -47,6 +47,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use ts_capture::{RawPacket, RoutingSender};
 use ts_common::config::{CaptureSourceConfig, PipelineDef};
 use ts_common::internal_metrics::{Metric, MetricsSystem};
+use ts_llm::agent_classifier::ClassifierConfig;
 use ts_llm::model::{LlmCall, LlmEvent, TurnShardInput};
 use ts_metrics::model::LlmMetricsBatch;
 use ts_protocol::{
@@ -126,19 +127,19 @@ impl Pipeline {
         per_pipeline_metrics: &mut [MetricsSystem],
         shared_metrics: &mut MetricsSystem,
         active_turns: ts_turn::ActiveTurnRegistry,
+        classifier_cfg: ClassifierConfig,
     ) -> Self {
         // ---- Shared sinks (fan-in across every pipeline) ----
         // Each shared channel takes the max of its dedicated config across
         // every pipeline. We don't unify under one knob: a slow `storage_calls`
         // shouldn't force `storage_turns` to over-allocate.
-        let max_q =
-            |pick: fn(&ts_common::config::QueueConfig) -> usize| -> usize {
-                pipeline_defs
-                    .iter()
-                    .map(|d| pick(&d.queues))
-                    .max()
-                    .unwrap_or(4096)
-            };
+        let max_q = |pick: fn(&ts_common::config::QueueConfig) -> usize| -> usize {
+            pipeline_defs
+                .iter()
+                .map(|d| pick(&d.queues))
+                .max()
+                .unwrap_or(4096)
+        };
         let calls_cap = max_q(|q| q.storage_calls);
         let turns_cap = max_q(|q| q.storage_turns);
         let metrics_cap = max_q(|q| q.storage_metrics);
@@ -147,8 +148,7 @@ impl Pipeline {
         let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(calls_cap);
         let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(turns_cap);
         let (metrics_out_tx, metrics_out_rx) = mpsc::channel::<LlmMetricsBatch>(metrics_cap);
-        let (http_exchanges_tx, http_exchanges_rx) =
-            mpsc::channel::<HttpExchange>(exchanges_cap);
+        let (http_exchanges_tx, http_exchanges_rx) = mpsc::channel::<HttpExchange>(exchanges_cap);
 
         let registry = Arc::new(ts_llm::agents::build_default_registry());
         let wire_api_registry = Arc::new(ts_llm::wire_apis::build_default_wire_api_registry());
@@ -338,6 +338,7 @@ impl Pipeline {
                 wire_api_registry.clone(),
                 registry.clone(),
                 metrics_sys,
+                classifier_cfg.clone(),
             );
             debug_assert_eq!(llm_handles.len(), flow_shards);
             for (j, h) in llm_handles.into_iter().enumerate() {

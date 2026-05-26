@@ -161,3 +161,14 @@ interval_secs = 10
 [api]
 listen = "0.0.0.0"
 port = 3000
+
+# ---------------------------------------------------------------------------
+# Agent classifier — used by ts-llm to derive tool_surface, agent_topology,
+# and suspicious-skill signals from extractor-emitted primitives. Empty lists
+# fall back to built-in defaults (see ts-llm::agent_classifier::ClassifierConfig::default).
+# ---------------------------------------------------------------------------
+[agent_classifier]
+cli_tool_allowlist      = ["bash", "shell", "exec", "run_command", "ShellExec"]
+orchestrator_tool_names = ["Task", "dispatch_agent"]
+mcp_tool_prefixes       = ["mcp__"]
+known_tool_registry     = ["Read", "Edit", "Write", "Grep", "Bash", "Task", "WebFetch", "WebSearch"]

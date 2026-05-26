@@ -15,6 +15,7 @@ use duckdb::Connection;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
+use tokenscope::create_backend;
 use tokenscope::Pipeline;
 use ts_capture::{CaptureSource, PcapFileSource};
 use ts_common::config::{
@@ -23,7 +24,6 @@ use ts_common::config::{
 };
 use ts_common::internal_metrics::{Metric, MetricsSystem};
 use ts_llm::wire_apis as wa;
-use tokenscope::create_backend;
 
 fn fixture(name: &str) -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -122,6 +122,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
         &mut per_pipeline_metrics,
         &mut shared_metrics,
         ts_turn::new_active_turn_registry(),
+        ts_llm::agent_classifier::ClassifierConfig::default(),
     );
     let _metrics_svcs: Vec<_> = per_pipeline_metrics
         .into_iter()

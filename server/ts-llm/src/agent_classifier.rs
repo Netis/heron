@@ -125,6 +125,62 @@ pub fn classify(primitives: &AgentPrimitives, cfg: &ClassifierConfig) -> Classif
     }
 }
 
+impl ClassifierConfig {
+    /// Build from TOML config — empty Vec fields fall back to the seed values
+    /// of `ClassifierConfig::default()`. This keeps `default.toml` minimal
+    /// while still allowing operators to fully override any list.
+    pub fn from_toml(toml_cfg: &ts_common::config::ClassifierConfigToml) -> Self {
+        let seeds = Self::default();
+        Self {
+            cli_tool_allowlist: if toml_cfg.cli_tool_allowlist.is_empty() {
+                seeds.cli_tool_allowlist
+            } else {
+                toml_cfg.cli_tool_allowlist.iter().cloned().collect()
+            },
+            orchestrator_tool_names: if toml_cfg.orchestrator_tool_names.is_empty() {
+                seeds.orchestrator_tool_names
+            } else {
+                toml_cfg.orchestrator_tool_names.iter().cloned().collect()
+            },
+            mcp_tool_prefixes: if toml_cfg.mcp_tool_prefixes.is_empty() {
+                seeds.mcp_tool_prefixes
+            } else {
+                toml_cfg.mcp_tool_prefixes.clone()
+            },
+            known_tool_registry: if toml_cfg.known_tool_registry.is_empty() {
+                seeds.known_tool_registry
+            } else {
+                toml_cfg.known_tool_registry.iter().cloned().collect()
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod toml_tests {
+    use super::*;
+    use ts_common::config::ClassifierConfigToml;
+
+    #[test]
+    fn empty_toml_falls_back_to_defaults() {
+        let toml_cfg = ClassifierConfigToml::default();
+        let cfg = ClassifierConfig::from_toml(&toml_cfg);
+        assert!(cfg.cli_tool_allowlist.contains("bash"));
+        assert!(cfg.orchestrator_tool_names.contains("Task"));
+        assert_eq!(cfg.mcp_tool_prefixes, vec!["mcp__".to_string()]);
+        assert!(cfg.known_tool_registry.contains("Read"));
+    }
+
+    #[test]
+    fn populated_toml_overrides() {
+        let mut toml_cfg = ClassifierConfigToml::default();
+        toml_cfg.cli_tool_allowlist = vec!["zsh".to_string()];
+        let cfg = ClassifierConfig::from_toml(&toml_cfg);
+        assert!(cfg.cli_tool_allowlist.contains("zsh"));
+        assert!(!cfg.cli_tool_allowlist.contains("bash"));
+    }
+}
+
 #[cfg(test)]
 mod config_tests {
     use super::*;
