@@ -18,7 +18,7 @@ use ts_pcap_extract::{prepare, stream_extract, ExtractRequest, PipelineRoot};
 use crate::extractors::Query;
 use crate::response::ApiError;
 
-const MAX_WINDOW_US: i64 = 60 * 60 * 1_000_000;   // 1 hour
+const MAX_WINDOW_US: i64 = 60 * 60 * 1_000_000; // 1 hour
 
 #[derive(Debug, Deserialize)]
 pub struct ExtractParams {
@@ -57,7 +57,10 @@ pub async fn handler(
         StatusCode::OK,
         [
             (CONTENT_TYPE, "application/vnd.tcpdump.pcap".to_string()),
-            (CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\"")),
+            (
+                CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
         ],
         body,
     )
@@ -66,7 +69,10 @@ pub async fn handler(
 
 fn build_request(p: ExtractParams) -> Result<ExtractRequest, ApiError> {
     if !is_safe_path_component(&p.source_id) {
-        return Err(ApiError::InvalidParam(format!("invalid source_id: {}", p.source_id)));
+        return Err(ApiError::InvalidParam(format!(
+            "invalid source_id: {}",
+            p.source_id
+        )));
     }
     if p.start >= p.end {
         return Err(ApiError::InvalidParam("start must be < end".into()));
@@ -89,7 +95,8 @@ fn build_request(p: ExtractParams) -> Result<ExtractRequest, ApiError> {
 
 fn parse_optional_ip(name: &str, value: Option<&str>) -> Result<Option<IpAddr>, ApiError> {
     match value {
-        Some(s) if !s.is_empty() => s.parse::<IpAddr>()
+        Some(s) if !s.is_empty() => s
+            .parse::<IpAddr>()
             .map(Some)
             .map_err(|_| ApiError::InvalidParam(format!("invalid {name}: {s}"))),
         _ => Ok(None),
@@ -103,9 +110,12 @@ mod tests {
     fn p(source_id: &str, start: i64, end: i64) -> ExtractParams {
         ExtractParams {
             source_id: source_id.into(),
-            start, end,
-            client_ip: None, client_port: None,
-            server_ip: None, server_port: None,
+            start,
+            end,
+            client_ip: None,
+            client_port: None,
+            server_ip: None,
+            server_port: None,
         }
     }
 

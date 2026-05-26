@@ -43,7 +43,12 @@ pub struct MergeIter {
 impl MergeIter {
     pub fn new(iters: Vec<PacketIter>, req: Arc<crate::types::ExtractRequest>) -> Self {
         let link_types: Vec<u32> = iters.iter().map(|it| it.link_type).collect();
-        let mut me = Self { iters, heap: BinaryHeap::new(), req, link_types };
+        let mut me = Self {
+            iters,
+            heap: BinaryHeap::new(),
+            req,
+            link_types,
+        };
         for idx in 0..me.iters.len() {
             me.refill(idx);
         }
@@ -52,10 +57,17 @@ impl MergeIter {
 
     fn refill(&mut self, idx: usize) {
         let lt = self.link_types[idx];
-        let f = crate::filter::Filter { req: &self.req, link_type: lt };
+        let f = crate::filter::Filter {
+            req: &self.req,
+            link_type: lt,
+        };
         for rec in self.iters[idx].by_ref() {
             if f.matches(&rec) {
-                self.heap.push(Reverse(HeapEntry { ts_us: rec.ts_us, file_idx: idx, rec }));
+                self.heap.push(Reverse(HeapEntry {
+                    ts_us: rec.ts_us,
+                    file_idx: idx,
+                    rec,
+                }));
                 return;
             }
         }
@@ -143,10 +155,20 @@ mod tests {
             server_port: None,
         };
         let iters = vec![
-            PacketIter::open(&CandidateFile { path: p1, compressed: false }).unwrap(),
-            PacketIter::open(&CandidateFile { path: p2, compressed: false }).unwrap(),
+            PacketIter::open(&CandidateFile {
+                path: p1,
+                compressed: false,
+            })
+            .unwrap(),
+            PacketIter::open(&CandidateFile {
+                path: p2,
+                compressed: false,
+            })
+            .unwrap(),
         ];
-        let timestamps: Vec<i64> = MergeIter::new(iters, std::sync::Arc::new(req)).map(|r| r.ts_us).collect();
+        let timestamps: Vec<i64> = MergeIter::new(iters, std::sync::Arc::new(req))
+            .map(|r| r.ts_us)
+            .collect();
         assert_eq!(timestamps, vec![1_000_000, 2_000_000, 3_000_000, 4_000_000]);
     }
 
@@ -167,9 +189,14 @@ mod tests {
             server_ip: None,
             server_port: None,
         };
-        let iters =
-            vec![PacketIter::open(&CandidateFile { path: p1, compressed: false }).unwrap()];
-        let timestamps: Vec<i64> = MergeIter::new(iters, std::sync::Arc::new(req)).map(|r| r.ts_us).collect();
+        let iters = vec![PacketIter::open(&CandidateFile {
+            path: p1,
+            compressed: false,
+        })
+        .unwrap()];
+        let timestamps: Vec<i64> = MergeIter::new(iters, std::sync::Arc::new(req))
+            .map(|r| r.ts_us)
+            .collect();
         assert_eq!(timestamps, vec![2_000_000]);
     }
 }

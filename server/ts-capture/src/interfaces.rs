@@ -76,16 +76,13 @@ pub fn list_interfaces() -> Result<Vec<CaptureInterface>, pcap::Error> {
 ///
 /// The validator never opens the real interface, so it is safe to call
 /// from a non-privileged API handler thread.
-pub fn validate_pcap_source(
-    interface: &str,
-    bpf_filter: Option<&str>,
-) -> Result<(), String> {
+pub fn validate_pcap_source(interface: &str, bpf_filter: Option<&str>) -> Result<(), String> {
     if interface.is_empty() {
         return Err("interface name is empty".to_string());
     }
     if interface != "any" {
-        let devices = pcap::Device::list()
-            .map_err(|e| format!("libpcap enumeration failed: {e}"))?;
+        let devices =
+            pcap::Device::list().map_err(|e| format!("libpcap enumeration failed: {e}"))?;
         if !devices.iter().any(|d| d.name == interface) {
             return Err(format!(
                 "interface '{interface}' is not visible to libpcap on this host"

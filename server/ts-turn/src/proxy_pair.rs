@@ -203,9 +203,7 @@ impl ProxyGroup {
 /// inexpensive sanity-checks. Tokens are passed through unchanged by
 /// well-behaved proxies and are the API-format-invariant content
 /// signal.
-fn content_fingerprint(
-    c: &PairCandidate,
-) -> (&str, &str, u32, u64, u64) {
+fn content_fingerprint(c: &PairCandidate) -> (&str, &str, u32, u64, u64) {
     (
         c.session_id.as_str(),
         c.agent_kind.as_str(),
@@ -287,8 +285,7 @@ fn assign_roles(
             let end_gap = (c.end_time_us - canon.end_time_us).abs();
             if start_gap <= MIRROR_TIME_TOLERANCE_US && end_gap <= MIRROR_TIME_TOLERANCE_US {
                 (i, Some(ProxyRole::MirrorSecondary))
-            } else if canon.start_time_us <= c.start_time_us && canon.end_time_us >= c.end_time_us
-            {
+            } else if canon.start_time_us <= c.start_time_us && canon.end_time_us >= c.end_time_us {
                 (i, Some(ProxyRole::ProxyOut))
             } else {
                 (i, None) // ambiguous time relationship
@@ -407,7 +404,10 @@ mod tests {
     }
 
     fn role_of(g: &ProxyGroup, turn_id: &str) -> Option<ProxyRole> {
-        g.members.iter().find(|m| m.turn_id == turn_id).map(|m| m.role)
+        g.members
+            .iter()
+            .find(|m| m.turn_id == turn_id)
+            .map(|m| m.role)
     }
 
     #[test]
@@ -415,8 +415,20 @@ mod tests {
         // Mirrors the verified haproxy_glm5 pair from wuneng: outer
         // proxy_in starts 2us earlier and ends 1us later than the
         // inner upstream call.
-        let outer = mk("d3d6", "S", 348_294_000, 350_588_000, "172.16.103.100->172.17.0.9");
-        let inner = mk("d3ec", "S", 348_296_000, 350_587_000, "172.17.0.1->172.17.0.4");
+        let outer = mk(
+            "d3d6",
+            "S",
+            348_294_000,
+            350_588_000,
+            "172.16.103.100->172.17.0.9",
+        );
+        let inner = mk(
+            "d3ec",
+            "S",
+            348_296_000,
+            350_587_000,
+            "172.17.0.1->172.17.0.4",
+        );
         let groups = group_all(&[outer, inner]);
         assert_eq!(groups.len(), 1);
         let g = &groups[0];
@@ -434,7 +446,10 @@ mod tests {
         let groups = group_all(&[a, b]);
         assert_eq!(groups.len(), 1);
         assert_eq!(role_of(&groups[0], "aaaa"), Some(ProxyRole::MirrorPrimary));
-        assert_eq!(role_of(&groups[0], "bbbb"), Some(ProxyRole::MirrorSecondary));
+        assert_eq!(
+            role_of(&groups[0], "bbbb"),
+            Some(ProxyRole::MirrorSecondary)
+        );
     }
 
     #[test]
@@ -445,8 +460,20 @@ mod tests {
         //   B — docker-IP view of the same inbound (mirror of A)
         //   C — haproxy's outbound to upstream container (real hop,
         //       nested inside the mirror pair)
-        let a = mk("a_br0", "S", 1_000_000, 3_000_000, "172.16.103.100->172.16.103.81");
-        let b = mk("b_dock0", "S", 1_000_000, 3_000_000, "172.16.103.100->172.17.0.9");
+        let a = mk(
+            "a_br0",
+            "S",
+            1_000_000,
+            3_000_000,
+            "172.16.103.100->172.16.103.81",
+        );
+        let b = mk(
+            "b_dock0",
+            "S",
+            1_000_000,
+            3_000_000,
+            "172.16.103.100->172.17.0.9",
+        );
         let c = mk("c_hop", "S", 1_002_000, 2_999_000, "172.17.0.1->172.17.0.4");
         let groups = group_all(&[a, b, c]);
         assert_eq!(groups.len(), 1, "all three must fold into one group");
@@ -577,8 +604,14 @@ mod tests {
     #[test]
     fn metadata_for_unknown_turn_id_returns_none() {
         let g = ProxyGroup::new(vec![
-            GroupMember { turn_id: "t1".into(), role: ProxyRole::ProxyIn },
-            GroupMember { turn_id: "t2".into(), role: ProxyRole::ProxyOut },
+            GroupMember {
+                turn_id: "t1".into(),
+                role: ProxyRole::ProxyIn,
+            },
+            GroupMember {
+                turn_id: "t2".into(),
+                role: ProxyRole::ProxyOut,
+            },
         ]);
         assert!(g.metadata_for("unrelated").is_none());
     }

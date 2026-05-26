@@ -259,10 +259,7 @@ fn ensure_backup(db_path: &Path) -> Result<(), String> {
     };
     backup.set_extension(new_ext);
     if backup.exists() {
-        tracing::info!(
-            "backup already present at {} (skipping)",
-            backup.display()
-        );
+        tracing::info!("backup already present at {} (skipping)", backup.display());
         return Ok(());
     }
     tracing::info!("backing up {} -> {}", db_path.display(), backup.display());
@@ -364,9 +361,7 @@ mod tests {
                 &format!("wire-{i}"),
                 "openai-chat",
                 200,
-                &format!(
-                    r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"q{i}"}}]}}"#
-                ),
+                &format!(r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"q{i}"}}]}}"#),
                 &format!(
                     r#"{{"choices":[{{"message":{{"role":"assistant","content":"answer {i}"}}}}],"usage":{{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11}}}}"#
                 ),

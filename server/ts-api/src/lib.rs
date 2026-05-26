@@ -123,10 +123,7 @@ pub fn router(
             "/api/runtime-config",
             get(routes::runtime_config::runtime_config),
         )
-        .route(
-            "/api/capture/sources",
-            put(routes::capture_sources::update),
-        )
+        .route("/api/capture/sources", put(routes::capture_sources::update))
         .with_state(runtime_config);
 
     let health_routes = Router::new()

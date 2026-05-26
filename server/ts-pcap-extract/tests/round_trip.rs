@@ -15,7 +15,7 @@ use ts_pcap_extract::output::{global_header, record_header};
 use ts_pcap_extract::reader::RawRec;
 use ts_pcap_extract::{prepare, stream_extract, ExtractRequest, PipelineRoot};
 
-fn ipv4_tcp_pkt(src: [u8;4], sp: u16, dst: [u8;4], dp: u16) -> Vec<u8> {
+fn ipv4_tcp_pkt(src: [u8; 4], sp: u16, dst: [u8; 4], dp: u16) -> Vec<u8> {
     let mut frame = Vec::new();
     frame.extend_from_slice(&[0u8; 12]);
     frame.extend_from_slice(&[0x08, 0x00]);
@@ -69,16 +69,19 @@ fn round_trip_libpcap_can_open_extract_output() {
     let src_dir = base.path().join("local/en0");
     std::fs::create_dir_all(&src_dir).unwrap();
 
-    let pkt_a = ipv4_tcp_pkt([10,0,0,1], 54321, [1,2,3,4], 443);
-    let pkt_b = ipv4_tcp_pkt([1,2,3,4], 443, [10,0,0,1], 54321);
-    write_minute_file(&src_dir, "19700101T0000", 1, &[
-        (1_000_000, &pkt_a),
-        (1_500_000, &pkt_b),
-        (2_000_000, &pkt_a),
-    ]);
-    write_minute_file(&src_dir, "19700101T0001", 1, &[
-        (60_500_000, &pkt_a),
-    ]);
+    let pkt_a = ipv4_tcp_pkt([10, 0, 0, 1], 54321, [1, 2, 3, 4], 443);
+    let pkt_b = ipv4_tcp_pkt([1, 2, 3, 4], 443, [10, 0, 0, 1], 54321);
+    write_minute_file(
+        &src_dir,
+        "19700101T0000",
+        1,
+        &[
+            (1_000_000, &pkt_a),
+            (1_500_000, &pkt_b),
+            (2_000_000, &pkt_a),
+        ],
+    );
+    write_minute_file(&src_dir, "19700101T0001", 1, &[(60_500_000, &pkt_a)]);
 
     let req = ExtractRequest {
         source_id: "en0".into(),
@@ -89,7 +92,10 @@ fn round_trip_libpcap_can_open_extract_output() {
         server_ip: "1.2.3.4".parse().ok(),
         server_port: Some(443),
     };
-    let roots = vec![PipelineRoot { name: "local".into(), dump_dir: base.path().to_path_buf() }];
+    let roots = vec![PipelineRoot {
+        name: "local".into(),
+        dump_dir: base.path().to_path_buf(),
+    }];
     let bytes = rt.block_on(async {
         let prep = prepare(req, &roots).unwrap();
         collect(stream_extract(prep)).await

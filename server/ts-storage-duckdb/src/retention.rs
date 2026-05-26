@@ -255,6 +255,7 @@ mod tests {
             tpot_p50: None,
             tpot_p95: None,
             tpot_p99: None,
+            tool_surface: None,
         }
     }
 

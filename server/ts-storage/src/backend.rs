@@ -82,10 +82,8 @@ pub trait StorageBackend: Send + Sync {
 
     /// Aggregate `agent_turns` by `agent_kind` over the given window.
     /// Powers the Overview "agent distribution" horizontal-bar chart.
-    async fn query_agent_summary(
-        &self,
-        query: &AgentSummaryQuery,
-    ) -> Result<Vec<AgentKindSummary>>;
+    async fn query_agent_summary(&self, query: &AgentSummaryQuery)
+        -> Result<Vec<AgentKindSummary>>;
 
     /// Per-bucket agent_turn counts split by `agent_kind`. Powers
     /// the Overview "agent activity" stacked time-series chart.
@@ -195,11 +193,7 @@ pub trait StorageBackend: Send + Sync {
     /// Returns `Ok(())` even if `turn_id` doesn't exist — the sweeper
     /// races finalization and a turn may briefly be unwritten when the
     /// patch arrives.
-    async fn update_turn_metadata(
-        &self,
-        _turn_id: &str,
-        _patch: serde_json::Value,
-    ) -> Result<()> {
+    async fn update_turn_metadata(&self, _turn_id: &str, _patch: serde_json::Value) -> Result<()> {
         Ok(())
     }
 

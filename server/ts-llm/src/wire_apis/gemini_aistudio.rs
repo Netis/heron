@@ -149,7 +149,9 @@ fn extract_response(resp: &HttpResponseData, resp_body: &ParsedJson) -> Response
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let candidates = parsed.and_then(|b| b.get("candidates")).and_then(|v| v.as_array());
+    let candidates = parsed
+        .and_then(|b| b.get("candidates"))
+        .and_then(|v| v.as_array());
     let first_candidate = candidates.and_then(|a| a.first());
 
     let raw_finish = first_candidate
@@ -165,8 +167,7 @@ fn extract_response(resp: &HttpResponseData, resp_body: &ParsedJson) -> Response
     let finish_reason = synthesize_finish_reason(raw_finish, has_function_call);
 
     let usage = parsed.and_then(|b| b.get("usageMetadata"));
-    let (input_tokens, output_tokens, total_tokens, cache_read_input_tokens) =
-        extract_usage(usage);
+    let (input_tokens, output_tokens, total_tokens, cache_read_input_tokens) = extract_usage(usage);
 
     ResponseInfo {
         model,
@@ -193,16 +194,23 @@ fn synthesize_finish_reason(raw: Option<String>, has_function_call: bool) -> Opt
 /// Map `usageMetadata` → (input, output, total, cache_read).
 /// `thoughtsTokenCount` is intentionally not surfaced: per Gemini spec it is
 /// already a subset of `candidatesTokenCount`, so adding it would double-count.
-fn extract_usage(
-    usage: Option<&Value>,
-) -> (Option<u32>, Option<u32>, Option<u32>, Option<u32>) {
+fn extract_usage(usage: Option<&Value>) -> (Option<u32>, Option<u32>, Option<u32>, Option<u32>) {
     let u = match usage {
         Some(v) => v,
         None => return (None, None, None, None),
     };
-    let input = u.get("promptTokenCount").and_then(|v| v.as_u64()).map(|v| v as u32);
-    let output = u.get("candidatesTokenCount").and_then(|v| v.as_u64()).map(|v| v as u32);
-    let total = u.get("totalTokenCount").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let input = u
+        .get("promptTokenCount")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let output = u
+        .get("candidatesTokenCount")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let total = u
+        .get("totalTokenCount")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
     let cache = u
         .get("cachedContentTokenCount")
         .and_then(|v| v.as_u64())
@@ -235,8 +243,7 @@ fn extract_sse(events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
         .map(str::to_string);
 
     let usage = synthetic.as_ref().and_then(|v| v.get("usageMetadata"));
-    let (input_tokens, output_tokens, total_tokens, cache_read_input_tokens) =
-        extract_usage(usage);
+    let (input_tokens, output_tokens, total_tokens, cache_read_input_tokens) = extract_usage(usage);
 
     let candidates = synthetic
         .as_ref()
@@ -356,10 +363,7 @@ fn build_response_body(parsed: &[Value]) -> Option<Value> {
         return None;
     }
 
-    let candidates_json: Vec<Value> = candidates
-        .into_values()
-        .map(finalize_candidate)
-        .collect();
+    let candidates_json: Vec<Value> = candidates.into_values().map(finalize_candidate).collect();
 
     let mut out = json!({});
     let obj = out.as_object_mut().unwrap();
@@ -384,7 +388,10 @@ fn accumulate_part(entry: &mut PartialCandidate, part: &Value) {
         entry.discrete_parts.push(part.clone());
         return;
     }
-    let is_thought = part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_thought = part
+        .get("thought")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
         if is_thought {
             entry.thought.push_str(t);
@@ -705,10 +712,8 @@ pub fn extract_user_input(req: &Value) -> Option<String> {
         };
         // Pure-functionResponse content = tool roundtrip, not user input.
         // Skip and look further back.
-        let has_only_function_responses = !parts.is_empty()
-            && parts
-                .iter()
-                .all(|p| p.get("functionResponse").is_some());
+        let has_only_function_responses =
+            !parts.is_empty() && parts.iter().all(|p| p.get("functionResponse").is_some());
         if has_only_function_responses {
             continue;
         }
@@ -827,7 +832,11 @@ mod tests {
         );
         assert!(matches!(api.classify_route(&r), RouteVerdict::Accept));
 
-        let r = make_request("POST", "/v1beta/models/gemini-1.5-flash:generateContent", "");
+        let r = make_request(
+            "POST",
+            "/v1beta/models/gemini-1.5-flash:generateContent",
+            "",
+        );
         assert!(matches!(api.classify_route(&r), RouteVerdict::Accept));
     }
 
@@ -909,7 +918,11 @@ mod tests {
         assert_eq!(info.model, "gemini-2.5-pro");
         assert!(info.is_stream);
 
-        let r = make_request("POST", "/v1beta/models/gemini-1.5-flash:generateContent", body);
+        let r = make_request(
+            "POST",
+            "/v1beta/models/gemini-1.5-flash:generateContent",
+            body,
+        );
         let info = api.extract_request(&r, &cache);
         assert_eq!(info.model, "gemini-1.5-flash");
         assert!(!info.is_stream);
@@ -998,13 +1011,21 @@ mod tests {
         // intact functionCall preservation.
         let api = GeminiAiStudioWireApi;
         let events = vec![
-            make_sse(r#"{"candidates":[{"index":0,"content":{"role":"model","parts":[{"thought":true,"text":"thinking-"}]}}],"modelVersion":"glm-5","responseId":"resp-1"}"#),
-            make_sse(r#"{"candidates":[{"index":0,"content":{"role":"model","parts":[{"thought":true,"text":"about-it"}]}}]}"#),
-            make_sse(r#"{"candidates":[{"index":0,"content":{"role":"model","parts":[
+            make_sse(
+                r#"{"candidates":[{"index":0,"content":{"role":"model","parts":[{"thought":true,"text":"thinking-"}]}}],"modelVersion":"glm-5","responseId":"resp-1"}"#,
+            ),
+            make_sse(
+                r#"{"candidates":[{"index":0,"content":{"role":"model","parts":[{"thought":true,"text":"about-it"}]}}]}"#,
+            ),
+            make_sse(
+                r#"{"candidates":[{"index":0,"content":{"role":"model","parts":[
                 {"functionCall":{"name":"grep","args":{"q":"x"}}},
                 {"functionCall":{"name":"read","args":{"path":"/a"}}}
-            ]},"finishReason":"STOP"}]}"#),
-            make_sse(r#"{"candidates":[{"index":0,"content":{"role":"model","parts":[]}}],"usageMetadata":{"promptTokenCount":13152,"candidatesTokenCount":208,"totalTokenCount":13360,"thoughtsTokenCount":159}}"#),
+            ]},"finishReason":"STOP"}]}"#,
+            ),
+            make_sse(
+                r#"{"candidates":[{"index":0,"content":{"role":"model","parts":[]}}],"usageMetadata":{"promptTokenCount":13152,"candidatesTokenCount":208,"totalTokenCount":13360,"thoughtsTokenCount":159}}"#,
+            ),
         ];
         let (info, cache) = api.extract_sse(&events);
         assert_eq!(info.response_id.as_deref(), Some("resp-1"));
@@ -1028,7 +1049,10 @@ mod tests {
             parts[0].get("text").and_then(|v| v.as_str()),
             Some("thinking-about-it")
         );
-        assert_eq!(parts[0].get("thought").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            parts[0].get("thought").and_then(|v| v.as_bool()),
+            Some(true)
+        );
         assert!(parts[1].get("functionCall").is_some());
         assert!(parts[2].get("functionCall").is_some());
         // raw STOP preserved in the synthesized body even though top-level
@@ -1044,8 +1068,12 @@ mod tests {
     fn test_sse_usage_snapshot_takes_last_non_null() {
         let api = GeminiAiStudioWireApi;
         let events = vec![
-            make_sse(r#"{"candidates":[{"index":0,"content":{"parts":[{"text":"a"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":1}}"#),
-            make_sse(r#"{"candidates":[{"index":0,"content":{"parts":[{"text":"b"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"cachedContentTokenCount":7,"totalTokenCount":17}}"#),
+            make_sse(
+                r#"{"candidates":[{"index":0,"content":{"parts":[{"text":"a"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":1}}"#,
+            ),
+            make_sse(
+                r#"{"candidates":[{"index":0,"content":{"parts":[{"text":"b"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"cachedContentTokenCount":7,"totalTokenCount":17}}"#,
+            ),
         ];
         let (info, _) = api.extract_sse(&events);
         // Last snapshot wins (Gemini sends cumulative, not delta).
@@ -1063,12 +1091,15 @@ mod tests {
         // <session_context> user msg, contents[1] is the real prompt. Sig
         // anchor uses [0] because session_context is constant within a
         // session — the property we want for stable session_id grouping.
-        let req: Value = serde_json::from_str(r#"{
+        let req: Value = serde_json::from_str(
+            r#"{
             "contents": [
                 {"role":"user","parts":[{"text":"<session_context>\nthis is the gemini cli"}]},
                 {"role":"user","parts":[{"text":"  hello there  "}]}
             ]
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         assert_eq!(
             first_user_text(&req).as_deref(),
             Some("<session_context>\nthis is the gemini cli"),
@@ -1077,11 +1108,17 @@ mod tests {
 
     #[test]
     fn test_first_system_text_from_system_instruction() {
-        let req: Value = serde_json::from_str(r#"{
+        let req: Value = serde_json::from_str(
+            r#"{
             "systemInstruction": {"role":"user","parts":[{"text":"You are an assistant."}]},
             "contents": []
-        }"#).unwrap();
-        assert_eq!(first_system_text(&req).as_deref(), Some("You are an assistant."));
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            first_system_text(&req).as_deref(),
+            Some("You are an assistant.")
+        );
 
         let req_empty: Value = serde_json::from_str(r#"{"contents": []}"#).unwrap();
         assert_eq!(first_system_text(&req_empty), None);
@@ -1093,10 +1130,7 @@ mod tests {
         let a: Value = serde_json::from_str(r#"{"pattern":"x","dir_path":"/a"}"#).unwrap();
         let b: Value = serde_json::from_str(r#"{"dir_path":"/a","pattern":"x"}"#).unwrap();
         assert_eq!(canonical_json(&a), canonical_json(&b));
-        assert_eq!(
-            canonical_json(&a),
-            r#"{"dir_path":"/a","pattern":"x"}"#,
-        );
+        assert_eq!(canonical_json(&a), r#"{"dir_path":"/a","pattern":"x"}"#,);
 
         // Recursive sort: nested objects also sort.
         let c: Value = serde_json::from_str(r#"{"z":{"b":1,"a":2},"y":[3,2,1]}"#).unwrap();
@@ -1112,7 +1146,8 @@ mod tests {
 
         // Response side: parts have visible text + 2 functionCalls + thought
         // (thought must be stripped from the sig).
-        let resp: Value = serde_json::from_str(r#"{
+        let resp: Value = serde_json::from_str(
+            r#"{
             "candidates": [{
                 "index": 0,
                 "content": {
@@ -1125,12 +1160,15 @@ mod tests {
                     ]
                 }
             }]
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let sig_resp = first_assistant_sig_from_response_value(&resp).unwrap();
 
         // Request side: same turn echoed back as contents[2] (CLI strips thought,
         // and may have args in different key order — see canonical_json).
-        let req: Value = serde_json::from_str(r#"{
+        let req: Value = serde_json::from_str(
+            r#"{
             "contents": [
                 {"role":"user","parts":[{"text":"hi"}]},
                 {"role":"user","parts":[{"text":"hi2"}]},
@@ -1140,7 +1178,9 @@ mod tests {
                     {"functionCall": {"name": "read", "args": {"file": "/a"}}}
                 ]}
             ]
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let sig_req = first_assistant_sig_from_request(&req).unwrap();
 
         // Tools-bearing model turn → ToolId variant (so the helper-shape
@@ -1154,7 +1194,10 @@ mod tests {
             AssistantSig::ToolId(s) => s,
             AssistantSig::Text(_) => panic!("tools-bearing sig should be ToolId, not Text"),
         };
-        assert_eq!(id_resp, id_req, "sig must be stable across resp/req boundary");
+        assert_eq!(
+            id_resp, id_req,
+            "sig must be stable across resp/req boundary"
+        );
         // tu-<16hex>: 3 + 16 = 19 chars exactly.
         assert!(id_resp.starts_with("tu-"), "got: {id_resp}");
         assert_eq!(id_resp.len(), 19, "got: {id_resp}");
@@ -1165,7 +1208,8 @@ mod tests {
         // Model goes straight to functionCall with zero text preamble — sig
         // must still be non-None (else first-call session_id synthesis fails).
         // Tools-bearing → ToolId variant (helper-shape gate skipped).
-        let resp: Value = serde_json::from_str(r#"{
+        let resp: Value = serde_json::from_str(
+            r#"{
             "candidates": [{
                 "content": {
                     "role": "model",
@@ -1175,7 +1219,9 @@ mod tests {
                     ]
                 }
             }]
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let sig = first_assistant_sig_from_response_value(&resp).unwrap();
         match sig {
             AssistantSig::ToolId(s) => {
@@ -1191,7 +1237,8 @@ mod tests {
         // When the model returns ONLY text (no functionCall / inlineData),
         // sig must be Text(_) so the helper-shape one-shot detector can
         // still trigger for true single-shot helper agents.
-        let resp: Value = serde_json::from_str(r#"{
+        let resp: Value = serde_json::from_str(
+            r#"{
             "candidates": [{
                 "content": {
                     "role": "model",
@@ -1201,7 +1248,9 @@ mod tests {
                     ]
                 }
             }]
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let sig = first_assistant_sig_from_response_value(&resp).unwrap();
         match sig {
             AssistantSig::Text(s) => assert_eq!(s, "t:hello there"),
@@ -1214,7 +1263,8 @@ mod tests {
         // When server eventually issues opaque ids, the canonical string
         // uses the id directly. functionCall is still a non-text part so
         // variant is ToolId regardless.
-        let resp: Value = serde_json::from_str(r#"{
+        let resp: Value = serde_json::from_str(
+            r#"{
             "candidates": [{
                 "content": {
                     "role": "model",
@@ -1223,7 +1273,9 @@ mod tests {
                     ]
                 }
             }]
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let sig = first_assistant_sig_from_response_value(&resp).unwrap();
         match sig {
             AssistantSig::ToolId(s) => {
@@ -1238,7 +1290,8 @@ mod tests {
     fn test_extract_user_input_skips_pure_function_response_content() {
         // Last content is functionResponse only (tool roundtrip continuation)
         // — extract_user_input must skip it and return the prior real prompt.
-        let req: Value = serde_json::from_str(r#"{
+        let req: Value = serde_json::from_str(
+            r#"{
             "contents": [
                 {"role":"user","parts":[{"text":"<session_context>scaffold"}]},
                 {"role":"user","parts":[{"text":"actual user question"}]},
@@ -1247,7 +1300,9 @@ mod tests {
                     {"functionResponse":{"name":"f","response":{"r":1},"id":"f_123_0"}}
                 ]}
             ]
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         assert_eq!(
             extract_user_input(&req).as_deref(),
             Some("actual user question"),
@@ -1256,7 +1311,8 @@ mod tests {
 
     #[test]
     fn test_is_user_turn_start_false_on_function_response_only() {
-        let req: Value = serde_json::from_str(r#"{
+        let req: Value = serde_json::from_str(
+            r#"{
             "contents": [
                 {"role":"user","parts":[{"text":"hi"}]},
                 {"role":"model","parts":[{"functionCall":{"name":"f","args":{}}}]},
@@ -1264,21 +1320,27 @@ mod tests {
                     {"functionResponse":{"name":"f","response":{"r":1}}}
                 ]}
             ]
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         // Last content is user but pure functionResponse → not a fresh turn.
         assert_eq!(is_user_turn_start(&req), Some(false));
 
-        let req_fresh: Value = serde_json::from_str(r#"{
+        let req_fresh: Value = serde_json::from_str(
+            r#"{
             "contents": [
                 {"role":"user","parts":[{"text":"please help"}]}
             ]
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         assert_eq!(is_user_turn_start(&req_fresh), Some(true));
     }
 
     #[test]
     fn test_extract_assistant_text_strips_thought() {
-        let resp: Value = serde_json::from_str(r#"{
+        let resp: Value = serde_json::from_str(
+            r#"{
             "candidates": [{
                 "content": {
                     "role": "model",
@@ -1289,8 +1351,13 @@ mod tests {
                     ]
                 }
             }]
-        }"#).unwrap();
-        assert_eq!(extract_assistant_text_value(&resp).as_deref(), Some("visible answer"));
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_assistant_text_value(&resp).as_deref(),
+            Some("visible answer")
+        );
     }
 
     #[test]
@@ -1298,9 +1365,7 @@ mod tests {
         // End-to-end fixture extracted from a real Gemini-CLI API-key pcap.
         // Validates the full pipeline against bytes the proxy actually emitted.
         let api = GeminiAiStudioWireApi;
-        let raw = include_str!(
-            "../../tests/fixtures/gemini-aistudio/response-streaming.sse"
-        );
+        let raw = include_str!("../../tests/fixtures/gemini-aistudio/response-streaming.sse");
         let events: Vec<SseEventData> = raw
             .split("\n\n")
             .filter_map(|chunk| {
@@ -1408,4 +1473,3 @@ mod tests {
         assert!(first_assistant_sig_from_request(&req).is_none());
     }
 }
-

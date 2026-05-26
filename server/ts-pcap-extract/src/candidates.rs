@@ -43,7 +43,13 @@ pub fn list_candidate_files(req: &ExtractRequest, roots: &[PipelineRoot]) -> Vec
     out
 }
 
-fn push_if_file(out: &mut Vec<CandidateFile>, dir: &Path, label: &str, ext: &str, compressed: bool) {
+fn push_if_file(
+    out: &mut Vec<CandidateFile>,
+    dir: &Path,
+    label: &str,
+    ext: &str,
+    compressed: bool,
+) {
     let path = dir.join(format!("{label}{ext}"));
     if path.is_file() {
         out.push(CandidateFile { path, compressed });
@@ -69,7 +75,10 @@ mod tests {
     }
 
     fn root(name: &str, dir: &Path) -> PipelineRoot {
-        PipelineRoot { name: name.into(), dump_dir: dir.to_path_buf() }
+        PipelineRoot {
+            name: name.into(),
+            dump_dir: dir.to_path_buf(),
+        }
     }
 
     #[test]
@@ -112,8 +121,12 @@ mod tests {
         let roots = vec![root("alpha", dir.path()), root("beta", dir.path())];
         let files = list_candidate_files(&req("en0", 0, 30_000_000), &roots);
         assert_eq!(files.len(), 2);
-        assert!(files.iter().any(|c| c.path.to_string_lossy().contains("alpha/en0")));
-        assert!(files.iter().any(|c| c.path.to_string_lossy().contains("beta/en0")));
+        assert!(files
+            .iter()
+            .any(|c| c.path.to_string_lossy().contains("alpha/en0")));
+        assert!(files
+            .iter()
+            .any(|c| c.path.to_string_lossy().contains("beta/en0")));
     }
 
     #[test]

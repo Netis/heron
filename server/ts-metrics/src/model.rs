@@ -99,6 +99,9 @@ pub struct LlmMetric {
     pub tpot_p50: Option<f64>,
     pub tpot_p95: Option<f64>,
     pub tpot_p99: Option<f64>,
+
+    /// Tool-surface dimension key. None until aggregator dimension wiring (Task 16) lands.
+    pub tool_surface: Option<String>,
 }
 
 /// One row of finish-reason counts in the long-format `llm_finish_metrics`

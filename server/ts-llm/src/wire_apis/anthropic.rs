@@ -1213,7 +1213,10 @@ mod estimator_tests {
             &json!({"content":[{"type":"text","text":"final answer"}]}),
             &cl(),
         );
-        assert!(n > plain, "thinking block must count (got {n} vs plain {plain})");
+        assert!(
+            n > plain,
+            "thinking block must count (got {n} vs plain {plain})"
+        );
     }
 
     #[test]

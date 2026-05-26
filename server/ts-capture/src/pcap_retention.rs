@@ -67,11 +67,7 @@ enum UnlinkOutcome {
 /// Run one cleanup sweep. Pure function over the file system + an injected
 /// `now` so it's deterministic in tests. Returns counts; the caller is
 /// responsible for bumping metrics and logging.
-pub fn run_sweep(
-    dump_dir: &Path,
-    cfg: &PcapDumpRetentionConfig,
-    now: SystemTime,
-) -> SweepReport {
+pub fn run_sweep(dump_dir: &Path, cfg: &PcapDumpRetentionConfig, now: SystemTime) -> SweepReport {
     let mut report = SweepReport::default();
     let mut warner = ThrottledWarn::new(WARN_THROTTLE);
 
@@ -91,7 +87,10 @@ pub fn run_sweep(
             if e.kind() != std::io::ErrorKind::NotFound {
                 warn_throttled(
                     &mut warner,
-                    &format!("pcap-retention: read_dir '{}' failed: {e}", dump_dir.display()),
+                    &format!(
+                        "pcap-retention: read_dir '{}' failed: {e}",
+                        dump_dir.display()
+                    ),
                 );
                 report.errors += 1;
             }
@@ -167,10 +166,7 @@ pub fn run_sweep(
                 Err(e) => {
                     warn_throttled(
                         &mut warner,
-                        &format!(
-                            "pcap-retention: stat '{}' failed: {e}",
-                            path.display()
-                        ),
+                        &format!("pcap-retention: stat '{}' failed: {e}", path.display()),
                     );
                     report.errors += 1;
                     continue;
@@ -271,11 +267,7 @@ fn system_time_to_minute_key(now: SystemTime) -> i64 {
     secs.div_euclid(60)
 }
 
-fn try_unlink(
-    path: &Path,
-    warner: &mut ThrottledWarn,
-    report: &mut SweepReport,
-) -> UnlinkOutcome {
+fn try_unlink(path: &Path, warner: &mut ThrottledWarn, report: &mut SweepReport) -> UnlinkOutcome {
     match fs::remove_file(path) {
         Ok(()) => UnlinkOutcome::Removed,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => UnlinkOutcome::AlreadyGone,
@@ -429,9 +421,9 @@ mod tests {
     fn age_sweep_deletes_files_older_than_cutoff() {
         let dir = tempfile::tempdir().unwrap();
         // current = 1000 minutes; max_age = 1h = 60 minutes; cutoff = 940.
-        let p_old = touch(dir.path(), "s", 900, ".pcap", 100);   // older than cutoff
-        let p_edge = touch(dir.path(), "s", 940, ".pcap", 100);  // exactly cutoff (kept: < strict)
-        let p_new = touch(dir.path(), "s", 980, ".pcap", 100);   // newer than cutoff
+        let p_old = touch(dir.path(), "s", 900, ".pcap", 100); // older than cutoff
+        let p_edge = touch(dir.path(), "s", 940, ".pcap", 100); // exactly cutoff (kept: < strict)
+        let p_new = touch(dir.path(), "s", 980, ".pcap", 100); // newer than cutoff
 
         let report = run_sweep(dir.path(), &cfg(1, 0), now_at_minute(1000));
 
@@ -533,7 +525,14 @@ mod tests {
 
         assert_eq!(report.files_deleted, 6);
         assert_eq!(report.bytes_deleted, 4 * MIB + 4 * MIB);
-        for p in [p_age_1, p_age_2, p_age_3, p_age_4, p_size_evict_1, p_size_evict_2] {
+        for p in [
+            p_age_1,
+            p_age_2,
+            p_age_3,
+            p_age_4,
+            p_size_evict_1,
+            p_size_evict_2,
+        ] {
             assert!(!p.exists(), "{} should be deleted", p.display());
         }
         assert!(p_keep_1.exists());
@@ -643,6 +642,9 @@ mod tests {
         let p = touch(dir.path(), "s", 100, ".pcap", 0);
         let _ = run_sweep(dir.path(), &cfg(1, 0), now_at_minute(10_000));
         assert!(!p.exists(), "file deleted by age");
-        assert!(src_dir.exists(), "source dir must NOT be pruned (dumper race)");
+        assert!(
+            src_dir.exists(),
+            "source dir must NOT be pruned (dumper race)"
+        );
     }
 }

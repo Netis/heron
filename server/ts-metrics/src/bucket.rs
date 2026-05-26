@@ -305,6 +305,7 @@ impl WindowBucket {
             tpot_p50: self.tpot.quantile(0.5),
             tpot_p95: self.tpot.quantile(0.95),
             tpot_p99: self.tpot.quantile(0.99),
+            tool_surface: None,
         };
 
         LlmMetricsBatch {

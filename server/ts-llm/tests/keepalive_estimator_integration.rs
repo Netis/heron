@@ -129,7 +129,8 @@ fn keepalive_real_bytes_estimator_populates_tokens() {
     }
 
     assert_eq!(
-        zero_token_calls, 0,
+        zero_token_calls,
+        0,
         "expected ALL calls to have non-zero estimated tokens; \
          {zero_token_calls} of {} still showed (in=0,out=0)",
         completes.len()

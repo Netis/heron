@@ -463,10 +463,7 @@ pub fn first_assistant_sig_from_request(req: &Value) -> Option<AssistantSig> {
     let first_assistant = msgs
         .iter()
         .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))?;
-    if let Some(arr) = first_assistant
-        .get("tool_calls")
-        .and_then(|v| v.as_array())
-    {
+    if let Some(arr) = first_assistant.get("tool_calls").and_then(|v| v.as_array()) {
         if let Some(id) = arr
             .first()
             .and_then(|tc| tc.get("id"))
@@ -731,7 +728,10 @@ mod tests {
         let msg = &v["choices"][0]["message"];
         assert_eq!(msg["content"], "42");
         assert_eq!(msg["reasoning_content"], "Let me think about this...");
-        assert!(msg.get("reasoning").is_none(), "should not invent a reasoning field");
+        assert!(
+            msg.get("reasoning").is_none(),
+            "should not invent a reasoning field"
+        );
     }
 
     #[test]
@@ -772,7 +772,9 @@ mod tests {
         use crate::token_estimator::TokenEstimator;
         struct CharLen;
         impl TokenEstimator for CharLen {
-            fn count_text(&self, s: &str) -> u32 { s.chars().count() as u32 }
+            fn count_text(&self, s: &str) -> u32 {
+                s.chars().count() as u32
+            }
         }
         let events_with = vec![
             make_sse(
@@ -1178,7 +1180,10 @@ mod tests {
             &json!({"choices":[{"index":0,"message":{"role":"assistant","content":"final"},"finish_reason":"stop"}]}),
             &cl(),
         );
-        assert!(n > plain, "<think> tokens must be counted (got {n} vs plain {plain})");
+        assert!(
+            n > plain,
+            "<think> tokens must be counted (got {n} vs plain {plain})"
+        );
     }
 
     #[test]

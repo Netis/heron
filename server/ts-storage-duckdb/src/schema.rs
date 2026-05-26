@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS llm_metrics (
     tpot_count          UBIGINT NOT NULL,
     tpot_p50            DOUBLE,
     tpot_p95            DOUBLE,
-    tpot_p99            DOUBLE
+    tpot_p99            DOUBLE,
+    tool_surface        VARCHAR
 );
 ";
 
@@ -345,6 +346,18 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
             }
         }
 
+        // Phase 5 migration (llm_metrics): add tool_surface dimension column.
+        let metrics_dim = "ALTER TABLE llm_metrics ADD COLUMN IF NOT EXISTS tool_surface VARCHAR;";
+        match conn.execute_batch(metrics_dim) {
+            Ok(()) => tracing::debug!(
+                sql = metrics_dim,
+                "phase5 migration: llm_metrics tool_surface column added (or already present)"
+            ),
+            Err(e) => tracing::info!(
+                "phase5 migration: llm_metrics tool_surface column add skipped: {e}"
+            ),
+        }
+
         info!("storage tables initialized");
         Ok(())
     })
@@ -461,7 +474,8 @@ fn backfill_sql(granularity_label: &str, time_bucket_interval: &str) -> String {
                 AND response_time IS NOT NULL AND complete_time IS NOT NULL
                 AND output_tokens IS NOT NULL AND output_tokens > 0
                 THEN (EPOCH_US(complete_time) - EPOCH_US(response_time))
-                     / 1000.0 / output_tokens END, 0.99)
+                     / 1000.0 / output_tokens END, 0.99),
+            NULL AS tool_surface
         FROM llm_calls
         GROUP BY
             time_bucket({time_bucket_interval}, request_time),

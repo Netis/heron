@@ -214,7 +214,6 @@ const SUM_FIELDS: &[&str] = &[
 /// rows under a grouped query).
 const MAX_FIELDS: &[&str] = &["active_calls_max"];
 
-
 impl DuckDbBackend {
     pub(crate) async fn write_metrics(&self, metrics: Vec<LlmMetric>) -> Result<()> {
         if metrics.is_empty() {
@@ -281,6 +280,7 @@ impl DuckDbBackend {
                         m.tpot_p50,
                         m.tpot_p95,
                         m.tpot_p99,
+                        m.tool_surface.as_deref(),
                     ])
                     .map_err(|e| AppError::Storage(format!("failed to append metric: {e}")))?;
             }
@@ -916,14 +916,12 @@ impl DuckDbBackend {
                 WHERE request_time >= ? AND request_time < ?
              ) WHERE rn <= 5";
 
-        let mut stmt = conn.prepare(body_sql).map_err(|e| {
-            AppError::Storage(format!("failed to prepare body sample query: {e}"))
-        })?;
+        let mut stmt = conn
+            .prepare(body_sql)
+            .map_err(|e| AppError::Storage(format!("failed to prepare body sample query: {e}")))?;
         let mut rs = stmt
             .query(duckdb::params![sample_start, sample_end])
-            .map_err(|e| {
-                AppError::Storage(format!("failed to execute body sample query: {e}"))
-            })?;
+            .map_err(|e| AppError::Storage(format!("failed to execute body sample query: {e}")))?;
         while let Some(row) = rs
             .next()
             .map_err(|e| AppError::Storage(format!("row error: {e}")))?
@@ -947,14 +945,16 @@ impl DuckDbBackend {
                 .get(5)
                 .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
 
-            let entry = out.entry((server_ip, server_port)).or_insert_with(|| AppSample {
-                request_paths: Vec::new(),
-                finish_reasons: Vec::new(),
-                sample_response_headers: None,
-                sample_request_headers: None,
-                sample_request_body: None,
-                sample_response_body: None,
-            });
+            let entry = out
+                .entry((server_ip, server_port))
+                .or_insert_with(|| AppSample {
+                    request_paths: Vec::new(),
+                    finish_reasons: Vec::new(),
+                    sample_response_headers: None,
+                    sample_request_headers: None,
+                    sample_request_body: None,
+                    sample_response_body: None,
+                });
 
             // First-match-wins per field: row_number ORDER BY
             // request_time DESC means the first row we see for an
@@ -991,10 +991,7 @@ impl DuckDbBackend {
     /// "Services" view — aggregate `llm_calls` by `(server_ip,
     /// server_port)`. See `StorageBackend::query_services` for the
     /// motivation (port is not on `llm_metrics`).
-    pub(crate) async fn query_services(
-        &self,
-        query: &ServicesQuery,
-    ) -> Result<Vec<ServiceRow>> {
+    pub(crate) async fn query_services(&self, query: &ServicesQuery) -> Result<Vec<ServiceRow>> {
         const VALID_SORT_FIELDS: &[&str] = &[
             "call_count",
             "error_count",
@@ -1663,11 +1660,9 @@ impl DuckDbBackend {
             let mut stmt = conn.prepare(sql).map_err(|e| {
                 AppError::Storage(format!("failed to prepare agent_summary query: {e}"))
             })?;
-            let mut rs = stmt
-                .query(duckdb::params![start_ts, end_ts])
-                .map_err(|e| {
-                    AppError::Storage(format!("failed to execute agent_summary query: {e}"))
-                })?;
+            let mut rs = stmt.query(duckdb::params![start_ts, end_ts]).map_err(|e| {
+                AppError::Storage(format!("failed to execute agent_summary query: {e}"))
+            })?;
             let mut out = Vec::new();
             while let Some(row) = rs
                 .next()
@@ -1740,11 +1735,9 @@ impl DuckDbBackend {
             let mut stmt = conn.prepare(&sql).map_err(|e| {
                 AppError::Storage(format!("failed to prepare agent_activity query: {e}"))
             })?;
-            let mut rs = stmt
-                .query(duckdb::params![start_ts, end_ts])
-                .map_err(|e| {
-                    AppError::Storage(format!("failed to execute agent_activity query: {e}"))
-                })?;
+            let mut rs = stmt.query(duckdb::params![start_ts, end_ts]).map_err(|e| {
+                AppError::Storage(format!("failed to execute agent_activity query: {e}"))
+            })?;
             let mut out = Vec::new();
             while let Some(row) = rs
                 .next()
@@ -1836,6 +1829,7 @@ mod tests {
             tpot_p50: Some(23.8),
             tpot_p95: Some(12.5),
             tpot_p99: Some(8.3),
+            tool_surface: None,
         }
     }
 
@@ -2825,5 +2819,4 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].values[0], Some(100.0));
     }
-
 }

@@ -69,7 +69,6 @@ fn prepare_exchange(x: HttpExchange) -> PreparedExchange {
     }
 }
 
-
 impl DuckDbBackend {
     pub(crate) async fn write_exchanges(&self, exchanges: Vec<HttpExchange>) -> Result<()> {
         if exchanges.is_empty() {
@@ -120,7 +119,10 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    pub(crate) async fn query_http_exchange_by_id(&self, id: &str) -> Result<Option<HttpExchangeDetail>> {
+    pub(crate) async fn query_http_exchange_by_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<HttpExchangeDetail>> {
         let conn = self.read_pool.acquire().await?;
         let id = id.to_string();
         tokio::task::spawn_blocking(move || {
@@ -177,7 +179,10 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    pub(crate) async fn query_http_exchanges(&self, query: &HttpExchangesQuery) -> Result<HttpExchangesPage> {
+    pub(crate) async fn query_http_exchanges(
+        &self,
+        query: &HttpExchangesQuery,
+    ) -> Result<HttpExchangesPage> {
         // `duration_ms` is a derived expression; the others are plain columns.
         const VALID_SORT_FIELDS: &[&str] = &["request_time", "status", "duration_ms"];
         if !VALID_SORT_FIELDS.contains(&query.sort_by.as_str()) {
@@ -461,5 +466,4 @@ mod tests {
         let got = backend.query_http_exchange_by_id("nope").await.unwrap();
         assert!(got.is_none());
     }
-
 }

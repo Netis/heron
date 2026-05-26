@@ -290,7 +290,10 @@ mod tests {
     fn build_history(tracked: Vec<Metric>) -> Arc<AggregateHistory> {
         let history = AggregateHistory::new(tracked.clone(), 16);
         for (ts, vals) in [
-            (1_000i64, &[(Metric::FlowsActive, 3u64), (Metric::TurnActive, 1)][..]),
+            (
+                1_000i64,
+                &[(Metric::FlowsActive, 3u64), (Metric::TurnActive, 1)][..],
+            ),
             (2_000, &[(Metric::FlowsActive, 5), (Metric::TurnActive, 2)]),
             (3_000, &[(Metric::FlowsActive, 4), (Metric::TurnActive, 2)]),
         ] {
@@ -331,10 +334,7 @@ mod tests {
         let series = v["data"]["series"].as_array().unwrap();
         assert_eq!(series.len(), 2);
 
-        let flows = series
-            .iter()
-            .find(|s| s["name"] == "flows_active")
-            .unwrap();
+        let flows = series.iter().find(|s| s["name"] == "flows_active").unwrap();
         let pts = flows["points"].as_array().unwrap();
         assert_eq!(pts.len(), 3);
         assert_eq!(pts[0]["t"], 1000);

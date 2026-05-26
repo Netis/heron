@@ -23,22 +23,33 @@ fn run<P: AgentProfile>(profile: &P, fixture: &str) -> AgentPrimitives {
 
 #[test]
 fn claude_cli_tool_use_extracts_tool_name_and_agent_marker() {
-    let p = run(&ts_llm::agents::ClaudeCliProfile, "claude_cli_tool_use.json");
+    let p = run(
+        &ts_llm::agents::ClaudeCliProfile,
+        "claude_cli_tool_use.json",
+    );
     assert_eq!(p.tool_call_count, 1);
     assert_eq!(p.tool_names, vec!["Read".to_string()]);
-    assert!(p.system_prompt_markers.contains(SystemPromptMarkers::AGENT_LOOP));
+    assert!(p
+        .system_prompt_markers
+        .contains(SystemPromptMarkers::AGENT_LOOP));
 }
 
 #[test]
 fn claude_cli_subagent_sets_dispatches_to_subagent() {
-    let p = run(&ts_llm::agents::ClaudeCliProfile, "claude_cli_subagent.json");
+    let p = run(
+        &ts_llm::agents::ClaudeCliProfile,
+        "claude_cli_subagent.json",
+    );
     assert!(p.dispatches_to_subagent);
     assert!(p.tool_names.iter().any(|n| n == "Task"));
 }
 
 #[test]
 fn codex_cli_function_calls_counted() {
-    let p = run(&ts_llm::agents::CodexCliProfile, "codex_cli_function_calls.json");
+    let p = run(
+        &ts_llm::agents::CodexCliProfile,
+        "codex_cli_function_calls.json",
+    );
     assert_eq!(p.tool_call_count, 2);
     assert_eq!(p.tool_names, vec!["Read".to_string(), "Edit".to_string()]);
 }

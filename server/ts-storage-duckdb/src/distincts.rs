@@ -208,6 +208,7 @@ mod tests {
             tpot_p50: Some(23.8),
             tpot_p95: Some(12.5),
             tpot_p99: Some(8.3),
+            tool_surface: None,
         }
     }
 

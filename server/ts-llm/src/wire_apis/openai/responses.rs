@@ -953,7 +953,10 @@ mod estimator_tests {
             &json!({"output":[{"type":"message","content":[{"type":"output_text","text":"final"}]}]}),
             &cl(),
         );
-        assert!(n > plain, "reasoning summary must add tokens (got {n} vs plain {plain})");
+        assert!(
+            n > plain,
+            "reasoning summary must add tokens (got {n} vs plain {plain})"
+        );
     }
 
     #[test]

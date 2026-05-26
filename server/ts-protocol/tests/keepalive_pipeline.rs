@@ -150,7 +150,11 @@ fn keepalive_two_sse_chunked_responses_real_bytes_interleaved_chunked_feed() {
             ts,
             &mut output,
         );
-        assert_eq!(r, ParseResult::Ok, "parser should not need resync mid-stream");
+        assert_eq!(
+            r,
+            ParseResult::Ok,
+            "parser should not need resync mid-stream"
+        );
     }
 
     // Final drain pass after both sides exhausted.
@@ -258,8 +262,8 @@ fn keepalive_client_first_then_server_real_bytes() {
 /// visible in the same pcap.
 #[test]
 fn keepalive_two_sse_chunked_responses_pcap_replay_through_tcp_flow() {
-    let pcap_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/keepalive_2sse_pipelined.pcap");
+    let pcap_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keepalive_2sse_pipelined.pcap");
     let mut cap = pcap::Capture::from_file(&pcap_path)
         .unwrap_or_else(|e| panic!("open {}: {e}", pcap_path.display()));
     let link_type = cap.get_datalink().0 as u32;
@@ -338,8 +342,8 @@ fn flow_worker_with_metrics() -> (FlowWorker, MetricsWorker) {
 /// `keepalive_2sse_pipelined.pcap` fixture.
 #[test]
 fn keepalive_pcap_replay_through_flow_worker() {
-    let pcap_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/keepalive_2sse_pipelined.pcap");
+    let pcap_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keepalive_2sse_pipelined.pcap");
     let mut cap = pcap::Capture::from_file(&pcap_path)
         .unwrap_or_else(|e| panic!("open {}: {e}", pcap_path.display()));
     let link_type = cap.get_datalink().0 as u32;

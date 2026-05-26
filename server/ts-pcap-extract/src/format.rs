@@ -66,7 +66,11 @@ pub fn parse_minute_label(s: &str) -> Option<i64> {
 }
 
 fn ymd_to_days(y: i32, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { i64::from(y) - 1 } else { i64::from(y) };
+    let y = if m <= 2 {
+        i64::from(y) - 1
+    } else {
+        i64::from(y)
+    };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = (y - era * 400) as u64;
     let m_shift = if m > 2 { m - 3 } else { m + 9 } as u64;
@@ -123,9 +127,9 @@ mod tests {
     #[test]
     fn parse_rejects_bad_input() {
         assert_eq!(parse_minute_label(""), None);
-        assert_eq!(parse_minute_label("20260505T2530"), None);  // hour 25
-        assert_eq!(parse_minute_label("20260532T1330"), None);  // day 32
-        assert_eq!(parse_minute_label("20261305T1330"), None);  // month 13
-        assert_eq!(parse_minute_label("20260505X1330"), None);  // missing T
+        assert_eq!(parse_minute_label("20260505T2530"), None); // hour 25
+        assert_eq!(parse_minute_label("20260532T1330"), None); // day 32
+        assert_eq!(parse_minute_label("20261305T1330"), None); // month 13
+        assert_eq!(parse_minute_label("20260505X1330"), None); // missing T
     }
 }

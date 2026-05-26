@@ -136,9 +136,7 @@ pub async fn sweep_once(
             let patch = g
                 .metadata_for(&member.turn_id)
                 .expect("member belongs to group it came from");
-            storage
-                .update_turn_metadata(&member.turn_id, patch)
-                .await?;
+            storage.update_turn_metadata(&member.turn_id, patch).await?;
             turns_tagged += 1;
         }
     }
@@ -164,6 +162,8 @@ pub struct SweepStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query::*;
+    use crate::retention::{RetentionPolicy, RetentionReport};
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::Mutex as StdMutex;
@@ -171,8 +171,6 @@ mod tests {
     use ts_llm::model::LlmCall;
     use ts_metrics::model::{LlmFinishMetric, LlmMetric};
     use ts_protocol::HttpExchange;
-    use crate::query::*;
-    use crate::retention::{RetentionPolicy, RetentionReport};
 
     use ts_turn::proxy_pair::PairCandidate;
     use ts_turn::AgentTurn;
@@ -205,17 +203,14 @@ mod tests {
         async fn write_exchanges(&self, _: Vec<HttpExchange>) -> Result<()> {
             Ok(())
         }
-        async fn query_http_exchange_by_id(
-            &self,
-            _: &str,
-        ) -> Result<Option<HttpExchangeDetail>> {
+        async fn query_http_exchange_by_id(&self, _: &str) -> Result<Option<HttpExchangeDetail>> {
             Ok(None)
         }
-        async fn query_http_exchanges(
-            &self,
-            _: &HttpExchangesQuery,
-        ) -> Result<HttpExchangesPage> {
-            Ok(HttpExchangesPage { total: 0, items: vec![] })
+        async fn query_http_exchanges(&self, _: &HttpExchangesQuery) -> Result<HttpExchangesPage> {
+            Ok(HttpExchangesPage {
+                total: 0,
+                items: vec![],
+            })
         }
         async fn query_metrics_timeseries(
             &self,
@@ -253,7 +248,10 @@ mod tests {
             &self,
             _: &ServicesTopologyQuery,
         ) -> Result<ServicesTopology> {
-            Ok(ServicesTopology { nodes: vec![], edges: vec![] })
+            Ok(ServicesTopology {
+                nodes: vec![],
+                edges: vec![],
+            })
         }
         async fn query_agent_summary(
             &self,
@@ -274,13 +272,19 @@ mod tests {
             Ok(vec![])
         }
         async fn query_calls(&self, _: &CallsQuery) -> Result<CallsPage> {
-            Ok(CallsPage { total: 0, items: vec![] })
+            Ok(CallsPage {
+                total: 0,
+                items: vec![],
+            })
         }
         async fn query_call_by_id(&self, _: &str) -> Result<Option<CallDetail>> {
             Ok(None)
         }
         async fn query_turns(&self, _: &TurnsQuery) -> Result<TurnsPage> {
-            Ok(TurnsPage { total: 0, items: vec![] })
+            Ok(TurnsPage {
+                total: 0,
+                items: vec![],
+            })
         }
         async fn query_turn_by_id(&self, _: &str) -> Result<Option<TurnDetail>> {
             Ok(None)
@@ -300,20 +304,19 @@ mod tests {
             Ok(vec![])
         }
         async fn query_sessions(&self, _: &SessionListQuery) -> Result<SessionsPage> {
-            Ok(SessionsPage { items: vec![], next_cursor: None })
+            Ok(SessionsPage {
+                items: vec![],
+                next_cursor: None,
+            })
         }
-        async fn query_session_by_id(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<Option<SessionDetail>> {
+        async fn query_session_by_id(&self, _: &str, _: &str) -> Result<Option<SessionDetail>> {
             Ok(None)
         }
-        async fn query_session_turns(
-            &self,
-            _: &SessionTurnsQuery,
-        ) -> Result<SessionTurnsPage> {
-            Ok(SessionTurnsPage { items: vec![], next_cursor: None })
+        async fn query_session_turns(&self, _: &SessionTurnsQuery) -> Result<SessionTurnsPage> {
+            Ok(SessionTurnsPage {
+                items: vec![],
+                next_cursor: None,
+            })
         }
         async fn query_distinct_wire_apis(&self) -> Result<Vec<String>> {
             Ok(vec![])
@@ -336,11 +339,7 @@ mod tests {
         async fn apply_retention(&self, _: RetentionPolicy) -> Result<RetentionReport> {
             Ok(RetentionReport::default())
         }
-        async fn query_pair_candidates(
-            &self,
-            _: i64,
-            _: i64,
-        ) -> Result<Vec<PairCandidate>> {
+        async fn query_pair_candidates(&self, _: i64, _: i64) -> Result<Vec<PairCandidate>> {
             Ok(self.candidates.clone())
         }
         async fn update_turn_metadata(
@@ -411,13 +410,22 @@ mod tests {
         assert_eq!(outer_patch["proxy"]["role"], "proxy_in");
         assert_eq!(inner_patch["proxy"]["role"], "proxy_out");
         // pair_id is shared between members of the same group.
-        assert_eq!(outer_patch["proxy"]["pair_id"], inner_patch["proxy"]["pair_id"]);
+        assert_eq!(
+            outer_patch["proxy"]["pair_id"],
+            inner_patch["proxy"]["pair_id"]
+        );
         // peer_turn_ids cross-references (legacy peer_turn_id matches first peer).
         assert_eq!(outer_patch["proxy"]["peer_turn_id"], "inner");
         assert_eq!(inner_patch["proxy"]["peer_turn_id"], "outer");
         // peer_turn_ids is an array with the right peer for each member.
-        assert_eq!(outer_patch["proxy"]["peer_turn_ids"], serde_json::json!(["inner"]));
-        assert_eq!(inner_patch["proxy"]["peer_turn_ids"], serde_json::json!(["outer"]));
+        assert_eq!(
+            outer_patch["proxy"]["peer_turn_ids"],
+            serde_json::json!(["inner"])
+        );
+        assert_eq!(
+            inner_patch["proxy"]["peer_turn_ids"],
+            serde_json::json!(["outer"])
+        );
     }
 
     #[tokio::test]
@@ -428,15 +436,30 @@ mod tests {
         // list shows ONE row.
         let stub_inner = Arc::new(StubStorage {
             candidates: vec![
-                cand("a_br0", "S", 1_000_000, 3_000_000, "172.16.103.100->172.16.103.81"),
-                cand("b_dock0", "S", 1_000_000, 3_000_000, "172.16.103.100->172.17.0.9"),
+                cand(
+                    "a_br0",
+                    "S",
+                    1_000_000,
+                    3_000_000,
+                    "172.16.103.100->172.16.103.81",
+                ),
+                cand(
+                    "b_dock0",
+                    "S",
+                    1_000_000,
+                    3_000_000,
+                    "172.16.103.100->172.17.0.9",
+                ),
                 cand("c_hop", "S", 1_002_000, 2_999_000, "172.17.0.1->172.17.0.4"),
             ],
             updates: StdMutex::new(HashMap::new()),
         });
         let stub = stub_inner.clone() as Arc<dyn StorageBackend>;
         let stats = sweep_once(&stub, Duration::from_secs(3600)).await.unwrap();
-        assert_eq!(stats.pairs_assigned, 1, "all three legs are one logical call");
+        assert_eq!(
+            stats.pairs_assigned, 1,
+            "all three legs are one logical call"
+        );
         assert_eq!(stats.turns_tagged, 3);
         let updates = stub_inner.updates.lock().unwrap();
         let a = updates.get("a_br0").expect("a_br0 patched");
@@ -450,9 +473,18 @@ mod tests {
         assert_eq!(a["proxy"]["pair_id"], b["proxy"]["pair_id"]);
         assert_eq!(a["proxy"]["pair_id"], c["proxy"]["pair_id"]);
         // Peer lists exclude self and are sorted lex.
-        assert_eq!(a["proxy"]["peer_turn_ids"], serde_json::json!(["b_dock0", "c_hop"]));
-        assert_eq!(b["proxy"]["peer_turn_ids"], serde_json::json!(["a_br0", "c_hop"]));
-        assert_eq!(c["proxy"]["peer_turn_ids"], serde_json::json!(["a_br0", "b_dock0"]));
+        assert_eq!(
+            a["proxy"]["peer_turn_ids"],
+            serde_json::json!(["b_dock0", "c_hop"])
+        );
+        assert_eq!(
+            b["proxy"]["peer_turn_ids"],
+            serde_json::json!(["a_br0", "c_hop"])
+        );
+        assert_eq!(
+            c["proxy"]["peer_turn_ids"],
+            serde_json::json!(["a_br0", "b_dock0"])
+        );
     }
 
     #[tokio::test]

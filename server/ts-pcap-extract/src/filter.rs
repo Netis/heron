@@ -54,12 +54,7 @@ mod tests {
 
     /// Build a minimal Ethernet+IPv4+TCP packet (20+20 byte headers) with the
     /// given addresses. Caplen == frame length.
-    fn ipv4_tcp_pkt(
-        src_ip: [u8; 4],
-        src_port: u16,
-        dst_ip: [u8; 4],
-        dst_port: u16,
-    ) -> Vec<u8> {
+    fn ipv4_tcp_pkt(src_ip: [u8; 4], src_port: u16, dst_ip: [u8; 4], dst_port: u16) -> Vec<u8> {
         let mut frame = Vec::new();
         // Ethernet (14): dst mac + src mac + ethertype 0x0800
         frame.extend_from_slice(&[0u8; 6]);
@@ -125,7 +120,10 @@ mod tests {
             "1.2.3.4".parse().ok(),
             Some(443),
         );
-        let f = Filter { req: &req, link_type: 1 };
+        let f = Filter {
+            req: &req,
+            link_type: 1,
+        };
         assert!(f.matches(&rec_for(pkt, 1_000_000)));
     }
 
@@ -141,7 +139,10 @@ mod tests {
             "1.2.3.4".parse().ok(),
             Some(443),
         );
-        let f = Filter { req: &req, link_type: 1 };
+        let f = Filter {
+            req: &req,
+            link_type: 1,
+        };
         assert!(f.matches(&rec_for(pkt, 1_000_000)));
     }
 
@@ -149,7 +150,10 @@ mod tests {
     fn empty_fields_are_wildcard() {
         let pkt = ipv4_tcp_pkt([10, 0, 0, 1], 54321, [1, 2, 3, 4], 443);
         let req = req_with(0, 10_000_000, None, None, None, None);
-        let f = Filter { req: &req, link_type: 1 };
+        let f = Filter {
+            req: &req,
+            link_type: 1,
+        };
         assert!(f.matches(&rec_for(pkt, 1_000_000)));
     }
 
@@ -157,7 +161,10 @@ mod tests {
     fn rejects_outside_time_window() {
         let pkt = ipv4_tcp_pkt([10, 0, 0, 1], 54321, [1, 2, 3, 4], 443);
         let req = req_with(2_000_000, 5_000_000, None, None, None, None);
-        let f = Filter { req: &req, link_type: 1 };
+        let f = Filter {
+            req: &req,
+            link_type: 1,
+        };
         assert!(!f.matches(&rec_for(pkt.clone(), 1_999_999)));
         assert!(f.matches(&rec_for(pkt.clone(), 2_000_000))); // inclusive lo
         assert!(f.matches(&rec_for(pkt.clone(), 5_000_000))); // inclusive hi
@@ -167,15 +174,11 @@ mod tests {
     #[test]
     fn drops_non_matching_5_tuple() {
         let pkt = ipv4_tcp_pkt([10, 0, 0, 1], 54321, [1, 2, 3, 4], 443);
-        let req = req_with(
-            0,
-            10_000_000,
-            "10.0.0.99".parse().ok(),
-            None,
-            None,
-            None,
-        ); // wrong client_ip
-        let f = Filter { req: &req, link_type: 1 };
+        let req = req_with(0, 10_000_000, "10.0.0.99".parse().ok(), None, None, None); // wrong client_ip
+        let f = Filter {
+            req: &req,
+            link_type: 1,
+        };
         assert!(!f.matches(&rec_for(pkt, 1_000_000)));
     }
 
@@ -184,7 +187,10 @@ mod tests {
         // Pure Ethernet, no IPv4: ts_protocol::de::decode returns Err.
         let frame = vec![0u8; 14];
         let req = req_with(0, 10_000_000, None, None, None, None);
-        let f = Filter { req: &req, link_type: 1 };
+        let f = Filter {
+            req: &req,
+            link_type: 1,
+        };
         assert!(!f.matches(&rec_for(frame, 1_000_000)));
     }
 }

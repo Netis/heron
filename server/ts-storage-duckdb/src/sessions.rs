@@ -4,9 +4,7 @@
 use ts_common::error::{AppError, Result};
 use ts_storage::query::*;
 
-use crate::util::{
-    extract_full_text_batch, parse_json_string_list, us_to_timestamp, ExtractKind,
-};
+use crate::util::{extract_full_text_batch, parse_json_string_list, us_to_timestamp, ExtractKind};
 use crate::DuckDbBackend;
 
 impl DuckDbBackend {
@@ -340,7 +338,10 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    pub(crate) async fn query_session_turns(&self, query: &SessionTurnsQuery) -> Result<SessionTurnsPage> {
+    pub(crate) async fn query_session_turns(
+        &self,
+        query: &SessionTurnsQuery,
+    ) -> Result<SessionTurnsPage> {
         let conn = self.read_pool.acquire().await?;
         let query = query.clone();
 

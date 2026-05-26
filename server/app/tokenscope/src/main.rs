@@ -11,7 +11,6 @@ use tracing_subscriber::FmtSubscriber;
 
 use tokenscope::create_backend;
 use tokenscope::Pipeline;
-use ts_llm::agent_classifier::ClassifierConfig;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use ts_common::config::{
@@ -20,6 +19,7 @@ use ts_common::config::{
 use ts_common::internal_metrics::{
     AggregateHistory, HistoryRecorder, Metric, MetricsReporter, MetricsSystem,
 };
+use ts_llm::agent_classifier::ClassifierConfig;
 
 mod cmd;
 

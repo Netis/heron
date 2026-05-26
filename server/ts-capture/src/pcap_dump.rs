@@ -429,7 +429,11 @@ pub(crate) fn parse_minute_label(s: &str) -> Option<i64> {
 /// Inverse of [`days_to_ymd`]: convert (year, month, day) UTC to
 /// days-since-1970-01-01. Days-from-civil algorithm by Howard Hinnant.
 fn ymd_to_days(y: i32, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { i64::from(y) - 1 } else { i64::from(y) };
+    let y = if m <= 2 {
+        i64::from(y) - 1
+    } else {
+        i64::from(y)
+    };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = (y - era * 400) as u64;
     let m_shift = if m > 2 { m - 3 } else { m + 9 } as u64;
@@ -696,7 +700,10 @@ mod tests {
 
     #[test]
     fn parse_minute_label_known_value() {
-        assert_eq!(parse_minute_label("20260505T1330"), Some(1_777_987_800 / 60));
+        assert_eq!(
+            parse_minute_label("20260505T1330"),
+            Some(1_777_987_800 / 60)
+        );
         assert_eq!(parse_minute_label("19700101T0000"), Some(0));
     }
 
@@ -705,13 +712,13 @@ mod tests {
         assert_eq!(parse_minute_label(""), None);
         assert_eq!(parse_minute_label("abc"), None);
         assert_eq!(parse_minute_label("2026-05-05T13:30"), None);
-        assert_eq!(parse_minute_label("20260505T133"), None);    // too short
-        assert_eq!(parse_minute_label("20260505T13300"), None);  // too long
-        assert_eq!(parse_minute_label("20261305T1330"), None);   // month 13
-        assert_eq!(parse_minute_label("20260532T1330"), None);   // day 32
-        assert_eq!(parse_minute_label("20260505T2530"), None);   // hour 25
-        assert_eq!(parse_minute_label("20260505T1360"), None);   // minute 60
-        assert_eq!(parse_minute_label("20260505X1330"), None);   // missing T
+        assert_eq!(parse_minute_label("20260505T133"), None); // too short
+        assert_eq!(parse_minute_label("20260505T13300"), None); // too long
+        assert_eq!(parse_minute_label("20261305T1330"), None); // month 13
+        assert_eq!(parse_minute_label("20260532T1330"), None); // day 32
+        assert_eq!(parse_minute_label("20260505T2530"), None); // hour 25
+        assert_eq!(parse_minute_label("20260505T1360"), None); // minute 60
+        assert_eq!(parse_minute_label("20260505X1330"), None); // missing T
     }
 
     #[test]
@@ -900,7 +907,11 @@ mod tests {
         }
 
         let (_, pkts) = read_pcap(&path);
-        assert_eq!(pkts.len(), 2, "second packet must be appended, not truncated");
+        assert_eq!(
+            pkts.len(),
+            2,
+            "second packet must be appended, not truncated"
+        );
         assert_eq!(pkts[0].1, vec![0xa1]);
         assert_eq!(pkts[1].1, vec![0xb2]);
         // Size must have grown (would shrink under truncation).
@@ -923,7 +934,10 @@ mod tests {
 
         let (lt, pkts) = read_pcap(&path);
         assert_eq!(lt, 1);
-        assert!(pkts.is_empty(), "newly recreated file should contain only the global header");
+        assert!(
+            pkts.is_empty(),
+            "newly recreated file should contain only the global header"
+        );
     }
 
     #[test]
@@ -977,7 +991,11 @@ mod tests {
         }
 
         let (_, pkts) = read_snappy_pcap(&path);
-        assert_eq!(pkts.len(), 2, "snappy mode must also append across restarts");
+        assert_eq!(
+            pkts.len(),
+            2,
+            "snappy mode must also append across restarts"
+        );
         assert_eq!(pkts[0].1, vec![0xa1, 0xa2, 0xa3]);
         assert_eq!(pkts[1].1, vec![0xb1]);
     }

@@ -342,22 +342,25 @@ pub async fn proxy_view(
     let group_id = proxy
         .and_then(|p| p.get("pair_id"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            ApiError::NotFound(format!(
-                "turn {turn_id} is not part of a proxy group"
-            ))
-        })?
+        .ok_or_else(|| ApiError::NotFound(format!("turn {turn_id} is not part of a proxy group")))?
         .to_string();
     let mut peer_ids: Vec<String> = proxy
         .and_then(|p| p.get("peer_turn_ids"))
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     // Backward compat: pre-N-leg writes only set peer_turn_id (a single
     // string). If peer_turn_ids is empty but the legacy field is set,
     // promote the singleton.
     if peer_ids.is_empty() {
-        if let Some(legacy) = proxy.and_then(|p| p.get("peer_turn_id")).and_then(|v| v.as_str()) {
+        if let Some(legacy) = proxy
+            .and_then(|p| p.get("peer_turn_id"))
+            .and_then(|v| v.as_str())
+        {
             peer_ids.push(legacy.to_string());
         }
     }
@@ -444,21 +447,40 @@ fn member_from(
     role: String,
     first_call: Option<CallDetail>,
 ) -> ProxyViewMember {
-    let (request_headers, response_headers, client_port, server_port, request_path, status_code, ttft_ms, e2e_latency_ms, request_model) =
-        match first_call {
-            Some(c) => (
-                parse_headers_json(c.request_headers.as_deref()),
-                parse_headers_json(c.response_headers.as_deref()),
-                Some(c.client_port),
-                Some(c.server_port),
-                Some(c.request_path),
-                c.status_code,
-                c.ttft_ms,
-                c.e2e_latency_ms,
-                extract_model_from_body(c.request_body.as_deref()),
-            ),
-            None => (Vec::new(), Vec::new(), None, None, None, None, None, None, None),
-        };
+    let (
+        request_headers,
+        response_headers,
+        client_port,
+        server_port,
+        request_path,
+        status_code,
+        ttft_ms,
+        e2e_latency_ms,
+        request_model,
+    ) = match first_call {
+        Some(c) => (
+            parse_headers_json(c.request_headers.as_deref()),
+            parse_headers_json(c.response_headers.as_deref()),
+            Some(c.client_port),
+            Some(c.server_port),
+            Some(c.request_path),
+            c.status_code,
+            c.ttft_ms,
+            c.e2e_latency_ms,
+            extract_model_from_body(c.request_body.as_deref()),
+        ),
+        None => (
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    };
     ProxyViewMember {
         turn_id: detail.turn_id,
         role,
@@ -629,7 +651,6 @@ pub async fn activity(
     Ok(ApiResponse::ok(AgentActivityResp { points }))
 }
 
-
 #[cfg(test)]
 mod proxy_view_tests {
     use super::*;
@@ -666,7 +687,7 @@ mod proxy_view_tests {
         let mut m2 = member("t2", "proxy_out", None, None);
         m1.response_headers = vec![
             h("Content-Type", "application/json"),
-            h("X-LiteLLM-Call-Id", "abc-123"),  // proxy-added
+            h("X-LiteLLM-Call-Id", "abc-123"), // proxy-added
             h("Server", "uvicorn"),
         ];
         m2.response_headers = vec![
@@ -707,11 +728,19 @@ mod proxy_view_tests {
         // Realistic LiteLLM scenario: client requests
         // "claude-3-5-sonnet-20241022", proxy forwards as "qwen36-27b".
         let members = vec![
-            member("client", "proxy_in", Some("claude-3-5-sonnet-20241022"), None),
+            member(
+                "client",
+                "proxy_in",
+                Some("claude-3-5-sonnet-20241022"),
+                None,
+            ),
             member("upstream", "proxy_out", Some("qwen36-27b"), None),
         ];
         let rewrite = detect_model_rewrite(&members).expect("rewrite detected");
-        assert_eq!(rewrite.client_requested.as_deref(), Some("claude-3-5-sonnet-20241022"));
+        assert_eq!(
+            rewrite.client_requested.as_deref(),
+            Some("claude-3-5-sonnet-20241022")
+        );
         assert_eq!(rewrite.upstream_received.as_deref(), Some("qwen36-27b"));
     }
 
@@ -768,7 +797,10 @@ mod proxy_view_tests {
         let parsed = parse_headers_json(Some(blob));
         assert_eq!(
             parsed,
-            vec![("X-A".to_string(), "1".to_string()), ("X-B".to_string(), "2".to_string())]
+            vec![
+                ("X-A".to_string(), "1".to_string()),
+                ("X-B".to_string(), "2".to_string())
+            ]
         );
         assert!(parse_headers_json(None).is_empty());
         assert!(parse_headers_json(Some("garbage")).is_empty());

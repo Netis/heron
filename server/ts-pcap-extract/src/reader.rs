@@ -96,7 +96,10 @@ fn read_full_or_eof<R: Read + ?Sized>(r: &mut R, buf: &mut [u8]) -> io::Result<u
 /// Path-helper for tests so we don't repeat the construct.
 #[cfg(test)]
 fn open_path(path: &std::path::Path, compressed: bool) -> io::Result<PacketIter> {
-    PacketIter::open(&CandidateFile { path: path.to_path_buf(), compressed })
+    PacketIter::open(&CandidateFile {
+        path: path.to_path_buf(),
+        compressed,
+    })
 }
 
 #[cfg(test)]
@@ -153,11 +156,11 @@ mod tests {
         let mut f = File::create(&path).unwrap();
         write_pcap_global_header(&mut f, 1).unwrap();
         // record header says caplen=10 but only writes 3 bytes
-        f.write_all(&0u32.to_le_bytes()).unwrap();          // ts_sec
-        f.write_all(&500_000u32.to_le_bytes()).unwrap();    // ts_usec
-        f.write_all(&10u32.to_le_bytes()).unwrap();         // caplen
-        f.write_all(&10u32.to_le_bytes()).unwrap();         // wirelen
-        f.write_all(&[0xaa, 0xbb, 0xcc]).unwrap();          // truncated
+        f.write_all(&0u32.to_le_bytes()).unwrap(); // ts_sec
+        f.write_all(&500_000u32.to_le_bytes()).unwrap(); // ts_usec
+        f.write_all(&10u32.to_le_bytes()).unwrap(); // caplen
+        f.write_all(&10u32.to_le_bytes()).unwrap(); // wirelen
+        f.write_all(&[0xaa, 0xbb, 0xcc]).unwrap(); // truncated
         drop(f);
         let mut it = open_path(&path, false).unwrap();
         // No complete record before EOF.
@@ -170,7 +173,7 @@ mod tests {
         let path = dir.path().join("a.pcap");
         let mut f = File::create(&path).unwrap();
         write_pcap_global_header(&mut f, 1).unwrap();
-        f.write_all(&[0u8; 5]).unwrap();   // partial 16-byte record header
+        f.write_all(&[0u8; 5]).unwrap(); // partial 16-byte record header
         drop(f);
         let mut it = open_path(&path, false).unwrap();
         assert!(it.next().is_none());

@@ -283,11 +283,7 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::query_pair_candidates(self, start_us, end_us).await
     }
 
-    async fn update_turn_metadata(
-        &self,
-        turn_id: &str,
-        patch: serde_json::Value,
-    ) -> Result<()> {
+    async fn update_turn_metadata(&self, turn_id: &str, patch: serde_json::Value) -> Result<()> {
         DuckDbBackend::update_turn_metadata(self, turn_id, patch).await
     }
 

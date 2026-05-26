@@ -44,7 +44,11 @@ struct ChunkIter {
 
 impl ChunkIter {
     fn new(merge: MergeIter, link_type: u32) -> Self {
-        Self { state: ChunkState::NeedHeader, merge, link_type }
+        Self {
+            state: ChunkState::NeedHeader,
+            merge,
+            link_type,
+        }
     }
 }
 
@@ -235,7 +239,10 @@ mod tests {
             server_ip: None,
             server_port: None,
         };
-        let roots = vec![PipelineRoot { name: "local".into(), dump_dir: dir.path().to_path_buf() }];
+        let roots = vec![PipelineRoot {
+            name: "local".into(),
+            dump_dir: dir.path().to_path_buf(),
+        }];
         let bytes = rt.block_on(async {
             let prep = prepare(req, &roots).unwrap();
             collect_stream(stream_extract(prep)).await
@@ -259,7 +266,10 @@ mod tests {
             server_ip: None,
             server_port: None,
         };
-        let roots = vec![PipelineRoot { name: "local".into(), dump_dir: dir.path().to_path_buf() }];
+        let roots = vec![PipelineRoot {
+            name: "local".into(),
+            dump_dir: dir.path().to_path_buf(),
+        }];
         let bytes = rt.block_on(async {
             let prep = prepare(req, &roots).unwrap();
             collect_stream(stream_extract(prep)).await
@@ -294,7 +304,10 @@ mod tests {
             server_ip: None,
             server_port: None,
         };
-        let roots = vec![PipelineRoot { name: "local".into(), dump_dir: dir.path().to_path_buf() }];
+        let roots = vec![PipelineRoot {
+            name: "local".into(),
+            dump_dir: dir.path().to_path_buf(),
+        }];
 
         match prepare(req, &roots) {
             Err(ExtractError::LinkTypeMismatch { expected, got }) => {

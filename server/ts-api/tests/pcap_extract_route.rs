@@ -11,8 +11,8 @@ use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use axum::routing::get;
 use axum::Router;
-use ts_pcap_extract::PipelineRoot;
 use tower::util::ServiceExt;
+use ts_pcap_extract::PipelineRoot;
 
 #[tokio::test]
 async fn returns_header_only_pcap_when_no_files() {
@@ -21,7 +21,10 @@ async fn returns_header_only_pcap_when_no_files() {
         dump_dir: std::path::PathBuf::from("/nonexistent"),
     }]);
     let app: Router = Router::new()
-        .route("/api/pcap/extract", get(ts_api::routes::pcap_extract::handler))
+        .route(
+            "/api/pcap/extract",
+            get(ts_api::routes::pcap_extract::handler),
+        )
         .with_state(roots);
 
     let resp = app
@@ -45,7 +48,10 @@ async fn returns_header_only_pcap_when_no_files() {
 async fn rejects_window_too_wide_with_400() {
     let roots: Arc<Vec<PipelineRoot>> = Arc::new(vec![]);
     let app: Router = Router::new()
-        .route("/api/pcap/extract", get(ts_api::routes::pcap_extract::handler))
+        .route(
+            "/api/pcap/extract",
+            get(ts_api::routes::pcap_extract::handler),
+        )
         .with_state(roots);
 
     // 1h + 1us

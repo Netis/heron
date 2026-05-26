@@ -352,6 +352,7 @@ async fn timeseries_endpoint_backfills_full_grid_for_sparse_data() {
         tpot_p50: None,
         tpot_p95: None,
         tpot_p99: None,
+        tool_surface: None,
     };
     <DuckDbBackend as ts_storage::StorageBackend>::write_metrics(&backend, vec![row])
         .await
