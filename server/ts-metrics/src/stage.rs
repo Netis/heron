@@ -164,6 +164,12 @@ mod tests {
                 is_auxiliary: false,
                 user_input: None,
                 assistant_text: None,
+                is_agent_request: false,
+                tool_surface: None,
+                agent_topology: None,
+                tool_names: Vec::new(),
+                tool_call_count: 0,
+                suspicious_signals: Vec::new(),
             }),
         }
     }
