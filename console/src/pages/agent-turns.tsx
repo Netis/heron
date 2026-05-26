@@ -9,9 +9,12 @@ import { TurnStatusBadge } from "@/components/ui/turn-status-badge"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import { ProxyBadge } from "@/components/ui/proxy-badge"
 import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
-import type { AgentTurnListItem } from "@/types/api"
+import { ToolSurfacePill, TopologyPill, SuspiciousMarker } from "@/components/agent-pills"
+import type { AgentTurnListItem, ToolSurface, AgentTopology } from "@/types/api"
 
 const STATUS_OPTIONS = ["in_progress", "complete", "incomplete"]
+const SURFACE_OPTIONS: ToolSurface[] = ["function_call", "mcp", "cli", "mixed", "unknown"]
+const TOPOLOGY_OPTIONS: AgentTopology[] = ["single_agent", "sub_agent", "orchestrator"]
 
 const PAGE_SIZES = [20, 50, 100] as const
 
@@ -23,6 +26,9 @@ const PAGE_SIZES = [20, 50, 100] as const
 const columns = [
   { key: "start_time", label: "Time", width: "w-[210px]", sortable: true, align: "left" as const },
   { key: "agent_kind", label: "Agent", width: "w-[100px]", sortable: false, align: "left" as const },
+  { key: "topology", label: "Topology", width: "w-[110px]", sortable: false, align: "left" as const },
+  { key: "tool_surfaces", label: "Surfaces", width: "w-[150px]", sortable: false, align: "left" as const },
+  { key: "suspicious", label: "⚠", width: "w-[40px]", sortable: false, align: "left" as const },
   { key: "client_ip", label: "Client", width: "w-[130px]", sortable: false, align: "left" as const },
   { key: "call_count", label: "Calls", width: "w-[60px]", sortable: true, align: "right" as const },
   { key: "status", label: "Status", width: "w-[100px]", sortable: false, align: "left" as const },
@@ -67,6 +73,20 @@ function CellValue({ item, column }: { item: AgentTurnListItem; column: (typeof 
           {item.agent_kind}
         </span>
       )
+    case "topology":
+      return item.agent_topology ? <TopologyPill topology={item.agent_topology} /> : <span className="text-muted-foreground">—</span>
+    case "tool_surfaces":
+      return item.tool_surfaces.length > 0 ? (
+        <span className="inline-flex flex-wrap items-center gap-1">
+          {item.tool_surfaces.map((s) => (
+            <ToolSurfacePill key={s} surface={s} />
+          ))}
+        </span>
+      ) : (
+        <span className="text-muted-foreground">—</span>
+      )
+    case "suspicious":
+      return <SuspiciousMarker count={item.suspicious_skills.length} />
     case "client_ip":
       return <span className="truncate font-mono text-xs">{item.client_ip}</span>
     case "server_ip":
@@ -104,11 +124,17 @@ export function AgentTurnsPage() {
   // shared link.
   const [showHopsStr, setShowHopsStr] = useSearchParamState("show_hops", "")
   const includeProxyHops = showHopsStr === "1"
+  const [topologyStr, setTopologyStr] = useSearchParamState("topology", "")
+  const [surfaceStr, setSurfaceStr] = useSearchParamState("surface", "")
+  const [suspiciousStr, setSuspiciousStr] = useSearchParamState("suspicious", "")
+  const suspiciousOnly = suspiciousStr === "1"
 
   const page = Number(pageStr) || 1
   const pageSize = Number(pageSizeStr) || 50
   const statusFilter = statusStr ? statusStr.split(",") : []
   const agentKindFilter = agentKindStr ? agentKindStr.split(",") : []
+  const topologyFilter = topologyStr ? (topologyStr.split(",") as AgentTopology[]) : []
+  const surfaceFilter = surfaceStr ? (surfaceStr.split(",") as ToolSurface[]) : []
   const { data: agentKindsData } = useAgentKinds()
 
   const [selectedId, setSelectedId] = useSearchParamState("selected", "")
@@ -142,11 +168,21 @@ export function AgentTurnsPage() {
     includeProxyHops,
   })
 
-  const items = data?.items ?? []
+  const rawItems = data?.items ?? []
+  const items = rawItems.filter((item) => {
+    if (topologyFilter.length > 0) {
+      if (!item.agent_topology || !topologyFilter.includes(item.agent_topology)) return false
+    }
+    if (surfaceFilter.length > 0) {
+      if (!item.tool_surfaces.some((s) => surfaceFilter.includes(s))) return false
+    }
+    if (suspiciousOnly && item.suspicious_skills.length === 0) return false
+    return true
+  })
   const agentKindOptions = Array.from(
     new Set([
       ...(agentKindsData?.values ?? []),
-      ...items.map((item) => item.agent_kind),
+      ...rawItems.map((item) => item.agent_kind),
       ...agentKindFilter,
     ]),
   ).sort()
@@ -193,6 +229,39 @@ export function AgentTurnsPage() {
             setPageStr("1")
           }}
         />
+        <FilterDropdown
+          label="Topology"
+          options={TOPOLOGY_OPTIONS}
+          selected={topologyFilter}
+          onChange={(v) => {
+            setTopologyStr(v.join(","))
+            setPageStr("1")
+          }}
+        />
+        <FilterDropdown
+          label="Surface"
+          options={SURFACE_OPTIONS}
+          selected={surfaceFilter}
+          onChange={(v) => {
+            setSurfaceStr(v.join(","))
+            setPageStr("1")
+          }}
+        />
+        <label
+          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-muted"
+          title="Show only turns flagged as suspicious"
+        >
+          <input
+            type="checkbox"
+            checked={suspiciousOnly}
+            onChange={(e) => {
+              setSuspiciousStr(e.target.checked ? "1" : "")
+              setPageStr("1")
+            }}
+            className="size-3"
+          />
+          Suspicious only
+        </label>
         <input
           value={clientIpStr}
           onChange={(e) => { setClientIpStr(e.target.value); setPageStr("1") }}
