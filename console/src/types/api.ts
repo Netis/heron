@@ -4,6 +4,22 @@ export interface ApiResponse<T> {
   data: T
 }
 
+// ---- Agent classification (Phase 5 — agent-era observer) ----
+//
+// Surfaces produced by the `ts_llm::agent_classifier` rule chain. Mirrors
+// `ts_common::agent::ToolSurface` (serde `snake_case`).
+export type ToolSurface = "function_call" | "mcp" | "cli" | "mixed" | "unknown"
+
+// Mirrors `ts_common::agent::AgentTopology`.
+export type AgentTopology = "single_agent" | "sub_agent" | "orchestrator"
+
+// One suspicious tool flagged during turn rollup. Backend serializes the
+// `tool_name` / `reason` pair into `agent_turns.suspicious_skills_json`.
+export interface SuspiciousSkillRollup {
+  tool_name: string
+  reason: string
+}
+
 export interface LlmCallsPage {
   total: number
   items: LlmCallListItem[]
@@ -31,6 +47,13 @@ export interface LlmCallListItem {
   server_ip: string
   server_port: number
   request_path: string
+  /** Agent classification — see Phase 5 plan. `false` for non-agent calls. */
+  is_agent_request: boolean
+  /** Tool surface detected by the classifier; null when not an agent call. */
+  tool_surface: ToolSurface | null
+  agent_topology: AgentTopology | null
+  tool_call_count: number
+  tool_names: string[]
 }
 
 // Metrics types
@@ -212,6 +235,15 @@ export interface AgentTurnListItem {
   /** Every other member of this turn's proxy group, sorted lex. The
    * haproxy 3-leg case shows 2 peers here (br0 mirror + upstream hop). */
   proxy_peer_turn_ids?: string[]
+  /** Distinct tool surfaces observed across the turn's calls. Empty for
+   * turns with no classified surface (e.g. legacy non-agent traffic). */
+  tool_surfaces: ToolSurface[]
+  /** Sum of per-call `tool_call_count` across the turn. */
+  tool_call_total: number
+  /** Coarsest topology seen across calls (Orchestrator > SubAgent > SingleAgent). */
+  agent_topology: AgentTopology | null
+  /** Deduplicated suspicious tools flagged during rollup. */
+  suspicious_skills: SuspiciousSkillRollup[]
 }
 
 // ---- Proxy view (multi-leg fold detail) ----
@@ -294,6 +326,11 @@ export interface AgentTurnDetail {
   final_answer: string | null
   call_ids: string[]
   metadata: unknown
+  /** See AgentTurnListItem. */
+  tool_surfaces: ToolSurface[]
+  tool_call_total: number
+  agent_topology: AgentTopology | null
+  suspicious_skills: SuspiciousSkillRollup[]
 }
 
 export interface AgentTurnCallItem {
@@ -324,6 +361,12 @@ export interface AgentTurnCallItem {
   /** JSON-encoded `[[header_name, header_value], ...]`. */
   request_headers: string | null
   response_headers: string | null
+  /** Agent classification — see LlmCallListItem. */
+  is_agent_request: boolean
+  tool_surface: ToolSurface | null
+  agent_topology: AgentTopology | null
+  tool_call_count: number
+  tool_names: string[]
 }
 
 // LLM call detail — raw payload. Frontend parses per-wire_api via
@@ -357,6 +400,12 @@ export interface LlmCallDetail {
   response_body: string | null
   request_headers: string | null
   response_headers: string | null
+  /** Agent classification — see LlmCallListItem. */
+  is_agent_request: boolean
+  tool_surface: ToolSurface | null
+  agent_topology: AgentTopology | null
+  tool_call_count: number
+  tool_names: string[]
 }
 
 // HTTP exchange types — /api/http-exchanges
@@ -469,6 +518,11 @@ export interface SessionTurnItem {
   user_input: string | null
   /** Full text. Null when the turn ended without a final answer. */
   final_answer: string | null
+  /** See AgentTurnListItem. */
+  tool_surfaces: ToolSurface[]
+  tool_call_total: number
+  agent_topology: AgentTopology | null
+  suspicious_skills: SuspiciousSkillRollup[]
 }
 
 export interface SessionTurnsPage {
