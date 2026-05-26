@@ -47,7 +47,12 @@ jobs:
           ISSUE_TITLE:  ${{ github.event.issue.title }}
           ISSUE_BODY:   ${{ github.event.issue.body }}
           ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          # Default token: posts the triage comment as github-actions[bot].
           GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
+          # PAT used ONLY to add the `agent:try` label on verdict=do.
+          # GitHub suppresses labeled events emitted under GITHUB_TOKEN,
+          # which would block issue-implement.yml from firing.
+          AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
         run: bash scripts/agent-bot/run_triage.sh
 
       - name: Cleanup transient files
