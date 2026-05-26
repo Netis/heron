@@ -34,6 +34,15 @@ jobs:
           rustc --version
           cargo clippy --version
           bun --version
+          python3 --version
+
+      - name: lint — referenced secrets are provisioned
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/lint/check-secrets.sh
+
+      - name: lint — validated constructors are scoped
+        run: python3 scripts/lint/check-validated-constructors.py
 
       - name: cargo test
         working-directory: server
