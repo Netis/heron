@@ -75,7 +75,20 @@ fi
 
 case "$VERDICT" in
   do)
-    gh issue edit "$ISSUE_NUMBER" --add-label "agent:try"
+    # Add the `agent:try` label using AGENT_GH_TOKEN (a PAT) rather
+    # than the default GITHUB_TOKEN. GitHub deliberately suppresses
+    # `labeled` events emitted by GITHUB_TOKEN to prevent recursive
+    # workflow chains — meaning issue-implement.yml would never fire.
+    # The PAT belongs to a real user, so its label edit fans out to
+    # downstream workflows normally. If AGENT_GH_TOKEN is missing we
+    # still label (with GITHUB_TOKEN) but the dev agent won't auto-start;
+    # an operator can re-toggle the label by hand.
+    if [ -n "${AGENT_GH_TOKEN:-}" ]; then
+      GH_TOKEN="$AGENT_GH_TOKEN" gh issue edit "$ISSUE_NUMBER" --add-label "agent:try"
+    else
+      echo "warning: AGENT_GH_TOKEN unset; labeling under GITHUB_TOKEN — wiwi will NOT auto-start" >&2
+      gh issue edit "$ISSUE_NUMBER" --add-label "agent:try"
+    fi
     gh issue comment "$ISSUE_NUMBER" --body "🤖 Triage: **${VERDICT}** — scope: ${SCOPE}
 
 ${REASON}
