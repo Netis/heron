@@ -372,7 +372,8 @@ impl DuckDbBackend {
                         total_input_tokens, total_output_tokens, \
                         status, final_finish_reason, \
                         user_input_preview, user_call_id, \
-                        final_answer_preview, final_call_id \
+                        final_answer_preview, final_call_id, \
+                        tool_surfaces_json, tool_call_total, agent_topology, suspicious_skills_json \
                  FROM agent_turns \
                  WHERE source_id = ? AND session_id = ?{cursor_sql} \
                  ORDER BY start_time DESC, turn_id DESC \
@@ -401,6 +402,10 @@ impl DuckDbBackend {
                 Option<String>,
                 Option<String>,
                 Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<u32>,
                 Option<String>,
                 Option<String>,
             )> = Vec::new();
@@ -454,6 +459,14 @@ impl DuckDbBackend {
                         row.get::<_, Option<String>>(16)
                             .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                         row.get::<_, Option<String>>(17)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get::<_, Option<String>>(18)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get::<_, Option<u32>>(19)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get::<_, Option<String>>(20)
+                            .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                        row.get::<_, Option<String>>(21)
                             .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
                     );
                     fetched.push(tuple);
@@ -510,6 +523,10 @@ impl DuckDbBackend {
                     user_call_id,
                     final_preview,
                     final_call_id,
+                    tool_surfaces_json,
+                    tool_call_total_raw,
+                    agent_topology,
+                    suspicious_skills_json,
                 ) = t;
 
                 let user_input = match (user_preview.as_deref(), user_call_id.as_deref()) {
@@ -525,6 +542,12 @@ impl DuckDbBackend {
 
                 let models_used = parse_json_string_list(models_used_raw.as_deref());
                 let primary_model = models_used.first().cloned();
+                let tool_surfaces = parse_json_string_list(tool_surfaces_json.as_deref());
+                let tool_call_total = tool_call_total_raw.unwrap_or(0);
+                let suspicious_skills: Vec<serde_json::Value> = suspicious_skills_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default();
 
                 items.push(SessionTurnItem {
                     turn_id,
@@ -544,6 +567,10 @@ impl DuckDbBackend {
                     final_finish_reason,
                     user_input,
                     final_answer,
+                    tool_surfaces,
+                    tool_call_total,
+                    agent_topology,
+                    suspicious_skills,
                 });
             }
 

@@ -299,6 +299,11 @@ pub struct CallListItem {
     pub server_ip: String,
     pub server_port: u16,
     pub request_path: String,
+    pub is_agent_request: bool,
+    pub tool_surface: Option<String>,
+    pub agent_topology: Option<String>,
+    pub tool_call_count: u32,
+    pub tool_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -422,6 +427,14 @@ pub struct TurnListItem {
     /// view + docker view + upstream hop) have two.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_peer_turn_ids: Option<Vec<String>>,
+    /// Distinct tool surfaces seen across the turn's calls (e.g. `"function_call"`, `"mcp"`).
+    pub tool_surfaces: Vec<String>,
+    /// Sum of `tool_call_count` across all calls in this turn.
+    pub tool_call_total: u32,
+    /// Agent topology classifier output (e.g. `"single_agent"`, `"multi_agent"`).
+    pub agent_topology: Option<String>,
+    /// Parsed `suspicious_skills_json` — array of `{tool_name, reason}` objects.
+    pub suspicious_skills: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -454,6 +467,14 @@ pub struct SessionTurnItem {
     pub final_finish_reason: Option<String>,
     pub user_input: Option<String>,
     pub final_answer: Option<String>,
+    /// Distinct tool surfaces seen across the turn's calls.
+    pub tool_surfaces: Vec<String>,
+    /// Sum of `tool_call_count` across all calls in this turn.
+    pub tool_call_total: u32,
+    /// Agent topology classifier output.
+    pub agent_topology: Option<String>,
+    /// Parsed `suspicious_skills_json`.
+    pub suspicious_skills: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -492,6 +513,14 @@ pub struct TurnDetail {
     pub final_answer: Option<String>,
     pub call_ids: Vec<String>,
     pub metadata: Option<serde_json::Value>,
+    /// Distinct tool surfaces seen across the turn's calls.
+    pub tool_surfaces: Vec<String>,
+    /// Sum of `tool_call_count` across all calls in this turn.
+    pub tool_call_total: u32,
+    /// Agent topology classifier output.
+    pub agent_topology: Option<String>,
+    /// Parsed `suspicious_skills_json`.
+    pub suspicious_skills: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]

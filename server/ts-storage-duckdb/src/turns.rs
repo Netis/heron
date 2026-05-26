@@ -316,7 +316,8 @@ impl DuckDbBackend {
                  wire_api, agent_kind, models_used, call_count, \
                  total_input_tokens, total_output_tokens, status, \
                  final_finish_reason, user_input_preview, final_answer_preview, \
-                 client_ip, server_ip, metadata \
+                 client_ip, server_ip, metadata, \
+                 tool_surfaces_json, tool_call_total, agent_topology, suspicious_skills_json \
                  FROM agent_turns WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
@@ -345,6 +346,17 @@ impl DuckDbBackend {
                     .map_err(|e| AppError::Storage(format!("read metadata: {e}")))?;
                 let (proxy_role, proxy_peer_turn_id, proxy_peer_turn_ids) =
                     extract_proxy_fields(metadata_raw);
+                let tool_surfaces_json: Option<String> = row
+                    .get(19)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let tool_surfaces = parse_json_string_list(tool_surfaces_json.as_deref());
+                let suspicious_skills_json: Option<String> = row
+                    .get(22)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let suspicious_skills: Vec<serde_json::Value> = suspicious_skills_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default();
                 items.push(TurnListItem {
                     turn_id: row
                         .get(0)
@@ -402,6 +414,15 @@ impl DuckDbBackend {
                     proxy_role,
                     proxy_peer_turn_id,
                     proxy_peer_turn_ids,
+                    tool_surfaces,
+                    tool_call_total: row
+                        .get::<_, Option<u32>>(20)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?
+                        .unwrap_or(0),
+                    agent_topology: row
+                        .get::<_, Option<String>>(21)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    suspicious_skills,
                 });
             }
 
@@ -427,7 +448,8 @@ impl DuckDbBackend {
                     user_input_preview, user_call_id,
                     final_answer_preview, final_call_id,
                     call_ids, metadata,
-                    client_ip, server_ip
+                    client_ip, server_ip,
+                    tool_surfaces_json, tool_call_total, agent_topology, suspicious_skills_json
                 FROM agent_turns
                 WHERE turn_id = ?
             ";
@@ -465,6 +487,10 @@ impl DuckDbBackend {
                     row.get::<_, Option<String>>(23)?, // metadata
                     row.get::<_, String>(24)?,         // client_ip
                     row.get::<_, String>(25)?,         // server_ip
+                    row.get::<_, Option<String>>(26)?, // tool_surfaces_json
+                    row.get::<_, Option<u32>>(27)?,    // tool_call_total
+                    row.get::<_, Option<String>>(28)?, // agent_topology
+                    row.get::<_, Option<String>>(29)?, // suspicious_skills_json
                 ))
             });
 
@@ -505,6 +531,10 @@ impl DuckDbBackend {
                 metadata_raw,
                 client_ip,
                 server_ip,
+                tool_surfaces_json,
+                tool_call_total_raw,
+                agent_topology,
+                suspicious_skills_json,
             ) = tuple;
 
             let models_used = parse_json_string_list(models_used_raw.as_deref());
@@ -513,6 +543,12 @@ impl DuckDbBackend {
             let metadata = metadata_raw
                 .as_deref()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+            let tool_surfaces = parse_json_string_list(tool_surfaces_json.as_deref());
+            let tool_call_total = tool_call_total_raw.unwrap_or(0);
+            let suspicious_skills: Vec<serde_json::Value> = suspicious_skills_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
 
             // `truncate_preview` in ts-turn appends `…` only when it truncates,
             // so a preview that does not end in `…` is already the full text —
@@ -565,6 +601,10 @@ impl DuckDbBackend {
                 final_answer,
                 call_ids,
                 metadata,
+                tool_surfaces,
+                tool_call_total,
+                agent_topology,
+                suspicious_skills,
             }))
         })
         .await

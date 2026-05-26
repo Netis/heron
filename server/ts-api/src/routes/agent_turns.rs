@@ -192,6 +192,14 @@ fn agent_turn_to_list_item(t: &AgentTurn) -> TurnListItem {
         proxy_role: None,
         proxy_peer_turn_id: None,
         proxy_peer_turn_ids: None,
+        tool_surfaces: t.tool_surfaces.iter().map(|s| s.to_string()).collect(),
+        tool_call_total: t.tool_call_total,
+        agent_topology: t.agent_topology.as_ref().map(|a| a.to_string()),
+        suspicious_skills: t
+            .suspicious_skills
+            .iter()
+            .filter_map(|s| serde_json::to_value(s).ok())
+            .collect(),
     }
 }
 
@@ -272,6 +280,14 @@ fn agent_turn_to_detail(t: AgentTurn) -> ts_storage::query::TurnDetail {
         final_answer: t.final_answer_preview,
         call_ids: t.call_ids,
         metadata: Some(t.metadata),
+        tool_surfaces: t.tool_surfaces.iter().map(|s| s.to_string()).collect(),
+        tool_call_total: t.tool_call_total,
+        agent_topology: t.agent_topology.as_ref().map(|a| a.to_string()),
+        suspicious_skills: t
+            .suspicious_skills
+            .iter()
+            .filter_map(|s| serde_json::to_value(s).ok())
+            .collect(),
     }
 }
 

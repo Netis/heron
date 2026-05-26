@@ -430,7 +430,8 @@ impl DuckDbBackend {
             let items_sql = format!(
                 "SELECT id, source_id, epoch_ms(request_time), wire_api, model, status_code, is_stream, \
                  finish_reason, ttft_ms, e2e_latency_ms, input_tokens, output_tokens, \
-                 client_ip, server_ip, server_port, request_path, response_body \
+                 client_ip, server_ip, server_port, request_path, response_body, \
+                 is_agent_request, tool_surface, agent_topology, tool_call_count, tool_names_json \
                  FROM llm_calls WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
@@ -460,6 +461,13 @@ impl DuckDbBackend {
                     .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
                 let tokens_estimated =
                     derive_tokens_estimated(input_tokens, output_tokens, response_body.as_deref());
+                let tool_names_json: Option<String> = row
+                    .get(21)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let tool_names: Vec<String> = tool_names_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default();
                 items.push(CallListItem {
                     id: row
                         .get(0)
@@ -506,6 +514,21 @@ impl DuckDbBackend {
                     request_path: row
                         .get(15)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    is_agent_request: row
+                        .get::<_, Option<bool>>(17)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?
+                        .unwrap_or(false),
+                    tool_surface: row
+                        .get::<_, Option<String>>(18)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    agent_topology: row
+                        .get::<_, Option<String>>(19)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+                    tool_call_count: row
+                        .get::<_, Option<u32>>(20)
+                        .map_err(|e| AppError::Storage(format!("read error: {e}")))?
+                        .unwrap_or(0),
+                    tool_names,
                 });
             }
 
