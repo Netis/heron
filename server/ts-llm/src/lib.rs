@@ -1,3 +1,4 @@
+pub mod agent_classifier;
 pub mod agent_primitives;
 pub mod agents;
 pub mod model;
