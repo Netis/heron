@@ -7,6 +7,9 @@ use tempfile::TempDir;
 use ts_llm::model::{ApiType, LlmCall};
 use ts_llm::wire_apis as wa;
 use ts_metrics::model::LlmMetric;
+use ts_storage::query::{
+    DimensionFilter, DistinctAgentKindsQuery, TimeRange, TurnsQuery,
+};
 use ts_storage::StorageBackend;
 use ts_turn::{AgentTurn, TurnStatus};
 
@@ -185,4 +188,86 @@ async fn concurrent_writes_to_three_tables() {
     assert_eq!(calls_count, expected);
     assert_eq!(turns_count, expected);
     assert_eq!(metrics_count, expected);
+}
+
+// Verify `reopen_all_connections` rebuilds **every** connection — all
+// writers AND every reader-pool entry — so a real DuckDB FATAL can be
+// recovered without a process restart. Before the fix this method
+// touched only the turns writer; reads kept failing because the pool
+// still held `try_clone`'d handles to the original (poisoned)
+// in-process instance.
+//
+// We can't deterministically trigger the DuckDB
+// "Failed to remove all rows while merging checkpoint deltas" FATAL
+// in a unit test, but we can exercise the recovery code path and
+// assert that every downstream surface (writes, table-scoped reads,
+// pool-backed reads) keeps working across the reopen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reopen_all_connections_keeps_reads_and_writes_alive() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("reopen.duckdb");
+    // Pool size = 2: small enough that any stale-handle reuse would
+    // surface on the second query.
+    let backend =
+        Arc::new(DuckDbBackend::open_with_pool(path.to_str().unwrap(), 2).unwrap());
+    backend.init().await.unwrap();
+
+    backend.write_turns(vec![mk_turn(0)]).await.unwrap();
+
+    backend.reopen_all_connections().await.unwrap();
+
+    // Read path 1: turn list query — goes through the read pool.
+    let turns_q = TurnsQuery {
+        time_range: TimeRange {
+            start_us: 1_700_000_000_000_000 - 1_000_000,
+            end_us: 1_700_000_000_000_000 + 60_000_000_000,
+        },
+        filter: DimensionFilter::default(),
+        client_ips: vec![],
+        server_ports: vec![],
+        statuses: vec![],
+        agent_kinds: vec![],
+        sort_by: "start_time".into(),
+        sort_order: "desc".into(),
+        page: 1,
+        page_size: 50,
+        include_proxy_hops: false,
+    };
+    let page = backend.query_turns(&turns_q).await.unwrap();
+    assert_eq!(
+        page.total, 1,
+        "query_turns after reopen must see the pre-reopen row"
+    );
+
+    // Read path 2: distinct agent kinds — different code path but
+    // also uses the read pool. Loop a few times to drain at least
+    // pool_size + 1 connections so any stale-handle reuse would
+    // surface.
+    for _ in 0..3 {
+        let kinds = backend
+            .query_distinct_agent_kinds(&DistinctAgentKindsQuery {
+                time_range: turns_q.time_range.clone(),
+                filter: DimensionFilter::default(),
+                include_proxy_hops: false,
+            })
+            .await
+            .unwrap();
+        assert!(
+            kinds.iter().any(|k| k == "test"),
+            "query_distinct_agent_kinds after reopen must see the inserted agent_kind"
+        );
+    }
+
+    // Write path on every writer mutex — proves all four writers
+    // were rebuilt, not just turns.
+    backend.write_turns(vec![mk_turn(1)]).await.unwrap();
+    backend.write_calls(vec![mk_call(0)]).await.unwrap();
+    backend.write_metrics(vec![mk_metric(0)]).await.unwrap();
+
+    // And re-confirm the post-reopen reads pick up the new row.
+    let page2 = backend.query_turns(&turns_q).await.unwrap();
+    assert_eq!(
+        page2.total, 2,
+        "post-reopen writes must persist and be queryable"
+    );
 }

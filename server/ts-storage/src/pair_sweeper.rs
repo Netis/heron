@@ -91,23 +91,24 @@ pub fn spawn_pair_sweeper(
                 Err(e) => {
                     let msg = format!("{e}");
                     tracing::warn!(error = %e, "pair-sweeper: sweep failed; continuing");
-                    // The DuckDB invalidation FATAL is global to the
-                    // connection — every subsequent query in the
-                    // process returns 500 until the connection is
-                    // dropped. Detect by message substring (DuckDB
-                    // doesn't surface a typed code) and swap the
-                    // writer in place so the rest of the process
-                    // recovers without an external restart.
+                    // The DuckDB invalidation FATAL is global to every
+                    // handle on the in-process database instance — all
+                    // writers AND every reader-pool entry start
+                    // returning the same FATAL. Detect by message
+                    // substring (DuckDB doesn't surface a typed code)
+                    // and rebuild the entire connection set so the
+                    // rest of the process recovers without an external
+                    // restart.
                     if msg.contains("database has been invalidated")
                         || msg.contains("must be restarted prior to being used")
                     {
-                        match storage.reopen_turns_writer().await {
+                        match storage.reopen_all_connections().await {
                             Ok(()) => tracing::info!(
-                                "pair-sweeper: reopened agent_turns writer after invalidation"
+                                "pair-sweeper: reopened all DuckDB connections after invalidation"
                             ),
                             Err(re) => tracing::error!(
                                 error = %re,
-                                "pair-sweeper: failed to reopen turns writer after invalidation"
+                                "pair-sweeper: failed to reopen connections after invalidation"
                             ),
                         }
                     }

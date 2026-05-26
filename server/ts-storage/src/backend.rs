@@ -214,12 +214,25 @@ pub trait StorageBackend: Send + Sync {
         Ok(())
     }
 
-    /// Replace the agent_turns writer connection with a freshly-opened
-    /// one. Called by the pair sweeper after a sweep failure that
-    /// looks like the DuckDB "database has been invalidated" FATAL —
-    /// without this, every subsequent query in the process returns
-    /// 500 until external restart. Default no-op for mock backends.
-    async fn reopen_turns_writer(&self) -> Result<()> {
+    /// Replace **every** connection the backend holds — all writer
+    /// mutexes and every reader-pool entry — with freshly-opened
+    /// handles to the on-disk database. Called by the pair sweeper
+    /// after a sweep failure that looks like the DuckDB "database has
+    /// been invalidated" FATAL.
+    ///
+    /// Reopening only one connection isn't enough: DuckDB's
+    /// in-process invalidation propagates to every `try_clone()`d
+    /// handle, so any reader still cloned from the original anchor
+    /// will keep returning the same FATAL on the next query. Until
+    /// the broken anchor has no remaining handles, the process is
+    /// poisoned and every API endpoint that hits the read pool keeps
+    /// returning HTTP 500 — even after the turns writer alone has
+    /// been swapped. The on-disk file is intact; only the in-process
+    /// MVCC/index state is corrupted, so opening a fresh anchor from
+    /// the same path recovers cleanly.
+    ///
+    /// Default no-op for mock backends.
+    async fn reopen_all_connections(&self) -> Result<()> {
         Ok(())
     }
 }
