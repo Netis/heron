@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use ts_common::agent::ToolSurface;
 use ts_common::internal_metrics::{Metric, MetricsWorker};
 use ts_llm::model::{LlmCall, LlmCallStart, LlmEvent};
 
@@ -31,6 +32,14 @@ const GRANULARITIES: &[GranularityConfig] = &[
 ];
 
 /// Composite key for a metrics bucket: (source, granularity, window_start, dim).
+///
+/// `tool_surface` is `None` for `LlmEvent::Start` writes (the surface is only
+/// observable once the response body has been parsed in the LLM stage) and
+/// carries the call's classified surface for `LlmEvent::Complete` writes. The
+/// resulting per-window split is intentional: Start-side counters (call_count,
+/// stream_count, active_calls) aggregate untagged while Complete-side
+/// counters (tokens, errors, latency, finish_reason) carry the surface tag.
+/// Query layers sum across surfaces to recover the pre-Task-16 totals.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BucketKey {
     source_id: String,
@@ -39,6 +48,7 @@ struct BucketKey {
     wire_api: String,
     model: String,
     server_ip: String,
+    tool_surface: Option<ToolSurface>,
 }
 
 /// Dimension key for active-calls tracking (no window or granularity).
@@ -150,6 +160,7 @@ impl MetricsAggregator {
                         key.wire_api,
                         key.model,
                         key.server_ip,
+                        key.tool_surface,
                     ));
                     self.metrics.counter(Metric::MetricsWindowsEmitted).inc();
                 }
@@ -163,6 +174,7 @@ impl MetricsAggregator {
                 .then(a.metric.wire_api.cmp(&b.metric.wire_api))
                 .then(a.metric.model.cmp(&b.metric.model))
                 .then(a.metric.server_ip.cmp(&b.metric.server_ip))
+                .then(a.metric.tool_surface.cmp(&b.metric.tool_surface))
         });
         batches
     }
@@ -195,6 +207,9 @@ impl MetricsAggregator {
                     wire_api: dk.wire_api.clone(),
                     model: dk.model.clone(),
                     server_ip: dk.server_ip.clone(),
+                    // Start events don't carry a tool surface — that's
+                    // decided when the response body is classified on Complete.
+                    tool_surface: None,
                 };
                 let bucket = self.buckets.entry(bk).or_insert_with(WindowBucket::new);
                 bucket.on_call_start(start.is_stream);
@@ -231,6 +246,7 @@ impl MetricsAggregator {
                     wire_api: dk.wire_api.clone(),
                     model: dk.model.clone(),
                     server_ip: dk.server_ip.clone(),
+                    tool_surface: call.tool_surface,
                 };
                 let bucket = self.buckets.entry(bk).or_insert_with(WindowBucket::new);
                 bucket.on_call_complete(call);
@@ -273,6 +289,7 @@ impl MetricsAggregator {
                             key.wire_api,
                             key.model,
                             key.server_ip,
+                            key.tool_surface,
                         ));
                         self.metrics.counter(Metric::MetricsWindowsEmitted).inc();
                     }

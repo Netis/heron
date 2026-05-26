@@ -241,6 +241,7 @@ impl WindowBucket {
         wire_api: String,
         model: String,
         server_ip: String,
+        tool_surface: Option<ts_common::agent::ToolSurface>,
     ) -> LlmMetricsBatch {
         let finish_metrics: Vec<LlmFinishMetric> = self
             .finish_counts
@@ -305,7 +306,7 @@ impl WindowBucket {
             tpot_p50: self.tpot.quantile(0.5),
             tpot_p95: self.tpot.quantile(0.95),
             tpot_p99: self.tpot.quantile(0.99),
-            tool_surface: None,
+            tool_surface: tool_surface.map(|s| s.to_string()),
         };
 
         LlmMetricsBatch {
@@ -475,6 +476,7 @@ mod tests {
             wa::OPENAI_CHAT.to_string(),
             "gpt-4".to_string(),
             "10.0.0.1".to_string(),
+            None,
         );
         let m = &batch.metric;
         // Start-side
@@ -516,6 +518,7 @@ mod tests {
             wa::OPENAI_CHAT.to_string(),
             "gpt-4".to_string(),
             "10.0.0.1".to_string(),
+            None,
         );
         let m = &batch.metric;
         assert_eq!(m.call_count, 0);
