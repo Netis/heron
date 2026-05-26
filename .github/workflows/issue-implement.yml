@@ -45,11 +45,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # AGENT_GH_TOKEN is a PAT (not GITHUB_TOKEN) so wiwi's
-          # `gh pr create` actually triggers the downstream `ci` and
-          # `pr-review` workflows. With the default GITHUB_TOKEN the
-          # spawned PR's check runs would be skipped.
-          token: ${{ secrets.AGENT_GH_TOKEN }}
+          # Use the default GITHUB_TOKEN for the initial fetch.
+          # We tried `token: secrets.AGENT_GH_TOKEN` (both fine-grained
+          # and classic PATs) and the actions/checkout extraheader
+          # basic-auth flow failed on this self-hosted runner with
+          # `could not read Username for 'https://github.com'`, even
+          # though identical commands work against the same PAT from
+          # other hosts. Root cause is runner-environment specific
+          # (likely a stale credential helper or system git config
+          # that overrides the per-repo extraheader); the safest
+          # workaround is to take the GITHUB_TOKEN code path that
+          # CI already uses successfully, then swap in the PAT only
+          # for the push step below.
+
+      - name: Use AGENT_GH_TOKEN for `git push` (so downstream CI / pr-review trigger)
+        env:
+          AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+        run: |
+          if [ -z "$AGENT_GH_TOKEN" ]; then
+            echo "::warning::AGENT_GH_TOKEN is not set; wiwi pushes will use GITHUB_TOKEN and downstream workflows will be suppressed by GitHub's anti-recursion rule." >&2
+            exit 0
+          fi
+          git remote set-url --push origin \
+            "https://x-access-token:${AGENT_GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
       - name: Implement issue
         env:
