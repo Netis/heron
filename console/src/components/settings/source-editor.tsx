@@ -346,7 +346,7 @@ function CloudProbeForm({
     <div className="flex flex-col gap-3">
       <Field
         label="Listen on"
-        hint="ZMQ address tokenscope will bind to receive packets from remote probes. Format host:port. 0.0.0.0 = all addresses on this host."
+        hint="ZMQ address heron will bind to receive packets from remote probes. Format host:port. 0.0.0.0 = all addresses on this host."
       >
         <div className="flex items-center">
           <span className="rounded-l-md border border-r-0 border-border bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">
@@ -402,7 +402,7 @@ function PcapFileForm({
     <div className="flex flex-col gap-3">
       <Field
         label="File path"
-        hint="Absolute path to a .pcap or .pcapng file readable by the tokenscope process."
+        hint="Absolute path to a .pcap or .pcapng file readable by the heron process."
       >
         <input
           value={source.path}

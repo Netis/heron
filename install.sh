@@ -1,12 +1,12 @@
 #!/bin/sh
-# TokenScope installer.
+# Heron installer.
 #
 # Usage:
 #   System install (binary in /usr/local/bin, config in /etc):
-#     curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | sudo sh
+#     curl -fsSL https://raw.githubusercontent.com/__NETIS_HERON_REPO__/main/install.sh | sudo sh
 #
 #   User install (binary in ~/.local/bin, config in ~/.config):
-#     curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | INSTALL_DIR="$HOME/.local" sh
+#     curl -fsSL https://raw.githubusercontent.com/__NETIS_HERON_REPO__/main/install.sh | INSTALL_DIR="$HOME/.local" sh
 #
 # Environment overrides:
 #   TOKENSCOPE_VERSION  Pin a specific version (default: latest GitHub release)
@@ -28,11 +28,11 @@ set -eu
 
 usage() {
     cat <<'EOF'
-TokenScope installer.
+Heron installer.
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | sudo sh
-  curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | INSTALL_DIR="$HOME/.local" sh
+  curl -fsSL https://raw.githubusercontent.com/__NETIS_HERON_REPO__/main/install.sh | sudo sh
+  curl -fsSL https://raw.githubusercontent.com/__NETIS_HERON_REPO__/main/install.sh | INSTALL_DIR="$HOME/.local" sh
 
 Flags:
   -h, --help   Show this help and exit.
@@ -47,11 +47,11 @@ Environment overrides:
   TOKENSCOPE_VERSION  Pin a specific version (default: latest GitHub release).
                       A leading "v" is added automatically if missing.
   TOKENSCOPE_TARGET   Force a target triple (default: auto-detected).
-  TOKENSCOPE_REPO     Override the GitHub repo (default: Netis/TokenScope).
+  HERON_REPO     Override the GitHub repo (default: __NETIS_HERON_REPO__).
   INSTALL_DIR         Binary install prefix (default: /usr/local).
                       Known system prefixes (/usr/local, /usr, /opt/*) also
-                      trigger a system-wide layout: config in /etc/tokenscope,
-                      data in /var/lib/tokenscope.
+                      trigger a system-wide layout: config in /etc/heron,
+                      data in /var/lib/heron.
                       Any other prefix only redirects the binary location;
                       config and data still go to XDG paths
                       ($XDG_CONFIG_HOME / $XDG_DATA_HOME, falling back to
@@ -115,20 +115,20 @@ need id
 # ---------------------------------------------------------------------------
 # Resolve install layout from INSTALL_DIR.
 # ---------------------------------------------------------------------------
-GITHUB_REPO="${TOKENSCOPE_REPO:-Netis/TokenScope}"
+GITHUB_REPO="${HERON_REPO:-__NETIS_HERON_REPO__}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local}"
 BIN_DIR="$INSTALL_DIR/bin"
 
 case "$INSTALL_DIR" in
     /usr/local|/usr|/opt/*)
         INSTALL_MODE="system"
-        CONFIG_DIR="/etc/tokenscope"
-        DATA_DIR="/var/lib/tokenscope"
+        CONFIG_DIR="/etc/heron"
+        DATA_DIR="/var/lib/heron"
         ;;
     *)
         INSTALL_MODE="user"
-        CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tokenscope"
-        DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/tokenscope"
+        CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/heron"
+        DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/heron"
         ;;
 esac
 CONFIG_PATH="$CONFIG_DIR/config.toml"
@@ -229,10 +229,10 @@ materialize_config() {
 
     mkdir -p "$CONFIG_DIR"
     # Anchor the duckdb path to $DATA_DIR. The shipped default uses
-    # `path = "data/tokenscope.duckdb"` (relative, dev-friendly); rewrite
+    # `path = "data/heron.duckdb"` (relative, dev-friendly); rewrite
     # to an absolute path so install-mode startup works without cd-ing.
-    _new_db_path="$DATA_DIR/tokenscope.duckdb"
-    sed "s|^path = \"data/tokenscope.duckdb\"|path = \"$_new_db_path\"|" \
+    _new_db_path="$DATA_DIR/heron.duckdb"
+    sed "s|^path = \"data/heron.duckdb\"|path = \"$_new_db_path\"|" \
         "$_src_default" > "$CONFIG_PATH"
     # Verify the rewrite landed. If default.toml's storage line ever drifts
     # (different quoting, comment, key alias), sed silently no-ops and we'd
@@ -292,13 +292,13 @@ main() {
     TARGET=$(detect_target)
     VERSION=$(resolve_version)
 
-    NAME="tokenscope-${VERSION}-${TARGET}"
+    NAME="heron-${VERSION}-${TARGET}"
     TARBALL="${NAME}.tar.gz"
     BASE_URL="https://github.com/$GITHUB_REPO/releases/download/$VERSION"
 
-    info "TokenScope ${BOLD}${VERSION}${RESET} for ${BOLD}${TARGET}${RESET}"
+    info "Heron ${BOLD}${VERSION}${RESET} for ${BOLD}${TARGET}${RESET}"
     info "Mode:    ${BOLD}${INSTALL_MODE}${RESET}"
-    info "Binary:  $BIN_DIR/tokenscope"
+    info "Binary:  $BIN_DIR/heron"
     info "Config:  $CONFIG_PATH"
     info "Data:    $DATA_DIR"
 
@@ -327,7 +327,7 @@ EOF
         exit 1
     fi
 
-    TMPDIR=$(mktemp -d 2>/dev/null || mktemp -d -t tokenscope)
+    TMPDIR=$(mktemp -d 2>/dev/null || mktemp -d -t heron)
     trap 'rm -rf "$TMPDIR"' EXIT INT TERM
 
     info "Downloading $TARBALL"
@@ -344,15 +344,15 @@ EOF
     tar -xzf "$TMPDIR/$TARBALL" -C "$TMPDIR"
 
     SRC="$TMPDIR/$NAME"
-    [ -f "$SRC/tokenscope" ] || fail "extracted archive does not contain a tokenscope binary"
+    [ -f "$SRC/heron" ] || fail "extracted archive does not contain a heron binary"
     [ -f "$SRC/config/default.toml" ] || fail "extracted archive missing config/default.toml"
 
     info "Installing binary to $BIN_DIR"
     mkdir -p "$BIN_DIR"
-    cp "$SRC/tokenscope" "$BIN_DIR/.tokenscope.new"
-    chmod 0755 "$BIN_DIR/.tokenscope.new"
-    mv -f "$BIN_DIR/.tokenscope.new" "$BIN_DIR/tokenscope"
-    ok "installed: $BIN_DIR/tokenscope"
+    cp "$SRC/heron" "$BIN_DIR/.heron.new"
+    chmod 0755 "$BIN_DIR/.heron.new"
+    mv -f "$BIN_DIR/.heron.new" "$BIN_DIR/heron"
+    ok "installed: $BIN_DIR/heron"
 
     # Drop the default config (skips if user already has one) and pre-create
     # the data directory.
@@ -360,10 +360,10 @@ EOF
     mkdir -p "$DATA_DIR"
 
     # When invoked with `sudo`, root owns everything we just created — but
-    # the user expects to run `tokenscope` later under their own UID
+    # the user expects to run `heron` later under their own UID
     # (typically with setcap, not sudo). Hand the data dir back so writes
     # succeed without further permission tweaks. The config file stays
-    # root-owned in /etc/tokenscope/ so accidental edits require sudo,
+    # root-owned in /etc/heron/ so accidental edits require sudo,
     # matching system-config conventions.
     if [ "$INSTALL_MODE" = "system" ] && [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
         if command -v chown >/dev/null 2>&1; then
@@ -373,8 +373,8 @@ EOF
     fi
 
     # Best-effort sanity check.
-    if "$BIN_DIR/tokenscope" --version >/dev/null 2>&1; then
-        _ver=$("$BIN_DIR/tokenscope" --version 2>/dev/null || true)
+    if "$BIN_DIR/heron" --version >/dev/null 2>&1; then
+        _ver=$("$BIN_DIR/heron" --version 2>/dev/null || true)
         ok "$_ver"
     else
         warn "binary installed but '--version' failed; check that $BIN_DIR is in your PATH"
@@ -395,22 +395,22 @@ print_next_steps() {
         *-linux-*)
             cat <<EOF
   ${DIM}# 1. Grant capture privileges (one-time, no sudo at runtime):${RESET}
-  ${CYAN}sudo setcap cap_net_raw,cap_net_admin=eip $BIN_DIR/tokenscope${RESET}
+  ${CYAN}sudo setcap cap_net_raw,cap_net_admin=eip $BIN_DIR/heron${RESET}
      ${DIM}— or run with sudo each time, or use the systemd recipe in docs/install.md${RESET}
 
   ${DIM}# 2. Run against a live interface${RESET}
-  ${CYAN}tokenscope -i eth0${RESET}
+  ${CYAN}heron -i eth0${RESET}
 EOF
             ;;
         *-apple-darwin)
             cat <<EOF
   ${DIM}# 1. Grant BPF access. Either run with sudo:${RESET}
-  ${CYAN}sudo tokenscope -i en0${RESET}
+  ${CYAN}sudo heron -i en0${RESET}
      ${DIM}— or install the ChmodBPF helper bundled with Wireshark for${RESET}
      ${DIM}  unprivileged access (see docs/install.md, "macOS notes").${RESET}
 
   ${DIM}# 2. Or replay a pcap file (no privileges needed)${RESET}
-  ${CYAN}tokenscope --pcap-file capture.pcap --no-retention${RESET}
+  ${CYAN}heron --pcap-file capture.pcap --no-retention${RESET}
 EOF
             ;;
         *)

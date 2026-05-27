@@ -311,7 +311,7 @@ Each backend implements `StorageBackend::apply_retention` with a dialect-appropr
 - Table `llm_turns` → `agent_turns`
 - Column `client_kind` → `agent_kind`
 
-No online migration is performed. Existing `server/data/tokenscope.duckdb` files from before the rename should be deleted before restart — the backend will recreate the new schema on first run via `CREATE TABLE IF NOT EXISTS`.
+No online migration is performed. Existing `server/data/heron.duckdb` files from before the rename should be deleted before restart — the backend will recreate the new schema on first run via `CREATE TABLE IF NOT EXISTS`.
 
 ### `finish_reason` raw-string refactor (see `CHANGELOG`)
 

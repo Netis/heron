@@ -1,4 +1,4 @@
-# TokenScope
+# Heron
 
 **Agent observability from the network wire.** A passive analyzer that watches LLM traffic on the wire and reconstructs what your agents are actually *doing* — tool calls, multi-step plans, where time is spent, where loops happen, who calls whom — without an SDK, sidecar, or proxy in the request path.
 
@@ -6,7 +6,7 @@
 
 ## What it does
 
-Most agent code looks fine on paper and falls apart in production: a tool call stalls, the planner loops between two states, a downstream service silently substitutes a different model. TokenScope reconstructs that behavior from the bytes on the wire — packet capture → HTTP / SSE parse → wire-API decode → semantic extraction → **agent-turn assembly** — and serves the result through a console that's organized around *turns and sessions*, not raw HTTP calls.
+Most agent code looks fine on paper and falls apart in production: a tool call stalls, the planner loops between two states, a downstream service silently substitutes a different model. Heron reconstructs that behavior from the bytes on the wire — packet capture → HTTP / SSE parse → wire-API decode → semantic extraction → **agent-turn assembly** — and serves the result through a console that's organized around *turns and sessions*, not raw HTTP calls.
 
 It reads post-TLS traffic — on the inference host, behind a TLS terminator, or fed in from a SPAN/TAP point via [cloud-probe](https://github.com/Netis/cloud-probe). Multi-call agent interactions (planner → tool → planner → tool …) stitch into a single addressable turn. Multi-leg proxy hops (litellm in front of vLLM/SGLang/haproxy) fold automatically. The pipeline never sits in the request path, so the observer can fail without breaking the calls being observed.
 
@@ -35,9 +35,9 @@ Same connection's packets always land on the same worker, so parsing state is lo
 | SDK instrumentation        |       yes       |    every client must     |       yes        |  every client must emit  |
 | Reverse proxy (LiteLLM …)  |       yes       |   clients point at it    |       yes        |       per-call only      |
 | OpenTelemetry from server  |       yes       |     server must emit     |     partial      |  if the server tags it   |
-| **TokenScope**             |     **no**      |          **no**          |   **yes**¹       |        **yes**           |
+| **Heron**             |     **no**      |          **no**          |   **yes**¹       |        **yes**           |
 
-¹ TLS-terminated traffic only — TokenScope sees plaintext HTTP. Install it where the traffic is already decrypted: on the inference host, behind the TLS terminator, or fed by [cloud-probe](https://github.com/Netis/cloud-probe) from a SPAN/TAP point.
+¹ TLS-terminated traffic only — Heron sees plaintext HTTP. Install it where the traffic is already decrypted: on the inference host, behind the TLS terminator, or fed by [cloud-probe](https://github.com/Netis/cloud-probe) from a SPAN/TAP point.
 
 The trade-off is honest: you give up cross-cluster client tracing, you get a single passive evidence chain that can't break the call when the observer fails, that requires zero cooperation from the workloads being observed, and that **assembles the agent narrative for you** instead of leaving you to join calls into turns in your data warehouse.
 
@@ -100,24 +100,24 @@ This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Ver
 
 ```bash
 # Install (Linux/macOS, no sudo, user-local)
-curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/__NETIS_HERON_REPO__/main/install.sh \
   | INSTALL_DIR="$HOME/.local" sh
 
 # Linux: grant capture privileges to the binary (no sudo at runtime)
-sudo setcap cap_net_raw,cap_net_admin=eip ~/.local/bin/tokenscope
+sudo setcap cap_net_raw,cap_net_admin=eip ~/.local/bin/heron
 
 # Capture from a live interface
-tokenscope -i eth0
+heron -i eth0
 
 # ...or replay a pcap (no privileges needed)
-tokenscope --pcap-file capture.pcap --no-retention
+heron --pcap-file capture.pcap --no-retention
 ```
 
 Then open <http://localhost:3000>.
 
 After a pcap finishes replaying, the process keeps the API/console available so you can browse the results — press Ctrl+C to exit, or pass `--exit-after-drain` for batch/CI use that exits as soon as the pipeline drains.
 
-> TokenScope sees **plaintext** HTTP. Install it where the traffic is already decrypted, such as on the inference host, behind a TLS terminator, or fed from a trusted packet source.
+> Heron sees **plaintext** HTTP. Install it where the traffic is already decrypted, such as on the inference host, behind a TLS terminator, or fed from a trusted packet source.
 
 For systemd deployment, capability options, and uninstall, see [docs/install.md](docs/install.md).
 

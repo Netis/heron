@@ -443,7 +443,7 @@ but that's well past plausible reorder.)
 | `idle_timeout_us` | 600_000_000 (600 s) | Fallback for turns that never see a terminal signal. |
 | `sweep_interval_us` | 10_000_000 (10 s) | How often the idle sweep runs. |
 
-`tokenscope.toml`:
+`heron.toml`:
 
 ```toml
 [turn]

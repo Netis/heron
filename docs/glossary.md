@@ -1,12 +1,12 @@
 # Glossary
 
-This page explains the terms you will encounter in the TokenScope console and reports. It is written for a non-engineering reader — you should be able to follow it without knowing how the capture pipeline works. Pipeline-internal mechanics live in the per-module design docs under [design/](design/).
+This page explains the terms you will encounter in the Heron console and reports. It is written for a non-engineering reader — you should be able to follow it without knowing how the capture pipeline works. Pipeline-internal mechanics live in the per-module design docs under [design/](design/).
 
 ## Performance Metrics
 
 The numbers shown on dashboards and detail views. Together they answer: *is the LLM service fast, stable, and efficient?*
 
-**Aggregation unit — LLM Call, not HTTP Exchange.** Every metric in this section is computed over **LLM Calls**. An HTTP Exchange that TokenScope did not recognise as an LLM call (a health check, an admin endpoint, a misrouted request) does **not** contribute to Call Rate, Token Throughput, Call Error Rate, or any other number below. This keeps dashboards focused on inference traffic. If you need raw-HTTP counts for debugging, query the `http_exchanges` table directly. Agent-level equivalents (per-turn latency, per-turn token cost) are derived separately from Agent Turns and appear under the turn views, not here.
+**Aggregation unit — LLM Call, not HTTP Exchange.** Every metric in this section is computed over **LLM Calls**. An HTTP Exchange that Heron did not recognise as an LLM call (a health check, an admin endpoint, a misrouted request) does **not** contribute to Call Rate, Token Throughput, Call Error Rate, or any other number below. This keeps dashboards focused on inference traffic. If you need raw-HTTP counts for debugging, query the `http_exchanges` table directly. Agent-level equivalents (per-turn latency, per-turn token cost) are derived separately from Agent Turns and appear under the turn views, not here.
 
 ### TTFT — Time To First Token
 
@@ -58,7 +58,7 @@ The numbers shown on dashboards and detail views. Together they answer: *is the 
 
 ## Data Entities
 
-The records TokenScope stores and that the console lets you drill into.
+The records Heron stores and that the console lets you drill into.
 
 ### HTTP Exchange
 
@@ -122,7 +122,7 @@ Identifiers and status fields that appear on the entities above and are worth un
 
 **Definition:** Identifier of one Agent Session — the same value ties together every request made inside a single conversation, project, or IDE window of an agent product.
 
-**How it is generated:** TokenScope does **not** invent this — it reads it directly off the wire, from whatever field the client itself already uses. Each recognised agent kind has a different source:
+**How it is generated:** Heron does **not** invent this — it reads it directly off the wire, from whatever field the client itself already uses. Each recognised agent kind has a different source:
 
 - `claude-cli` (Claude Code): the `X-Claude-Code-Session-Id` request header.
 - `codex-cli` (Codex CLI): the `session_id` field in the request body.
@@ -135,8 +135,8 @@ Identifiers and status fields that appear on the entities above and are worth un
 
 **How it is generated:** Depends on whether the client exposes turn boundaries itself:
 
-- **Client provides one (Codex CLI):** the client sends an explicit turn identifier on every call in the turn; TokenScope captures it verbatim.
-- **Client does not (Claude Code / Anthropic):** TokenScope's turn tracker detects the start of a new turn from the call pattern and mints a UUIDv7, then stamps it onto every call in that turn until the terminal call closes it. UUIDv7 is time-ordered, so turn IDs sort naturally by when the turn happened.
+- **Client provides one (Codex CLI):** the client sends an explicit turn identifier on every call in the turn; Heron captures it verbatim.
+- **Client does not (Claude Code / Anthropic):** Heron's turn tracker detects the start of a new turn from the call pattern and mints a UUIDv7, then stamps it onto every call in that turn until the terminal call closes it. UUIDv7 is time-ordered, so turn IDs sort naturally by when the turn happened.
 
 **Why it matters:** Stable back-reference from every LLM Call to the interaction cycle it belongs to. Without it, per-turn metrics, drill-down views, and session timelines cannot be reconstructed.
 
@@ -152,7 +152,7 @@ Identifiers and status fields that appear on the entities above and are worth un
 | `error` | Call failed (HTTP error or provider-side failure). |
 | `cancelled` | Client disconnected or aborted before completion. |
 
-**How it is generated:** Each wire API reports termination differently; TokenScope normalises them into this common vocabulary. Example mappings:
+**How it is generated:** Each wire API reports termination differently; Heron normalises them into this common vocabulary. Example mappings:
 
 - OpenAI `finish_reason: "stop"` → `complete`; `"length"` → `length`; `"tool_calls"` → `tool_use`.
 - Anthropic `stop_reason: "end_turn"` → `complete`; `"max_tokens"` → `length`; `"tool_use"` → `tool_use`.

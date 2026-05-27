@@ -1,5 +1,5 @@
 /**
- * TokenScope brand mark. Two variants share the same icon glyph (rounded
+ * Heron brand mark. Two variants share the same icon glyph (rounded
  * square "scope frame" containing three decreasing horizontal lines —
  * abstracted tokens viewed through the lens), so the icon-only and the
  * wordmark line up visually when the sidebar collapses.
@@ -26,7 +26,7 @@ export function Logo({ variant, className }: LogoProps) {
         strokeLinecap="round"
         strokeLinejoin="round"
         className={cn("shrink-0", className)}
-        aria-label="TokenScope"
+        aria-label="Heron"
         role="img"
       >
         <rect x={2.5} y={2.5} width={19} height={19} rx={4.5} />
@@ -37,7 +37,7 @@ export function Logo({ variant, className }: LogoProps) {
     )
   }
 
-  // Wordmark: same icon glyph at the left + "TokenScope" set in a
+  // Wordmark: same icon glyph at the left + "Heron" set in a
   // system-stack semi-bold. SVG <text> renders crisply at any DPI and
   // tints with currentColor; we accept the (tiny) variance across OS
   // font choices in exchange for not shipping a webfont.
@@ -46,7 +46,7 @@ export function Logo({ variant, className }: LogoProps) {
       viewBox="0 0 156 24"
       fill="none"
       className={cn("shrink-0", className)}
-      aria-label="TokenScope"
+      aria-label="Heron"
       role="img"
     >
       <g stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
@@ -64,7 +64,7 @@ export function Logo({ variant, className }: LogoProps) {
         letterSpacing={-0.2}
         fill="currentColor"
       >
-        TokenScope
+        Heron
       </text>
     </svg>
   )

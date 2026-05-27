@@ -7,7 +7,7 @@ The `ts-llm` crate detects the LLM wire API from HTTP requests/responses and ext
 ### Terminology
 
 - **Wire API** — the on-wire HTTP shape (method + path + body schema) of a single LLM API. Examples: `openai-chat` (Chat Completions), `openai-responses` (Responses API), `anthropic` (Anthropic Messages API for now). This is what `ts-llm` detects and parses.
-- **Vendor** — the organization that serves a given wire API (OpenAI, Anthropic, Azure, Google, self-hosted vLLM). Multiple vendors can speak the same wire API (Azure OpenAI, vLLM, Ollama all speak `openai-chat`). Not yet a first-class field in TokenScope; if/when we need it it will come from hostname / key prefix / route prefix.
+- **Vendor** — the organization that serves a given wire API (OpenAI, Anthropic, Azure, Google, self-hosted vLLM). Multiple vendors can speak the same wire API (Azure OpenAI, vLLM, Ollama all speak `openai-chat`). Not yet a first-class field in Heron; if/when we need it it will come from hostname / key prefix / route prefix.
 
 `LlmCall.wire_api` is persisted verbatim to storage as the compound `<vendor>-<api>` form (e.g. `openai-chat`) so operator filter UIs stay self-descriptive until an explicit vendor dimension lands.
 

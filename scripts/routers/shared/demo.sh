@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Demo — manage the demo server and the TokenScope service (port 3000)
+# Demo — manage the demo server and the Heron service (port 3000)
 # ==============================================================================
 # The demo server runs:
 #   - cliproxyapi (LLM proxy) on port 8317
-#   - TokenScope (capture + API + embedded console) on port 3000
+#   - Heron (capture + API + embedded console) on port 3000
 #   - traffic-gen.py (simulated LLM traffic)
 #
 # This router owns:
@@ -18,9 +18,9 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../../scripts/lib/demo-common.sh"
 
 DEMO_BRANCH="${DEMO_BRANCH:-main}"
-GIT_REMOTE_URL="${GIT_REMOTE_URL:-git@github.com:Netis/TokenScope.git}"
+GIT_REMOTE_URL="${GIT_REMOTE_URL:-git@github.com:__NETIS_HERON_REPO__.git}"
 CROSS_TARGET="x86_64-unknown-linux-gnu"
-BINARY_NAME="tokenscope"
+BINARY_NAME="heron"
 TMUX_SESSION="demo"
 LOCAL_BINARY="server/target/${CROSS_TARGET}/release/${BINARY_NAME}"
 LOCAL_TRAFFIC_GEN="scripts/traffic-gen.py"
@@ -35,7 +35,7 @@ REMOTE_CONFIG="${DEMO_REMOTE_DIR}/server/config/demo.toml"
 
 show_help() {
     echo ""
-    echo "  Demo — ${DEMO_USER}@${DEMO_HOST} (TokenScope on port 3000)"
+    echo "  Demo — ${DEMO_USER}@${DEMO_HOST} (Heron on port 3000)"
     echo ""
     echo "  Connection:"
     echo "   just demo ping         Test SSH connectivity"
@@ -44,7 +44,7 @@ show_help() {
     echo ""
     echo "  Server:"
     echo "   just demo host         System info (CPU, disk, mem, uptime)"
-    echo "   just demo ps           TokenScope + cliproxyapi + traffic processes"
+    echo "   just demo ps           Heron + cliproxyapi + traffic processes"
     echo ""
     echo "  Setup (first-time):"
     echo "   just demo bootstrap    Copy & show bootstrap instructions"
@@ -64,11 +64,11 @@ show_help() {
     echo "   just demo upload       Upload binary + config + traffic-gen.py"
     echo ""
     echo "  Service (tmux session: ${TMUX_SESSION}):"
-    echo "   just demo start        Start TokenScope in tmux"
+    echo "   just demo start        Start Heron in tmux"
     echo "   just demo stop         Kill tmux session"
     echo "   just demo restart      Restart (stop + start)"
-    echo "   just demo status       Show TokenScope tmux + process status"
-    echo "   just demo log          Show last 100 lines of TokenScope log"
+    echo "   just demo status       Show Heron tmux + process status"
+    echo "   just demo log          Show last 100 lines of Heron log"
     echo "   just demo log -f       Follow the log (Ctrl-C to exit)"
     echo "   just demo config       Show deploy config"
     echo ""
@@ -143,8 +143,8 @@ cmd_host() {
 
 cmd_ps() {
     run_ssh '
-        echo "=== TokenScope ==="
-        pgrep -a tokenscope 2>/dev/null || echo "(not running)"
+        echo "=== Heron ==="
+        pgrep -a heron 2>/dev/null || echo "(not running)"
         echo ""
         echo "=== cliproxyapi ==="
         pgrep -a cli-proxy-api 2>/dev/null || echo "(not running)"
@@ -189,7 +189,7 @@ cmd_bootstrap() {
 
 cmd_grant_setcap() {
     echo -e "${BLUE}Installing passwordless setcap sudoers rule for '${DEMO_USER}'...${NC}"
-    run_ssh_root "set -e; echo '${DEMO_USER} ALL=(root) NOPASSWD: /sbin/setcap' | tee /etc/sudoers.d/tokenscope-setcap >/dev/null && chmod 440 /etc/sudoers.d/tokenscope-setcap && echo 'Installed: /etc/sudoers.d/tokenscope-setcap'"
+    run_ssh_root "set -e; echo '${DEMO_USER} ALL=(root) NOPASSWD: /sbin/setcap' | tee /etc/sudoers.d/heron-setcap >/dev/null && chmod 440 /etc/sudoers.d/heron-setcap && echo 'Installed: /etc/sudoers.d/heron-setcap'"
     echo -e "${GREEN}Done. Re-run: just demo deploy${NC}"
 }
 
@@ -447,11 +447,11 @@ _apply_pcap_caps() {
             echo -e "${GREEN}Capabilities already present${NC}"
             ;;
         *)
-            echo -e "${YELLOW}Could not set pcap capabilities — tokenscope will fail with 'Operation not permitted'.${NC}"
+            echo -e "${YELLOW}Could not set pcap capabilities — heron will fail with 'Operation not permitted'.${NC}"
             echo "  Run this once on the server as root:"
             echo -e "    ${CYAN}ssh root@${DEMO_HOST} \"setcap cap_net_raw,cap_net_admin=eip ${REMOTE_BINARY}\"${NC}"
             echo "  Or enable passwordless setcap for ${DEMO_USER}:"
-            echo -e "    ${CYAN}echo '${DEMO_USER} ALL=(root) NOPASSWD: /sbin/setcap' | ssh root@${DEMO_HOST} 'tee /etc/sudoers.d/tokenscope-setcap'${NC}"
+            echo -e "    ${CYAN}echo '${DEMO_USER} ALL=(root) NOPASSWD: /sbin/setcap' | ssh root@${DEMO_HOST} 'tee /etc/sudoers.d/heron-setcap'${NC}"
             ;;
     esac
 }
@@ -579,7 +579,7 @@ cmd_start() {
     run_ssh "
         cd '${DEMO_REMOTE_DIR}'
         if tmux has-session -t ${TMUX_SESSION} 2>/dev/null; then
-            echo 'TokenScope already running (tmux session: ${TMUX_SESSION})'
+            echo 'Heron already running (tmux session: ${TMUX_SESSION})'
             exit 0
         fi
         if [ ! -x '${REMOTE_BINARY}' ]; then
@@ -589,26 +589,26 @@ cmd_start() {
         fi
         mkdir -p data
         # Redirect stdout/stderr to the log file directly (no '| tee'). Piping
-        # through tee means tokenscope's fd1/fd2 are a pipe whose reader (tee)
+        # through tee means heron's fd1/fd2 are a pipe whose reader (tee)
         # dies when tmux closes the PTY on kill-session. Subsequent tracing
         # writes can then block a tokio worker thread, which starves the
         # signal driver and makes SIGTERM appear to be ignored — the
         # classic 'kill -9 only' symptom just-demo-stop reproduces.
-        tmux new-session -d -s ${TMUX_SESSION} '${REMOTE_BINARY} --config ${REMOTE_CONFIG} >> tokenscope.log 2>&1' < /dev/null
+        tmux new-session -d -s ${TMUX_SESSION} '${REMOTE_BINARY} --config ${REMOTE_CONFIG} >> heron.log 2>&1' < /dev/null
         sleep 1
         if tmux has-session -t ${TMUX_SESSION} 2>/dev/null; then
-            echo 'TokenScope started (tmux session: ${TMUX_SESSION})'
+            echo 'Heron started (tmux session: ${TMUX_SESSION})'
             echo '  logs:  just demo log'
         else
-            echo 'TokenScope failed to start — see tokenscope.log'
-            tail -30 tokenscope.log 2>/dev/null || true
+            echo 'Heron failed to start — see heron.log'
+            tail -30 heron.log 2>/dev/null || true
             exit 1
         fi
     "
 }
 
 cmd_stop() {
-    # Send SIGTERM directly to tokenscope rather than relying on tmux's
+    # Send SIGTERM directly to heron rather than relying on tmux's
     # SIGHUP propagating through the pane shell — that path is fragile when
     # anything sits between tmux and the binary (see cmd_start comment).
     #
@@ -648,9 +648,9 @@ cmd_stop() {
             fi
             echo 'Killed (SIGKILL).'
         elif [ \$running -eq 1 ]; then
-            echo 'TokenScope stopped cleanly.'
+            echo 'Heron stopped cleanly.'
         else
-            echo 'TokenScope was not running'
+            echo 'Heron was not running'
         fi
     "
 }
@@ -664,11 +664,11 @@ cmd_restart() {
 cmd_status() {
     run_ssh "
         if tmux has-session -t ${TMUX_SESSION} 2>/dev/null; then
-            echo -e 'TokenScope: \033[0;32mrunning\033[0m (tmux: ${TMUX_SESSION})'
+            echo -e 'Heron: \033[0;32mrunning\033[0m (tmux: ${TMUX_SESSION})'
             pids=\$(pgrep -x ${BINARY_NAME} 2>/dev/null | tr '\n' ',' | sed 's/,\$//')
             [ -n \"\$pids\" ] && ps -p \"\$pids\" -o pid,user,%cpu,%mem,etime,args --no-headers 2>/dev/null || true
         else
-            echo -e 'TokenScope: \033[0;31mstopped\033[0m'
+            echo -e 'Heron: \033[0;31mstopped\033[0m'
         fi
     "
 }
@@ -676,12 +676,12 @@ cmd_status() {
 cmd_log() {
     if [[ "${1:-}" == "-f" ]]; then
         _ssh_base
-        echo -e "${CYAN}Tailing tokenscope.log — Ctrl-C to exit${NC}"
+        echo -e "${CYAN}Tailing heron.log — Ctrl-C to exit${NC}"
         exec ssh "${SSH_ARGS[@]}" -t -o IdentitiesOnly=yes -i "$DEMO_SSH_KEY" \
             "${DEMO_USER}@${DEMO_HOST}" \
-            "cd '${DEMO_REMOTE_DIR}' && tail -n 100 -F tokenscope.log"
+            "cd '${DEMO_REMOTE_DIR}' && tail -n 100 -F heron.log"
     else
-        run_ssh "cd '${DEMO_REMOTE_DIR}' && tail -100 tokenscope.log 2>/dev/null || echo 'No log file yet'"
+        run_ssh "cd '${DEMO_REMOTE_DIR}' && tail -100 heron.log 2>/dev/null || echo 'No log file yet'"
     fi
 }
 

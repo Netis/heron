@@ -1,6 +1,6 @@
 name: release
 
-# Builds the single `tokenscope` binary (with embedded console) for:
+# Builds the single `heron` binary (with embedded console) for:
 #   - x86_64-unknown-linux-musl  (static, runs on glibc + musl distros alike)
 #   - aarch64-unknown-linux-musl (static, AWS Graviton / Ampere etc.)
 #   - x86_64-apple-darwin
@@ -114,7 +114,7 @@ jobs:
           echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
           ls -la "$PREFIX/lib"
 
-      - name: Build TokenScope
+      - name: Build Heron
         env:
           PCAP_PREFIX: ${{ steps.libpcap.outputs.prefix }}
         run: |
@@ -131,11 +131,11 @@ jobs:
             --release \
             --target ${{ matrix.target }} \
             --features console \
-            -p tokenscope
+            -p heron
 
       - name: Verify static linkage
         run: |
-          BIN="server/target/${{ matrix.target }}/release/tokenscope"
+          BIN="server/target/${{ matrix.target }}/release/heron"
           file "$BIN"
           # Should report "statically linked" — fail loud if it pulled in a dynamic loader.
           if file "$BIN" | grep -q "dynamically linked"; then
@@ -148,10 +148,10 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME:-dev}"
-          NAME="tokenscope-${VERSION}-${{ matrix.target }}"
+          NAME="heron-${VERSION}-${{ matrix.target }}"
           STAGE="dist/$NAME"
           mkdir -p "$STAGE"
-          cp "server/target/${{ matrix.target }}/release/tokenscope" "$STAGE/"
+          cp "server/target/${{ matrix.target }}/release/heron" "$STAGE/"
           cp README.md LICENSE CHANGELOG.md "$STAGE/"
           cp -r server/config "$STAGE/config"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
@@ -198,7 +198,7 @@ jobs:
           workspaces: server -> target
           key: ${{ matrix.target }}
 
-      - name: Build TokenScope
+      - name: Build Heron
         # macOS ships libpcap in the base system; native build links against it.
         # The resulting binary depends only on system libraries — portable across
         # macOS versions that match the SDK target.
@@ -208,11 +208,11 @@ jobs:
             --release \
             --target ${{ matrix.target }} \
             --features console \
-            -p tokenscope
+            -p heron
 
       - name: Verify binary
         run: |
-          BIN="server/target/${{ matrix.target }}/release/tokenscope"
+          BIN="server/target/${{ matrix.target }}/release/heron"
           file "$BIN"
           otool -L "$BIN"
           "$BIN" --help || true
@@ -221,10 +221,10 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME:-dev}"
-          NAME="tokenscope-${VERSION}-${{ matrix.target }}"
+          NAME="heron-${VERSION}-${{ matrix.target }}"
           STAGE="dist/$NAME"
           mkdir -p "$STAGE"
-          cp "server/target/${{ matrix.target }}/release/tokenscope" "$STAGE/"
+          cp "server/target/${{ matrix.target }}/release/heron" "$STAGE/"
           cp README.md LICENSE CHANGELOG.md "$STAGE/"
           cp -r server/config "$STAGE/config"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
@@ -281,7 +281,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            --title "TokenScope $GITHUB_REF_NAME" \
+            --title "Heron $GITHUB_REF_NAME" \
             --notes-file release-notes.md \
             --generate-notes \
             dist/*.tar.gz dist/SHA256SUMS

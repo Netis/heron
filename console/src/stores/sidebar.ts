@@ -14,6 +14,6 @@ export const useSidebarStore = create<SidebarState>()(
       toggle: () => set((s) => ({ expanded: !s.expanded })),
       setExpanded: (expanded) => set({ expanded }),
     }),
-    { name: "tokenscope-sidebar" },
+    { name: "heron-sidebar" },
   ),
 )

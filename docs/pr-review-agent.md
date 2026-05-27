@@ -10,7 +10,7 @@ to window width, etc.) so the human reviewer arrives at a PR with the
 ## Architecture
 
 ```
-GitHub                                  wuneng VM tokenscope-ci
+GitHub                                  wuneng VM heron-ci
 ┌──────────────┐  ci passes (workflow_run)  ┌─────────────────────────┐
 │  PR opened   │ ─────────────────────────► │ self-hosted GH runner   │
 │  PR sync     │                            │  ┌───────────────────┐  │
@@ -77,7 +77,7 @@ in-flight review of the same PR — no duplicate comments.
 
 ## Self-hosted runner expectations
 
-The `tokenscope` self-hosted runner on wuneng's `tokenscope-ci` VM
+The `heron` self-hosted runner on wuneng's `heron-ci` VM
 needs:
 
 1. **Claude Code CLI** installed and on `$PATH`:

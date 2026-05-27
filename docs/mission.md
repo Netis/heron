@@ -1,12 +1,12 @@
-# TokenScope Mission
+# Heron Mission
 
 ## Mission
 
-TokenScope extracts behavioral and business intelligence from LLM API traffic on the provider side — from passive packet evidence, no SDK required. It is Behavioral Packet Capture rebuilt for the AI era: the thing BPC always wanted to be, now tractable because LLM traffic is already structured intent, plan, and outcome.
+Heron extracts behavioral and business intelligence from LLM API traffic on the provider side — from passive packet evidence, no SDK required. It is Behavioral Packet Capture rebuilt for the AI era: the thing BPC always wanted to be, now tractable because LLM traffic is already structured intent, plan, and outcome.
 
 ## Vision
 
-TokenScope becomes the open, vendor-neutral, protocol-level observer for LLM API traffic — the Wireshark of LLM observability. One passive capture, rich structured signals, consumable by any downstream tool: DuckDB-backed single-node deploys, ClickHouse-backed analytics clusters, OpenTelemetry pipelines, anyone's dashboard.
+Heron becomes the open, vendor-neutral, protocol-level observer for LLM API traffic — the Wireshark of LLM observability. One passive capture, rich structured signals, consumable by any downstream tool: DuckDB-backed single-node deploys, ClickHouse-backed analytics clusters, OpenTelemetry pipelines, anyone's dashboard.
 
 ## Ambition
 
@@ -18,9 +18,9 @@ Classical Behavioral Packet Capture tried to infer business behavior from enterp
 
 LLM API traffic closes that gap. The payload is already the business substrate — the prompt is intent, the tool-call chain is plan, the response is outcome. AI-assisted analysis over that substrate delivers what BPC promised, without waking the request path.
 
-TokenScope's architecture takes this seriously. L7 infra metrics are the floor, not the ceiling. Agent profiling, cost attribution, business-outcome correlation, and compliance signals are all layers on the same passive packet evidence.
+Heron's architecture takes this seriously. L7 infra metrics are the floor, not the ceiling. Agent profiling, cost attribution, business-outcome correlation, and compliance signals are all layers on the same passive packet evidence.
 
-## Who TokenScope is for
+## Who Heron is for
 
 - **Ops — platform SREs, LLM provider infra teams, on-prem inference operators.** Keep inference clusters healthy. Tune prompt-cache and prefill-decode split from ground truth. Capacity plan from real traffic.
 
@@ -34,9 +34,9 @@ TokenScope's architecture takes this seriously. L7 infra metrics are the floor, 
 
 - **Procurement and vendor management.** Measure provider SLA conformance from the wire. Quantify outage impact. Back contract decisions with ground truth.
 
-## What questions TokenScope answers
+## What questions Heron answers
 
-TokenScope is designed to answer questions at every layer of the stack. A selection, with the customer role most likely to ask:
+Heron is designed to answer questions at every layer of the stack. A selection, with the customer role most likely to ask:
 
 **Infra ops and provider-side optimization** — Platform SRE, LLM provider:
 - Is our inference cluster healthy?
