@@ -1,4 +1,4 @@
-# TokenScope default configuration
+# Heron default configuration
 
 # ---------------------------------------------------------------------------
 # Pipelines
@@ -57,9 +57,9 @@
 # # cloud-probe). Off by default — enable only when you need offline replay
 # # or traffic capture for support.
 # #
-# # `dir` is resolved relative to the working directory. When TokenScope is
+# # `dir` is resolved relative to the working directory. When Heron is
 # # started by systemd or via install.sh layout, the CWD is not the install
-# # tree, so use an absolute path (e.g. /var/lib/tokenscope/dumps) to keep
+# # tree, so use an absolute path (e.g. /var/lib/heron/dumps) to keep
 # # dumps next to the DuckDB file.
 # #
 # # Layout: <dir>/<pipeline_name>/<sanitized_source_id>/<minute>.pcap[.snappy]
@@ -113,7 +113,7 @@
 backend = "duckdb"
 
 [storage.duckdb]
-path = "data/tokenscope.duckdb"
+path = "data/heron.duckdb"
 
 # Storage sink batching. flush_interval_ms is the upper bound on how long a
 # single LlmCall / AgentTurn / metric row can sit in the in-memory buffer

@@ -1,4 +1,4 @@
-//! `tokenscope config validate` — load and validate a config without
+//! `heron config validate` — load and validate a config without
 //! starting any pipelines. JSON-by-default so CI / agent gates can parse
 //! the result; `--text` flips to a human-readable rendering.
 //!

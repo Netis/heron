@@ -1,11 +1,11 @@
 [package]
-name = "tokenscope"
+name = "heron"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "tokenscope"
+name = "heron"
 path = "src/main.rs"
 
 [dependencies]

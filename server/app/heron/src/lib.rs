@@ -1,4 +1,4 @@
-//! Library surface of the `tokenscope` crate.
+//! Library surface of the `heron` crate.
 //!
 //! Only the composition root is re-exported: everything else lives in the
 //! per-stage `ts-*` crates. Exposing `Pipeline` lets integration tests under
