@@ -2831,7 +2831,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokenscope"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
@@ -3113,7 +3113,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "ts-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "chrono",
@@ -3136,7 +3136,7 @@ dependencies = [
 
 [[package]]
 name = "ts-capture"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "ts-common"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "config",
  "serde",
@@ -3169,7 +3169,7 @@ dependencies = [
 
 [[package]]
 name = "ts-llm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bitflags 2.11.0",
  "bytes",
@@ -3188,7 +3188,7 @@ dependencies = [
 
 [[package]]
 name = "ts-metrics"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "tdigest",
  "tokio",
@@ -3199,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "ts-pcap-extract"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "futures",
@@ -3216,7 +3216,7 @@ dependencies = [
 
 [[package]]
 name = "ts-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -3232,7 +3232,7 @@ dependencies = [
 
 [[package]]
 name = "ts-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3251,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "ts-storage-duckdb"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3271,7 +3271,7 @@ dependencies = [
 
 [[package]]
 name = "ts-turn"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",

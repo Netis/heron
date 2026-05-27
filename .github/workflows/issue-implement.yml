@@ -29,7 +29,14 @@ jobs:
   implement:
     if: ${{ github.event.label.name == 'agent:try' }}
     runs-on: [self-hosted, tokenscope]
-    timeout-minutes: 45
+    # 120-minute fence. A clean, well-scoped wiwi run (per the triage
+    # gates: <300 LOC, <10 files) typically completes in 10-25 min; the
+    # 120-min cap absorbs slower LiteLLM ↔ GLM-5 round-trips on busy
+    # days and gives wiwi room to iterate when `cargo build` finds
+    # something it has to fix mid-run. If you ever see this fence
+    # actually hit, the triage gate is probably mis-sized — file an
+    # issue rather than bumping the fence again.
+    timeout-minutes: 120
     env:
       ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
       ANTHROPIC_API_KEY:  ${{ secrets.LITELLM_API_KEY }}
@@ -45,11 +52,45 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # AGENT_GH_TOKEN is a PAT (not GITHUB_TOKEN) so wiwi's
-          # `gh pr create` actually triggers the downstream `ci` and
-          # `pr-review` workflows. With the default GITHUB_TOKEN the
-          # spawned PR's check runs would be skipped.
-          token: ${{ secrets.AGENT_GH_TOKEN }}
+          # Use the default GITHUB_TOKEN for the initial fetch.
+          # We tried `token: secrets.AGENT_GH_TOKEN` (both fine-grained
+          # and classic PATs) and the actions/checkout extraheader
+          # basic-auth flow failed on this self-hosted runner with
+          # `could not read Username for 'https://github.com'`, even
+          # though identical commands work against the same PAT from
+          # other hosts. Root cause is runner-environment specific
+          # (likely a stale credential helper or system git config
+          # that overrides the per-repo extraheader); the safest
+          # workaround is to take the GITHUB_TOKEN code path that
+          # CI already uses successfully, then swap in the PAT only
+          # for the push step below.
+
+      - name: Use AGENT_GH_TOKEN for `git push` (so downstream CI / pr-review trigger)
+        env:
+          AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+        run: |
+          if [ -z "$AGENT_GH_TOKEN" ]; then
+            echo "::warning::AGENT_GH_TOKEN is not set; wiwi pushes will use GITHUB_TOKEN and downstream workflows will be suppressed by GitHub's anti-recursion rule." >&2
+            exit 0
+          fi
+          # actions/checkout writes
+          #   http.https://github.com/.extraheader = AUTHORIZATION: basic <base64(x-access-token:GITHUB_TOKEN)>
+          # as part of its persist-credentials path. That header is
+          # sent on every subsequent git operation against github.com
+          # — INCLUDING `git push`, even after we override the push
+          # URL with a PAT-embedded URL. When the request lands at
+          # GitHub the extraheader's GITHUB_TOKEN (a GitHub App
+          # token without `workflows` permission) is picked over the
+          # URL-embedded PAT, and any push that touches a file under
+          # `.github/workflows/` is rejected with:
+          #   refusing to allow a GitHub App to create or update workflow
+          #   <path> without `workflows` permission
+          # Clearing the extraheader here lets the URL-embedded PAT
+          # (which DOES have `workflow` scope) be the sole credential
+          # on push.
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url --push origin \
+            "https://x-access-token:${AGENT_GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
       - name: Implement issue
         env:

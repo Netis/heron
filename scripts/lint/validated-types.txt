@@ -1,0 +1,24 @@
+# Validated-constructor allow-list.
+#
+# Each line declares a struct whose direct `Type { … }` construction
+# is BANNED outside the listed file globs. Anything else must call
+# the validating constructor (e.g., `to_time_range` for `TimeRange`).
+#
+# Format:   TypeName : <space-separated file globs, relative to repo root>
+#
+# Globs use Path.match / fnmatch semantics. `**` matches any path
+# depth.
+#
+# Adding a new entry:
+#   1. Pick a type that gained a validating constructor.
+#   2. Find the file(s) where the constructor itself lives — those
+#      must be allow-listed.
+#   3. Allow-list any tests / fixtures that legitimately need the raw
+#      shape.
+#   4. Run `scripts/lint/check-validated-constructors.py` and fix
+#      every reported caller by migrating to the validator.
+
+# `TimeRange` validation lives in to_time_range() at server/ts-api/src/params.rs.
+# All API route handlers must funnel through it; tests and internal
+# query types may construct directly.
+TimeRange : server/ts-api/src/params.rs server/ts-storage/src/query.rs server/**/tests/**.rs server/**/concurrent_tests.rs server/**/keepalive_pipeline.rs server/**/keepalive_estimator_integration.rs server/**/duckdb_routes.rs server/**/pipeline_e2e.rs server/**/pcap_extract_route.rs

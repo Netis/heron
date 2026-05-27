@@ -49,9 +49,13 @@ pub struct DuckDbBackend {
     pub(crate) write_metrics_conn: Arc<StdMutex<Connection>>,
     pub(crate) write_exchanges_conn: Arc<StdMutex<Connection>>,
     pub(crate) read_pool: ReadPool,
-    /// Kept so we can re-`Connection::open` a poisoned writer in place.
-    /// See `reopen_turns_writer`.
+    /// Kept so we can re-`Connection::open` the whole connection set
+    /// in place after a DuckDB in-process FATAL. See
+    /// `reopen_all_connections`.
     pub(crate) db_path: String,
+    /// Captured at construction; used by `reopen_all_connections` to
+    /// rebuild the reader pool at the same size.
+    pub(crate) read_pool_size: usize,
 }
 
 impl DuckDbBackend {
@@ -104,6 +108,7 @@ impl DuckDbBackend {
             write_exchanges_conn: Arc::new(StdMutex::new(exchanges_writer)),
             read_pool: ReadPool::new(readers),
             db_path: path.to_string(),
+            read_pool_size: pool_size,
         })
     }
 
@@ -301,20 +306,71 @@ impl StorageBackend for DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    async fn reopen_turns_writer(&self) -> Result<()> {
+    async fn reopen_all_connections(&self) -> Result<()> {
         let path = self.db_path.clone();
-        let conn_arc = self.write_turns_conn.clone();
+        let pool_size = self.read_pool_size;
+        let calls_arc = self.write_calls_conn.clone();
+        let turns_arc = self.write_turns_conn.clone();
+        let metrics_arc = self.write_metrics_conn.clone();
+        let exchanges_arc = self.write_exchanges_conn.clone();
+        let read_pool = self.read_pool.clone();
         tokio::task::spawn_blocking(move || {
-            // Try to reach the existing DB file. If the on-disk DB is
-            // also unhealthy we'll surface that error to the caller and
-            // it'll just retry on the next sweep.
-            let fresh = Connection::open(&path)
-                .map_err(|e| AppError::Storage(format!("reopen duckdb: {e}")))?;
-            let mut guard = conn_arc
-                .lock()
-                .map_err(|e| AppError::Storage(format!("lock turns writer: {e}")))?;
-            *guard = fresh;
-            info!("reopened agent_turns writer after FATAL invalidation");
+            // Open one fresh anchor connection to the on-disk file.
+            // If the file itself is unreachable we surface the error
+            // and the sweeper will retry on the next interval.
+            let anchor = Connection::open(&path)
+                .map_err(|e| AppError::Storage(format!("reopen duckdb anchor: {e}")))?;
+            let turns_fresh = anchor
+                .try_clone()
+                .map_err(|e| AppError::Storage(format!("clone turns writer: {e}")))?;
+            let metrics_fresh = anchor
+                .try_clone()
+                .map_err(|e| AppError::Storage(format!("clone metrics writer: {e}")))?;
+            let exchanges_fresh = anchor
+                .try_clone()
+                .map_err(|e| AppError::Storage(format!("clone exchanges writer: {e}")))?;
+            let mut readers = Vec::with_capacity(pool_size);
+            for _ in 0..pool_size {
+                let r = anchor
+                    .try_clone()
+                    .map_err(|e| AppError::Storage(format!("clone reader: {e}")))?;
+                readers.push(r);
+            }
+
+            // Swap each writer in place. The brief moment between two
+            // writer locks is acceptable — invalidated writers are
+            // already returning FATAL, so a request that races the
+            // swap and hits one of the not-yet-replaced writers just
+            // sees one more 500 before the next caller succeeds.
+            {
+                let mut g = calls_arc
+                    .lock()
+                    .map_err(|e| AppError::Storage(format!("lock calls writer: {e}")))?;
+                *g = anchor;
+            }
+            {
+                let mut g = turns_arc
+                    .lock()
+                    .map_err(|e| AppError::Storage(format!("lock turns writer: {e}")))?;
+                *g = turns_fresh;
+            }
+            {
+                let mut g = metrics_arc
+                    .lock()
+                    .map_err(|e| AppError::Storage(format!("lock metrics writer: {e}")))?;
+                *g = metrics_fresh;
+            }
+            {
+                let mut g = exchanges_arc
+                    .lock()
+                    .map_err(|e| AppError::Storage(format!("lock exchanges writer: {e}")))?;
+                *g = exchanges_fresh;
+            }
+            read_pool.replace_all(readers)?;
+            info!(
+                pool_size,
+                "reopened all DuckDB connections after FATAL invalidation"
+            );
             Ok(())
         })
         .await
