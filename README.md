@@ -100,7 +100,7 @@ This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Ver
 
 ```bash
 # Install (Linux/macOS, no sudo, user-local)
-curl -fsSL https://raw.githubusercontent.com/__NETIS_HERON_REPO__/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh \
   | INSTALL_DIR="$HOME/.local" sh
 
 # Linux: grant capture privileges to the binary (no sudo at runtime)

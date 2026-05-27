@@ -3,14 +3,14 @@
 #
 # Usage:
 #   System install (binary in /usr/local/bin, config in /etc):
-#     curl -fsSL https://raw.githubusercontent.com/__NETIS_HERON_REPO__/main/install.sh | sudo sh
+#     curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | sudo sh
 #
 #   User install (binary in ~/.local/bin, config in ~/.config):
-#     curl -fsSL https://raw.githubusercontent.com/__NETIS_HERON_REPO__/main/install.sh | INSTALL_DIR="$HOME/.local" sh
+#     curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | INSTALL_DIR="$HOME/.local" sh
 #
 # Environment overrides:
-#   TOKENSCOPE_VERSION  Pin a specific version (default: latest GitHub release)
-#   TOKENSCOPE_TARGET   Force a target triple (default: auto-detected)
+#   HERON_VERSION  Pin a specific version (default: latest GitHub release)
+#   HERON_TARGET   Force a target triple (default: auto-detected)
 #   INSTALL_DIR         Install prefix (default: /usr/local for system,
 #                       set to "$HOME/.local" for user install)
 #
@@ -31,8 +31,8 @@ usage() {
 Heron installer.
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/__NETIS_HERON_REPO__/main/install.sh | sudo sh
-  curl -fsSL https://raw.githubusercontent.com/__NETIS_HERON_REPO__/main/install.sh | INSTALL_DIR="$HOME/.local" sh
+  curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | sudo sh
+  curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | INSTALL_DIR="$HOME/.local" sh
 
 Flags:
   -h, --help   Show this help and exit.
@@ -44,10 +44,10 @@ Flags:
                produce undefined JSON output and are not supported.
 
 Environment overrides:
-  TOKENSCOPE_VERSION  Pin a specific version (default: latest GitHub release).
+  HERON_VERSION  Pin a specific version (default: latest GitHub release).
                       A leading "v" is added automatically if missing.
-  TOKENSCOPE_TARGET   Force a target triple (default: auto-detected).
-  HERON_REPO     Override the GitHub repo (default: __NETIS_HERON_REPO__).
+  HERON_TARGET   Force a target triple (default: auto-detected).
+  HERON_REPO     Override the GitHub repo (default: Netis/TokenScope).
   INSTALL_DIR         Binary install prefix (default: /usr/local).
                       Known system prefixes (/usr/local, /usr, /opt/*) also
                       trigger a system-wide layout: config in /etc/heron,
@@ -115,7 +115,7 @@ need id
 # ---------------------------------------------------------------------------
 # Resolve install layout from INSTALL_DIR.
 # ---------------------------------------------------------------------------
-GITHUB_REPO="${HERON_REPO:-__NETIS_HERON_REPO__}"
+GITHUB_REPO="${HERON_REPO:-Netis/TokenScope}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local}"
 BIN_DIR="$INSTALL_DIR/bin"
 
@@ -154,8 +154,8 @@ fi
 # Detect target triple
 # ---------------------------------------------------------------------------
 detect_target() {
-    if [ -n "${TOKENSCOPE_TARGET:-}" ]; then
-        printf '%s' "$TOKENSCOPE_TARGET"
+    if [ -n "${HERON_TARGET:-}" ]; then
+        printf '%s' "$HERON_TARGET"
         return
     fi
 
@@ -181,8 +181,8 @@ detect_target() {
 # Resolve version (via the /releases/latest redirect, no API rate limit)
 # ---------------------------------------------------------------------------
 resolve_version() {
-    if [ -n "${TOKENSCOPE_VERSION:-}" ]; then
-        _tag="$TOKENSCOPE_VERSION"
+    if [ -n "${HERON_VERSION:-}" ]; then
+        _tag="$HERON_VERSION"
     else
         _location=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
             "https://github.com/$GITHUB_REPO/releases/latest")

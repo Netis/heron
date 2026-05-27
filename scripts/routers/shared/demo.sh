@@ -18,7 +18,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../../scripts/lib/demo-common.sh"
 
 DEMO_BRANCH="${DEMO_BRANCH:-main}"
-GIT_REMOTE_URL="${GIT_REMOTE_URL:-git@github.com:__NETIS_HERON_REPO__.git}"
+GIT_REMOTE_URL="${GIT_REMOTE_URL:-git@github.com:Netis/TokenScope.git}"
 CROSS_TARGET="x86_64-unknown-linux-gnu"
 BINARY_NAME="heron"
 TMUX_SESSION="demo"

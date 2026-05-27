@@ -3,7 +3,7 @@ name: Heron
 description: LLM API performance monitoring via network traffic analysis (Rust backend + React SPA)
 
 git:
-  url: git@github.com:__NETIS_HERON_REPO__.git
+  url: git@github.com:Netis/TokenScope.git
   default_branch: main
 
 version:
