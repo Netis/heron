@@ -41,6 +41,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/lint/check-secrets.sh
 
+      - name: lint — secret values are sane (not '-', not empty)
+        # Catches the `gh secret set X --body -` stdin-bug class: a
+        # secret silently persisted as the literal string "-" passes
+        # `check-secrets.sh` (it's "provisioned") but blows up at
+        # runtime with masked log noise. We pull each known secret
+        # into env and let the script validate length / shape.
+        # Secret VALUES are never printed; only lengths surface in
+        # CI logs.
+        env:
+          AGENT_GH_TOKEN:   ${{ secrets.AGENT_GH_TOKEN }}
+          LITELLM_API_KEY:  ${{ secrets.LITELLM_API_KEY }}
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_NO_PROXY: ${{ secrets.LITELLM_NO_PROXY }}
+        run: |
+          bash scripts/lint/check-secret-values.sh \
+            AGENT_GH_TOKEN LITELLM_API_KEY LITELLM_BASE_URL LITELLM_NO_PROXY
+
       - name: lint — validated constructors are scoped
         run: python3 scripts/lint/check-validated-constructors.py
 
