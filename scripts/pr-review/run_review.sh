@@ -29,21 +29,17 @@ BASE_REF="$(gh pr view "$PR_NUMBER" --json baseRefName --jq .baseRefName)"
 export PR_NUMBER HEAD_SHA BASE_REF
 envsubst < "$WORKDIR/prompt.md" > "$PROMPT"
 
-# Pre-flight: verify LiteLLM is reachable AND our API key is
-# accepted. The key check is what tells us the secret is wired
-# correctly before we burn turns on the real agent run.
-if ! curl -fsS --max-time 5 \
-    -H "Authorization: Bearer ${ANTHROPIC_API_KEY:-}" \
-    "${ANTHROPIC_BASE_URL:-}/v1/models" >/dev/null 2>&1; then
-  # Pre-flight diagnostics MUST stay local — `post_review.py` is
-  # gated to skip posting when the agent exits non-zero, so this
-  # OUT file is consumed only by the workflow log. Endpoint URL +
-  # full curl trace go to the workflow log on the next two lines.
+# Pre-flight: wait until LiteLLM is reachable AND our API key is
+# accepted. The wait covers the common case where GLM-5 / LiteLLM
+# is restarting when this workflow fires; if it's still down after
+# 30 min (MAX_LITELLM_WAIT_SECONDS) the function returns 2 and we
+# pass through with the same diagnostic shape as before. Shared
+# helper in scripts/lib/litellm-wait.sh.
+LITELLM_WAIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/litellm-wait.sh"
+# shellcheck source=../lib/litellm-wait.sh
+source "$LITELLM_WAIT"
+if ! wait_for_litellm; then
   echo "ERROR: agent unavailable (pre-flight)" > "$OUT"
-  echo "pre-flight: backend unreachable at ${ANTHROPIC_BASE_URL:-<unset>}" >&2
-  curl -v --max-time 5 \
-    -H "Authorization: Bearer ${ANTHROPIC_API_KEY:-}" \
-    "${ANTHROPIC_BASE_URL:-}/v1/models" >&2 2>&1 || true
   exit 2
 fi
 

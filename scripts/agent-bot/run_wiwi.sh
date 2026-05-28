@@ -55,6 +55,16 @@ the PR body. End it with the literal line:
 Issue title: ${ISSUE_TITLE}
 EOF
 
+# Wait for LiteLLM to be reachable before launching claude. Without
+# this, a transient GLM-5 / LiteLLM restart that happens during the
+# (often-15+ min) self-hosted runner queue wait kills the run
+# immediately and wastes the queue wait + branch-prep work. Caps at
+# 30 min by default; configurable via MAX_LITELLM_WAIT_SECONDS.
+LITELLM_WAIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/litellm-wait.sh"
+# shellcheck source=../lib/litellm-wait.sh
+source "$LITELLM_WAIT"
+wait_for_litellm || exit $?
+
 # Stream claude's output to BOTH the workflow log (stdout) and a
 # preserved file. Previously this was `> /tmp/wiwi-run.log 2>&1`,
 # which silenced the GH Actions log entirely for the run — you

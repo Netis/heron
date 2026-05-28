@@ -38,6 +38,14 @@ Issue title: ${ISSUE_TITLE}
 Author: ${ISSUE_AUTHOR}
 EOF
 
+# Wait for LiteLLM to be reachable before burning a runner slot
+# inside claude --print. Caps at 30 min by default; configurable
+# via MAX_LITELLM_WAIT_SECONDS. See scripts/lib/litellm-wait.sh.
+LITELLM_WAIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/litellm-wait.sh"
+# shellcheck source=../lib/litellm-wait.sh
+source "$LITELLM_WAIT"
+wait_for_litellm || exit $?
+
 # Run claude in print mode against our LiteLLM-style endpoint.
 claude --print \
   --allowed-tools Bash Read Grep Glob WebFetch \
