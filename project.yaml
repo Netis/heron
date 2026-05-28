@@ -1,5 +1,5 @@
 # Project Configuration
-name: TokenScope
+name: Heron
 description: LLM API performance monitoring via network traffic analysis (Rust backend + React SPA)
 
 git:

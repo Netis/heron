@@ -13,9 +13,9 @@ use crate::error::AppError;
 ///
 /// 1. `./config/default.toml` — development mode (`cargo run` from the repo;
 ///    or the layout inside an extracted release tarball).
-/// 2. `$XDG_CONFIG_HOME/tokenscope/config.toml` — user override (XDG-aware).
-/// 3. `~/.config/tokenscope/config.toml` — user override (XDG default).
-/// 4. `/etc/tokenscope/config.toml` — system-wide install (dropped by
+/// 2. `$XDG_CONFIG_HOME/heron/config.toml` — user override (XDG-aware).
+/// 3. `~/.config/heron/config.toml` — user override (XDG default).
+/// 4. `/etc/heron/config.toml` — system-wide install (dropped by
 ///    `install.sh` when invoked with `sudo`).
 ///
 /// On macOS we deliberately use the same `~/.config/` location as Linux —
@@ -27,15 +27,15 @@ pub fn config_search_paths() -> Vec<PathBuf> {
 
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
-            paths.push(PathBuf::from(xdg).join("tokenscope/config.toml"));
+            paths.push(PathBuf::from(xdg).join("heron/config.toml"));
         }
     }
     if let Ok(home) = std::env::var("HOME") {
         if !home.is_empty() {
-            paths.push(PathBuf::from(home).join(".config/tokenscope/config.toml"));
+            paths.push(PathBuf::from(home).join(".config/heron/config.toml"));
         }
     }
-    paths.push(PathBuf::from("/etc/tokenscope/config.toml"));
+    paths.push(PathBuf::from("/etc/heron/config.toml"));
 
     paths
 }
@@ -466,7 +466,7 @@ pub struct RetentionConfig {
     /// (typo guard). Populated by [`resolve_metrics_retention`] at load time
     /// from the user's raw input — by the time you read this, the unknowns
     /// have already been dropped from `metrics`. Surfaced by
-    /// `AppConfig::validate()` so `tokenscope config validate` can fail
+    /// `AppConfig::validate()` so `heron config validate` can fail
     /// loudly on typos that the load-time warn easily missed.
     #[serde(skip)]
     pub unknown_granularities: Vec<String>,
@@ -528,7 +528,7 @@ impl Default for DuckDbConfig {
 }
 
 fn default_duckdb_path() -> String {
-    "data/tokenscope.duckdb".to_string()
+    "data/heron.duckdb".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -777,7 +777,7 @@ fn default_sink_flush_interval_ms() -> u64 {
     200
 }
 
-/// Severity of a [`ConfigIssue`]. `Error` blocks `tokenscope config validate`
+/// Severity of a [`ConfigIssue`]. `Error` blocks `heron config validate`
 /// (exit 1); `Warn` shows up in output but does not fail the command —
 /// reserved for legal-but-suboptimal configurations (e.g. no pipelines,
 /// which the runtime tolerates by serving the API in idle mode).
@@ -790,7 +790,7 @@ pub enum IssueSeverity {
 
 /// A semantic issue surfaced by [`AppConfig::validate`] beyond what TOML
 /// parse and serde already catch. Stable JSON serialization (snake_case
-/// `code`) so `tokenscope config validate` and `tokenscope doctor` produce
+/// `code`) so `heron config validate` and `heron doctor` produce
 /// machine-readable output suitable for CI gates and AI agents.
 ///
 /// Each variant has a fixed severity ([`ConfigIssue::severity`]) — variants
@@ -977,7 +977,7 @@ fn is_writable_dir(dir: &Path) -> bool {
     if !probe_root.is_dir() {
         return false;
     }
-    let probe = probe_root.join(format!(".tokenscope_validate_probe.{}", std::process::id()));
+    let probe = probe_root.join(format!(".heron_validate_probe.{}", std::process::id()));
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1016,7 +1016,7 @@ impl AppConfig {
     /// complete picture instead of failing on the first one.
     ///
     /// Callable safely after [`AppConfig::load`] succeeds. Used by
-    /// `tokenscope config validate` and `tokenscope doctor`.
+    /// `heron config validate` and `heron doctor`.
     pub fn validate(&self) -> Vec<ConfigIssue> {
         let mut issues = Vec::new();
 
@@ -1474,7 +1474,7 @@ mod phase2_tests {
     #[test]
     fn validate_storage_path_parent_unwritable() {
         // A path under a definitely-not-writable root surfaces the issue.
-        // `/proc/tokenscope-validate-test` exists on Linux but is not writable;
+        // `/proc/heron-validate-test` exists on Linux but is not writable;
         // on macOS we use `/dev/null/` which is unwritable as a directory.
         let toml = r#"
             [[pipeline]]
@@ -1634,7 +1634,7 @@ mod phase2_tests {
             interface = "eth0"
 
             [storage.duckdb]
-            path = "{}/tokenscope-validate-clean.duckdb"
+            path = "{}/heron-validate-clean.duckdb"
             "#,
             tmp.display()
         );
@@ -1897,7 +1897,7 @@ mod phase2_tests {
     fn validate_unsafe_pipeline_name_with_pcap_dump_enabled_is_an_error() {
         // Pipeline name sanitizes to empty/./.. → the runtime would
         // silently disable pcap_dump for this pipeline. Surface as a
-        // hard error so `tokenscope config validate` catches it before
+        // hard error so `heron config validate` catches it before
         // deploy. We test '..' specifically; other unsafe shapes share
         // the same code path (covered by ts-common::path tests).
         let toml = r#"

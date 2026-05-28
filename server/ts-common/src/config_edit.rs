@@ -77,7 +77,7 @@ pub fn patch_pipeline_sources(
         ".{}.tmp",
         path.file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("tokenscope-config")
+            .unwrap_or("heron-config")
     ));
     std::fs::write(&tmp, doc.to_string()).map_err(ConfigEditError::Write)?;
     std::fs::rename(&tmp, path).map_err(ConfigEditError::Write)?;

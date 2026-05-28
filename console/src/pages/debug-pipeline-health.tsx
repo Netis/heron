@@ -151,7 +151,7 @@ export function PipelineHealthPage() {
               <ul className="ml-4 list-disc text-sm text-muted-foreground">
                 <li>No pcap source or ZMQ ingest configured</li>
                 <li>
-                  Pcap file finished and TokenScope is staying up (
+                  Pcap file finished and Heron is staying up (
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">
                     --exit-after-drain
                   </code>{" "}

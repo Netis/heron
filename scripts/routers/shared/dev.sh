@@ -24,7 +24,7 @@ show_help() {
 
 run_server() {
     echo -e "${BLUE}Starting backend (cargo run)...${NC}"
-    cd server && cargo run --bin tokenscope -- -c config/default.toml
+    cd server && cargo run --bin heron -- -c config/default.toml
 }
 
 run_console() {

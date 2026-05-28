@@ -15,8 +15,8 @@ use duckdb::Connection;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
-use tokenscope::create_backend;
-use tokenscope::Pipeline;
+use heron::create_backend;
+use heron::Pipeline;
 use ts_capture::{CaptureSource, PcapFileSource};
 use ts_common::config::{
     CaptureSourceConfig, DuckDbConfig, PipelineDef, RetentionConfig, StorageConfig,

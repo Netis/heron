@@ -1,4 +1,4 @@
-//! `GET /api/health` — liveness probe for the running tokenscope process.
+//! `GET /api/health` — liveness probe for the running heron process.
 //!
 //! Always returns 200 with `code: 0` when the route is reachable. The body
 //! reports per-pipeline `running`, derived from a single `drained` flag set

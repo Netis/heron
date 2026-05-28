@@ -29,7 +29,7 @@ run_console() {
 run_server() {
     echo -e "${BLUE}Building server (cargo release)...${NC}"
     cd server && cargo build --release
-    echo -e "${GREEN}Server built: server/target/release/tokenscope${NC}"
+    echo -e "${GREEN}Server built: server/target/release/heron${NC}"
 }
 
 run_all() {
@@ -37,7 +37,7 @@ run_all() {
     cd "$PROJECT_ROOT"
     echo -e "${BLUE}Building server with embedded console...${NC}"
     cd server && cargo build --release --features console
-    echo -e "${GREEN}All built: server/target/release/tokenscope${NC}"
+    echo -e "${GREEN}All built: server/target/release/heron${NC}"
 }
 
 # No subcommand → print help AND exit non-zero. Fails closed so CI / scripts

@@ -3,7 +3,7 @@
 ## Monorepo Layout
 
 ```
-TokenScope/
+Heron/
 ├── CLAUDE.md                        # AI context — always loaded
 ├── docs/
 │   ├── design/                      # Module design docs (AI dev reference)
@@ -21,7 +21,7 @@ TokenScope/
 │   ├── ts-storage/                  # Pluggable storage
 │   ├── ts-api/                      # REST API
 │   ├── app/
-│   │   └── tokenscope/             # Binary entry crate
+│   │   └── heron/             # Binary entry crate
 │   │       ├── Cargo.toml
 │   │       └── src/main.rs          # config → pipeline → API server
 │   └── config/
@@ -75,7 +75,7 @@ Rust workspace and Node project have completely separate toolchains (cargo vs bu
 
 ### Why `ts-` prefix?
 
-Crate names like `net`, `http`, `storage` collide with existing crates.io packages. The `ts-` prefix (TokenScope) keeps names short while avoiding conflicts. This matches rpktminer's `pktm-` convention.
+Crate names like `net`, `http`, `storage` collide with existing crates.io packages. The `ts-` prefix (Heron) keeps names short while avoiding conflicts. This matches rpktminer's `pktm-` convention.
 
 ### Why `app/` directory for binaries?
 
@@ -174,7 +174,7 @@ ts-common ◀──────────────────────�
   ├── ts-storage   ◀── ts-llm, ts-metrics                      │
   └── ts-api       ◀── ts-storage, ts-metrics, ts-llm          │
                                                                │
-app/tokenscope ──▶ all crates ────────────────────────────────┘
+app/heron ──▶ all crates ────────────────────────────────┘
 ```
 
-Dependencies flow left-to-right through the pipeline. No circular dependencies. `ts-common` is depended on by all. `app/tokenscope` wires everything together.
+Dependencies flow left-to-right through the pipeline. No circular dependencies. `ts-common` is depended on by all. `app/heron` wires everything together.

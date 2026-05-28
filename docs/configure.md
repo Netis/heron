@@ -1,33 +1,33 @@
-# Configuring TokenScope
+# Configuring Heron
 
 This is a reference for every section in the configuration file. The
 shipped `config/default.toml` is heavily commented and is the best place
 to copy a starting point from.
 
-## Where TokenScope looks for config
+## Where Heron looks for config
 
-When you start `tokenscope` without `-c <path>`, it searches these
+When you start `heron` without `-c <path>`, it searches these
 locations **in order** and uses the first file that exists:
 
 1. `./config/default.toml` — current working directory (dev mode and
    the layout inside an extracted release tarball).
-2. `$XDG_CONFIG_HOME/tokenscope/config.toml` — XDG-aware user override.
-3. `~/.config/tokenscope/config.toml` — XDG default user override.
-4. `/etc/tokenscope/config.toml` — system-wide install (dropped by
+2. `$XDG_CONFIG_HOME/heron/config.toml` — XDG-aware user override.
+3. `~/.config/heron/config.toml` — XDG default user override.
+4. `/etc/heron/config.toml` — system-wide install (dropped by
    `install.sh` when invoked with `sudo`).
 
-The startup log line `tokenscope vX.Y.Z starting, config=<path>` tells
-you which one was picked. macOS uses `~/.config/` too — TokenScope does
+The startup log line `heron vX.Y.Z starting, config=<path>` tells
+you which one was picked. macOS uses `~/.config/` too — Heron does
 not split between Linux and macOS here.
 
 ## Override precedence
 
 ```bash
 # Auto-discovered (the cascade above)
-tokenscope -i eth0
+heron -i eth0
 
 # Explicit path — bypasses discovery
-tokenscope -c /opt/tokenscope/custom.toml -i eth0
+heron -c /opt/heron/custom.toml -i eth0
 ```
 
 CLI flags **override the config file** entirely for the source pipeline:
@@ -102,7 +102,7 @@ recv_hwm = 1000                # ZMQ receive high-water mark
 ```
 
 Use this when the LLM provider workload runs on hosts you cannot install
-TokenScope on directly. Cloud-probe runs there, captures locally, and
+Heron on directly. Cloud-probe runs there, captures locally, and
 forwards packets over ZMQ.
 
 ### Optional: persist captured packets
@@ -161,7 +161,7 @@ see `docs/design/06-storage.md`.
 
 ```toml
 [storage.duckdb]
-path = "data/tokenscope.duckdb"
+path = "data/heron.duckdb"
 ```
 
 The path is relative to the working directory. Parent directories are
@@ -217,7 +217,7 @@ Behavior:
   short unless you specifically need a longer forensics window.
 - `turns` must not outlive `calls`. `agent_turns.call_ids` references
   rows in `llm_calls`, and the no-JOIN turn-detail read returns
-  empty/partial call lists once those references go stale. `tokenscope
+  empty/partial call lists once those references go stale. `heron
   config validate` enforces `turns <= calls` (with `calls = 0` treated
   as infinite, which satisfies any finite `turns`).
 
@@ -248,10 +248,10 @@ See `docs/design/08-internal-metrics.md`.
 ## BPF filters per scenario
 
 The BPF expression filters packets at the kernel level before they reach
-TokenScope. Use it to scope capture to the LLM API path and avoid
+Heron. Use it to scope capture to the LLM API path and avoid
 processing unrelated traffic.
 
-> **TokenScope sees plaintext HTTP.** It runs *post-TLS* — either on the
+> **Heron sees plaintext HTTP.** It runs *post-TLS* — either on the
 > inference host where TLS is already terminated, or fed by cloud-probe
 > from a TLS-terminating LB. Filters target the *internal* port, not 443.
 
@@ -264,14 +264,14 @@ processing unrelated traffic.
 | Specific upstream pool | `tcp port 8000 and host 10.0.0.5` |
 | Multiple proxies | `(tcp port 8000) or (tcp port 8001)` |
 
-Test a filter without TokenScope first:
+Test a filter without Heron first:
 
 ```bash
 sudo tcpdump -i eth0 -n 'tcp port 8000'
 ```
 
 If `tcpdump` shows the LLM traffic you expect, the same filter will work
-in TokenScope's `bpf_filter`.
+in Heron's `bpf_filter`.
 
 ## Multi-pipeline example
 
@@ -338,7 +338,7 @@ interface = "eth0"
 [storage]
 backend = "duckdb"
 [storage.duckdb]
-path = "data/tokenscope.duckdb"
+path = "data/heron.duckdb"
 
 [api]
 listen = "127.0.0.1"

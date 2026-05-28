@@ -4,7 +4,7 @@ import type { CaptureInterfacesResponse } from "@/types/api"
 
 /**
  * Fetch /api/capture/interfaces — the network interfaces libpcap can
- * enumerate inside the tokenscope process. List changes are rare; refresh
+ * enumerate inside the heron process. List changes are rare; refresh
  * is manual via `refetch`.
  */
 export function useCaptureInterfaces() {

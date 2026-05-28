@@ -80,7 +80,7 @@ export function Sidebar() {
           <button
             onClick={toggle}
             aria-label="Expand sidebar"
-            title="TokenScope — click to expand"
+            title="Heron — click to expand"
             className="flex size-8 items-center justify-center rounded-md text-foreground transition-colors hover:bg-muted"
           >
             <Logo variant="icon" className="size-5" />

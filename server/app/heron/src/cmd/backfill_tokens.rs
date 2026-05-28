@@ -1,4 +1,4 @@
-//! `tokenscope backfill-tokens` — fill in missing per-call token counts on
+//! `heron backfill-tokens` — fill in missing per-call token counts on
 //! historical rows by re-tokenizing their request/response bodies via the
 //! same wire-api walkers + tiktoken cl100k estimator the live processor
 //! uses for fresh traffic.
@@ -11,7 +11,7 @@
 //!   * response_body IS NOT NULL AND length > 0
 //!
 //! Idempotent — a re-run finds no zero-token rows and exits with a no-op
-//! summary. Refuses to run if the live tokenscope daemon holds the DB lock.
+//! summary. Refuses to run if the live heron daemon holds the DB lock.
 //!
 //! Exit codes:
 //!   0 — success (rows updated, or zero rows to update)
@@ -35,7 +35,7 @@ use ts_llm::wire_apis as wa;
 #[derive(Debug, Args)]
 pub struct BackfillTokensArgs {
     /// DuckDB file to scan. If omitted, falls back to `XDG_DATA_HOME` /
-    /// `~/.local/share/tokenscope/data/tokenscope.duckdb`.
+    /// `~/.local/share/heron/data/heron.duckdb`.
     #[arg(long)]
     pub db_path: Option<PathBuf>,
 
@@ -48,7 +48,7 @@ pub struct BackfillTokensArgs {
     #[arg(long, default_value_t = 0)]
     pub limit: u64,
 
-    /// Skip the safety backup (`tokenscope.duckdb.pre_backfill_tokens_backup`).
+    /// Skip the safety backup (`heron.duckdb.pre_backfill_tokens_backup`).
     /// Default: take a one-time backup if not already present.
     #[arg(long)]
     pub skip_backup: bool,
@@ -79,7 +79,7 @@ pub fn run(args: &BackfillTokensArgs) -> i32 {
         Err(e) => {
             tracing::error!(
                 "failed to open {}: {e}\n\
-                 Hint: stop the live tokenscope daemon first — DuckDB \
+                 Hint: stop the live heron daemon first — DuckDB \
                  takes an exclusive lock while the writer is open.",
                 db_path.display()
             );
@@ -248,7 +248,7 @@ fn resolve_db_path(arg: Option<&Path>) -> Result<PathBuf, String> {
         return Ok(p.to_path_buf());
     }
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-    Ok(PathBuf::from(home).join(".local/share/tokenscope/data/tokenscope.duckdb"))
+    Ok(PathBuf::from(home).join(".local/share/heron/data/heron.duckdb"))
 }
 
 fn ensure_backup(db_path: &Path) -> Result<(), String> {

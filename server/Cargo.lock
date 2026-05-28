@@ -1154,6 +1154,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "heron"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "clap",
+ "duckdb",
+ "libc",
+ "mime_guess",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "ts-api",
+ "ts-capture",
+ "ts-common",
+ "ts-llm",
+ "ts-metrics",
+ "ts-pcap-extract",
+ "ts-protocol",
+ "ts-storage",
+ "ts-storage-duckdb",
+ "ts-turn",
+]
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2828,36 +2858,6 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
-
-[[package]]
-name = "tokenscope"
-version = "0.3.0"
-dependencies = [
- "axum",
- "clap",
- "duckdb",
- "libc",
- "mime_guess",
- "rust-embed",
- "serde",
- "serde_json",
- "tempfile",
- "time",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "ts-api",
- "ts-capture",
- "ts-common",
- "ts-llm",
- "ts-metrics",
- "ts-pcap-extract",
- "ts-protocol",
- "ts-storage",
- "ts-storage-duckdb",
- "ts-turn",
-]
 
 [[package]]
 name = "tokio"

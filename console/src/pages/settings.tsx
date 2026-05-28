@@ -32,7 +32,7 @@ import { SourceEditorRow, defaultFor } from "@/components/settings/source-editor
 
 /**
  * Settings page — friendly view + edit of the capture configuration the
- * running tokenscope process is using. Source list is structured by
+ * running heron process is using. Source list is structured by
  * source type (live NIC / ZMQ receiver / PCAP replay); editor hides BPF
  * behind a ports+hosts UI for the common case. Saving rewrites the on-
  * disk TOML and self-restarts; the page polls runtime-config until the
@@ -105,7 +105,7 @@ export function SettingsPage() {
       {/* Pipelines */}
       {pipelines.length === 0 ? (
         <EmptyState>
-          No pipelines configured — tokenscope is running in CLI mode (started with
+          No pipelines configured — heron is running in CLI mode (started with
           <code className="mx-1 rounded bg-muted px-1 font-mono">--pcap-file</code> or
           <code className="mx-1 rounded bg-muted px-1 font-mono">-i</code>). Restart
           without those flags to edit pipelines here.
@@ -171,7 +171,7 @@ function PageHeader({
       <div className="flex items-start gap-2 border-t border-border bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
         <Info className="mt-0.5 size-3.5 shrink-0" />
         <p>
-          Capture sources tell tokenscope where packets come from — a live network
+          Capture sources tell heron where packets come from — a live network
           interface, a remote ZMQ stream from a probe, or a PCAP file. Saving here
           rewrites the config file and restarts the process; capture pauses for
           about 2–3 seconds while the new pipeline comes up.
@@ -303,7 +303,7 @@ const TYPE_META: Record<
     title: "ZMQ receivers",
     addLabel: "Add ZMQ receiver",
     emptyHint:
-      "(none — receive packets streamed in from remote tokenscope probes)",
+      "(none — receive packets streamed in from remote heron probes)",
   },
   "pcap-file": {
     icon: "📂",
@@ -556,7 +556,7 @@ function SourceEditor({
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs">
             <AlertCircle className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
             <span>
-              Capture will pause for ~2–3 s while tokenscope restarts. Continue?
+              Capture will pause for ~2–3 s while heron restarts. Continue?
             </span>
             <button
               onClick={() => setConfirming(false)}
@@ -842,7 +842,7 @@ function RestartOverlay({ state }: { state: "saving" | "restarting" }) {
         ) : (
           <>
             <Power className="size-8 animate-pulse text-primary" />
-            <div className="text-sm font-medium">Restarting tokenscope…</div>
+            <div className="text-sm font-medium">Restarting heron…</div>
             <div className="text-xs text-muted-foreground">
               Capture pipeline is being recreated. This usually takes a few seconds.
             </div>

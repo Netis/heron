@@ -1,4 +1,4 @@
-//! `tokenscope doctor` — pre-flight diagnostics for an installed TokenScope.
+//! `heron doctor` — pre-flight diagnostics for an installed Heron.
 //! Self-contained (does not talk to a running instance); each check is
 //! independent so a single failure doesn't mask later checks.
 //!
@@ -331,7 +331,7 @@ async fn check_api_bind(cfg: &AppConfig) -> DoctorCheck {
     let addr = format!("{}:{}", cfg.api.listen, cfg.api.port);
     match tokio::net::TcpListener::bind(&addr).await {
         Ok(listener) => {
-            // Drop immediately so the running tokenscope can take this port.
+            // Drop immediately so the running heron can take this port.
             drop(listener);
             DoctorCheck::pass("api.bind", format!("port available: {addr}"))
         }

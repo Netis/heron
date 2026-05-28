@@ -1,6 +1,6 @@
 # Design Documents
 
-Module-level design docs for TokenScope's data pipeline. Ordered to follow the packet-to-metric flow.
+Module-level design docs for Heron's data pipeline. Ordered to follow the packet-to-metric flow.
 
 For cross-cutting terminology (TTFT/E2E/TPOT, wire_api, agent_kind, HttpExchange, LlmCall, AgentTurn, …) see [../glossary.md](../glossary.md).
 

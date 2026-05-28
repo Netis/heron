@@ -4,7 +4,7 @@ import type { RuntimeConfigResponse } from "@/types/api"
 
 /**
  * Fetch /api/runtime-config — the in-memory configuration of the running
- * TokenScope process. The config can only change with a restart, so there
+ * Heron process. The config can only change with a restart, so there
  * is no polling; the page exposes a manual Refresh button via `refetch`.
  */
 export function useRuntimeConfig() {

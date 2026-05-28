@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, Copy, Maximize2, Minimize2 } from "lucide-re
 import { JsonTree } from "./json-tree"
 import { defaultExpansion, formatJson, formatSize, tryParseJson, walkAllPaths } from "./helpers"
 
-const MODE_KEY = "tokenscope.rawHttp.bodyMode"
+const MODE_KEY = "heron.rawHttp.bodyMode"
 const TREE_SIZE_LIMIT = 500 * 1024
 
 type Mode = "raw" | "tree"

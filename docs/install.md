@@ -1,6 +1,6 @@
-# Installing TokenScope
+# Installing Heron
 
-TokenScope ships as a single statically linked binary with the web console
+Heron ships as a single statically linked binary with the web console
 embedded inside it. There is no installer, no package manager footprint,
 and (on Linux) no runtime dependency on libpcap or any C++ runtime.
 
@@ -30,8 +30,8 @@ curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | 
 After install, grant capture privileges and run:
 
 ```bash
-sudo setcap cap_net_raw,cap_net_admin=eip "$(which tokenscope)"
-tokenscope -i eth0       # Linux; on macOS use -i en0
+sudo setcap cap_net_raw,cap_net_admin=eip "$(which heron)"
+heron -i eth0       # Linux; on macOS use -i en0
 ```
 
 Open <http://localhost:3000> for the console.
@@ -40,11 +40,11 @@ The installer chooses paths from `INSTALL_DIR`:
 
 | `INSTALL_DIR` | Binary | Config | Data |
 |---|---|---|---|
-| `/usr/local` (default with `sudo`) | `/usr/local/bin/tokenscope` | `/etc/tokenscope/config.toml` | `/var/lib/tokenscope/` |
-| `$HOME/.local` (user install) | `~/.local/bin/tokenscope` | `~/.config/tokenscope/config.toml` | `~/.local/share/tokenscope/` |
+| `/usr/local` (default with `sudo`) | `/usr/local/bin/heron` | `/etc/heron/config.toml` | `/var/lib/heron/` |
+| `$HOME/.local` (user install) | `~/.local/bin/heron` | `~/.config/heron/config.toml` | `~/.local/share/heron/` |
 
-Other supported environment variables: `TOKENSCOPE_VERSION` (pin a release),
-`TOKENSCOPE_TARGET` (force a target triple), `NO_COLOR=1`.
+Other supported environment variables: `HERON_VERSION` (pin a release),
+`HERON_TARGET` (force a target triple), `NO_COLOR=1`.
 
 ## Manual install
 
@@ -53,14 +53,14 @@ If you would rather not pipe a script to your shell:
 ```bash
 VERSION=v0.1.0
 TARGET=x86_64-unknown-linux-musl
-curl -fL "https://github.com/Netis/TokenScope/releases/download/${VERSION}/tokenscope-${VERSION}-${TARGET}.tar.gz" \
+curl -fL "https://github.com/Netis/TokenScope/releases/download/${VERSION}/heron-${VERSION}-${TARGET}.tar.gz" \
   | tar -xz
-cd "tokenscope-${VERSION}-${TARGET}"
-sudo setcap cap_net_raw,cap_net_admin=eip ./tokenscope
-./tokenscope -i eth0
+cd "heron-${VERSION}-${TARGET}"
+sudo setcap cap_net_raw,cap_net_admin=eip ./heron
+./heron -i eth0
 ```
 
-In this mode TokenScope reads `./config/default.toml` from the extracted
+In this mode Heron reads `./config/default.toml` from the extracted
 directory — `cd` into it, or pass `-c <path>` from elsewhere.
 
 For other targets, swap `TARGET` to the value from the table above.
@@ -86,8 +86,8 @@ Grant the binary itself the needed capabilities. The process then runs as
 an unprivileged user:
 
 ```bash
-sudo setcap cap_net_raw,cap_net_admin=eip ./tokenscope
-./tokenscope -i eth0
+sudo setcap cap_net_raw,cap_net_admin=eip ./heron
+./heron -i eth0
 ```
 
 Notes:
@@ -100,20 +100,20 @@ Notes:
 
 Run as a dedicated user via systemd, with capabilities granted by the
 service manager. No `setcap` needed. Example unit
-(`/etc/systemd/system/tokenscope.service`):
+(`/etc/systemd/system/heron.service`):
 
 ```ini
 [Unit]
-Description=TokenScope LLM API observability
+Description=Heron LLM API observability
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=tokenscope
-Group=tokenscope
-WorkingDirectory=/opt/tokenscope
-ExecStart=/opt/tokenscope/tokenscope -c /etc/tokenscope/config.toml
+User=heron
+Group=heron
+WorkingDirectory=/opt/heron
+ExecStart=/opt/heron/heron -c /etc/heron/config.toml
 Restart=on-failure
 RestartSec=5
 
@@ -126,7 +126,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/tokenscope
+ReadWritePaths=/var/lib/heron
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
@@ -136,20 +136,20 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin tokenscope
-sudo mkdir -p /opt/tokenscope /etc/tokenscope /var/lib/tokenscope
-sudo cp tokenscope /opt/tokenscope/
-sudo cp -r config /etc/tokenscope/
-sudo chown -R tokenscope:tokenscope /var/lib/tokenscope
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin heron
+sudo mkdir -p /opt/heron /etc/heron /var/lib/heron
+sudo cp heron /opt/heron/
+sudo cp -r config /etc/heron/
+sudo chown -R heron:heron /var/lib/heron
 sudo systemctl daemon-reload
-sudo systemctl enable --now tokenscope
-sudo journalctl -u tokenscope -f
+sudo systemctl enable --now heron
+sudo journalctl -u heron -f
 ```
 
 ### 3. `sudo` — quick test only
 
 ```bash
-sudo ./tokenscope -i eth0
+sudo ./heron -i eth0
 ```
 
 Works, but the data files (DuckDB, dumps) end up owned by root. Fine for
@@ -160,7 +160,7 @@ a one-off, not for a long-running install.
 macOS ships libpcap as part of the OS; the binary uses the system one.
 Live capture requires either:
 
-- Running as root: `sudo ./tokenscope -i en0`
+- Running as root: `sudo ./heron -i en0`
 - Or installing the [ChmodBPF helper](https://www.wireshark.org/docs/wsug_html_chunked/ChIntroPlatformSpecificMacos.html)
   bundled with Wireshark, which grants your user access to `/dev/bpf*`
   devices.
@@ -170,11 +170,11 @@ on either platform.
 
 ## Reading from a pcap file (no privileges needed)
 
-Useful for offline analysis, regression testing, or trying TokenScope
+Useful for offline analysis, regression testing, or trying Heron
 without touching a live interface:
 
 ```bash
-./tokenscope --pcap-file capture.pcap --no-retention
+./heron --pcap-file capture.pcap --no-retention
 ```
 
 `--no-retention` disables the retention sweeper for this run. Without
@@ -191,8 +191,8 @@ behavior for batch/CI use.
 ## Verify the install
 
 ```bash
-./tokenscope --version
-./tokenscope --help
+./heron --version
+./heron --help
 ```
 
 After starting with `-i <iface>` or `--pcap-file`, hit the health endpoint:
@@ -203,7 +203,7 @@ curl http://localhost:3000/api/health
 
 ## Uninstall
 
-TokenScope writes to three places: the binary, a config directory, and
+Heron writes to three places: the binary, a config directory, and
 a data directory (DuckDB file plus optional pcap dumps). The installer
 never touches anything else, so removing those three paths is a clean
 uninstall.
@@ -211,24 +211,24 @@ uninstall.
 ### One-line installer — system mode (`sudo`)
 
 ```bash
-sudo rm /usr/local/bin/tokenscope
-sudo rm -rf /etc/tokenscope /var/lib/tokenscope
+sudo rm /usr/local/bin/heron
+sudo rm -rf /etc/heron /var/lib/heron
 ```
 
 ### One-line installer — user mode (`INSTALL_DIR=$HOME/.local`)
 
 ```bash
-rm ~/.local/bin/tokenscope
-rm -rf ~/.config/tokenscope ~/.local/share/tokenscope
+rm ~/.local/bin/heron
+rm -rf ~/.config/heron ~/.local/share/heron
 ```
 
 ### systemd deployment (from the example unit above)
 
 ```bash
-sudo systemctl disable --now tokenscope
-sudo rm /etc/systemd/system/tokenscope.service
-sudo rm -rf /opt/tokenscope /etc/tokenscope /var/lib/tokenscope
-sudo userdel tokenscope
+sudo systemctl disable --now heron
+sudo rm /etc/systemd/system/heron.service
+sudo rm -rf /opt/heron /etc/heron /var/lib/heron
+sudo userdel heron
 ```
 
 > The DuckDB file holds all captured telemetry. Back it up first if you

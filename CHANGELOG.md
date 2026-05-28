@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to TokenScope are recorded here. The format follows
+All notable changes to Heron are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -176,7 +176,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.1.0] — 2026-04-30
 
-Initial release of TokenScope — an LLM API performance monitoring system that
+Initial release of Heron — an LLM API performance monitoring system that
 analyzes plaintext HTTP traffic on the LLM provider's server side to measure
 and diagnose inference performance.
 

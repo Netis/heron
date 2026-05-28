@@ -9,8 +9,8 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::fmt::time::UtcTime;
 use tracing_subscriber::FmtSubscriber;
 
-use tokenscope::create_backend;
-use tokenscope::Pipeline;
+use heron::create_backend;
+use heron::Pipeline;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use ts_common::config::{
@@ -66,7 +66,7 @@ pub(crate) enum Color {
 /// pipeline (existing behavior). Subcommands `config validate` and `doctor`
 /// reserve those names — the flag-only API has no positional collision.
 #[derive(Debug, Parser)]
-#[command(name = "tokenscope", version, about = "LLM API performance monitoring")]
+#[command(name = "heron", version, about = "LLM API performance monitoring")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Command>,
@@ -74,9 +74,9 @@ struct Cli {
     #[command(flatten)]
     run: RunArgs,
 
-    /// Path to configuration file. When omitted, TokenScope searches
-    /// (in order): ./config/default.toml, $XDG_CONFIG_HOME/tokenscope/config.toml,
-    /// ~/.config/tokenscope/config.toml, /etc/tokenscope/config.toml.
+    /// Path to configuration file. When omitted, Heron searches
+    /// (in order): ./config/default.toml, $XDG_CONFIG_HOME/heron/config.toml,
+    /// ~/.config/heron/config.toml, /etc/heron/config.toml.
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 
@@ -90,7 +90,7 @@ struct Cli {
 }
 
 /// Capture-pipeline args. Lives on the root `Cli` (via `flatten`) so the
-/// existing `tokenscope -i eth0` / `tokenscope --pcap-file foo.pcap`
+/// existing `heron -i eth0` / `heron --pcap-file foo.pcap`
 /// invocations keep working unchanged when no subcommand is given.
 #[derive(Debug, Args)]
 struct RunArgs {
@@ -136,7 +136,7 @@ enum Command {
     Doctor(cmd::doctor::DoctorArgs),
     /// Re-tokenize historical rows whose `usage` block was missing on the wire,
     /// filling in input_tokens / output_tokens / total_tokens via cl100k.
-    /// Stop the live tokenscope daemon first — DuckDB takes an exclusive lock.
+    /// Stop the live heron daemon first — DuckDB takes an exclusive lock.
     BackfillTokens(cmd::backfill_tokens::BackfillTokensArgs),
 }
 
@@ -244,7 +244,7 @@ async fn run_pipeline(cli: Cli) {
     };
 
     tracing::info!(
-        "tokenscope v{} starting, config={}",
+        "heron v{} starting, config={}",
         env!("CARGO_PKG_VERSION"),
         config_path.display()
     );
@@ -909,7 +909,7 @@ async fn run_pipeline(cli: Cli) {
         tracing::info!(
             "no pipelines with sources configured (use --pcap-file, -i, or [[pipeline]] in config)"
         );
-        tracing::info!("tokenscope ready, press Ctrl+C to stop");
+        tracing::info!("heron ready, press Ctrl+C to stop");
 
         let sig = wait_shutdown_signal().await;
         tracing::info!("received {sig}, shutting down...");
@@ -960,5 +960,5 @@ async fn run_pipeline(cli: Cli) {
         }
     }
 
-    tracing::info!("tokenscope stopped");
+    tracing::info!("heron stopped");
 }
