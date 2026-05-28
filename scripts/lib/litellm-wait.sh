@@ -106,3 +106,36 @@ wait_for_litellm() {
     echo "::error::litellm still unreachable after ${max}s; giving up" >&2
     return 2
 }
+
+# Returns 0 (true) when the LiteLLM endpoint looks DOWN right now
+# (connect-refused, timeout, or 5xx). Returns 1 (false) when it is
+# serving any response — 2xx OR 4xx. The 4xx case is deliberately
+# treated as "not down": LiteLLM is up and choosing to reject; that
+# is a configuration issue, not a transient outage to wait through.
+#
+# Designed to be called immediately after a `claude --print` failure
+# to decide whether to retry. Pattern in the agent scripts:
+#
+#   while true; do
+#       claude --print ...  ; rc=$?
+#       [ $rc -eq 0 ] && break
+#       litellm_appears_down || break   # not down → real failure
+#       [ $attempt -ge $CLAUDE_RETRY_MAX ] && break
+#       attempt=$((attempt+1))
+#       wait_for_litellm || break        # wait for recovery
+#   done
+#
+# CLAUDE_RETRY_MAX is per-caller; default 2 in the agent scripts
+# (giving 3 attempts total). The retry restarts claude from scratch
+# — for stateful agents (wiwi) any work already committed to the
+# branch is preserved by virtue of being on disk; in-flight, not-yet
+# -committed work is lost. That's an acceptable trade because the
+# alternative (no retry) loses the whole run anyway.
+litellm_appears_down() {
+    _litellm_probe "${ANTHROPIC_BASE_URL:?}" "${ANTHROPIC_API_KEY:?}"
+    local rc=$?
+    case $rc in
+        0|1) return 1 ;;  # up (2xx) or auth-rejecting (4xx) — not "down"
+        *)   return 0 ;;  # 5xx / connect-refused / timeout — looks down
+    esac
+}

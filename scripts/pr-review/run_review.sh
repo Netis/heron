@@ -58,25 +58,56 @@ ALLOWED_TOOLS="$(grep -v '^#' "$WORKDIR/allowed_tools.txt" \
 # right after it gets consumed as an extra tool name and claude then
 # errors with "Input must be provided either through stdin or as a
 # prompt argument when using --print".
-timeout 1800 claude \
-  --print \
-  --model "${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}" \
-  --max-turns 60 \
-  --output-format text \
-  --permission-mode acceptEdits \
-  --allowed-tools "$ALLOWED_TOOLS" \
-  < "$PROMPT" \
-  > "$OUT" \
-  2> "$LOG" \
-  || {
-    rc=$?
-    echo "ERROR: agent exited with code $rc" >> "$LOG"
+#
+# Retry on transient LiteLLM mid-stream failures: if claude exits
+# non-zero AND the backend looks down right now (5xx / connect-
+# refused / timeout — NOT 4xx), wait for LiteLLM and re-run. Review
+# is idempotent (the OUT file just gets overwritten); restart from
+# scratch is safe. Up to CLAUDE_RETRY_MAX retries (default 2).
+CLAUDE_RETRY_MAX="${CLAUDE_RETRY_MAX:-2}"
+attempt=0
+claude_rc=0
+while true; do
+    set +e
+    timeout 1800 claude \
+      --print \
+      --model "${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}" \
+      --max-turns 60 \
+      --output-format text \
+      --permission-mode acceptEdits \
+      --allowed-tools "$ALLOWED_TOOLS" \
+      < "$PROMPT" \
+      > "$OUT" \
+      2> "$LOG"
+    claude_rc=$?
+    set -e
+
+    [ "$claude_rc" -eq 0 ] && break
+
+    if ! litellm_appears_down; then
+        # LiteLLM is up — failure is real (timeout, claude crash,
+        # rate limit, etc). Don't retry.
+        break
+    fi
+
+    if [ "$attempt" -ge "$CLAUDE_RETRY_MAX" ]; then
+        echo "::error::vivi claude died $((attempt+1)) times with LiteLLM down; giving up" >&2
+        break
+    fi
+
+    attempt=$((attempt + 1))
+    echo "::warning::vivi claude exited $claude_rc, LiteLLM down; waiting + retrying (attempt $((attempt+1))/$((CLAUDE_RETRY_MAX+1)))" >&2
+    wait_for_litellm || break
+done
+
+if [ "$claude_rc" -ne 0 ]; then
+    echo "ERROR: agent exited with code $claude_rc" >> "$LOG"
     # Don't synthesize a PR-bound failure summary here — post_review.py
     # is gated on AGENT_EXIT and will skip the PR entirely on non-zero.
     # The OUT file is left as-is (possibly empty) for workflow-log
     # consumption.
-    exit "$rc"
-  }
+    exit "$claude_rc"
+fi
 
 # Sanity: non-empty markdown with at least a `### Summary` heading.
 if ! grep -q '^### Summary' "$OUT"; then
