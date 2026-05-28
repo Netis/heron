@@ -21,3 +21,9 @@ bytes.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+# Enables `fault_injection` module + injection hooks on backend paths.
+# Off by default: production builds and `cargo test --workspace` see
+# no extra code. Tests that exercise recovery paths opt in explicitly.
+fault-injection = []

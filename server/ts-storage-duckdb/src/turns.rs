@@ -125,6 +125,16 @@ impl DuckDbBackend {
         if turns.is_empty() {
             return Ok(());
         }
+        #[cfg(feature = "fault-injection")]
+        {
+            use crate::fault_injection::FaultPoint;
+            if self.fault_set.should_fire(FaultPoint::DuckDbInvalidate) {
+                return Err(crate::fault_injection::fatal_invalidate_error());
+            }
+            if self.fault_set.should_fire(FaultPoint::DiskFull) {
+                return Err(crate::fault_injection::disk_full_error());
+            }
+        }
         let conn = self.write_turns_conn.clone();
         tokio::task::spawn_blocking(move || {
             let prepared: Vec<PreparedTurn> = turns.into_iter().map(prepare_turn).collect();
@@ -714,6 +724,16 @@ impl DuckDbBackend {
         turn_id: &str,
         patch: serde_json::Value,
     ) -> Result<()> {
+        #[cfg(feature = "fault-injection")]
+        {
+            use crate::fault_injection::FaultPoint;
+            if self.fault_set.should_fire(FaultPoint::DuckDbInvalidate) {
+                return Err(crate::fault_injection::fatal_invalidate_error());
+            }
+            if self.fault_set.should_fire(FaultPoint::DiskFull) {
+                return Err(crate::fault_injection::disk_full_error());
+            }
+        }
         let conn = self.write_turns_conn.clone();
         let turn_id = turn_id.to_string();
         tokio::task::spawn_blocking(move || {

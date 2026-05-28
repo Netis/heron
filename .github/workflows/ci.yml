@@ -67,6 +67,29 @@ jobs:
           CARGO_TERM_COLOR: always
         run: cargo test --workspace --quiet
 
+      - name: cargo test (fault-injection feature)
+        # Builds ts-storage-duckdb with the `fault-injection` feature and
+        # runs its concurrent_tests module, which contains the
+        # deterministic recovery tests that drive the PR#48-class
+        # "FATAL → reopen → every surface works" path. The feature is
+        # off by default in `cargo test --workspace` above so production
+        # builds and the headline test run see no extra code; this step
+        # exists to keep the recovery-path tests green.
+        working-directory: server
+        env:
+          CARGO_TERM_COLOR: always
+        run: cargo test -p ts-storage-duckdb --features fault-injection --quiet
+
+      - name: cargo test (schema-migration golden DBs)
+        # Locks in the auto-migration code in ts-storage-duckdb/src/schema.rs
+        # against silent regression. Tests synthesize the on-disk shape
+        # of older releases via DDL, run current init(), and assert the
+        # expected drift (columns added/dropped, legacy values rewritten).
+        working-directory: server
+        env:
+          CARGO_TERM_COLOR: always
+        run: cargo test -p ts-storage-duckdb --test migrations --quiet
+
       - name: cargo clippy (informational; not enforcing yet)
         working-directory: server
         # Clippy enforcement deferred — main has accumulated lint debt

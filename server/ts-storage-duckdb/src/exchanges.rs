@@ -74,6 +74,16 @@ impl DuckDbBackend {
         if exchanges.is_empty() {
             return Ok(());
         }
+        #[cfg(feature = "fault-injection")]
+        {
+            use crate::fault_injection::FaultPoint;
+            if self.fault_set.should_fire(FaultPoint::DuckDbInvalidate) {
+                return Err(crate::fault_injection::fatal_invalidate_error());
+            }
+            if self.fault_set.should_fire(FaultPoint::DiskFull) {
+                return Err(crate::fault_injection::disk_full_error());
+            }
+        }
         let conn = self.write_exchanges_conn.clone();
         tokio::task::spawn_blocking(move || {
             let prepared: Vec<PreparedExchange> =

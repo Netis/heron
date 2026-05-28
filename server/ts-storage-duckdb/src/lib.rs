@@ -4,6 +4,8 @@ mod calls;
 mod concurrent_tests;
 mod distincts;
 mod exchanges;
+#[cfg(feature = "fault-injection")]
+pub mod fault_injection;
 mod metrics;
 mod pool;
 mod retention;
@@ -56,6 +58,12 @@ pub struct DuckDbBackend {
     /// Captured at construction; used by `reopen_all_connections` to
     /// rebuild the reader pool at the same size.
     pub(crate) read_pool_size: usize,
+    /// Per-backend armed-fault set. Only present when the
+    /// `fault-injection` feature is enabled; shared by reference with
+    /// `read_pool` so writer-path and reader-path injections both see
+    /// the same set.
+    #[cfg(feature = "fault-injection")]
+    pub(crate) fault_set: fault_injection::FaultSet,
 }
 
 impl DuckDbBackend {
@@ -101,15 +109,30 @@ impl DuckDbBackend {
             pool_size
         );
 
+        #[cfg(feature = "fault-injection")]
+        let fault_set = fault_injection::FaultSet::new();
+
         Ok(Self {
             write_calls_conn: Arc::new(StdMutex::new(calls_writer)),
             write_turns_conn: Arc::new(StdMutex::new(turns_writer)),
             write_metrics_conn: Arc::new(StdMutex::new(metrics_writer)),
             write_exchanges_conn: Arc::new(StdMutex::new(exchanges_writer)),
-            read_pool: ReadPool::new(readers),
+            read_pool: ReadPool::new(
+                readers,
+                #[cfg(feature = "fault-injection")]
+                fault_set.clone(),
+            ),
             db_path: path.to_string(),
             read_pool_size: pool_size,
+            #[cfg(feature = "fault-injection")]
+            fault_set,
         })
+    }
+
+    /// Test-only accessor for the per-backend fault-injection set.
+    #[cfg(feature = "fault-injection")]
+    pub fn fault_set(&self) -> &fault_injection::FaultSet {
+        &self.fault_set
     }
 
     #[cfg(test)]
