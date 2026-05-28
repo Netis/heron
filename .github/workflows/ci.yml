@@ -1,10 +1,10 @@
 name: ci
 
-# Runs on the wuneng self-hosted runner — toolchain (rustup stable +
-# Node 20 + bun) is pre-installed in /home/ci on the VM. Internet egress
-# goes through the internal 100.115.8.61:8888 proxy (set in the runner's
-# .env), so any action that pulls from the network just works without
-# extra config.
+# Runs on the project's self-hosted runner — toolchain (rustup stable +
+# Node 20 + bun) is pre-installed on the runner host. Internet egress
+# goes through the configured internal proxy (set in the runner's `.env`),
+# so any action that pulls from the network just works without extra
+# config.
 
 on:
   pull_request:

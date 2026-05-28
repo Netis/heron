@@ -392,7 +392,7 @@ mod tests {
 
     #[tokio::test]
     async fn sweep_once_assigns_proxy_in_to_outer_leg() {
-        // Recreate the verified wuneng haproxy_glm5 pair shape and
+        // Recreate the verified production haproxy pair shape and
         // check the proxy_in role lands on the outer leg.
         let stub_inner = Arc::new(StubStorage {
             candidates: vec![
