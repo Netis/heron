@@ -24,12 +24,12 @@ fi
 
 DEMO_HOST="${DEMO_HOST:-10.40.7.104}"
 DEMO_USER="${DEMO_USER:-ts}"
-DEMO_SSH_KEY="${DEMO_SSH_KEY:-$HOME/.ssh/id_ed25519_tokenscope}"
+DEMO_SSH_KEY="${DEMO_SSH_KEY:-$HOME/.ssh/id_ed25519_heron}"
 DEMO_URL="${DEMO_URL:-http://10.40.7.104:3000/}"
 DEMO_JUMP_HOST="${DEMO_JUMP_HOST:-}"
 DEMO_JUMP_USER="${DEMO_JUMP_USER:-william}"
 DEMO_JUMP_KEY="${DEMO_JUMP_KEY:-$HOME/.ssh/id_ed25519_macbook_m5}"
-DEMO_REMOTE_DIR="/home/${DEMO_USER}/TokenScope"
+DEMO_REMOTE_DIR="/home/${DEMO_USER}/Heron"
 
 # ---------------------------------------------------------------------------
 # SSH helpers

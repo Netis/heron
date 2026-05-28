@@ -2,10 +2,10 @@
 //! represent the same logical LLM call observed at different network
 //! vantage points.
 //!
-//! Three (or more) scenarios produce duplicate turns in TokenScope:
+//! Three (or more) scenarios produce duplicate turns in Heron:
 //!
 //! 1. **Real proxy hops** — e.g. an external client → haproxy_glm5 container
-//!    → sglang container. Both legs cross interfaces TokenScope captures
+//!    → sglang container. Both legs cross interfaces Heron captures
 //!    so each becomes its own `AgentTurn`. The proxy_in leg strictly
 //!    contains the proxy_out leg in event time.
 //!

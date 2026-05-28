@@ -29,7 +29,7 @@
 # Usage
 # -----
 #   scripts/lint/check-secrets.sh                     # against $GITHUB_REPOSITORY or origin
-#   scripts/lint/check-secrets.sh Netis/TokenScope    # explicit
+#   scripts/lint/check-secrets.sh Netis/Heron    # explicit
 set -euo pipefail
 
 REPO="${1:-${GITHUB_REPOSITORY:-}}"

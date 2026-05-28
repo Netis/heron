@@ -1,6 +1,6 @@
 //! Per-record predicate: time window AND 5-tuple in either direction.
 //! Records that don't decode to TCP via `ts_protocol::de::decode` are
-//! dropped. (TokenScope is TCP-only today; ARP / ICMP / UDP / QUIC /
+//! dropped. (Heron is TCP-only today; ARP / ICMP / UDP / QUIC /
 //! malformed all fall through to "skip".)
 
 use ts_protocol::de::decode;

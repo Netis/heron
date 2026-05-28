@@ -4,7 +4,7 @@
 //! schema the request/response bodies follow and which endpoint handles them.
 //! It is **not** the vendor: Azure OpenAI, vLLM, Ollama and api.openai.com all
 //! speak the same `openai-chat` wire API despite being different vendors.
-//! (When TokenScope later needs to distinguish vendors, that will be a
+//! (When Heron later needs to distinguish vendors, that will be a
 //! separate field sourced from hostname / key prefix / route prefix.)
 //!
 //! Values use the compound `<vendor>-<api>` form so operators and storage

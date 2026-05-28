@@ -14,9 +14,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 TS_USER="ts"
-PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFtjiC3olMik26ZQRitCiOtUwrUtOcjBDJZfC6aHx1yV tokenscope-demo"
+PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFtjiC3olMik26ZQRitCiOtUwrUtOcjBDJZfC6aHx1yV heron-demo"
 
-echo -e "${GREEN}=== TokenScope Demo Server Setup ===${NC}"
+echo -e "${GREEN}=== Heron Demo Server Setup ===${NC}"
 
 # 1. Create ts user
 if id $TS_USER &>/dev/null; then
@@ -40,11 +40,11 @@ echo -e "${GREEN}SSH key installed${NC}"
 echo "Granting capture permissions..."
 # Allow ts to use tcpdump/libpcap without root
 if command -v setcap &>/dev/null; then
-    # If tokenscope binary exists, grant cap_net_raw
-    if [[ -f /root/tokenscope/bin/tokenscope ]]; then
-        cp /root/tokenscope/bin/tokenscope /home/$TS_USER/tokenscope-cap 2>/dev/null || true
-        setcap cap_net_raw,cap_net_admin=eip /home/$TS_USER/tokenscope-cap 2>/dev/null || true
-        chown $TS_USER:$TS_USER /home/$TS_USER/tokenscope-cap 2>/dev/null || true
+    # If heron binary exists, grant cap_net_raw
+    if [[ -f /root/heron/bin/heron ]]; then
+        cp /root/heron/bin/heron /home/$TS_USER/heron-cap 2>/dev/null || true
+        setcap cap_net_raw,cap_net_admin=eip /home/$TS_USER/heron-cap 2>/dev/null || true
+        chown $TS_USER:$TS_USER /home/$TS_USER/heron-cap 2>/dev/null || true
     fi
     echo -e "${GREEN}cap_net_raw granted${NC}"
 else
@@ -74,11 +74,11 @@ echo ""
 echo -e "${GREEN}=== Setup Complete ===${NC}"
 echo ""
 echo "Test from local machine (via jump host):"
-echo "  ssh -J william@172.16.103.73 -i ~/.ssh/id_ed25519_tokenscope ts@10.40.7.104"
+echo "  ssh -J william@172.16.103.73 -i ~/.ssh/id_ed25519_heron ts@10.40.7.104"
 echo ""
 echo "Next steps (run locally):"
 echo "  1. just demo ping         # verify SSH"
 echo "  2. just demo setup        # install just, bun, rust, claude, codex"
-echo "  3. just demo clone        # clone TokenScope repo"
+echo "  3. just demo clone        # clone Heron repo"
 echo "  4. just demo build        # build binary"
 echo "  5. just demo start        # start the service"
