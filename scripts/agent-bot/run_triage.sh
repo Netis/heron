@@ -38,15 +38,56 @@ Issue title: ${ISSUE_TITLE}
 Author: ${ISSUE_AUTHOR}
 EOF
 
+# Wait for LiteLLM to be reachable before burning a runner slot
+# inside claude --print. Caps at 30 min by default; configurable
+# via MAX_LITELLM_WAIT_SECONDS. See scripts/lib/litellm-wait.sh.
+LITELLM_WAIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/litellm-wait.sh"
+# shellcheck source=../lib/litellm-wait.sh
+source "$LITELLM_WAIT"
+wait_for_litellm || exit $?
+
 # Run claude in print mode against our LiteLLM-style endpoint.
-claude --print \
-  --allowed-tools Bash Read Grep Glob WebFetch \
-  --model "${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}" \
-  < "$PROMPT" > "$OUT" 2> /tmp/triage-stderr.log || {
+# Wrap in a retry loop that catches the specific case "claude
+# crashed because LiteLLM died mid-stream". Up to CLAUDE_RETRY_MAX
+# retries (default 2 → 3 attempts total). Triage is idempotent —
+# the input is just the issue body — so restart from scratch is
+# safe.
+CLAUDE_RETRY_MAX="${CLAUDE_RETRY_MAX:-2}"
+attempt=0
+claude_rc=0
+while true; do
+    set +e
+    claude --print \
+      --allowed-tools Bash Read Grep Glob WebFetch \
+      --model "${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}" \
+      < "$PROMPT" > "$OUT" 2> /tmp/triage-stderr.log
+    claude_rc=$?
+    set -e
+
+    [ "$claude_rc" -eq 0 ] && break
+
+    # claude failed. Was it because LiteLLM is down right now?
+    if ! litellm_appears_down; then
+        # LiteLLM is up; the failure is something else (rate limit,
+        # token budget, claude bug). Don't retry.
+        break
+    fi
+
+    if [ "$attempt" -ge "$CLAUDE_RETRY_MAX" ]; then
+        echo "::error::triage claude died $((attempt+1)) times with LiteLLM down each time; giving up" >&2
+        break
+    fi
+
+    attempt=$((attempt + 1))
+    echo "::warning::triage claude exited $claude_rc with LiteLLM down; waiting + retrying (attempt $((attempt+1))/$((CLAUDE_RETRY_MAX+1)))" >&2
+    wait_for_litellm || break
+done
+
+if [ "$claude_rc" -ne 0 ]; then
     echo "triage agent failed (see workflow log)" >&2
     cat /tmp/triage-stderr.log >&2
     exit 1
-}
+fi
 
 # Strict JSON parse: scan every line, keep ones that are valid JSON AND
 # carry a `verdict` field, take the last. This rejects lines inside

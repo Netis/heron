@@ -29,21 +29,17 @@ BASE_REF="$(gh pr view "$PR_NUMBER" --json baseRefName --jq .baseRefName)"
 export PR_NUMBER HEAD_SHA BASE_REF
 envsubst < "$WORKDIR/prompt.md" > "$PROMPT"
 
-# Pre-flight: verify LiteLLM is reachable AND our API key is
-# accepted. The key check is what tells us the secret is wired
-# correctly before we burn turns on the real agent run.
-if ! curl -fsS --max-time 5 \
-    -H "Authorization: Bearer ${ANTHROPIC_API_KEY:-}" \
-    "${ANTHROPIC_BASE_URL:-}/v1/models" >/dev/null 2>&1; then
-  # Pre-flight diagnostics MUST stay local — `post_review.py` is
-  # gated to skip posting when the agent exits non-zero, so this
-  # OUT file is consumed only by the workflow log. Endpoint URL +
-  # full curl trace go to the workflow log on the next two lines.
+# Pre-flight: wait until LiteLLM is reachable AND our API key is
+# accepted. The wait covers the common case where GLM-5 / LiteLLM
+# is restarting when this workflow fires; if it's still down after
+# 30 min (MAX_LITELLM_WAIT_SECONDS) the function returns 2 and we
+# pass through with the same diagnostic shape as before. Shared
+# helper in scripts/lib/litellm-wait.sh.
+LITELLM_WAIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/litellm-wait.sh"
+# shellcheck source=../lib/litellm-wait.sh
+source "$LITELLM_WAIT"
+if ! wait_for_litellm; then
   echo "ERROR: agent unavailable (pre-flight)" > "$OUT"
-  echo "pre-flight: backend unreachable at ${ANTHROPIC_BASE_URL:-<unset>}" >&2
-  curl -v --max-time 5 \
-    -H "Authorization: Bearer ${ANTHROPIC_API_KEY:-}" \
-    "${ANTHROPIC_BASE_URL:-}/v1/models" >&2 2>&1 || true
   exit 2
 fi
 
@@ -62,25 +58,56 @@ ALLOWED_TOOLS="$(grep -v '^#' "$WORKDIR/allowed_tools.txt" \
 # right after it gets consumed as an extra tool name and claude then
 # errors with "Input must be provided either through stdin or as a
 # prompt argument when using --print".
-timeout 1800 claude \
-  --print \
-  --model "${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}" \
-  --max-turns 60 \
-  --output-format text \
-  --permission-mode acceptEdits \
-  --allowed-tools "$ALLOWED_TOOLS" \
-  < "$PROMPT" \
-  > "$OUT" \
-  2> "$LOG" \
-  || {
-    rc=$?
-    echo "ERROR: agent exited with code $rc" >> "$LOG"
+#
+# Retry on transient LiteLLM mid-stream failures: if claude exits
+# non-zero AND the backend looks down right now (5xx / connect-
+# refused / timeout — NOT 4xx), wait for LiteLLM and re-run. Review
+# is idempotent (the OUT file just gets overwritten); restart from
+# scratch is safe. Up to CLAUDE_RETRY_MAX retries (default 2).
+CLAUDE_RETRY_MAX="${CLAUDE_RETRY_MAX:-2}"
+attempt=0
+claude_rc=0
+while true; do
+    set +e
+    timeout 1800 claude \
+      --print \
+      --model "${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}" \
+      --max-turns 60 \
+      --output-format text \
+      --permission-mode acceptEdits \
+      --allowed-tools "$ALLOWED_TOOLS" \
+      < "$PROMPT" \
+      > "$OUT" \
+      2> "$LOG"
+    claude_rc=$?
+    set -e
+
+    [ "$claude_rc" -eq 0 ] && break
+
+    if ! litellm_appears_down; then
+        # LiteLLM is up — failure is real (timeout, claude crash,
+        # rate limit, etc). Don't retry.
+        break
+    fi
+
+    if [ "$attempt" -ge "$CLAUDE_RETRY_MAX" ]; then
+        echo "::error::vivi claude died $((attempt+1)) times with LiteLLM down; giving up" >&2
+        break
+    fi
+
+    attempt=$((attempt + 1))
+    echo "::warning::vivi claude exited $claude_rc, LiteLLM down; waiting + retrying (attempt $((attempt+1))/$((CLAUDE_RETRY_MAX+1)))" >&2
+    wait_for_litellm || break
+done
+
+if [ "$claude_rc" -ne 0 ]; then
+    echo "ERROR: agent exited with code $claude_rc" >> "$LOG"
     # Don't synthesize a PR-bound failure summary here — post_review.py
     # is gated on AGENT_EXIT and will skip the PR entirely on non-zero.
     # The OUT file is left as-is (possibly empty) for workflow-log
     # consumption.
-    exit "$rc"
-  }
+    exit "$claude_rc"
+fi
 
 # Sanity: non-empty markdown with at least a `### Summary` heading.
 if ! grep -q '^### Summary' "$OUT"; then

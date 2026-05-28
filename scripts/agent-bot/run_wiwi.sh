@@ -46,6 +46,16 @@ You are **wiwi**, the dev agent. Implement the change requested by issue
   the fallback produces a single "wiwi: auto-commit" message that's
   useless to reviewers compared to your own intentional commit
   messages.
+- **You may be a RESUMED run.** If \`git log origin/main..HEAD\` shows
+  existing commits OR \`git status\` shows uncommitted edits when you
+  start, the previous attempt crashed mid-run (typically a LiteLLM /
+  GLM-5 hiccup) and the driver is retrying. Treat that state as your
+  starting point: do NOT redo work that's already committed; do
+  verify the partial state makes sense (read the diffs, build, run
+  tests); then continue toward the issue's acceptance criteria. If
+  the existing state is incoherent and you cannot make sense of it,
+  STOP and write to /tmp/wiwi-abort.txt explaining why so a human
+  can intervene.
 
 When done, write a brief summary to /tmp/wiwi-summary.md (Markdown) for
 the PR body. End it with the literal line:
@@ -54,6 +64,16 @@ the PR body. End it with the literal line:
 
 Issue title: ${ISSUE_TITLE}
 EOF
+
+# Wait for LiteLLM to be reachable before launching claude. Without
+# this, a transient GLM-5 / LiteLLM restart that happens during the
+# (often-15+ min) self-hosted runner queue wait kills the run
+# immediately and wastes the queue wait + branch-prep work. Caps at
+# 30 min by default; configurable via MAX_LITELLM_WAIT_SECONDS.
+LITELLM_WAIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/litellm-wait.sh"
+# shellcheck source=../lib/litellm-wait.sh
+source "$LITELLM_WAIT"
+wait_for_litellm || exit $?
 
 # Stream claude's output to BOTH the workflow log (stdout) and a
 # preserved file. Previously this was `> /tmp/wiwi-run.log 2>&1`,
@@ -69,13 +89,43 @@ EOF
 #
 # `tee` always exits 0, so we briefly drop `set -e` and capture
 # claude's actual exit via `${PIPESTATUS[0]}`.
-set +e
-stdbuf -oL claude --print \
-  --allowed-tools Bash Read Write Edit Grep Glob \
-  --model "${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}" \
-  < "$PROMPT" 2>&1 | stdbuf -oL tee /tmp/wiwi-run.log
-claude_exit=${PIPESTATUS[0]}
-set -e
+#
+# Retry on transient LiteLLM mid-stream failures: if claude exits
+# non-zero AND the backend now looks down (5xx / connect-refused /
+# timeout — not 4xx, which means LiteLLM is choosing to reject and
+# waiting won't help), wait for LiteLLM to come back and re-run
+# claude from scratch. The prompt above tells claude how to resume
+# from the partial state on disk. Up to CLAUDE_RETRY_MAX retries
+# (default 2 → 3 attempts total).
+CLAUDE_RETRY_MAX="${CLAUDE_RETRY_MAX:-2}"
+attempt=0
+claude_exit=0
+while true; do
+    set +e
+    stdbuf -oL claude --print \
+      --allowed-tools Bash Read Write Edit Grep Glob \
+      --model "${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}" \
+      < "$PROMPT" 2>&1 | stdbuf -oL tee /tmp/wiwi-run.log
+    claude_exit=${PIPESTATUS[0]}
+    set -e
+
+    [ "$claude_exit" -eq 0 ] && break
+
+    if ! litellm_appears_down; then
+        # LiteLLM is up — failure is something else (claude
+        # internal error, prompt issue, token budget). Don't retry.
+        break
+    fi
+
+    if [ "$attempt" -ge "$CLAUDE_RETRY_MAX" ]; then
+        echo "::error::wiwi claude died $((attempt+1)) times with LiteLLM down; giving up" >&2
+        break
+    fi
+
+    attempt=$((attempt + 1))
+    echo "::warning::wiwi claude exited $claude_exit, LiteLLM down; waiting + retrying (attempt $((attempt+1))/$((CLAUDE_RETRY_MAX+1)))" >&2
+    wait_for_litellm || break
+done
 
 if [ "$claude_exit" != "0" ]; then
   echo "wiwi run failed (claude exit=$claude_exit; see /tmp/wiwi-run.log)" >&2
