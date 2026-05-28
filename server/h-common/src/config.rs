@@ -771,7 +771,7 @@ fn default_sink_batch_size() -> usize {
 fn default_sink_flush_interval_ms() -> u64 {
     // 200 ms keeps the worst-case "row visible to a SELECT" under ~250 ms
     // when the producer is interval-bound (i.e. < 1000 calls/sec, the
-    // typical wuneng-class workload). At 200 ms the writer fires ~5×
+    // typical mid-size deployment workload). At 200 ms the writer fires ~5×
     // more often than at 1000 ms; each flush is ~5 ms (DuckDB appender),
     // so the extra wall-clock cost stays under 3 %.
     200

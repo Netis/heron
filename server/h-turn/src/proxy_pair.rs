@@ -97,7 +97,7 @@ pub const MAX_REQ_TIME_GAP_US: i64 = 100_000;
 /// jitter (<100us in practice). Real proxy hops — even the cheapest
 /// in-container ones — introduce at least 1ms of forwarding overhead, so
 /// 500us cleanly separates the two cases. Don't widen this without
-/// re-checking that the verified haproxy_glm5 turn pair from wuneng
+/// re-checking that the verified production haproxy turn pair
 /// (start_gap 2ms, end_gap 1ms) still classifies as strict-nesting.
 pub const MIRROR_TIME_TOLERANCE_US: i64 = 500;
 
@@ -182,8 +182,8 @@ impl ProxyGroup {
 /// Content fingerprint (everything that must agree across all members
 /// of a group) — used to bucket candidates before time-clustering.
 ///
-/// Intentionally NOT in the fingerprint (all observed in live wuneng
-/// data, mirrors the same exclusions in the front-end call-level
+/// Intentionally NOT in the fingerprint (all observed in live
+/// production capture data, mirrors the same exclusions in the front-end call-level
 /// `lib/call-pair.ts::contentKey`):
 ///
 /// * `wire_api` — LiteLLM and similar proxies translate API styles
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn proxy_hop_strict_nesting_yields_two_member_group() {
-        // Mirrors the verified haproxy_glm5 pair from wuneng: outer
+        // Mirrors a verified production haproxy pair: outer
         // proxy_in starts 2us earlier and ends 1us later than the
         // inner upstream call.
         let outer = mk(

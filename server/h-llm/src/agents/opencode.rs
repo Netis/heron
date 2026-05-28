@@ -2,7 +2,7 @@
 //!
 //! opencode (https://opencode.ai) is a TypeScript/Bun CLI that talks the
 //! OpenAI Chat Completions wire shape. Recent releases (≥ 1.14.x as
-//! verified against captured pcaps on wuneng) include a stable session
+//! verified against captured pcaps) include a stable session
 //! identifier on every request:
 //!
 //!   User-Agent: opencode/1.14.50 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13

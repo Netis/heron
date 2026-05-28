@@ -42,7 +42,7 @@ describe("groupCalls", () => {
   })
 
   it("folds a 2-leg pair (client→litellm + litellm→upstream)", () => {
-    // Mirrors the user's wuneng case: seq 1 → :4000 e2e=1701ms,
+    // Mirrors a captured production case: seq 1 → :4000 e2e=1701ms,
     // seq 2 → :9008 e2e=1645ms, ~50ms apart on request_time.
     const c1 = call({
       id: "leg1",
@@ -152,7 +152,7 @@ describe("groupCalls", () => {
   })
 
   it("pairs even when request_path differs (proxy URL rewrite)", () => {
-    // Real-world LiteLLM case from wuneng: client SDK sends
+    // Real-world LiteLLM case from a production capture: client SDK sends
     // /v1/chat/completions to LiteLLM (port 4000), LiteLLM forwards
     // bare /chat/completions to the upstream (port 9008). Same call,
     // different captured paths.
@@ -174,7 +174,7 @@ describe("groupCalls", () => {
   })
 
   it("pairs even when model differs (LiteLLM alias rewrite)", () => {
-    // Live wuneng case: client SDK sends `glm5` (alias) to LiteLLM:4000,
+    // Live captured case: client SDK sends `glm5` (alias) to LiteLLM:4000,
     // LiteLLM rewrites it to `GLM-5.1` for the upstream. Same logical
     // call, different model field per leg. Model rewrite IS surfaced
     // in the Proxy view; pairing must succeed regardless.
