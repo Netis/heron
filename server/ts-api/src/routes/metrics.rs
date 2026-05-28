@@ -1,15 +1,14 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::Serialize;
 use ts_storage::query::{MetricsModelsQuery, MetricsSummaryQuery, MetricsTimeseriesQuery};
-use ts_storage::StorageBackend;
 
 use crate::extractors::Query;
 use crate::params::*;
 use crate::response::{ApiError, ApiResponse};
+use crate::AppState;
 
 const VALID_GRANULARITIES: &[&str] = &["10s", "1m", "5m", "1h"];
 
@@ -27,7 +26,7 @@ struct TimeseriesData {
 }
 
 pub async fn timeseries(
-    State(storage): State<Arc<dyn StorageBackend>>,
+    State(state): State<AppState>,
     Query(params): Query<TimeseriesParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     if !VALID_GRANULARITIES.contains(&params.granularity.as_str()) {
@@ -56,7 +55,7 @@ pub async fn timeseries(
         group_by: params.group_by,
     };
 
-    let rows = storage.query_metrics_timeseries(&query).await?;
+    let rows = state.storage.query_metrics_timeseries(&query).await?;
 
     // Pivot: rows (each with timestamp + group + values) -> timestamps[] + series[]
     let mut timestamps: Vec<i64> = Vec::new();
@@ -103,14 +102,14 @@ pub async fn timeseries(
 }
 
 pub async fn summary(
-    State(storage): State<Arc<dyn StorageBackend>>,
+    State(state): State<AppState>,
     Query(params): Query<SummaryParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = MetricsSummaryQuery {
         time_range: to_time_range(params.start, params.end),
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip),
     };
-    let row = storage.query_metrics_summary(&query).await?;
+    let row = state.storage.query_metrics_summary(&query).await?;
     Ok(ApiResponse::ok(row))
 }
 
@@ -120,7 +119,7 @@ struct ModelsData {
 }
 
 pub async fn models(
-    State(storage): State<Arc<dyn StorageBackend>>,
+    State(state): State<AppState>,
     Query(params): Query<ModelsParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = MetricsModelsQuery {
@@ -130,6 +129,6 @@ pub async fn models(
         sort_order: params.sort_order,
         limit: params.limit,
     };
-    let rows = storage.query_metrics_models(&query).await?;
+    let rows = state.storage.query_metrics_models(&query).await?;
     Ok(ApiResponse::ok(ModelsData { models: rows }))
 }

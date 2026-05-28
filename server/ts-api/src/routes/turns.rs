@@ -1,14 +1,12 @@
-use std::sync::Arc;
-
 use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use ts_storage::query::TurnsQuery;
-use ts_storage::StorageBackend;
 
 use crate::extractors::{Path, Query};
 use crate::params::*;
 use crate::response::{ApiError, ApiResponse};
+use crate::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct TurnsParams {
@@ -50,7 +48,7 @@ fn default_page_size() -> u32 {
 }
 
 pub async fn list(
-    State(storage): State<Arc<dyn StorageBackend>>,
+    State(state): State<AppState>,
     Query(params): Query<TurnsParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let page_size = params.page_size.min(200);
@@ -66,24 +64,24 @@ pub async fn list(
         page_size,
     };
 
-    let page = storage.query_turns(&query).await?;
+    let page = state.storage.query_turns(&query).await?;
     Ok(ApiResponse::ok(page))
 }
 
 pub async fn detail(
-    State(storage): State<Arc<dyn StorageBackend>>,
+    State(state): State<AppState>,
     Path(turn_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    match storage.query_turn_by_id(&turn_id).await? {
+    match state.storage.query_turn_by_id(&turn_id).await? {
         Some(detail) => Ok(ApiResponse::ok(detail)),
         None => Err(ApiError::NotFound(format!("turn not found: {turn_id}"))),
     }
 }
 
 pub async fn calls(
-    State(storage): State<Arc<dyn StorageBackend>>,
+    State(state): State<AppState>,
     Path(turn_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let items = storage.query_turn_calls(&turn_id).await?;
+    let items = state.storage.query_turn_calls(&turn_id).await?;
     Ok(ApiResponse::ok(items))
 }

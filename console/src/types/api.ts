@@ -141,6 +141,26 @@ export interface TurnCallItem {
 
 // Call detail types
 
+// Data sources
+
+export type SourceKind = "pcap" | "pcap_file" | "cloud_probe_receiver" | "cloud_probe_peer"
+
+export interface SourceSnapshot {
+  key: string
+  kind: SourceKind
+  endpoint: string
+  parent_key: string | null
+  first_seen_ms: number
+  last_seen_ms: number
+  packets: number
+  heartbeats: number
+}
+
+export interface SourcesResponse {
+  as_of_ms: number
+  sources: SourceSnapshot[]
+}
+
 export interface CallDetail {
   id: string
   request_time: number

@@ -7,6 +7,7 @@ import { TrafficPage } from "@/pages/traffic"
 import { ErrorsPage } from "@/pages/errors"
 import { ModelsPage } from "@/pages/models"
 import { RequestsPage } from "@/pages/requests"
+import { SourcesPage } from "@/pages/sources"
 import { TurnsPage } from "@/pages/turns"
 
 const queryClient = new QueryClient({
@@ -31,6 +32,7 @@ export default function App() {
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/requests" element={<RequestsPage />} />
             <Route path="/turns" element={<TurnsPage />} />
+            <Route path="/sources" element={<SourcesPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

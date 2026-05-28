@@ -12,6 +12,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use ts_common::config::{AppConfig, CaptureSourceConfig, PipelineDef};
 use ts_common::internal_metrics::{Metric, MetricsReporter, MetricsSystem};
+use ts_common::source_registry::SourceRegistry;
 use ts_storage::create_backend;
 
 #[cfg(feature = "console")]
@@ -204,6 +205,11 @@ async fn main() {
     // both drop out when this fires (Ctrl+C, pipeline failure, etc.).
     let cancel = CancellationToken::new();
 
+    // Runtime catalog of data sources, shared between capture (which
+    // touches it on every packet) and the API layer (which snapshots it
+    // for `/api/sources`).
+    let source_registry = SourceRegistry::new();
+
     // Initialize storage backend
     let storage = match create_backend(&config.storage) {
         Ok(backend) => backend,
@@ -228,9 +234,12 @@ async fn main() {
     // Bind API server (warn and continue if port is occupied)
     match ts_api::bind(&config.api).await {
         Ok(listener) => {
-            let api_storage = storage.clone();
+            let api_state = ts_api::AppState {
+                storage: storage.clone(),
+                sources: source_registry.clone(),
+            };
             tokio::spawn(async move {
-                let router = ts_api::router(api_storage);
+                let router = ts_api::router(api_state);
                 #[cfg(feature = "console")]
                 let router = router.fallback(console::static_handler);
                 if let Err(e) = axum::serve(listener, router).await {
@@ -348,7 +357,11 @@ async fn main() {
                 .enumerate()
                 .zip(source_metrics.into_iter())
             {
-                let source = match ts_capture::build_source(source_cfg, dump_cfg.clone()) {
+                let source = match ts_capture::build_source(
+                    source_cfg,
+                    dump_cfg.clone(),
+                    source_registry.clone(),
+                ) {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::error!(

@@ -7,6 +7,7 @@
 //! keybit) is currently discarded — only the packet bytes and timestamps
 //! propagate downstream.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -16,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use zeromq::{PullSocket, Socket, SocketRecv, ZmqMessage};
 
 use ts_common::internal_metrics::{Metric, MetricsWorker};
+use ts_common::source_registry::{self, SourceRegistry};
 use ts_common::throttle::ThrottledWarn;
 
 use crate::heartbeat::HeartbeatTracker;
@@ -136,14 +138,21 @@ pub struct CloudProbeSource {
     endpoint: String,
     recv_hwm: i32,
     dump_cfg: Option<PacketDumperConfig>,
+    registry: Arc<SourceRegistry>,
 }
 
 impl CloudProbeSource {
-    pub fn new(endpoint: String, recv_hwm: i32, dump_cfg: Option<PacketDumperConfig>) -> Self {
+    pub fn new(
+        endpoint: String,
+        recv_hwm: i32,
+        dump_cfg: Option<PacketDumperConfig>,
+        registry: Arc<SourceRegistry>,
+    ) -> Self {
         Self {
             endpoint,
             recv_hwm,
             dump_cfg,
+            registry,
         }
     }
 }
@@ -158,6 +167,7 @@ impl CaptureSource for CloudProbeSource {
     ) -> crate::Result<()> {
         let endpoint = self.endpoint.clone();
         let recv_hwm = self.recv_hwm;
+        let registry = self.registry.clone();
 
         // Best-effort dumper setup; failure here only disables dumping.
         let mut dumper =
@@ -204,6 +214,8 @@ impl CaptureSource for CloudProbeSource {
                                 Ok((uuid, pkts)) => {
                                     metrics.counter(Metric::CaptureBatchesReceived).inc();
                                     batch_count += 1;
+                                    // One registry peer entry per UUID; idempotent.
+                                    registry.ensure_peer(&uuid, &endpoint);
                                     for mut pkt in pkts {
                                         pkt.stream_id = uuid.clone();
                                         let is_hb = pkt.is_heartbeat();
@@ -228,6 +240,11 @@ impl CaptureSource for CloudProbeSource {
                                             metrics
                                                 .counter(Metric::CaptureHeartbeatsEmitted)
                                                 .inc();
+                                            registry.touch(
+                                                &uuid,
+                                                source_registry::now_ms(),
+                                                true,
+                                            );
                                             hb_count += 1;
                                         }
 
@@ -247,6 +264,11 @@ impl CaptureSource for CloudProbeSource {
                                             );
                                             return Ok(());
                                         }
+                                        registry.touch(
+                                            &uuid,
+                                            source_registry::now_ms(),
+                                            is_hb,
+                                        );
                                         if is_hb {
                                             metrics
                                                 .counter(Metric::CaptureHeartbeatsEmitted)
@@ -496,6 +518,9 @@ mod tests {
                     Metric::CapturePacketsDropped,
                     Metric::CaptureBatchesReceived,
                     Metric::CaptureBatchesDropped,
+                    Metric::CaptureHeartbeatsEmitted,
+                    Metric::CaptureSourceErrors,
+                    Metric::CaptureDumpErrors,
                 ],
             )
         }
@@ -523,7 +548,12 @@ mod tests {
             let (tx, mut rx) = mpsc::channel(16);
             let cancel = CancellationToken::new();
 
-            let source = Box::new(CloudProbeSource::new(endpoint.clone(), 100, None));
+            let source = Box::new(CloudProbeSource::new(
+                endpoint.clone(),
+                100,
+                None,
+                SourceRegistry::new(),
+            ));
             let metrics = test_metrics();
             let cancel_clone = cancel.clone();
             let handle = tokio::spawn(async move {
@@ -563,6 +593,92 @@ mod tests {
             assert!(result.is_ok());
         }
 
+        /// Build a batch with a specific UUID for registry-aware tests.
+        fn build_batch_with_uuid(uuid: [u8; 16], packets: &[(u32, u32, &[u8])]) -> Vec<u8> {
+            let mut v = Vec::with_capacity(BATCH_HDR_LEN);
+            v.extend_from_slice(&2u16.to_be_bytes()); // version
+            v.extend_from_slice(&(packets.len() as u16).to_be_bytes()); // pkts_num
+            v.extend_from_slice(&0u32.to_be_bytes()); // keybit
+            v.extend_from_slice(&uuid);
+            for (tv_sec, tv_usec, payload) in packets {
+                append_packet(&mut v, *tv_sec, *tv_usec, payload, 0);
+            }
+            v
+        }
+
+        #[tokio::test]
+        async fn integration_registry_tracks_distinct_uuids() {
+            let port = pick_free_port();
+            let endpoint = format!("tcp://127.0.0.1:{port}");
+
+            let (tx, mut rx) = mpsc::channel(32);
+            let cancel = CancellationToken::new();
+            let registry = SourceRegistry::new();
+            // Simulate the startup-time static registration that factory.rs
+            // will perform so the snapshot below carries the receiver entry.
+            registry.register_static(
+                &endpoint,
+                ts_common::source_registry::SourceKind::CloudProbeReceiver,
+                &endpoint,
+                None,
+            );
+
+            let source = Box::new(CloudProbeSource::new(
+                endpoint.clone(),
+                100,
+                None,
+                registry.clone(),
+            ));
+            let metrics = test_metrics();
+            let cancel_clone = cancel.clone();
+            let handle = tokio::spawn(async move {
+                source
+                    .run(RoutingSender::single(tx), metrics, cancel_clone)
+                    .await
+            });
+
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let mut pusher = PushSocket::new();
+            pusher.connect(&endpoint).await.unwrap();
+
+            let uuid_a = [0xAA; 16];
+            let uuid_b = [0xBB; 16];
+            let batch_a = build_batch_with_uuid(uuid_a, &[(1, 0, &[0x01][..])]);
+            let batch_b = build_batch_with_uuid(uuid_b, &[(2, 0, &[0x02][..]), (3, 0, &[0x03][..])]);
+            pusher.send(ZmqMessage::from(batch_a)).await.unwrap();
+            pusher.send(ZmqMessage::from(batch_b)).await.unwrap();
+
+            // Drain packets until idle. Tight tv_sec gaps can cause the
+            // HeartbeatTracker to synthesize an extra HB for uuid_b between
+            // the two real packets, so we keep draining until a short
+            // timeout so all forwards are processed before the snapshot.
+            let mut drained = 0;
+            loop {
+                match tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv())
+                    .await
+                {
+                    Ok(Some(_)) => drained += 1,
+                    _ => break,
+                }
+            }
+            assert!(drained >= 3, "expected at least 3 packets, got {drained}");
+
+            let snap = registry.snapshot();
+            assert_eq!(snap.len(), 3, "receiver + 2 peer entries expected");
+            let peer_a_key = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+            let peer_b_key = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+            let peer_a = snap.iter().find(|s| s.key == peer_a_key).unwrap();
+            let peer_b = snap.iter().find(|s| s.key == peer_b_key).unwrap();
+            assert_eq!(peer_a.parent_key.as_deref(), Some(endpoint.as_str()));
+            assert_eq!(peer_b.parent_key.as_deref(), Some(endpoint.as_str()));
+            assert_eq!(peer_a.packets, 1);
+            assert_eq!(peer_b.packets, 2);
+
+            cancel.cancel();
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+        }
+
         #[tokio::test]
         async fn integration_malformed_batch_is_dropped() {
             let port = pick_free_port();
@@ -571,7 +687,12 @@ mod tests {
             let (tx, mut rx) = mpsc::channel(16);
             let cancel = CancellationToken::new();
 
-            let source = Box::new(CloudProbeSource::new(endpoint.clone(), 100, None));
+            let source = Box::new(CloudProbeSource::new(
+                endpoint.clone(),
+                100,
+                None,
+                SourceRegistry::new(),
+            ));
             let metrics = test_metrics();
             let cancel_clone = cancel.clone();
             let handle = tokio::spawn(async move {

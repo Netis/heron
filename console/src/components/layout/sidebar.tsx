@@ -7,6 +7,7 @@ import {
   Cpu,
   List,
   GitBranch,
+  Radio,
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react"
@@ -24,6 +25,7 @@ const navItems = [
   { to: "/models", icon: Cpu, label: "Models" },
   { to: "/requests", icon: List, label: "Requests" },
   { to: "/turns", icon: GitBranch, label: "Agent Turns" },
+  { to: "/sources", icon: Radio, label: "Sources" },
 ]
 
 export function Sidebar() {

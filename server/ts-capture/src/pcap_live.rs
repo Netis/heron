@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -7,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing;
 
 use ts_common::internal_metrics::{Metric, MetricsWorker};
+use ts_common::source_registry::{self, SourceRegistry};
 use ts_common::throttle::ThrottledWarn;
 
 const ERR_WARN_THROTTLE: Duration = Duration::from_secs(5);
@@ -41,6 +43,7 @@ pub struct PcapLiveSource {
     snaplen: u32,
     stream_id: String,
     dump_cfg: Option<PacketDumperConfig>,
+    registry: Arc<SourceRegistry>,
 }
 
 impl PcapLiveSource {
@@ -50,6 +53,7 @@ impl PcapLiveSource {
         snaplen: u32,
         stream_id: String,
         dump_cfg: Option<PacketDumperConfig>,
+        registry: Arc<SourceRegistry>,
     ) -> Self {
         Self {
             interface,
@@ -57,6 +61,7 @@ impl PcapLiveSource {
             snaplen,
             stream_id,
             dump_cfg,
+            registry,
         }
     }
 }
@@ -75,6 +80,7 @@ impl CaptureSource for PcapLiveSource {
         let stream_id = self.stream_id.clone();
         let dump_cfg = self.dump_cfg.clone();
         let dumper_metrics = metrics.clone();
+        let registry = self.registry.clone();
 
         let result = tokio::task::spawn_blocking(move || -> crate::Result<()> {
             // Best-effort: open the packet dumper if configured. A failure to
@@ -169,6 +175,7 @@ impl CaptureSource for PcapLiveSource {
                                 break;
                             }
                             metrics.counter(Metric::CaptureHeartbeatsEmitted).inc();
+                            registry.touch(&stream_id, source_registry::now_ms(), true);
                             last_hb_ts = raw.timestamp_us;
                         }
 
@@ -183,6 +190,7 @@ impl CaptureSource for PcapLiveSource {
 
                         count += 1;
                         metrics.counter(Metric::CapturePacketsReceived).inc();
+                        registry.touch(&stream_id, source_registry::now_ms(), false);
                     }
                     Err(pcap::Error::TimeoutExpired) => {
                         // Periodically update drop stats during idle.
@@ -209,6 +217,7 @@ impl CaptureSource for PcapLiveSource {
                                     break;
                                 }
                                 metrics.counter(Metric::CaptureHeartbeatsEmitted).inc();
+                                registry.touch(&stream_id, source_registry::now_ms(), true);
                                 last_hb_ts = hb_ts;
                             }
                         }

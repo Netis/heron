@@ -1,14 +1,12 @@
-use std::sync::Arc;
-
 use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use ts_storage::query::CallsQuery;
-use ts_storage::StorageBackend;
 
 use crate::extractors::{Path, Query};
 use crate::params::*;
 use crate::response::{ApiError, ApiResponse};
+use crate::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct CallsParams {
@@ -48,7 +46,7 @@ fn default_page_size() -> u32 {
 }
 
 pub async fn list(
-    State(storage): State<Arc<dyn StorageBackend>>,
+    State(state): State<AppState>,
     Query(params): Query<CallsParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let page_size = params.page_size.min(200);
@@ -71,15 +69,15 @@ pub async fn list(
         page_size,
     };
 
-    let page = storage.query_calls(&query).await?;
+    let page = state.storage.query_calls(&query).await?;
     Ok(ApiResponse::ok(page))
 }
 
 pub async fn detail(
-    State(storage): State<Arc<dyn StorageBackend>>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    match storage.query_call_by_id(&id).await? {
+    match state.storage.query_call_by_id(&id).await? {
         Some(detail) => Ok(ApiResponse::ok(detail)),
         None => Err(ApiError::NotFound(format!("call not found: {id}"))),
     }
@@ -92,9 +90,10 @@ mod tests {
     use http_body_util::BodyExt;
     use serde_json::Value;
     use tower::ServiceExt;
+    use ts_common::source_registry::SourceRegistry;
     use ts_storage::duckdb::DuckDbBackend;
 
-    use crate::router;
+    use crate::{router, AppState};
 
     #[tokio::test]
     async fn invalid_status_code_returns_json_envelope() {
@@ -103,7 +102,10 @@ mod tests {
             .await
             .unwrap();
         let storage: std::sync::Arc<dyn ts_storage::StorageBackend> = std::sync::Arc::new(backend);
-        let app = router(storage);
+        let app = router(AppState {
+            storage,
+            sources: SourceRegistry::new(),
+        });
 
         let resp = app
             .oneshot(

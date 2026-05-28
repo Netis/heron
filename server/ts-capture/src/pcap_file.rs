@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -7,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing;
 
 use ts_common::internal_metrics::{Metric, MetricsWorker};
+use ts_common::source_registry::{self, SourceRegistry};
 
 use crate::packet::RawPacket;
 use crate::pcap_dump::{PacketDumper, PacketDumperConfig};
@@ -18,14 +20,21 @@ pub struct PcapFileSource {
     path: PathBuf,
     stream_id: String,
     dump_cfg: Option<PacketDumperConfig>,
+    registry: Arc<SourceRegistry>,
 }
 
 impl PcapFileSource {
-    pub fn new(path: PathBuf, stream_id: String, dump_cfg: Option<PacketDumperConfig>) -> Self {
+    pub fn new(
+        path: PathBuf,
+        stream_id: String,
+        dump_cfg: Option<PacketDumperConfig>,
+        registry: Arc<SourceRegistry>,
+    ) -> Self {
         Self {
             path,
             stream_id,
             dump_cfg,
+            registry,
         }
     }
 }
@@ -42,6 +51,7 @@ impl CaptureSource for PcapFileSource {
         let stream_id = self.stream_id.clone();
         let dump_cfg = self.dump_cfg.clone();
         let dumper_metrics = metrics.clone();
+        let registry = self.registry.clone();
 
         // Run pcap reading on a blocking thread since next_packet() is blocking.
         let result = tokio::task::spawn_blocking(move || -> crate::Result<()> {
@@ -94,6 +104,7 @@ impl CaptureSource for PcapFileSource {
 
                         count += 1;
                         metrics.counter(Metric::CapturePacketsReceived).add(1);
+                        registry.touch(&stream_id, source_registry::now_ms(), false);
                     }
                     Err(pcap::Error::NoMorePackets) => {
                         tracing::debug!("pcap-file: end of file reached");
@@ -148,6 +159,7 @@ mod tests {
             PathBuf::from("/nonexistent/test.pcap"),
             "test".to_string(),
             None,
+            SourceRegistry::new(),
         );
         let (tx, _rx) = mpsc::channel(16);
         let cancel = CancellationToken::new();
@@ -180,7 +192,7 @@ mod tests {
         let path = dir.path().join("truncated.pcap");
         std::fs::write(&path, &data).unwrap();
 
-        let source = PcapFileSource::new(path, "test".to_string(), None);
+        let source = PcapFileSource::new(path, "test".to_string(), None, SourceRegistry::new());
         let (tx, _rx) = mpsc::channel(16);
         let cancel = CancellationToken::new();
         let result = Box::new(source)
@@ -225,7 +237,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(1);
         drop(rx);
 
-        let source = PcapFileSource::new(path, "test".to_string(), None);
+        let source = PcapFileSource::new(path, "test".to_string(), None, SourceRegistry::new());
         let cancel = CancellationToken::new();
         let result = Box::new(source)
             .run(RoutingSender::single(tx), test_metrics(), cancel)
@@ -243,7 +255,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel(); // Pre-cancel
 
-        let source = PcapFileSource::new(path, "test".to_string(), None);
+        let source = PcapFileSource::new(path, "test".to_string(), None, SourceRegistry::new());
         let result = Box::new(source)
             .run(RoutingSender::single(tx), test_metrics(), cancel)
             .await;
@@ -258,7 +270,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(16);
         let cancel = CancellationToken::new();
-        let source = PcapFileSource::new(path, "test".to_string(), None);
+        let source = PcapFileSource::new(path, "test".to_string(), None, SourceRegistry::new());
         let result = Box::new(source)
             .run(RoutingSender::single(tx), test_metrics(), cancel)
             .await;
