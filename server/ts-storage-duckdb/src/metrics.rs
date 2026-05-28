@@ -219,6 +219,16 @@ impl DuckDbBackend {
         if metrics.is_empty() {
             return Ok(());
         }
+        #[cfg(feature = "fault-injection")]
+        {
+            use crate::fault_injection::FaultPoint;
+            if self.fault_set.should_fire(FaultPoint::DuckDbInvalidate) {
+                return Err(crate::fault_injection::fatal_invalidate_error());
+            }
+            if self.fault_set.should_fire(FaultPoint::DiskFull) {
+                return Err(crate::fault_injection::disk_full_error());
+            }
+        }
         let conn = self.write_metrics_conn.clone();
         tokio::task::spawn_blocking(move || {
             let prepared: Vec<PreparedMetric> = metrics.into_iter().map(prepare_metric).collect();
@@ -296,6 +306,16 @@ impl DuckDbBackend {
     pub(crate) async fn write_finish_metrics(&self, metrics: Vec<LlmFinishMetric>) -> Result<()> {
         if metrics.is_empty() {
             return Ok(());
+        }
+        #[cfg(feature = "fault-injection")]
+        {
+            use crate::fault_injection::FaultPoint;
+            if self.fault_set.should_fire(FaultPoint::DuckDbInvalidate) {
+                return Err(crate::fault_injection::fatal_invalidate_error());
+            }
+            if self.fault_set.should_fire(FaultPoint::DiskFull) {
+                return Err(crate::fault_injection::disk_full_error());
+            }
         }
         // Shares the metrics writer Mutex with `write_metrics` so the two
         // long/wide rollups for one bucket flush serialize against each other

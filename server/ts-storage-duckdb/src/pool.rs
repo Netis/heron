@@ -27,10 +27,15 @@ struct ReadPoolInner {
 pub(crate) struct ReadPool {
     inner: Arc<StdMutex<Arc<ReadPoolInner>>>,
     semaphore: Arc<Semaphore>,
+    #[cfg(feature = "fault-injection")]
+    fault_set: crate::fault_injection::FaultSet,
 }
 
 impl ReadPool {
-    pub(crate) fn new(conns: Vec<Connection>) -> Self {
+    pub(crate) fn new(
+        conns: Vec<Connection>,
+        #[cfg(feature = "fault-injection")] fault_set: crate::fault_injection::FaultSet,
+    ) -> Self {
         let size = conns.len();
         let inner = Arc::new(ReadPoolInner {
             conns: StdMutex::new(conns),
@@ -38,10 +43,19 @@ impl ReadPool {
         Self {
             inner: Arc::new(StdMutex::new(inner)),
             semaphore: Arc::new(Semaphore::new(size)),
+            #[cfg(feature = "fault-injection")]
+            fault_set,
         }
     }
 
     pub(crate) async fn acquire(&self) -> Result<PooledConn> {
+        #[cfg(feature = "fault-injection")]
+        {
+            use crate::fault_injection::FaultPoint;
+            if self.fault_set.should_fire(FaultPoint::ReadPoolPoisoned) {
+                return Err(crate::fault_injection::read_pool_poisoned_error());
+            }
+        }
         let permit = self
             .semaphore
             .clone()

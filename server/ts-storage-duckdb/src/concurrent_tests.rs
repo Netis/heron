@@ -313,3 +313,169 @@ async fn reopen_all_connections_keeps_reads_and_writes_alive() {
         "post-reopen writes must persist and be queryable"
     );
 }
+
+// Deterministic counterpart to the test above. Where that one can only
+// say "if we call reopen, downstream surfaces keep working", this one
+// drives the actual sequence the production sweeper sees:
+//
+//   1. A write fails with a FATAL invalidation,
+//   2. `reopen_all_connections` rebuilds the writer + reader set,
+//   3. Subsequent writes and reads on every code path succeed.
+//
+// PR#48 was missed because the prod failure could not be reproduced from
+// a unit test (real DuckDB FATAL needs real load pressure). The
+// fault-injection path closes that gap: armed faults look identical to
+// the real FATAL from the recovery code's perspective.
+#[cfg(feature = "fault-injection")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reopen_recovers_from_injected_duckdb_invalidate() {
+    use crate::fault_injection::{FaultGuard, FaultPoint};
+
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("reopen-injected.duckdb");
+    let backend =
+        Arc::new(DuckDbBackend::open_with_pool(path.to_str().unwrap(), 2).unwrap());
+    backend.init().await.unwrap();
+
+    // Baseline write, before any fault — exercises the writer set.
+    backend.write_turns(vec![mk_turn(0)]).await.unwrap();
+
+    // ARM: every write path now synthesizes a FATAL invalidation error
+    // identical in shape to what DuckDB returns when its in-process
+    // instance dies.
+    {
+        let _guard = FaultGuard::arm(backend.fault_set(), FaultPoint::DuckDbInvalidate);
+        assert!(backend.fault_set().should_fire(FaultPoint::DuckDbInvalidate));
+
+        let err = backend
+            .write_turns(vec![mk_turn(1)])
+            .await
+            .expect_err("write_turns must surface the injected FATAL");
+        assert!(
+            format!("{err}").contains("FATAL"),
+            "injected error message must mention FATAL: got {err}"
+        );
+
+        let err = backend
+            .write_calls(vec![mk_call(0)])
+            .await
+            .expect_err("write_calls must surface the injected FATAL");
+        assert!(format!("{err}").contains("FATAL"));
+
+        let err = backend
+            .write_metrics(vec![mk_metric(0)])
+            .await
+            .expect_err("write_metrics must surface the injected FATAL");
+        assert!(format!("{err}").contains("FATAL"));
+
+        // Recover. reopen_all_connections itself is NOT gated by the
+        // fault — it must succeed even while the fault is armed,
+        // because in production the sweeper invokes reopen *because*
+        // writes are FATAL'ing.
+        backend.reopen_all_connections().await.unwrap();
+        // _guard drops here, disarming DuckDbInvalidate.
+    }
+
+    assert!(
+        !backend.fault_set().should_fire(FaultPoint::DuckDbInvalidate),
+        "FaultGuard::drop must disarm"
+    );
+
+    // Post-recovery: every writer mutex must accept fresh work, and
+    // every reader path (turn list, distinct-agent-kinds — backed by
+    // the pool that `reopen_all_connections` is supposed to have fully
+    // replaced) must serve the new row plus the pre-fault baseline.
+    backend.write_turns(vec![mk_turn(2)]).await.unwrap();
+    backend.write_calls(vec![mk_call(0)]).await.unwrap();
+    backend.write_metrics(vec![mk_metric(0)]).await.unwrap();
+
+    let turns_q = TurnsQuery {
+        time_range: TimeRange {
+            start_us: 1_700_000_000_000_000 - 1_000_000,
+            end_us: 1_700_000_000_000_000 + 60_000_000_000,
+        },
+        filter: DimensionFilter::default(),
+        client_ips: vec![],
+        server_ports: vec![],
+        statuses: vec![],
+        agent_kinds: vec![],
+        sort_by: "start_time".into(),
+        sort_order: "desc".into(),
+        page: 1,
+        page_size: 50,
+        include_proxy_hops: false,
+    };
+    let page = backend.query_turns(&turns_q).await.unwrap();
+    assert_eq!(
+        page.total, 2,
+        "post-recovery list query must see baseline turn-0 + new turn-2"
+    );
+
+    // Drain the pool more than its size so any stale-handle reuse on
+    // any reader slot would surface.
+    for _ in 0..4 {
+        let kinds = backend
+            .query_distinct_agent_kinds(&DistinctAgentKindsQuery {
+                time_range: turns_q.time_range.clone(),
+                filter: DimensionFilter::default(),
+                include_proxy_hops: false,
+            })
+            .await
+            .unwrap();
+        assert!(
+            kinds.iter().any(|k| k == "test"),
+            "post-recovery distinct-kinds must see the seeded agent_kind"
+        );
+    }
+}
+
+// Independently verify the ReadPoolPoisoned injection point —
+// `pair_sweeper` and a few API surfaces depend on pool acquires never
+// silently returning a stale connection. The fault makes the next
+// `acquire()` return a poisoned-pool error so tests can exercise the
+// downstream handling path.
+#[cfg(feature = "fault-injection")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn read_pool_poisoned_fault_propagates_to_reads() {
+    use crate::fault_injection::{FaultGuard, FaultPoint};
+
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("pool-poison.duckdb");
+    let backend =
+        Arc::new(DuckDbBackend::open_with_pool(path.to_str().unwrap(), 2).unwrap());
+    backend.init().await.unwrap();
+    backend.write_turns(vec![mk_turn(0)]).await.unwrap();
+
+    let turns_q = TurnsQuery {
+        time_range: TimeRange {
+            start_us: 1_700_000_000_000_000 - 1_000_000,
+            end_us: 1_700_000_000_000_000 + 60_000_000_000,
+        },
+        filter: DimensionFilter::default(),
+        client_ips: vec![],
+        server_ports: vec![],
+        statuses: vec![],
+        agent_kinds: vec![],
+        sort_by: "start_time".into(),
+        sort_order: "desc".into(),
+        page: 1,
+        page_size: 50,
+        include_proxy_hops: false,
+    };
+
+    {
+        let _guard = FaultGuard::arm(backend.fault_set(), FaultPoint::ReadPoolPoisoned);
+        let err = backend
+            .query_turns(&turns_q)
+            .await
+            .expect_err("query must surface poisoned-pool error");
+        assert!(
+            format!("{err}").contains("read pool poisoned"),
+            "injected error must mention pool poisoning: got {err}"
+        );
+    }
+
+    // After guard drops, queries work again.
+    let page = backend.query_turns(&turns_q).await.unwrap();
+    assert_eq!(page.total, 1);
+}
