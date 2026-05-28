@@ -20,7 +20,7 @@ before clicking Approve.
   - `server/app/tokenscope` (binary entry point).
 - **Console**: `console/src/`. React 19 + TypeScript + tanstack-query
   + recharts + tailwind. `app.tsx` registers routes.
-- **Schemas**: `server/ts-storage-duckdb/src/schema.rs` for tables.
+- **Schemas**: `server/h-storage-duckdb/src/schema.rs` for tables.
   `console/src/types/api.ts` for TS mirrors.
 - **Build natively**: cross-platform `.next` / `dist` builds break in
   production — verify any deploy-relevant change builds on Linux.
