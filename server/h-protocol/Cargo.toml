@@ -1,0 +1,19 @@
+[package]
+name = "h-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+h-common.workspace = true
+h-capture.workspace = true
+bytes.workspace = true
+httparse.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+pcap.workspace = true

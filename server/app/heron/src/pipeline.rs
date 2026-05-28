@@ -44,19 +44,19 @@ use std::sync::Arc;
 use tokio::sync::mpsc::{self, WeakSender};
 use tokio::task::{JoinHandle, JoinSet};
 
-use ts_capture::{RawPacket, RoutingSender};
-use ts_common::config::{CaptureSourceConfig, PipelineDef};
-use ts_common::internal_metrics::{Metric, MetricsSystem};
-use ts_llm::agent_classifier::ClassifierConfig;
-use ts_llm::model::{LlmCall, LlmEvent, TurnShardInput};
-use ts_metrics::model::LlmMetricsBatch;
-use ts_protocol::{
+use h_capture::{RawPacket, RoutingSender};
+use h_common::config::{CaptureSourceConfig, PipelineDef};
+use h_common::internal_metrics::{Metric, MetricsSystem};
+use h_llm::agent_classifier::ClassifierConfig;
+use h_llm::model::{LlmCall, LlmEvent, TurnShardInput};
+use h_metrics::model::LlmMetricsBatch;
+use h_protocol::{
     spawn_flow_dispatcher, spawn_http_joiner_stage, spawn_protocol_stage, HttpExchange,
     HttpJoinerEvent, WorkerInput,
 };
-use ts_storage::StorageBackend;
-use ts_turn::tracker::TrackerConfig;
-use ts_turn::AgentTurn;
+use h_storage::StorageBackend;
+use h_turn::tracker::TrackerConfig;
+use h_turn::AgentTurn;
 
 /// Every task spawned by the pipeline is labeled so panic logs name the
 /// specific worker that died. Cheap strings — formatting happens only at
@@ -107,7 +107,7 @@ impl Pipeline {
     /// Each `MetricsSystem` has `{name}.*` workers registered against it
     /// by the dispatcher/protocol/llm/turn stages; the caller is expected
     /// to start one
-    /// [`MetricsReporter`](ts_common::internal_metrics::MetricsReporter) per
+    /// [`MetricsReporter`](h_common::internal_metrics::MetricsReporter) per
     /// system so log lines are per-pipeline.
     ///
     /// `shared_metrics` carries counters and gauges that span every pipeline:
@@ -122,18 +122,18 @@ impl Pipeline {
     /// shared stage.
     pub fn build(
         pipeline_defs: &[PipelineDef],
-        storage_config: &ts_storage::StorageSinkConfig,
+        storage_config: &h_storage::StorageSinkConfig,
         storage: Arc<dyn StorageBackend>,
         per_pipeline_metrics: &mut [MetricsSystem],
         shared_metrics: &mut MetricsSystem,
-        active_turns: ts_turn::ActiveTurnRegistry,
+        active_turns: h_turn::ActiveTurnRegistry,
         classifier_cfg: ClassifierConfig,
     ) -> Self {
         // ---- Shared sinks (fan-in across every pipeline) ----
         // Each shared channel takes the max of its dedicated config across
         // every pipeline. We don't unify under one knob: a slow `storage_calls`
         // shouldn't force `storage_turns` to over-allocate.
-        let max_q = |pick: fn(&ts_common::config::QueueConfig) -> usize| -> usize {
+        let max_q = |pick: fn(&h_common::config::QueueConfig) -> usize| -> usize {
             pipeline_defs
                 .iter()
                 .map(|d| pick(&d.queues))
@@ -150,8 +150,8 @@ impl Pipeline {
         let (metrics_out_tx, metrics_out_rx) = mpsc::channel::<LlmMetricsBatch>(metrics_cap);
         let (http_exchanges_tx, http_exchanges_rx) = mpsc::channel::<HttpExchange>(exchanges_cap);
 
-        let registry = Arc::new(ts_llm::agents::build_default_registry());
-        let wire_api_registry = Arc::new(ts_llm::wire_apis::build_default_wire_api_registry());
+        let registry = Arc::new(h_llm::agents::build_default_registry());
+        let wire_api_registry = Arc::new(h_llm::wire_apis::build_default_wire_api_registry());
 
         assert_eq!(
             per_pipeline_metrics.len(),
@@ -239,11 +239,11 @@ impl Pipeline {
             // long as any dispatcher task holds a strong clone of the same channel.
             let parsed_weaks: Vec<WeakSender<WorkerInput>> =
                 parsed_txs.iter().map(|tx| tx.downgrade()).collect();
-            let (event_txs, event_rxs) = make_shard_channels::<ts_protocol::model::HttpParseEvent>(
+            let (event_txs, event_rxs) = make_shard_channels::<h_protocol::model::HttpParseEvent>(
                 flow_shards,
                 q.http_parse_events,
             );
-            let event_weaks: Vec<WeakSender<ts_protocol::model::HttpParseEvent>> =
+            let event_weaks: Vec<WeakSender<h_protocol::model::HttpParseEvent>> =
                 event_txs.iter().map(|tx| tx.downgrade()).collect();
             // Joiner output: per-shard HttpJoinerEvent channels into the LLM stage.
             let (joiner_event_txs, joiner_event_rxs) =
@@ -306,7 +306,7 @@ impl Pipeline {
             // HTTP joiner stage — `flow_shards` workers per pipeline. Pairs
             // HTTP request/response/SSE events into `HttpJoinerEvent`s. Each
             // paired `Exchange` is fanned out to `http_exchanges_tx` (all
-            // traffic goes to storage) and to `joiner_event_txs` (ts-llm
+            // traffic goes to storage) and to `joiner_event_txs` (h-llm
             // consumes the same source to extract LLM semantics).
             let joiner_handles = spawn_http_joiner_stage(
                 event_rxs,
@@ -330,7 +330,7 @@ impl Pipeline {
             // is moved in (pipeline-local, never leaves the loop). `calls_tx` is
             // cloned so the shared sink sees EOF only after every pipeline's
             // llm stage drains.
-            let llm_handles = ts_llm::spawn_llm_stage(
+            let llm_handles = h_llm::spawn_llm_stage(
                 joiner_event_rxs,
                 turn_shard_txs,
                 metrics_shard_txs,
@@ -354,9 +354,9 @@ impl Pipeline {
 
             // Turn stage — `turn_shards` workers per pipeline. Feeds the
             // shared `turns_tx`. No profile/wire_api registry needed here:
-            // classification is pre-computed at ts-llm and carried on
+            // classification is pre-computed at h-llm and carried on
             // `AgentCall.agent`.
-            let turn_handles = ts_turn::spawn_turn_stage(
+            let turn_handles = h_turn::spawn_turn_stage(
                 tracker_cfg,
                 turn_shard_rxs,
                 turns_tx.clone(),
@@ -379,7 +379,7 @@ impl Pipeline {
             // clones `metrics_out_tx` so each pipeline's metrics tasks drop
             // their sender on drain. The shared sink observes EOF once every
             // pipeline has drained.
-            let metrics_handles = ts_metrics::spawn_metrics_stage(
+            let metrics_handles = h_metrics::spawn_metrics_stage(
                 metrics_shard_rxs,
                 metrics_out_tx.clone(),
                 metrics_sys,
@@ -506,7 +506,7 @@ impl Pipeline {
                 Metric::StorageFlushErrors,
             ],
         );
-        let sink_handle = ts_storage::spawn_storage_sink_stage(
+        let sink_handle = h_storage::spawn_storage_sink_stage(
             storage_config.clone(),
             calls_rx,
             turns_rx,
@@ -530,7 +530,7 @@ impl Pipeline {
         // back to `agent_turns.metadata`. Runs forever, owns its own
         // Arc<dyn StorageBackend>.
         let pair_sweeper_handle =
-            ts_storage::spawn_pair_sweeper(ts_storage::PairSweeperConfig::default(), storage);
+            h_storage::spawn_pair_sweeper(h_storage::PairSweeperConfig::default(), storage);
         stage_handles.push((
             StageTask {
                 stage: "pair_sweeper",

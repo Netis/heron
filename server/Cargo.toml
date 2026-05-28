@@ -1,5 +1,5 @@
 [workspace]
-members = ["ts-*", "app/*"]
+members = ["h-*", "app/*"]
 resolver = "2"
 
 [workspace.package]
@@ -56,15 +56,15 @@ uuid = { version = "1", features = ["v7"] }
 bytemuck = { version = "1", features = ["derive"] }
 
 # Internal crates
-ts-common = { path = "ts-common" }
-ts-capture = { path = "ts-capture" }
-ts-protocol = { path = "ts-protocol" }
-ts-llm = { path = "ts-llm" }
-ts-turn = { path = "ts-turn" }
-ts-metrics = { path = "ts-metrics" }
-ts-storage = { path = "ts-storage" }
-ts-storage-duckdb = { path = "ts-storage-duckdb" }
-ts-pcap-extract = { path = "ts-pcap-extract" }
+h-common = { path = "h-common" }
+h-capture = { path = "h-capture" }
+h-protocol = { path = "h-protocol" }
+h-llm = { path = "h-llm" }
+h-turn = { path = "h-turn" }
+h-metrics = { path = "h-metrics" }
+h-storage = { path = "h-storage" }
+h-storage-duckdb = { path = "h-storage-duckdb" }
+h-pcap-extract = { path = "h-pcap-extract" }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 rust-embed = "8"
@@ -72,4 +72,4 @@ mime_guess = "2"
 duckdb = { version = "1", features = ["bundled", "json"] }
 chrono = "0.4"
 tdigest = "0.2"
-ts-api = { path = "ts-api" }
+h-api = { path = "h-api" }

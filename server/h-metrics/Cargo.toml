@@ -1,0 +1,12 @@
+[package]
+name = "h-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+h-common.workspace = true
+h-llm.workspace = true
+tracing.workspace = true
+tdigest.workspace = true
+tokio = { workspace = true }

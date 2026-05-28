@@ -1,0 +1,21 @@
+[package]
+name = "h-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+h-common.workspace = true
+h-llm.workspace = true
+h-metrics.workspace = true
+h-protocol.workspace = true
+h-turn.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+

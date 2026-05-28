@@ -13,13 +13,13 @@ use heron::create_backend;
 use heron::Pipeline;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use ts_common::config::{
+use h_common::config::{
     config_search_paths, discover_config_path, AppConfig, CaptureSourceConfig, PipelineDef,
 };
-use ts_common::internal_metrics::{
+use h_common::internal_metrics::{
     AggregateHistory, HistoryRecorder, Metric, MetricsReporter, MetricsSystem,
 };
-use ts_llm::agent_classifier::ClassifierConfig;
+use h_llm::agent_classifier::ClassifierConfig;
 
 mod cmd;
 
@@ -295,11 +295,11 @@ async fn run_pipeline(cli: Cli) {
         config.pipelines.clone()
     };
 
-    let pcap_extract_roots: std::sync::Arc<Vec<ts_pcap_extract::PipelineRoot>> =
+    let pcap_extract_roots: std::sync::Arc<Vec<h_pcap_extract::PipelineRoot>> =
         std::sync::Arc::new(
             effective_pipelines
                 .iter()
-                .map(|def| ts_pcap_extract::PipelineRoot {
+                .map(|def| h_pcap_extract::PipelineRoot {
                     name: def.name.clone(),
                     dump_dir: std::path::PathBuf::from(&def.pcap_dump.dir),
                 })
@@ -325,7 +325,7 @@ async fn run_pipeline(cli: Cli) {
     // pipelines reflect CLI overrides (`--pcap-file`, `-i`), everything else
     // mirrors `AppConfig::load` (which already absorbed `TS_*` env overrides).
     // Exposed read-only via `GET /api/runtime-config`.
-    let runtime_config_ctx = ts_api::ApiRuntimeConfigContext {
+    let runtime_config_ctx = h_api::ApiRuntimeConfigContext {
         config: Arc::new(AppConfig {
             pipelines: effective_pipelines.clone(),
             storage: config.storage.clone(),
@@ -382,7 +382,7 @@ async fn run_pipeline(cli: Cli) {
     tracing::info!("storage backend initialized ({})", config.storage.backend);
 
     // Data retention sweeper (no-op if disabled in config).
-    let retention_handle = ts_storage::spawn_retention_task(
+    let retention_handle = h_storage::spawn_retention_task(
         storage.clone(),
         config.storage.retention.clone(),
         cancel.clone(),
@@ -397,7 +397,7 @@ async fn run_pipeline(cli: Cli) {
     // `axum::serve` spawn happens after the per-pipeline + global
     // `MetricsSystem::start()` calls below so the API's `ApiMetricsContext`
     // carries fully populated `Arc<MetricsSvc>`s.
-    let mut api_listener: Option<tokio::net::TcpListener> = match ts_api::bind(&config.api).await {
+    let mut api_listener: Option<tokio::net::TcpListener> = match h_api::bind(&config.api).await {
         Ok(l) => Some(l),
         Err(e) => {
             tracing::error!("failed to bind API server: {e}");
@@ -455,14 +455,14 @@ async fn run_pipeline(cli: Cli) {
         // `pcap_dump.dir` is the *base*; we always append a sanitized
         // pipeline-name layer so multiple pipelines that happen to share
         // a base dir stay fully isolated on disk.
-        let pipeline_dump_cfgs: Vec<Option<ts_capture::PacketDumperConfig>> = effective_pipelines
+        let pipeline_dump_cfgs: Vec<Option<h_capture::PacketDumperConfig>> = effective_pipelines
             .iter()
             .map(|def| {
                 if !def.pcap_dump.enabled {
                     return None;
                 }
                 let base = PathBuf::from(&def.pcap_dump.dir);
-                let resolved = match ts_capture::pcap_dump_dir_for(&base, &def.name) {
+                let resolved = match h_capture::pcap_dump_dir_for(&base, &def.name) {
                     Some(p) => p,
                     None => {
                         tracing::error!(
@@ -472,7 +472,7 @@ async fn run_pipeline(cli: Cli) {
                         return None;
                     }
                 };
-                Some(ts_capture::PacketDumperConfig {
+                Some(h_capture::PacketDumperConfig {
                     dir: resolved,
                     compression: def.pcap_dump.compression,
                 })
@@ -502,7 +502,7 @@ async fn run_pipeline(cli: Cli) {
                     Metric::CaptureDumpRetentionErrors,
                 ],
             );
-            pcap_retention_handles.push(ts_capture::spawn_pcap_retention_task(
+            pcap_retention_handles.push(h_capture::spawn_pcap_retention_task(
                 dump_cfg.dir.clone(),
                 def.pcap_dump.retention.clone(),
                 worker,
@@ -519,7 +519,7 @@ async fn run_pipeline(cli: Cli) {
         // turn-tracker shard (writers) and the API's /api/agent-turns
         // handler (reader) so the console sees in-progress turns alongside
         // finalized ones without DB write amplification.
-        let active_turns = ts_turn::new_active_turn_registry();
+        let active_turns = h_turn::new_active_turn_registry();
 
         // Process-wide gauge for the dashboard "Active Agent Turns" chart:
         // size of the in-progress turn registry at sample time. Registered on
@@ -542,7 +542,7 @@ async fn run_pipeline(cli: Cli) {
             stage_handles,
         } = Pipeline::build(
             &effective_pipelines,
-            &ts_storage::StorageSinkConfig {
+            &h_storage::StorageSinkConfig {
                 batch_size: config.storage.sink.batch_size,
                 flush_interval_ms: config.storage.sink.flush_interval_ms,
             },
@@ -562,7 +562,7 @@ async fn run_pipeline(cli: Cli) {
             config.internal_metrics.enabled && config.internal_metrics.interval_secs > 0;
         let mut api_pipeline_metrics: Vec<(
             String,
-            std::sync::Arc<ts_common::internal_metrics::MetricsSvc>,
+            std::sync::Arc<h_common::internal_metrics::MetricsSvc>,
         )> = Vec::new();
         let pipeline_reporter_handles: Vec<_> = per_pipeline_metrics
             .into_iter()
@@ -649,13 +649,13 @@ async fn run_pipeline(cli: Cli) {
                     .iter()
                     .map(|(name, _)| name.clone())
                     .collect();
-                let api_metrics = ts_api::ApiMetricsContext {
+                let api_metrics = h_api::ApiMetricsContext {
                     pipelines: api_pipeline_metrics,
                     global: api_global_metrics.clone(),
                     history: history_ctx.clone(),
                 };
                 let api_runtime_config = runtime_config_ctx.clone();
-                let api_health = ts_api::ApiHealthContext {
+                let api_health = h_api::ApiHealthContext {
                     started_at_ms: loaded_at_ms,
                     version: env!("CARGO_PKG_VERSION"),
                     pipelines: pipeline_names,
@@ -664,7 +664,7 @@ async fn run_pipeline(cli: Cli) {
                 let pcap_extract_roots = pcap_extract_roots.clone();
                 let api_active_turns = active_turns.clone();
                 Some(tokio::spawn(async move {
-                    let router = ts_api::router(
+                    let router = h_api::router(
                         api_storage,
                         api_metrics,
                         api_runtime_config,
@@ -701,7 +701,7 @@ async fn run_pipeline(cli: Cli) {
                 .enumerate()
                 .zip(source_metrics.into_iter())
             {
-                let source = match ts_capture::build_source(source_cfg, dump_cfg.clone()) {
+                let source = match h_capture::build_source(source_cfg, dump_cfg.clone()) {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::error!(
@@ -862,13 +862,13 @@ async fn run_pipeline(cli: Cli) {
                     let api_storage = storage.clone();
                     let api_cancel = cancel.clone();
                     let empty_global = MetricsSystem::new().start();
-                    let api_metrics = ts_api::ApiMetricsContext {
+                    let api_metrics = h_api::ApiMetricsContext {
                         pipelines: Vec::new(),
                         global: empty_global,
                         history: None,
                     };
                     let api_runtime_config = runtime_config_ctx.clone();
-                    let api_health = ts_api::ApiHealthContext {
+                    let api_health = h_api::ApiHealthContext {
                         started_at_ms: loaded_at_ms,
                         version: env!("CARGO_PKG_VERSION"),
                         pipelines: Vec::new(),
@@ -879,9 +879,9 @@ async fn run_pipeline(cli: Cli) {
                     // the registry stays empty for the lifetime of this
                     // process. Construct a fresh empty one so the API still
                     // serves /api/agent-turns (returning DB rows only).
-                    let api_active_turns = ts_turn::new_active_turn_registry();
+                    let api_active_turns = h_turn::new_active_turn_registry();
                     Some(tokio::spawn(async move {
-                        let router = ts_api::router(
+                        let router = h_api::router(
                             api_storage,
                             api_metrics,
                             api_runtime_config,

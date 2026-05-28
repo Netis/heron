@@ -1,0 +1,26 @@
+[package]
+name = "h-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+h-capture.workspace = true
+h-common.workspace = true
+h-llm.workspace = true
+h-storage.workspace = true
+h-turn.workspace = true
+h-pcap-extract = { workspace = true }
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tower-http.workspace = true
+chrono = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+h-metrics.workspace = true
+h-storage-duckdb.workspace = true
