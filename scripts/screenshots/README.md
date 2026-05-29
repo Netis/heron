@@ -1,6 +1,6 @@
 # README screenshot regenerator
 
-Drives a running TokenScope console with Playwright and writes
+Drives a running Heron console with Playwright and writes
 PNGs into `docs/images/`. Used to refresh the README hero shots.
 
 ## Setup (once per machine)

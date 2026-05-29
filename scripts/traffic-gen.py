@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-traffic-gen.py — LLM API traffic generator for TokenScope demos.
+traffic-gen.py — LLM API traffic generator for Heron demos.
 
 Continuously sends requests via Claude Code CLI and Codex CLI through a local
-proxy so that TokenScope can capture plaintext HTTP traffic.
+proxy so that Heron can capture plaintext HTTP traffic.
 
 Usage:
     python3 scripts/traffic-gen.py
@@ -234,7 +234,7 @@ def execute_scenario(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="LLM API traffic generator for TokenScope demos"
+        description="LLM API traffic generator for Heron demos"
     )
     parser.add_argument(
         "--interval",
@@ -301,7 +301,7 @@ def main():
         log.error("No valid providers available. Install claude and/or codex CLI.")
         sys.exit(1)
 
-    log.info("=== TokenScope Traffic Generator ===")
+    log.info("=== Heron Traffic Generator ===")
     log.info("Providers: %s", ", ".join(valid_providers))
     log.info("Interval: %.0fs (±20%% jitter)", args.interval)
     log.info("Scenario ratio: %.0f%%", args.scenario_ratio * 100)

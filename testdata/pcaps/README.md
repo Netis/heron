@@ -1,12 +1,12 @@
 # PCAP Fixtures
 
-Local test pcaps for TokenScope development (capture playback + turn grouping).
+Local test pcaps for Heron development (capture playback + turn grouping).
 The `.pcap` files themselves are **not** checked in (see `.gitignore`). This
 README documents what each fixture contains so tests and local runs can assert
 against known ground truth.
 
 All captures are loopback (`127.0.0.1:8317`) plaintext HTTP — matching
-TokenScope's post-TLS server-side deployment model.
+Heron's post-TLS server-side deployment model.
 
 ## Fixtures
 
@@ -22,7 +22,7 @@ TokenScope's post-TLS server-side deployment model.
 
 Turn counts are ground truth verified against the current implementation and
 are intended as assertions for turn-grouping tests
-(`server/ts-turn/tests/integration.rs`). `Incomplete` turns reflect streams
+(`server/h-turn/tests/integration.rs`). `Incomplete` turns reflect streams
 that did not close cleanly within the capture window — the grouping is still
 deterministic across runs and shard counts.
 
@@ -33,11 +33,11 @@ deterministic across runs and shard counts.
 
 ## Usage
 
-Run TokenScope against a fixture via the pcap-file capture backend:
+Run Heron against a fixture via the pcap-file capture backend:
 
 ```bash
 # example — adjust flags to match current CLI/config
-cargo run -p tokenscope -- --pcap testdata/pcaps/claude-cli-messages-multi.pcap
+cargo run -p heron -- --pcap testdata/pcaps/claude-cli-messages-multi.pcap
 ```
 
 ## Obtaining the files
