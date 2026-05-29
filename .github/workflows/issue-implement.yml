@@ -28,7 +28,7 @@ env:
 jobs:
   implement:
     if: ${{ github.event.label.name == 'agent:try' }}
-    runs-on: [self-hosted, tokenscope]
+    runs-on: [self-hosted, heron]
     # 120-minute fence. A clean, well-scoped wiwi run (per the triage
     # gates: <300 LOC, <10 files) typically completes in 10-25 min; the
     # 120-min cap absorbs slower LiteLLM ↔ GLM-5 round-trips on busy

@@ -11,7 +11,7 @@ on:
 
 jobs:
   probe:
-    runs-on: [self-hosted, tokenscope]
+    runs-on: [self-hosted, heron]
     timeout-minutes: 5
     env:
       ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
