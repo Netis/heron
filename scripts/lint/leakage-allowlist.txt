@@ -1,15 +1,21 @@
 # Leakage-linter allow-list.
 #
-# `check-leakage.sh` flags any private/internal IP in tracked files. The
-# only IPs that are SAFE to commit are documentation/test ranges and
-# well-known defaults — everything else is treated as a real-infra leak.
+# `check-leakage.sh` flags any private/internal IP or machine-specific
+# home-directory path in tracked files. The only values that are SAFE to
+# commit are documentation/test ranges and well-known defaults — everything
+# else is treated as a real-infra leak.
 #
-# This file lists the SAFE IP-address PREFIXES. Note: we deliberately
-# list only non-sensitive ranges here — never the internal addresses
-# the linter is meant to catch (per CLAUDE.md PR-hygiene rule, the lint
-# config must not itself enumerate the secrets it guards).
+# This file lists the SAFE IP-address PREFIXES and FILE PATTERNS to exclude
+# from machine-specific path checks. Note: we deliberately list only
+# non-sensitive ranges here — never the internal addresses the linter is
+# meant to catch (per CLAUDE.md PR-hygiene rule, the lint config must not
+# itself enumerate the secrets it guards).
 #
-# Format: one allowed IPv4 prefix per line (string prefix match).
+# Format:
+#   - IP allowlist: one allowed IPv4 prefix per line (string prefix match).
+#   - File pattern allowlist: lines starting with "file:" are glob patterns
+#     for files that may contain legitimate captured home-directory paths
+#     (e.g. recorded wire data fixtures).
 # Lines starting with # are comments.
 
 # Loopback.
@@ -34,3 +40,10 @@
 # Unspecified / broadcast sentinels.
 0.0.0.0
 255.255.255.255
+
+# File patterns that may contain legitimate captured home-directory paths.
+# These are recorded wire data from external machines (not our infra).
+file:server/h-llm/tests/fixtures/**
+file:server/h-protocol/tests/fixtures/**
+file:docs/examples/**
+file:scripts/lint/test-check-leakage.sh
