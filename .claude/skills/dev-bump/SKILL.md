@@ -1,12 +1,12 @@
 ---
 name: dev-bump
 version: 0.2.0
-description: "Bump TokenScope version via the VERSION-file SSOT. Delegates to `just bump` which syncs server/Cargo.toml (workspace.package.version) and console/package.json. Also updates CHANGELOG.md and creates a bump commit + tag. Usage: /dev-bump <type> where type=patch|minor|major|tag"
+description: "Bump Heron version via the VERSION-file SSOT. Delegates to `just bump` which syncs server/Cargo.toml (workspace.package.version) and console/package.json. Also updates CHANGELOG.md and creates a bump commit + tag. Usage: /dev-bump <type> where type=patch|minor|major|tag"
 ---
 
-# dev-bump — Version bump for TokenScope
+# dev-bump — Version bump for Heron
 
-TokenScope uses a **VERSION-file SSOT** pattern (see Core Principles → Single Source of Truth in CLAUDE.md):
+Heron uses a **VERSION-file SSOT** pattern (see Core Principles → Single Source of Truth in CLAUDE.md):
 
 | File | Role |
 |---|---|

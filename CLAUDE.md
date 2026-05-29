@@ -12,7 +12,7 @@ These apply to every artifact in this repo — code, docs, and CLAUDE.md itself.
 
 ## Project Overview
 
-TokenScope is an LLM API performance monitoring system that analyzes network traffic to measure and diagnose LLM inference performance. Deployed on the **LLM provider's server side** (post-TLS termination, plaintext HTTP), it serves ops, dev, and business teams.
+Heron is an LLM API performance monitoring system that analyzes network traffic to measure and diagnose LLM inference performance. Deployed on the **LLM provider's server side** (post-TLS termination, plaintext HTTP), it serves ops, dev, and business teams.
 
 **Data acquisition:**
 - Local NIC capture via libpcap
@@ -51,21 +51,22 @@ TokenScope is an LLM API performance monitoring system that analyzes network tra
 ## Repository Structure
 
 ```
-TokenScope/
+heron/
 ├── CLAUDE.md
 ├── docs/design/                 # Module design docs (AI dev reference)
 ├── server/                      # Rust backend (Cargo workspace)
 │   ├── Cargo.toml               # workspace root + workspace.package + workspace.dependencies
-│   ├── ts-common/               # Shared config, error types
-│   ├── ts-capture/              # libpcap + cloud-probe ZMQ receiver → RawPacket
-│   ├── ts-protocol/             # net (L2-L4) + http (HTTP/SSE) parsing
-│   ├── ts-llm/                  # Wire-API detection + extractors → LlmCall
-│   ├── ts-turn/                 # Agent profiles + state machine → AgentTurn
-│   ├── ts-metrics/              # Sliding-window aggregation → LlmMetric
-│   ├── ts-storage/              # StorageBackend trait + DuckDB/PG/ClickHouse + write buffer
-│   ├── ts-api/                  # Axum REST API
+│   ├── h-common/                # Shared config, error types
+│   ├── h-capture/               # libpcap + cloud-probe ZMQ receiver → RawPacket
+│   ├── h-protocol/              # net (L2-L4) + http (HTTP/SSE) parsing
+│   ├── h-llm/                   # Wire-API detection + extractors → LlmCall
+│   ├── h-turn/                  # Agent profiles + state machine → AgentTurn
+│   ├── h-metrics/               # Sliding-window aggregation → LlmMetric
+│   ├── h-storage/               # StorageBackend trait + DuckDB/PG/ClickHouse + write buffer
+│   ├── h-storage-duckdb/        # DuckDB implementation of StorageBackend
+│   ├── h-api/                   # Axum REST API
 │   ├── app/
-│   │   └── tokenscope/          # Binary entry crate
+│   │   └── heron/               # Binary entry crate
 │   └── config/
 │       └── default.toml
 ├── console/                     # React frontend (Bun + Vite)
@@ -82,7 +83,7 @@ See [docs/design/04-turn.md](docs/design/04-turn.md) for Turn (agent interaction
 
 Three entities: `agent_turns` (agent turn), `llm_calls` (per-call detail + full body), `llm_metrics` (pre-aggregated time-series). Relation: `agent_turns 1─N llm_calls`. Pluggable backends:
 
-**Query rule — no JOIN.** Read-path SQL MUST NOT use any `JOIN`. Cross-entity reads are split into multiple point lookups: e.g. fetch `call_ids` from `agent_turns` by PK, then `SELECT ... FROM llm_calls WHERE id IN (?, ?, ...)`. See `query_turn_calls` in `ts-storage/src/duckdb.rs` for the canonical pattern. This keeps queries uniformly cheap across DuckDB/PG/ClickHouse and avoids planner surprises at scale.
+**Query rule — no JOIN.** Read-path SQL MUST NOT use any `JOIN`. Cross-entity reads are split into multiple point lookups: e.g. fetch `call_ids` from `agent_turns` by PK, then `SELECT ... FROM llm_calls WHERE id IN (?, ?, ...)`. See `query_turn_calls` in `h-storage-duckdb/src/turns.rs` for the canonical pattern. This keeps queries uniformly cheap across DuckDB/PG/ClickHouse and avoids planner surprises at scale.
 
 | Backend | Use case |
 |---------|----------|

@@ -1,6 +1,6 @@
 //! Schema-migration integration tests.
 //!
-//! Each test synthesizes the on-disk shape of an older `tokenscope`
+//! Each test synthesizes the on-disk shape of an older `heron`
 //! release directly via DDL — no historical binary build required — then
 //! runs the current `DuckDbBackend::init()` against it and asserts that:
 //!

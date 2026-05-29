@@ -1,10 +1,10 @@
-# TokenScope justfile
+# Heron justfile
 # Router pattern: recipes dispatch to scripts/routers/shared/*.sh
 # Run `just help` for the menu, or `just <router>` for per-router detail.
 
 set shell := ["bash", "-cu"]
 
-project := "TokenScope"
+project := "Heron"
 version := `cat VERSION 2>/dev/null || echo "dev"`
 
 # Default: show help
