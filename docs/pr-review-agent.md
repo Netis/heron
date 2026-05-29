@@ -35,7 +35,7 @@ GitHub                                  wuneng VM heron-ci
 * `scripts/pr-review/run_review.sh`
   Substitutes `PR_NUMBER` / `HEAD_SHA` / `BASE_REF` into the prompt
   template, pre-flights LiteLLM, runs `claude -p` with the read-only
-  tool allowlist + 1800 s outer timeout, writes the model's stdout to
+  tool allowlist + 7200 s outer timeout, writes the model's stdout to
   `/tmp/pr-review-${N}-out.md`.
 * `scripts/pr-review/prompt.md`
   Instructional prompt. Encodes repo facts the agent has to know
@@ -151,7 +151,7 @@ footguns.
 | Failure | What happens | Mitigation |
 |---|---|---|
 | LiteLLM down | Pre-flight curl fails, `run_review.sh` exits 2 | `post_review.py` posts a brief "agent failed" comment with link to workflow log; PR is not blocked |
-| Agent loops | `timeout 1800` kills the agent | Same: failure comment, no block |
+| Agent loops | `timeout 7200` kills the agent | Same: failure comment, no block |
 | GLM-5 returns garbage / no `### Summary` | `run_review.sh` appends a warning to the output | `post_review.py` still posts it as COMMENT — the agent's broken output is visible, which is signal |
 | Bot can't `--approve` its own PR | `gh pr review` rc != 0 | `post_review.py` falls back to `gh pr comment` |
 | Schema mirror miss inside the agent | Agent under-reports | Add the missed signature to `prompt.md` § "Things this repo has been bitten by" — encode the lesson |
