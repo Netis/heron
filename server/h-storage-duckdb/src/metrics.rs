@@ -1413,11 +1413,11 @@ impl DuckDbBackend {
             // to_port). For each row we either:
             //   (a) attribute the traffic to a service we already
             //       know about — `caller_ip` matches the server_ip of
-            //       some node (typical case: LiteLLM at .81:4210
+            //       some node (typical case: a LiteLLM proxy node
             //       accepts an inbound, then makes outgoing calls
-            //       that hit the upstream as `client_ip=172.16.103.81`
-            //       — those should render as litellm → upstream, not
-            //       anonymous-clients → upstream); or
+            //       that hit the upstream with the proxy's own IP as
+            //       `client_ip` — those should render as litellm →
+            //       upstream, not anonymous-clients → upstream); or
             //   (b) fall through to a synthetic `__clients__` edge.
             // Same SQL as before, just adds `client_ip` to the
             // grouping. We exclude `proxy_out` turns because their
@@ -1584,8 +1584,8 @@ impl DuckDbBackend {
             }
 
             // SQL groups by caller_ip but multiple caller_ips can
-            // resolve to the same originating service (e.g. external
-            // 172.16.103.81 AND loopback 127.0.0.1 both have a
+            // resolve to the same originating service (e.g. a proxy's
+            // external IP AND loopback 127.0.0.1 both front the same
             // litellm); collapse those into single edges.
             let mut inferred_dedup: std::collections::HashMap<(String, u16, String, u16), u64> =
                 std::collections::HashMap::new();

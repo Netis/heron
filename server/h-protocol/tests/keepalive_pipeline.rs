@@ -28,13 +28,13 @@ const SERVER_BYTES: &[u8] = include_bytes!("fixtures/keepalive_2sse_server.bin")
 fn flow() -> (FlowKey, (IpAddr, u16), (IpAddr, u16)) {
     let fk = FlowKey::new(
         String::new(),
-        "10.40.1.81".parse().unwrap(),
+        "198.51.100.81".parse().unwrap(),
         54754,
-        "172.16.103.81".parse().unwrap(),
+        "192.0.2.81".parse().unwrap(),
         4210,
     );
-    let ca = ("10.40.1.81".parse().unwrap(), 54754);
-    let sa = ("172.16.103.81".parse().unwrap(), 4210);
+    let ca = ("198.51.100.81".parse().unwrap(), 54754);
+    let sa = ("192.0.2.81".parse().unwrap(), 4210);
     (fk, ca, sa)
 }
 

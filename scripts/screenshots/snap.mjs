@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Regenerate the README screenshots under docs/images/ by driving
-// a real TokenScope console with Playwright. Point BASE at any
+// a real Heron console with Playwright. Point BASE at any
 // running instance that has live agent traffic.
 //
 // Setup:
 //   cd scripts/screenshots && npm install && npx playwright install chromium
 // Run:
-//   BASE=http://172.16.103.81:4500 OUT=$PWD/../../docs/images node snap.mjs
+//   BASE=http://heron-host:4500 OUT=$PWD/../../docs/images node snap.mjs
 //
 // Why per-instance: the most striking screenshots come from instances
 // with real fleet density — multi-leg proxy hops, dozens of services,

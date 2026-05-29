@@ -234,6 +234,34 @@ sudo userdel heron
 > The DuckDB file holds all captured telemetry. Back it up first if you
 > want to keep historical metrics across reinstalls.
 
+## Spinning up a demo on a remote host
+
+There is no built-in deploy tooling — a demo is just the binary running on
+a box. If you drive an AI coding agent (Claude Code, etc.), hand it a
+prompt like the one below and let it do the SSH/setup. Fill in your own
+host and credentials; never commit them.
+
+```text
+Set up a Heron demo on the host I give you over SSH:
+
+1. SSH in (I'll provide host + credentials separately — do not hard-code
+   them in any file or commit them).
+2. Install Heron with the one-line installer from docs/install.md
+   (user-local install is fine).
+3. Grant capture caps: sudo setcap cap_net_raw,cap_net_admin=eip on the
+   binary.
+4. Start it on the primary interface, console on port 3000, running under
+   tmux so it survives the SSH session.
+5. Generate some LLM traffic through it (point an OpenAI/Anthropic-style
+   client at a local proxy the host can capture), then confirm
+   /api/health is green and the console shows turns.
+
+Report back the console URL. Keep it minimal — this is a throwaway demo.
+```
+
+That is the whole "demo" story: install, capture, look at the console.
+Nothing about it needs to live in this repo.
+
 ## Next steps
 
 - [Configuration reference](configure.md) — pipelines, sources, storage,

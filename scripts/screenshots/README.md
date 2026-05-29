@@ -14,11 +14,11 @@ npx playwright install chromium
 ## Run
 
 ```sh
-# Point at any TokenScope instance with real agent traffic.
+# Point at any Heron instance with real agent traffic.
 # WINDOW_HOURS controls the time-range query string (default 24).
 # TURN_ID deep-links the agent-turn-detail shot to a specific
 # many-call run — pick one with ≥100 calls so the gantt is dense.
-BASE=http://172.16.103.81:4500 \
+BASE=http://heron-host:4500 \
 WINDOW_HOURS=24 \
 TURN_ID=019e4242-9b82-7083-8cba-a046f3477e44 \
 OUT=$PWD/../../docs/images \

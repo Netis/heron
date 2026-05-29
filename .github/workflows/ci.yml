@@ -61,6 +61,13 @@ jobs:
       - name: lint — validated constructors are scoped
         run: python3 scripts/lint/check-validated-constructors.py
 
+      - name: lint — no internal-infra leakage
+        # Deterministic gate behind CLAUDE.md's PR-hygiene rule: fails on
+        # any tracked file carrying a non-allow-listed private/internal
+        # IP or a private-key PEM block. The PR-review agent carries the
+        # semantic half (plaintext passwords, internal hostnames, paths).
+        run: bash scripts/lint/check-leakage.sh
+
       - name: cargo test
         working-directory: server
         env:
