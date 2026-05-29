@@ -23,7 +23,7 @@ env:
 jobs:
   triage:
     if: ${{ github.event.label.name == 'agent:assess' }}
-    runs-on: [self-hosted, tokenscope]
+    runs-on: [self-hosted, heron]
     timeout-minutes: 10
     env:
       ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
