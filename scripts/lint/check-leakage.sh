@@ -44,7 +44,7 @@ while IFS= read -r _f; do FILES+=("$_f"); done < <(
     'node_modules/|/target/|docs/superpowers/|tests/fixtures/|(^|/)CHANGELOG\.md$|\.lock$|(^|/)bun\.lock$|(^|/)package-lock\.json$|scripts/lint/leakage-allowlist\.txt$'
 )
 
-# RFC1918 + CGNAT (100.64.0.0/10) full-dotted-quad matcher.
+# RFC1918 + CGNAT (100.64/10) full-dotted-quad matcher.
 PRIV_IP_RE='\b(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3}|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3})\b'
 
 is_allowed_ip() {

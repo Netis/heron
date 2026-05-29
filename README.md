@@ -121,6 +121,36 @@ After a pcap finishes replaying, the process keeps the API/console available so 
 
 For systemd deployment, capability options, and uninstall, see [docs/install.md](docs/install.md).
 
+## Install & verify with an AI agent
+
+Running an AI coding agent (Claude Code, Codex, etc.)? Hand it the prompt
+below and let it do the install + smoke test for you. It needs only shell
+access to the target machine.
+
+```text
+Install and smoke-test Heron (https://github.com/Netis/TokenScope) on this machine:
+
+1. Read the README and docs/install.md to pick the right install path.
+   Use the one-line installer; user-local (no sudo) is fine.
+2. Verify the binary: `heron --version` and `heron --help` both work.
+3. Smoke-test WITHOUT live capture (no privileges needed): find or fetch a
+   small .pcap with LLM traffic (the repo's testdata/pcaps/ has fixtures),
+   then run `heron --pcap-file <file> --no-retention`.
+4. Confirm the API is up: `curl -s http://localhost:3000/api/health` returns
+   healthy, and `curl -s 'http://localhost:3000/api/agent-turns?limit=5'`
+   returns reconstructed turns.
+5. (Optional, needs CAP_NET_RAW) for a live test: setcap the binary and run
+   `heron -i <iface>`, generate some LLM traffic through the host, then
+   re-check the console at http://localhost:3000.
+
+Report the console URL and the turn count you saw. Don't hard-code or
+commit any host/credential — this repo rejects infra leakage in CI.
+```
+
+The last line matters: a `check-leakage.sh` CI gate fails any PR that
+commits a private IP, plaintext credential, or key — keep your own infra
+out of anything you push back.
+
 ## Documentation
 
 - [Install](docs/install.md) — one-line installer, systemd, capabilities
