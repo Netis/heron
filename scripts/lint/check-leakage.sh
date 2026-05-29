@@ -19,9 +19,11 @@
 #   * Plaintext passwords, internal hostnames, machine-specific paths.
 #   The PR-review agent prompt carries a leakage dimension for those.
 #
-# Scope: tracked files only (git ls-files), minus vendored trees,
-# build output, captured test fixtures (real wire data), historical
-# design docs, the changelog, and lockfiles.
+# Scope: tracked text files only (git ls-files; binary files skipped via
+# grep -I), minus vendored trees, build output, historical design docs,
+# the changelog, and lockfiles. Test fixtures ARE scanned — recorded
+# wire data must still not carry real internal IPs (use RFC5737 ranges);
+# only true binaries (.pcap etc.) fall out via the binary-file skip.
 #
 # Usage:
 #   bash scripts/lint/check-leakage.sh
@@ -41,7 +43,7 @@ while IFS= read -r _l; do SAFE_PREFIXES+=("$_l"); done < <(grep -vE '^\s*#|^\s*$
 FILES=()
 while IFS= read -r _f; do FILES+=("$_f"); done < <(
   git ls-files | grep -vE \
-    'node_modules/|/target/|docs/superpowers/|tests/fixtures/|(^|/)CHANGELOG\.md$|\.lock$|(^|/)bun\.lock$|(^|/)package-lock\.json$|scripts/lint/leakage-allowlist\.txt$'
+    'node_modules/|/target/|docs/superpowers/|(^|/)CHANGELOG\.md$|\.lock$|(^|/)bun\.lock$|(^|/)package-lock\.json$|scripts/lint/leakage-allowlist\.txt$'
 )
 
 # RFC1918 + CGNAT (100.64/10) full-dotted-quad matcher.
@@ -78,10 +80,10 @@ for f in "${FILES[@]}"; do
         report "$f:$lineno leaks private/internal IP '$ip' — replace with an RFC5737 doc range (192.0.2.x / 198.51.100.x / 203.0.113.x) or add the prefix to $ALLOWLIST if it is genuinely safe."
       fi
     done < <(grep -oE "$PRIV_IP_RE" <<<"$rest")
-  done < <(grep -nE "$PRIV_IP_RE" "$f" 2>/dev/null || true)
+  done < <(grep -InE "$PRIV_IP_RE" "$f" 2>/dev/null || true)
 
   # --- Class 2: private-key PEM blocks ---
-  if grep -nE -- '-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----' "$f" >/dev/null 2>&1; then
+  if grep -InE -- '-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----' "$f" >/dev/null 2>&1; then
     report "$f contains a PRIVATE KEY block — private keys must never be committed. Remove it and rotate the key."
   fi
 done
