@@ -173,24 +173,16 @@ async fn phase5_adds_nullable_agent_columns_to_llm_calls_on_legacy_db() {
     }
 }
 
-// FIXME(p1-followup): Phase-5 migration uses
-// `ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS is_agent_request \
-//  BOOLEAN NOT NULL DEFAULT FALSE` and the same for `tool_call_count`.
-// DuckDB (verified on 1.10501.0, the workspace pin) refuses
-// `ADD COLUMN ... NOT NULL` even with `DEFAULT`, surfacing an error
-// that `schema::init` swallows as `tracing::info!`. Net effect: a
-// pre-Phase-5 DB upgraded to 0.3.0 ends up missing the two NOT NULL
-// agent columns, while reads compiled against the canonical schema
-// expect them.
-//
-// This test is `#[ignore]`d so CI stays green; un-ignore it once the
-// migration is rewritten (likely a "rebuild llm_calls with the
-// canonical CREATE if pre-Phase-5 detected" path, mirroring
-// `needs_canonical_rebuild` for llm_metrics).
+// Regression test for the Phase-5 NOT NULL ADD COLUMN gap: DuckDB
+// (verified on 1.10501.0) refuses `ALTER TABLE ... ADD COLUMN ...
+// NOT NULL DEFAULT ...`, so the original migration silently left
+// `is_agent_request` / `tool_call_count` absent on upgraded DBs,
+// breaking every subsequent INSERT. `schema::init` now adds these
+// nullable-with-default (NOT NULL omitted on the ALTER path only), so
+// the columns land on a legacy DB. This test asserts they do — keep it
+// passing so the migration can't silently regress again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "tracks the NOT NULL ADD COLUMN gap in schema::init — see FIXME above"]
-#[allow(non_snake_case)]
-async fn phase5_adds_not_null_agent_columns_to_llm_calls_on_legacy_db_FIXME() {
+async fn phase5_adds_agent_not_null_columns_to_llm_calls_on_legacy_db() {
     let tmp = TempDir::new().unwrap();
     let path = synth_db(&tmp, &[LEGACY_LLM_CALLS_PRE_PHASE5]);
 
