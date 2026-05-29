@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-29
+
+### Changed — Rebrand to Heron
+
+- Project renamed **TokenScope → Heron**. The binary is now `heron`
+  (was `tokenscope`); the 10 internal library crates moved from the
+  `ts-*` prefix to `h-*`; the GitHub repo is now `Netis/heron` (the old
+  URL redirects). Console title, logo (a new heron mark), and all
+  install/docs URLs updated.
+
+### Added — Quality infrastructure
+
+- Deterministic fault-injection harness for the DuckDB backend
+  (feature-gated) plus recovery tests that drive the FATAL → reopen →
+  every-surface-works path without relying on real load pressure.
+- Schema-migration tests over synthesized legacy DB shapes, locking the
+  auto-migration paths against silent regression.
+- CI lint gates: referenced-secret provisioning, secret-value sanity,
+  validated-constructor scoping, and an infra-leakage gate that fails on
+  any non-allow-listed private IP or private-key block in tracked files.
+
+### Security / privacy
+
+- Removed the demo deploy tooling, which hard-coded a server address, a
+  jump-host username, and a plaintext password. Demo setup is now an
+  AI-agent prompt in the docs instead.
+- Scrubbed internal infrastructure identity (private IPs, hostnames)
+  from source comments, docs, scripts, and test fixtures; tests now use
+  RFC5737 documentation ranges.
+
 ### Added — Agent-era observer (H002)
 
 - Agent traffic classification: every LlmCall carries `is_agent_request`,
