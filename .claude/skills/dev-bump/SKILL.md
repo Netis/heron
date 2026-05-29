@@ -13,7 +13,7 @@ Heron uses a **VERSION-file SSOT** pattern (see Core Principles → Single Sourc
 | `VERSION` (repo root) | **Canonical.** Plain `X.Y.Z` + trailing newline. Every other version reference derives from here. |
 | `server/Cargo.toml` (`workspace.package.version`) | Derived — rewritten by `just bump`. Cargo requires a literal version string. |
 | `console/package.json` (`version`) | Derived — rewritten by `just bump`. npm tooling needs the literal. |
-| `server/ts-common/src/version.rs` | Reads VERSION via `include_str!` at compile time. Other Rust crates call `ts_common::version::version()`. |
+| `server/h-common/src/version.rs` | Reads VERSION via `include_str!` at compile time. Other Rust crates call `h_common::version::version()`. |
 | `console/vite.config.ts` | Reads VERSION at build time, exposes as `__APP_VERSION__` for frontend code. |
 
 ## Parameters
@@ -103,7 +103,7 @@ Still update CHANGELOG if release notes changed.
 - **Never edit Cargo.toml / package.json version fields directly.** If you're tempted, it means `just bump` is broken — fix the script, not the derived files.
 - **Never commit a drifted state.** `just bump check` should be green before every bump commit.
 - **Never push tags automatically.** User decides.
-- **Never rename `VERSION`.** It is referenced by path from `vite.config.ts`, `ts-common/src/version.rs`, `scripts/routers/shared/bump.sh`, and `justfile`.
+- **Never rename `VERSION`.** It is referenced by path from `vite.config.ts`, `h-common/src/version.rs`, `scripts/routers/shared/bump.sh`, and `justfile`.
 
 ## Output format after a run
 

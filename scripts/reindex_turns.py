@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Re-derive agent_turns rows from llm_calls using the helper-shape
-fallback session_id rule introduced in ts-llm.
+fallback session_id rule introduced in h-llm.
 
 Mirrors the Rust algorithm in agents/{generic,session_id}.rs:
 
@@ -25,7 +25,7 @@ Usage:
 
     # Stop heron first (it holds an exclusive db lock):
     pkill -f 'target/release/heron' && sleep 2
-    python3 reindex_turns.py /home/vader/.local/share/heron/data/heron.duckdb
+    python3 reindex_turns.py ~/.local/share/heron/data/heron.duckdb
 """
 
 import json

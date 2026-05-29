@@ -22,7 +22,7 @@ Heron's post-TLS server-side deployment model.
 
 Turn counts are ground truth verified against the current implementation and
 are intended as assertions for turn-grouping tests
-(`server/ts-turn/tests/integration.rs`). `Incomplete` turns reflect streams
+(`server/h-turn/tests/integration.rs`). `Incomplete` turns reflect streams
 that did not close cleanly within the capture window — the grouping is still
 deterministic across runs and shard counts.
 
