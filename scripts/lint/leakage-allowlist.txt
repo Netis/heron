@@ -1,0 +1,36 @@
+# Leakage-linter allow-list.
+#
+# `check-leakage.sh` flags any private/internal IP in tracked files. The
+# only IPs that are SAFE to commit are documentation/test ranges and
+# well-known defaults — everything else is treated as a real-infra leak.
+#
+# This file lists the SAFE IP-address PREFIXES. Note: we deliberately
+# list only non-sensitive ranges here — never the internal addresses
+# the linter is meant to catch (per CLAUDE.md PR-hygiene rule, the lint
+# config must not itself enumerate the secrets it guards).
+#
+# Format: one allowed IPv4 prefix per line (string prefix match).
+# Lines starting with # are comments.
+
+# Loopback.
+127.0.0.
+
+# RFC5737 documentation ranges — use these in tests and docs.
+192.0.2.
+198.51.100.
+203.0.113.
+
+# RFC1918 sample block conventionally used as "some client/server" in
+# tests where the exact address is irrelevant. Kept narrow (only the
+# 10.0.0.0/24 and 10.1.0.0/24 sample blocks) so a real 10.x infra host
+# still trips the linter.
+10.0.0.
+10.1.0.
+
+# Docker default bridge network (172.17.0.0/16). Appears in proxy-pair
+# tests that model docker0 SNAT — a public default, not infra identity.
+172.17.0.
+
+# Unspecified / broadcast sentinels.
+0.0.0.0
+255.255.255.255

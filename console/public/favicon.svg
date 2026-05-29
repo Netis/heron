@@ -1,10 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none"
-     stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
   <style>
-    svg { stroke: #0a0a0a; }
-    @media (prefers-color-scheme: dark) { svg { stroke: #fafafa; } }
+    svg { fill: #0a0a0a; stroke: #0a0a0a; }
+    @media (prefers-color-scheme: dark) { svg { fill: #fafafa; stroke: #fafafa; } }
   </style>
-  <path d="M9 6 L4 6 L4 26 L9 26" />
-  <path d="M23 6 L28 6 L28 26 L23 26" />
-  <path d="M8 18 L12 18 L15 10 L18 24 L21 14 L24 18" />
+  <!-- body + S-neck + head + beak, eye knocked out (evenodd) -->
+  <path fill-rule="evenodd" stroke="none"
+        d="M4.8 17.2 C6.2 13.2 9.8 12.6 11.6 13.2 C11.9 11 12.8 9 14.2 7.9
+           C15.3 7 16.4 6.6 17.2 6.3 L22 5.0 L17.8 7.2 C16.9 7.7 16.2 8.7 15.6 9.9
+           C14.6 12 13.9 14.2 13.2 15.4 C12.3 17.2 10 18.8 7.6 18.4
+           C6.4 18.2 5.4 17.8 4.8 17.2 Z
+           M16.18 7.4 A0.42 0.42 0 1 0 17.02 7.4 A0.42 0.42 0 1 0 16.18 7.4 Z"/>
+  <!-- legs -->
+  <path fill="none" stroke-width="1.2" stroke-linecap="round"
+        d="M9.2 18.2 L8.3 22 M11 17.8 L12 22"/>
 </svg>

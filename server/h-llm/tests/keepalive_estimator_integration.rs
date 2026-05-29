@@ -34,8 +34,8 @@ const SERVER_BYTES: &[u8] =
 
 #[test]
 fn keepalive_real_bytes_estimator_populates_tokens() {
-    let cip: IpAddr = "10.40.1.81".parse().unwrap();
-    let sip: IpAddr = "172.16.103.81".parse().unwrap();
+    let cip: IpAddr = "198.51.100.81".parse().unwrap();
+    let sip: IpAddr = "192.0.2.81".parse().unwrap();
     let fk = FlowKey::new(String::new(), cip, 54754, sip, 4210);
     let ca = (cip, 54754);
     let sa = (sip, 4210);

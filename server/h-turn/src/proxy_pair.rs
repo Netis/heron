@@ -32,10 +32,10 @@
 //! ### Why not topology (A.server_ip == B.client_ip)
 //!
 //! Docker bridges SNAT outbound traffic from a container's IP to the
-//! bridge gateway IP (172.17.0.1 instead of the originating container's
-//! 172.17.0.9). The proxy host's *listen* IP and its *outbound* IP differ
-//! on captured packets, so the obvious topological signal is unreliable.
-//! Content + timing is the rule that survives.
+//! bridge gateway IP (e.g. the docker0 gateway instead of the
+//! originating container address). The proxy host's *listen* IP and its
+//! *outbound* IP differ on captured packets, so the obvious topological
+//! signal is unreliable. Content + timing is the rule that survives.
 
 use std::collections::HashMap;
 
@@ -420,7 +420,7 @@ mod tests {
             "S",
             348_294_000,
             350_588_000,
-            "172.16.103.100->172.17.0.9",
+            "192.0.2.100->172.17.0.9",
         );
         let inner = mk(
             "d3ec",
@@ -465,14 +465,14 @@ mod tests {
             "S",
             1_000_000,
             3_000_000,
-            "172.16.103.100->172.16.103.81",
+            "192.0.2.100->192.0.2.81",
         );
         let b = mk(
             "b_dock0",
             "S",
             1_000_000,
             3_000_000,
-            "172.16.103.100->172.17.0.9",
+            "192.0.2.100->172.17.0.9",
         );
         let c = mk("c_hop", "S", 1_002_000, 2_999_000, "172.17.0.1->172.17.0.4");
         let groups = group_all(&[a, b, c]);

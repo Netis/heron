@@ -41,13 +41,6 @@ help:
     @echo "   just wt list           List worktrees"
     @echo "   just wt merge <name>   Cherry-pick back to current branch"
     @echo ""
-    @echo "🖥️  Demo (TokenScope on remote host, port 3000)"
-    @echo "   just demo ping       Test SSH to demo server"
-    @echo "   just demo deploy     Build + upload + restart + open"
-    @echo "   just demo status     TokenScope process status"
-    @echo "   just demo log        Tail TokenScope log"
-    @echo "   (add --no-open to deploy to skip opening the browser)"
-    @echo ""
     @echo "🔭 Tools"
     @echo "   just loc               Lines of code dashboard"
     @echo ""
@@ -92,7 +85,3 @@ bump *args:
 # Lines of code dashboard
 loc *args:
     @bash scripts/routers/shared/loc.sh {{args}}
-
-# Demo — SSH/setup + cross-compile + deploy TokenScope (port 3000)
-demo *args:
-    @bash scripts/routers/shared/demo.sh {{args}}

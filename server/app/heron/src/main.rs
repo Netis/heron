@@ -166,9 +166,9 @@ fn init_logger(color: &Color, verbose: u8) {
 }
 
 /// Resolve on the first of Ctrl+C, SIGTERM, or SIGHUP. Returns the signal
-/// name so the caller can log which one fired. `tmux kill-session` (used by
-/// `just demo stop`) sends SIGHUP — without catching it, Rust's default
-/// aborts the process before Drop runs, leaving pcap dumps truncated.
+/// name so the caller can log which one fired. `tmux kill-session` sends
+/// SIGHUP — without catching it, Rust's default aborts the process before
+/// Drop runs, leaving pcap dumps truncated.
 #[cfg(unix)]
 async fn wait_shutdown_signal() -> &'static str {
     use tokio::signal::unix::{signal, SignalKind};

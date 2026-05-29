@@ -21,10 +21,10 @@ Amazon Linux 2/2023, Arch — without installing libpcap or a matching glibc.
 
 ```bash
 # System-wide (binary in /usr/local/bin, config in /etc):
-curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/Netis/heron/main/install.sh | sudo sh
 
 # User-local (binary in ~/.local/bin, config in ~/.config; no sudo):
-curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | INSTALL_DIR="$HOME/.local" sh
+curl -fsSL https://raw.githubusercontent.com/Netis/heron/main/install.sh | INSTALL_DIR="$HOME/.local" sh
 ```
 
 After install, grant capture privileges and run:
@@ -53,7 +53,7 @@ If you would rather not pipe a script to your shell:
 ```bash
 VERSION=v0.1.0
 TARGET=x86_64-unknown-linux-musl
-curl -fL "https://github.com/Netis/TokenScope/releases/download/${VERSION}/heron-${VERSION}-${TARGET}.tar.gz" \
+curl -fL "https://github.com/Netis/heron/releases/download/${VERSION}/heron-${VERSION}-${TARGET}.tar.gz" \
   | tar -xz
 cd "heron-${VERSION}-${TARGET}"
 sudo setcap cap_net_raw,cap_net_admin=eip ./heron
@@ -70,7 +70,7 @@ For other targets, swap `TARGET` to the value from the table above.
 Each release ships a `SHA256SUMS` file. Verify before running:
 
 ```bash
-curl -fLO "https://github.com/Netis/TokenScope/releases/download/${VERSION}/SHA256SUMS"
+curl -fLO "https://github.com/Netis/heron/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
@@ -233,6 +233,34 @@ sudo userdel heron
 
 > The DuckDB file holds all captured telemetry. Back it up first if you
 > want to keep historical metrics across reinstalls.
+
+## Spinning up a demo on a remote host
+
+There is no built-in deploy tooling — a demo is just the binary running on
+a box. If you drive an AI coding agent (Claude Code, etc.), hand it a
+prompt like the one below and let it do the SSH/setup. Fill in your own
+host and credentials; never commit them.
+
+```text
+Set up a Heron demo on the host I give you over SSH:
+
+1. SSH in (I'll provide host + credentials separately — do not hard-code
+   them in any file or commit them).
+2. Install Heron with the one-line installer from docs/install.md
+   (user-local install is fine).
+3. Grant capture caps: sudo setcap cap_net_raw,cap_net_admin=eip on the
+   binary.
+4. Start it on the primary interface, console on port 3000, running under
+   tmux so it survives the SSH session.
+5. Generate some LLM traffic through it (point an OpenAI/Anthropic-style
+   client at a local proxy the host can capture), then confirm
+   /api/health is green and the console shows turns.
+
+Report back the console URL. Keep it minimal — this is a throwaway demo.
+```
+
+That is the whole "demo" story: install, capture, look at the console.
+Nothing about it needs to live in this repo.
 
 ## Next steps
 

@@ -14,7 +14,7 @@
 #
 # Required env:
 #   ANTHROPIC_BASE_URL  full URL (no trailing slash) — e.g.,
-#                       http://172.16.103.81:4000
+#                       http://litellm-host:4000
 #   ANTHROPIC_API_KEY   bearer token; never printed; used only in
 #                       the Authorization header for the probe.
 #
