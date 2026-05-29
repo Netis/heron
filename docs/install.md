@@ -21,10 +21,10 @@ Amazon Linux 2/2023, Arch — without installing libpcap or a matching glibc.
 
 ```bash
 # System-wide (binary in /usr/local/bin, config in /etc):
-curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/Netis/heron/main/install.sh | sudo sh
 
 # User-local (binary in ~/.local/bin, config in ~/.config; no sudo):
-curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | INSTALL_DIR="$HOME/.local" sh
+curl -fsSL https://raw.githubusercontent.com/Netis/heron/main/install.sh | INSTALL_DIR="$HOME/.local" sh
 ```
 
 After install, grant capture privileges and run:
@@ -53,7 +53,7 @@ If you would rather not pipe a script to your shell:
 ```bash
 VERSION=v0.1.0
 TARGET=x86_64-unknown-linux-musl
-curl -fL "https://github.com/Netis/TokenScope/releases/download/${VERSION}/heron-${VERSION}-${TARGET}.tar.gz" \
+curl -fL "https://github.com/Netis/heron/releases/download/${VERSION}/heron-${VERSION}-${TARGET}.tar.gz" \
   | tar -xz
 cd "heron-${VERSION}-${TARGET}"
 sudo setcap cap_net_raw,cap_net_admin=eip ./heron
@@ -70,7 +70,7 @@ For other targets, swap `TARGET` to the value from the table above.
 Each release ships a `SHA256SUMS` file. Verify before running:
 
 ```bash
-curl -fLO "https://github.com/Netis/TokenScope/releases/download/${VERSION}/SHA256SUMS"
+curl -fLO "https://github.com/Netis/heron/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 

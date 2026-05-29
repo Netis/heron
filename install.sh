@@ -3,10 +3,10 @@
 #
 # Usage:
 #   System install (binary in /usr/local/bin, config in /etc):
-#     curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | sudo sh
+#     curl -fsSL https://raw.githubusercontent.com/Netis/heron/main/install.sh | sudo sh
 #
 #   User install (binary in ~/.local/bin, config in ~/.config):
-#     curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | INSTALL_DIR="$HOME/.local" sh
+#     curl -fsSL https://raw.githubusercontent.com/Netis/heron/main/install.sh | INSTALL_DIR="$HOME/.local" sh
 #
 # Environment overrides:
 #   HERON_VERSION  Pin a specific version (default: latest GitHub release)
@@ -31,8 +31,8 @@ usage() {
 Heron installer.
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | sudo sh
-  curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh | INSTALL_DIR="$HOME/.local" sh
+  curl -fsSL https://raw.githubusercontent.com/Netis/heron/main/install.sh | sudo sh
+  curl -fsSL https://raw.githubusercontent.com/Netis/heron/main/install.sh | INSTALL_DIR="$HOME/.local" sh
 
 Flags:
   -h, --help   Show this help and exit.
@@ -47,7 +47,7 @@ Environment overrides:
   HERON_VERSION  Pin a specific version (default: latest GitHub release).
                       A leading "v" is added automatically if missing.
   HERON_TARGET   Force a target triple (default: auto-detected).
-  HERON_REPO     Override the GitHub repo (default: Netis/TokenScope).
+  HERON_REPO     Override the GitHub repo (default: Netis/heron).
   INSTALL_DIR         Binary install prefix (default: /usr/local).
                       Known system prefixes (/usr/local, /usr, /opt/*) also
                       trigger a system-wide layout: config in /etc/heron,
@@ -115,7 +115,7 @@ need id
 # ---------------------------------------------------------------------------
 # Resolve install layout from INSTALL_DIR.
 # ---------------------------------------------------------------------------
-GITHUB_REPO="${HERON_REPO:-Netis/TokenScope}"
+GITHUB_REPO="${HERON_REPO:-Netis/heron}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local}"
 BIN_DIR="$INSTALL_DIR/bin"
 

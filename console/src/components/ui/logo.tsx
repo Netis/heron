@@ -1,11 +1,13 @@
 /**
- * Heron brand mark. Two variants share the same icon glyph (rounded
- * square "scope frame" containing three decreasing horizontal lines —
- * abstracted tokens viewed through the lens), so the icon-only and the
- * wordmark line up visually when the sidebar collapses.
+ * Heron brand mark. A filled silhouette of a heron in profile — long
+ * beak, S-curved neck, body, and two trailing legs, with a knocked-out
+ * eye. The icon-only and wordmark variants share the exact same glyph so
+ * they line up visually when the sidebar collapses.
  *
- * Stroke + fills use `currentColor` so the mark inherits the surrounding
- * text colour and respects light/dark themes without extra CSS.
+ * Fill + stroke use `currentColor` so the mark inherits the surrounding
+ * text colour and respects light/dark themes. The eye is a true cut-out
+ * (evenodd sub-path) rather than a painted dot, so it shows whatever is
+ * behind the mark instead of a hard-coded background colour.
  */
 
 import { cn } from "@/lib/utils"
@@ -15,32 +17,50 @@ interface LogoProps {
   className?: string
 }
 
+// Body + S-neck + head + beak, with the eye as an evenodd cut-out.
+const HERON_BODY =
+  "M4.8 17.2 C6.2 13.2 9.8 12.6 11.6 13.2 C11.9 11 12.8 9 14.2 7.9 " +
+  "C15.3 7 16.4 6.6 17.2 6.3 L22 5.0 L17.8 7.2 C16.9 7.7 16.2 8.7 15.6 9.9 " +
+  "C14.6 12 13.9 14.2 13.2 15.4 C12.3 17.2 10 18.8 7.6 18.4 " +
+  "C6.4 18.2 5.4 17.8 4.8 17.2 Z " +
+  "M16.18 7.4 A0.42 0.42 0 1 0 17.02 7.4 A0.42 0.42 0 1 0 16.18 7.4 Z"
+
+// Two legs.
+const HERON_LEGS = "M9.2 18.2 L8.3 22 M11 17.8 L12 22"
+
+function HeronGlyph() {
+  return (
+    <>
+      <path d={HERON_BODY} fill="currentColor" fillRule="evenodd" stroke="none" />
+      <path
+        d={HERON_LEGS}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1}
+        strokeLinecap="round"
+      />
+    </>
+  )
+}
+
 export function Logo({ variant, className }: LogoProps) {
   if (variant === "icon") {
     return (
       <svg
         viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={1.75}
-        strokeLinecap="round"
-        strokeLinejoin="round"
         className={cn("shrink-0", className)}
         aria-label="Heron"
         role="img"
       >
-        <rect x={2.5} y={2.5} width={19} height={19} rx={4.5} />
-        <line x1={6.5} y1={9} x2={17.5} y2={9} />
-        <line x1={6.5} y1={13} x2={14} y2={13} />
-        <line x1={6.5} y1={17} x2={10.5} y2={17} />
+        <HeronGlyph />
       </svg>
     )
   }
 
-  // Wordmark: same icon glyph at the left + "Heron" set in a
-  // system-stack semi-bold. SVG <text> renders crisply at any DPI and
-  // tints with currentColor; we accept the (tiny) variance across OS
-  // font choices in exchange for not shipping a webfont.
+  // Wordmark: heron glyph on the left + "Heron" set in a system-stack
+  // semi-bold. SVG <text> renders crisply at any DPI and tints with
+  // currentColor; we accept the (tiny) variance across OS font choices
+  // in exchange for not shipping a webfont.
   return (
     <svg
       viewBox="0 0 156 24"
@@ -49,12 +69,7 @@ export function Logo({ variant, className }: LogoProps) {
       aria-label="Heron"
       role="img"
     >
-      <g stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
-        <rect x={2.5} y={2.5} width={19} height={19} rx={4.5} />
-        <line x1={6.5} y1={9} x2={17.5} y2={9} />
-        <line x1={6.5} y1={13} x2={14} y2={13} />
-        <line x1={6.5} y1={17} x2={10.5} y2={17} />
-      </g>
+      <HeronGlyph />
       <text
         x={30}
         y={17}

@@ -100,7 +100,7 @@ This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Ver
 
 ```bash
 # Install (Linux/macOS, no sudo, user-local)
-curl -fsSL https://raw.githubusercontent.com/Netis/TokenScope/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/Netis/heron/main/install.sh \
   | INSTALL_DIR="$HOME/.local" sh
 
 # Linux: grant capture privileges to the binary (no sudo at runtime)
@@ -128,7 +128,7 @@ below and let it do the install + smoke test for you. It needs only shell
 access to the target machine.
 
 ```text
-Install and smoke-test Heron (https://github.com/Netis/TokenScope) on this machine:
+Install and smoke-test Heron (https://github.com/Netis/heron) on this machine:
 
 1. Read the README and docs/install.md to pick the right install path.
    Use the one-line installer; user-local (no sudo) is fine.
