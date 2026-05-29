@@ -1091,6 +1091,182 @@ dependencies = [
 ]
 
 [[package]]
+name = "h-api"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "h-capture",
+ "h-common",
+ "h-llm",
+ "h-metrics",
+ "h-pcap-extract",
+ "h-storage",
+ "h-storage-duckdb",
+ "h-turn",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+]
+
+[[package]]
+name = "h-capture"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "h-common",
+ "libc",
+ "pcap",
+ "serde",
+ "snap",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zeromq",
+]
+
+[[package]]
+name = "h-common"
+version = "0.3.0"
+dependencies = [
+ "config",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml_edit 0.22.27",
+ "tracing",
+]
+
+[[package]]
+name = "h-llm"
+version = "0.3.0"
+dependencies = [
+ "bitflags 2.11.0",
+ "bytes",
+ "h-common",
+ "h-protocol",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tiktoken-rs",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "h-metrics"
+version = "0.3.0"
+dependencies = [
+ "h-common",
+ "h-llm",
+ "tdigest",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "h-pcap-extract"
+version = "0.3.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "h-common",
+ "h-protocol",
+ "pcap",
+ "snap",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "h-protocol"
+version = "0.3.0"
+dependencies = [
+ "bytemuck",
+ "bytes",
+ "h-capture",
+ "h-common",
+ "httparse",
+ "pcap",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "h-storage"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "h-common",
+ "h-llm",
+ "h-metrics",
+ "h-protocol",
+ "h-turn",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "h-storage-duckdb"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "duckdb",
+ "h-common",
+ "h-llm",
+ "h-metrics",
+ "h-protocol",
+ "h-storage",
+ "h-turn",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "h-turn"
+version = "0.3.0"
+dependencies = [
+ "h-capture",
+ "h-common",
+ "h-llm",
+ "h-metrics",
+ "h-protocol",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1160,6 +1336,16 @@ dependencies = [
  "axum",
  "clap",
  "duckdb",
+ "h-api",
+ "h-capture",
+ "h-common",
+ "h-llm",
+ "h-metrics",
+ "h-pcap-extract",
+ "h-protocol",
+ "h-storage",
+ "h-storage-duckdb",
+ "h-turn",
  "libc",
  "mime_guess",
  "rust-embed",
@@ -1171,16 +1357,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "ts-api",
- "ts-capture",
- "ts-common",
- "ts-llm",
- "ts-metrics",
- "ts-pcap-extract",
- "ts-protocol",
- "ts-storage",
- "ts-storage-duckdb",
- "ts-turn",
 ]
 
 [[package]]
@@ -3110,182 +3286,6 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
-
-[[package]]
-name = "ts-api"
-version = "0.3.0"
-dependencies = [
- "axum",
- "chrono",
- "http-body-util",
- "serde",
- "serde_json",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "ts-capture",
- "ts-common",
- "ts-llm",
- "ts-metrics",
- "ts-pcap-extract",
- "ts-storage",
- "ts-storage-duckdb",
- "ts-turn",
-]
-
-[[package]]
-name = "ts-capture"
-version = "0.3.0"
-dependencies = [
- "async-trait",
- "bytes",
- "libc",
- "pcap",
- "serde",
- "snap",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "ts-common",
- "zeromq",
-]
-
-[[package]]
-name = "ts-common"
-version = "0.3.0"
-dependencies = [
- "config",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml_edit 0.22.27",
- "tracing",
-]
-
-[[package]]
-name = "ts-llm"
-version = "0.3.0"
-dependencies = [
- "bitflags 2.11.0",
- "bytes",
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tiktoken-rs",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "ts-common",
- "ts-protocol",
- "uuid",
-]
-
-[[package]]
-name = "ts-metrics"
-version = "0.3.0"
-dependencies = [
- "tdigest",
- "tokio",
- "tracing",
- "ts-common",
- "ts-llm",
-]
-
-[[package]]
-name = "ts-pcap-extract"
-version = "0.3.0"
-dependencies = [
- "bytes",
- "futures",
- "pcap",
- "snap",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "ts-common",
- "ts-protocol",
-]
-
-[[package]]
-name = "ts-protocol"
-version = "0.3.0"
-dependencies = [
- "bytemuck",
- "bytes",
- "httparse",
- "pcap",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "ts-capture",
- "ts-common",
- "uuid",
-]
-
-[[package]]
-name = "ts-storage"
-version = "0.3.0"
-dependencies = [
- "async-trait",
- "bytes",
- "chrono",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing",
- "ts-common",
- "ts-llm",
- "ts-metrics",
- "ts-protocol",
- "ts-turn",
-]
-
-[[package]]
-name = "ts-storage-duckdb"
-version = "0.3.0"
-dependencies = [
- "async-trait",
- "bytes",
- "chrono",
- "duckdb",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "ts-common",
- "ts-llm",
- "ts-metrics",
- "ts-protocol",
- "ts-storage",
- "ts-turn",
-]
-
-[[package]]
-name = "ts-turn"
-version = "0.3.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "ts-capture",
- "ts-common",
- "ts-llm",
- "ts-metrics",
- "ts-protocol",
- "uuid",
-]
 
 [[package]]
 name = "typeid"

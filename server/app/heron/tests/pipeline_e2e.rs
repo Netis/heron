@@ -17,13 +17,13 @@ use tokio_util::sync::CancellationToken;
 
 use heron::create_backend;
 use heron::Pipeline;
-use ts_capture::{CaptureSource, PcapFileSource};
-use ts_common::config::{
+use h_capture::{CaptureSource, PcapFileSource};
+use h_common::config::{
     CaptureSourceConfig, DuckDbConfig, PipelineDef, RetentionConfig, StorageConfig,
     StorageSinkConfig,
 };
-use ts_common::internal_metrics::{Metric, MetricsSystem};
-use ts_llm::wire_apis as wa;
+use h_common::internal_metrics::{Metric, MetricsSystem};
+use h_llm::wire_apis as wa;
 
 fn fixture(name: &str) -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -106,7 +106,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
         })
         .collect();
 
-    let sink_config = ts_storage::StorageSinkConfig {
+    let sink_config = h_storage::StorageSinkConfig {
         batch_size: storage_config.sink.batch_size,
         flush_interval_ms: storage_config.sink.flush_interval_ms,
     };
@@ -121,8 +121,8 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
         storage.clone(),
         &mut per_pipeline_metrics,
         &mut shared_metrics,
-        ts_turn::new_active_turn_registry(),
-        ts_llm::agent_classifier::ClassifierConfig::default(),
+        h_turn::new_active_turn_registry(),
+        h_llm::agent_classifier::ClassifierConfig::default(),
     );
     let _metrics_svcs: Vec<_> = per_pipeline_metrics
         .into_iter()
@@ -207,7 +207,7 @@ async fn claude_cli_pcap_populates_all_three_tables() {
     );
 
     // A single complete claude-cli turn is the documented ground truth
-    // (matches `ts-turn/tests/integration.rs::claude_cli_messages_expects_one_complete_turn`).
+    // (matches `h-turn/tests/integration.rs::claude_cli_messages_expects_one_complete_turn`).
     let (anthropic_turns, status, agent_kind): (i64, String, String) = conn
         .query_row(
             "SELECT COUNT(*), MIN(status), MIN(agent_kind) \

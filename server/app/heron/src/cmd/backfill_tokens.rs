@@ -29,8 +29,8 @@ use clap::Args;
 use duckdb::Connection;
 use serde_json::Value;
 
-use ts_llm::token_estimator::{CL100kEstimator, TokenEstimator};
-use ts_llm::wire_apis as wa;
+use h_llm::token_estimator::{CL100kEstimator, TokenEstimator};
+use h_llm::wire_apis as wa;
 
 #[derive(Debug, Args)]
 pub struct BackfillTokensArgs {

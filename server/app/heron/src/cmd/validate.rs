@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::Args;
-use ts_common::config::{
+use h_common::config::{
     config_search_paths, discover_config_path, AnnotatedConfigIssue, AppConfig, IssueSeverity,
 };
 

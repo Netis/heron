@@ -18,7 +18,7 @@
 #   4. Run `scripts/lint/check-validated-constructors.py` and fix
 #      every reported caller by migrating to the validator.
 
-# `TimeRange` validation lives in to_time_range() at server/ts-api/src/params.rs.
+# `TimeRange` validation lives in to_time_range() at server/h-api/src/params.rs.
 # All API route handlers must funnel through it; tests and internal
 # query types may construct directly.
-TimeRange : server/ts-api/src/params.rs server/ts-storage/src/query.rs server/**/tests/**.rs server/**/concurrent_tests.rs server/**/keepalive_pipeline.rs server/**/keepalive_estimator_integration.rs server/**/duckdb_routes.rs server/**/pipeline_e2e.rs server/**/pcap_extract_route.rs
+TimeRange : server/h-api/src/params.rs server/h-storage/src/query.rs server/**/tests/**.rs server/**/concurrent_tests.rs server/**/keepalive_pipeline.rs server/**/keepalive_estimator_integration.rs server/**/duckdb_routes.rs server/**/pipeline_e2e.rs server/**/pcap_extract_route.rs

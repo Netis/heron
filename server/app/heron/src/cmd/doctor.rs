@@ -13,7 +13,7 @@ use std::path::Path;
 
 use clap::Args;
 use serde::Serialize;
-use ts_common::config::{
+use h_common::config::{
     config_search_paths, discover_config_path, AppConfig, ConfigIssue, IssueSeverity,
 };
 

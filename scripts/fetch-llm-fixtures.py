@@ -4,7 +4,7 @@
 Usage:
     python3 scripts/fetch-llm-fixtures.py
 
-Output: server/ts-llm/tests/fixtures/{provider}/request|response-*.{json,sse,txt}
+Output: server/h-llm/tests/fixtures/{provider}/request|response-*.{json,sse,txt}
 
 Sources (pinned):
 - OpenAI:    https://raw.githubusercontent.com/openai/openai-openapi/2025-03-21/openapi.yaml

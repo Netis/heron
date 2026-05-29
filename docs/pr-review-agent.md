@@ -10,7 +10,7 @@ to window width, etc.) so the human reviewer arrives at a PR with the
 ## Architecture
 
 ```
-GitHub                                  wuneng VM heron-ci
+GitHub                                  self-hosted runner VM
 ┌──────────────┐  ci passes (workflow_run)  ┌─────────────────────────┐
 │  PR opened   │ ─────────────────────────► │ self-hosted GH runner   │
 │  PR sync     │                            │  ┌───────────────────┐  │
@@ -77,8 +77,7 @@ in-flight review of the same PR — no duplicate comments.
 
 ## Self-hosted runner expectations
 
-The `heron` self-hosted runner on wuneng's `heron-ci` VM
-needs:
+The `heron` self-hosted runner needs:
 
 1. **Claude Code CLI** installed and on `$PATH`:
    ```
@@ -118,7 +117,7 @@ already posted, an operator can finish the merge by hand.
 
 ## Cost / latency
 
-GLM-5 runs on-prem (GPUs 4-7 of wuneng, served by SGLang). No
+GLM-5 runs on-prem (locally-served via SGLang on the GPU host). No
 per-request cost; the constraint is GPU minutes.
 
 | PR size | Files | Input tokens | Output tokens | Wall clock |

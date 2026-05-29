@@ -2,7 +2,7 @@
 # Regenerate per-release golden DuckDB fixtures under testdata/golden-dbs/.
 #
 # Default behavior (no tag arg): print a friendly note and exit 0. The
-# migration test suite at server/ts-storage-duckdb/tests/migrations.rs
+# migration test suite at server/h-storage-duckdb/tests/migrations.rs
 # uses **code-defined synthetic fixtures** rather than binary blobs as
 # of v0.3.0, so regenerating fixtures is opt-in.
 #

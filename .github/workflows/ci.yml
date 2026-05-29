@@ -1,10 +1,10 @@
 name: ci
 
-# Runs on the wuneng self-hosted runner — toolchain (rustup stable +
-# Node 20 + bun) is pre-installed in /home/ci on the VM. Internet egress
-# goes through the internal 100.115.8.61:8888 proxy (set in the runner's
-# .env), so any action that pulls from the network just works without
-# extra config.
+# Runs on the project's self-hosted runner — toolchain (rustup stable +
+# Node 20 + bun) is pre-installed on the runner host. Internet egress
+# goes through the configured internal proxy (set in the runner's `.env`),
+# so any action that pulls from the network just works without extra
+# config.
 
 on:
   pull_request:
@@ -68,7 +68,7 @@ jobs:
         run: cargo test --workspace --quiet
 
       - name: cargo test (fault-injection feature)
-        # Builds ts-storage-duckdb with the `fault-injection` feature and
+        # Builds h-storage-duckdb with the `fault-injection` feature and
         # runs its concurrent_tests module, which contains the
         # deterministic recovery tests that drive the PR#48-class
         # "FATAL → reopen → every surface works" path. The feature is
@@ -78,17 +78,17 @@ jobs:
         working-directory: server
         env:
           CARGO_TERM_COLOR: always
-        run: cargo test -p ts-storage-duckdb --features fault-injection --quiet
+        run: cargo test -p h-storage-duckdb --features fault-injection --quiet
 
       - name: cargo test (schema-migration golden DBs)
-        # Locks in the auto-migration code in ts-storage-duckdb/src/schema.rs
+        # Locks in the auto-migration code in h-storage-duckdb/src/schema.rs
         # against silent regression. Tests synthesize the on-disk shape
         # of older releases via DDL, run current init(), and assert the
         # expected drift (columns added/dropped, legacy values rewritten).
         working-directory: server
         env:
           CARGO_TERM_COLOR: always
-        run: cargo test -p ts-storage-duckdb --test migrations --quiet
+        run: cargo test -p h-storage-duckdb --test migrations --quiet
 
       - name: cargo clippy (informational; not enforcing yet)
         working-directory: server

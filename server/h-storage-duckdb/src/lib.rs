@@ -1,0 +1,402 @@
+mod apps;
+mod calls;
+#[cfg(test)]
+mod concurrent_tests;
+mod distincts;
+mod exchanges;
+#[cfg(feature = "fault-injection")]
+pub mod fault_injection;
+mod metrics;
+mod pool;
+mod retention;
+mod schema;
+mod sessions;
+mod turns;
+mod util;
+
+use std::sync::{Arc, Mutex as StdMutex};
+
+use async_trait::async_trait;
+use duckdb::Connection;
+use tracing::info;
+use h_common::error::{AppError, Result};
+use h_llm::model::LlmCall;
+use h_metrics::model::{LlmFinishMetric, LlmMetric};
+use h_protocol::HttpExchange;
+use h_turn::{AgentTurn, PairCandidate};
+
+use h_storage::query::*;
+use h_storage::retention::{RetentionPolicy, RetentionReport};
+use h_storage::StorageBackend;
+
+use pool::ReadPool;
+
+/// Default size of the read-connection pool. DuckDB serializes writes at the
+/// database layer anyway; extra read connections only help queries.
+const DEFAULT_READ_POOL_SIZE: usize = 4;
+
+/// DuckDB storage backend.
+///
+/// Uses three dedicated writer connections — one per table (calls / turns /
+/// metrics) — each serialized by its own Mutex so that flushes on different
+/// tables do not block one another. All three share the same underlying
+/// DuckDB database instance via `Connection::try_clone`; DuckDB's MVCC
+/// handles inter-transaction isolation for writes to disjoint tables.
+///
+/// A small pool of reader connections is cloned from the calls writer.
+/// Queries never contend with writes on any of the writer Mutexes.
+pub struct DuckDbBackend {
+    pub(crate) write_calls_conn: Arc<StdMutex<Connection>>,
+    pub(crate) write_turns_conn: Arc<StdMutex<Connection>>,
+    pub(crate) write_metrics_conn: Arc<StdMutex<Connection>>,
+    pub(crate) write_exchanges_conn: Arc<StdMutex<Connection>>,
+    pub(crate) read_pool: ReadPool,
+    /// Kept so we can re-`Connection::open` the whole connection set
+    /// in place after a DuckDB in-process FATAL. See
+    /// `reopen_all_connections`.
+    pub(crate) db_path: String,
+    /// Captured at construction; used by `reopen_all_connections` to
+    /// rebuild the reader pool at the same size.
+    pub(crate) read_pool_size: usize,
+    /// Per-backend armed-fault set. Only present when the
+    /// `fault-injection` feature is enabled; shared by reference with
+    /// `read_pool` so writer-path and reader-path injections both see
+    /// the same set.
+    #[cfg(feature = "fault-injection")]
+    pub(crate) fault_set: fault_injection::FaultSet,
+}
+
+impl DuckDbBackend {
+    /// Open a DuckDB database at the given path with a default-sized read pool.
+    pub fn open(path: &str) -> Result<Self> {
+        Self::open_with_pool(path, DEFAULT_READ_POOL_SIZE)
+    }
+
+    pub fn open_with_pool(path: &str, read_pool_size: usize) -> Result<Self> {
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    AppError::Storage(format!(
+                        "failed to create duckdb parent dir {}: {e}",
+                        parent.display()
+                    ))
+                })?;
+            }
+        }
+        let calls_writer = Connection::open(path)
+            .map_err(|e| AppError::Storage(format!("failed to open duckdb: {e}")))?;
+        let turns_writer = calls_writer
+            .try_clone()
+            .map_err(|e| AppError::Storage(format!("failed to clone turns writer: {e}")))?;
+        let metrics_writer = calls_writer
+            .try_clone()
+            .map_err(|e| AppError::Storage(format!("failed to clone metrics writer: {e}")))?;
+        let exchanges_writer = calls_writer
+            .try_clone()
+            .map_err(|e| AppError::Storage(format!("failed to clone exchanges writer: {e}")))?;
+
+        let pool_size = read_pool_size.max(1);
+        let mut readers = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            let c = calls_writer
+                .try_clone()
+                .map_err(|e| AppError::Storage(format!("failed to clone read conn: {e}")))?;
+            readers.push(c);
+        }
+
+        info!(
+            "duckdb opened with 4 writer connections + {} readers",
+            pool_size
+        );
+
+        #[cfg(feature = "fault-injection")]
+        let fault_set = fault_injection::FaultSet::new();
+
+        Ok(Self {
+            write_calls_conn: Arc::new(StdMutex::new(calls_writer)),
+            write_turns_conn: Arc::new(StdMutex::new(turns_writer)),
+            write_metrics_conn: Arc::new(StdMutex::new(metrics_writer)),
+            write_exchanges_conn: Arc::new(StdMutex::new(exchanges_writer)),
+            read_pool: ReadPool::new(
+                readers,
+                #[cfg(feature = "fault-injection")]
+                fault_set.clone(),
+            ),
+            db_path: path.to_string(),
+            read_pool_size: pool_size,
+            #[cfg(feature = "fault-injection")]
+            fault_set,
+        })
+    }
+
+    /// Test-only accessor for the per-backend fault-injection set.
+    #[cfg(feature = "fault-injection")]
+    pub fn fault_set(&self) -> &fault_injection::FaultSet {
+        &self.fault_set
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_conn(&self) -> &StdMutex<Connection> {
+        &self.write_calls_conn
+    }
+}
+
+#[async_trait]
+impl StorageBackend for DuckDbBackend {
+    async fn init(&self) -> Result<()> {
+        schema::init(self).await
+    }
+
+    async fn write_calls(&self, calls: Vec<LlmCall>) -> Result<()> {
+        DuckDbBackend::write_calls(self, calls).await
+    }
+
+    async fn write_exchanges(&self, exchanges: Vec<HttpExchange>) -> Result<()> {
+        DuckDbBackend::write_exchanges(self, exchanges).await
+    }
+
+    async fn query_http_exchange_by_id(&self, id: &str) -> Result<Option<HttpExchangeDetail>> {
+        DuckDbBackend::query_http_exchange_by_id(self, id).await
+    }
+
+    async fn query_http_exchanges(&self, query: &HttpExchangesQuery) -> Result<HttpExchangesPage> {
+        DuckDbBackend::query_http_exchanges(self, query).await
+    }
+
+    async fn write_metrics(&self, metrics: Vec<LlmMetric>) -> Result<()> {
+        DuckDbBackend::write_metrics(self, metrics).await
+    }
+
+    async fn write_finish_metrics(&self, metrics: Vec<LlmFinishMetric>) -> Result<()> {
+        DuckDbBackend::write_finish_metrics(self, metrics).await
+    }
+
+    async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()> {
+        DuckDbBackend::write_turns(self, turns).await
+    }
+
+    async fn query_metrics_timeseries(
+        &self,
+        query: &MetricsTimeseriesQuery,
+    ) -> Result<Vec<MetricsTimeseriesRow>> {
+        DuckDbBackend::query_metrics_timeseries(self, query).await
+    }
+
+    async fn query_metrics_summary(
+        &self,
+        query: &MetricsSummaryQuery,
+    ) -> Result<MetricsSummaryRow> {
+        DuckDbBackend::query_metrics_summary(self, query).await
+    }
+
+    async fn query_metrics_models(
+        &self,
+        query: &MetricsModelsQuery,
+    ) -> Result<Vec<MetricsModelRow>> {
+        DuckDbBackend::query_metrics_models(self, query).await
+    }
+
+    async fn query_services(&self, query: &ServicesQuery) -> Result<Vec<ServiceRow>> {
+        DuckDbBackend::query_services(self, query).await
+    }
+
+    async fn query_services_topology(
+        &self,
+        query: &ServicesTopologyQuery,
+    ) -> Result<ServicesTopology> {
+        DuckDbBackend::query_services_topology(self, query).await
+    }
+
+    async fn query_agent_summary(
+        &self,
+        query: &AgentSummaryQuery,
+    ) -> Result<Vec<AgentKindSummary>> {
+        DuckDbBackend::query_agent_summary(self, query).await
+    }
+
+    async fn query_agent_activity(
+        &self,
+        query: &AgentActivityQuery,
+    ) -> Result<Vec<AgentActivityPoint>> {
+        DuckDbBackend::query_agent_activity(self, query).await
+    }
+
+    async fn query_finish_reasons(
+        &self,
+        query: &FinishReasonsQuery,
+    ) -> Result<Vec<FinishReasonTimeseries>> {
+        DuckDbBackend::query_finish_reasons(self, query).await
+    }
+
+    async fn query_calls(&self, query: &CallsQuery) -> Result<CallsPage> {
+        DuckDbBackend::query_calls(self, query).await
+    }
+
+    async fn query_call_by_id(&self, id: &str) -> Result<Option<CallDetail>> {
+        DuckDbBackend::query_call_by_id(self, id).await
+    }
+
+    async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage> {
+        DuckDbBackend::query_turns(self, query).await
+    }
+
+    async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>> {
+        DuckDbBackend::query_turn_by_id(self, turn_id).await
+    }
+
+    async fn query_turn_calls(
+        &self,
+        turn_id: &str,
+        include_bodies: bool,
+    ) -> Result<Vec<TurnCallItem>> {
+        DuckDbBackend::query_turn_calls(self, turn_id, include_bodies).await
+    }
+
+    async fn query_calls_by_ids(
+        &self,
+        call_ids: &[String],
+        include_bodies: bool,
+    ) -> Result<Vec<TurnCallItem>> {
+        DuckDbBackend::query_calls_by_ids(self, call_ids, include_bodies).await
+    }
+
+    async fn query_sessions(&self, query: &SessionListQuery) -> Result<SessionsPage> {
+        DuckDbBackend::query_sessions(self, query).await
+    }
+
+    async fn query_session_by_id(
+        &self,
+        source_id: &str,
+        session_id: &str,
+    ) -> Result<Option<SessionDetail>> {
+        DuckDbBackend::query_session_by_id(self, source_id, session_id).await
+    }
+
+    async fn query_session_turns(&self, query: &SessionTurnsQuery) -> Result<SessionTurnsPage> {
+        DuckDbBackend::query_session_turns(self, query).await
+    }
+
+    async fn query_distinct_wire_apis(&self) -> Result<Vec<String>> {
+        DuckDbBackend::query_distinct_wire_apis(self).await
+    }
+
+    async fn query_distinct_models(&self) -> Result<Vec<String>> {
+        DuckDbBackend::query_distinct_models(self).await
+    }
+
+    async fn query_distinct_server_ips(&self) -> Result<Vec<String>> {
+        DuckDbBackend::query_distinct_server_ips(self).await
+    }
+
+    async fn query_distinct_agent_kinds(
+        &self,
+        query: &DistinctAgentKindsQuery,
+    ) -> Result<Vec<String>> {
+        DuckDbBackend::query_distinct_agent_kinds(self, query).await
+    }
+
+    async fn query_distinct_finish_reasons(&self) -> Result<Vec<DistinctFinishReason>> {
+        DuckDbBackend::query_distinct_finish_reasons(self).await
+    }
+
+    async fn apply_retention(&self, policy: RetentionPolicy) -> Result<RetentionReport> {
+        DuckDbBackend::apply_retention(self, policy).await
+    }
+
+    async fn query_pair_candidates(
+        &self,
+        start_us: i64,
+        end_us: i64,
+    ) -> Result<Vec<PairCandidate>> {
+        DuckDbBackend::query_pair_candidates(self, start_us, end_us).await
+    }
+
+    async fn update_turn_metadata(&self, turn_id: &str, patch: serde_json::Value) -> Result<()> {
+        DuckDbBackend::update_turn_metadata(self, turn_id, patch).await
+    }
+
+    async fn checkpoint_turns_writer(&self) -> Result<()> {
+        let conn = self.write_turns_conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| AppError::Storage(format!("lock turns writer: {e}")))?;
+            conn.execute_batch("CHECKPOINT")
+                .map_err(|e| AppError::Storage(format!("CHECKPOINT failed: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+
+    async fn reopen_all_connections(&self) -> Result<()> {
+        let path = self.db_path.clone();
+        let pool_size = self.read_pool_size;
+        let calls_arc = self.write_calls_conn.clone();
+        let turns_arc = self.write_turns_conn.clone();
+        let metrics_arc = self.write_metrics_conn.clone();
+        let exchanges_arc = self.write_exchanges_conn.clone();
+        let read_pool = self.read_pool.clone();
+        tokio::task::spawn_blocking(move || {
+            // Open one fresh anchor connection to the on-disk file.
+            // If the file itself is unreachable we surface the error
+            // and the sweeper will retry on the next interval.
+            let anchor = Connection::open(&path)
+                .map_err(|e| AppError::Storage(format!("reopen duckdb anchor: {e}")))?;
+            let turns_fresh = anchor
+                .try_clone()
+                .map_err(|e| AppError::Storage(format!("clone turns writer: {e}")))?;
+            let metrics_fresh = anchor
+                .try_clone()
+                .map_err(|e| AppError::Storage(format!("clone metrics writer: {e}")))?;
+            let exchanges_fresh = anchor
+                .try_clone()
+                .map_err(|e| AppError::Storage(format!("clone exchanges writer: {e}")))?;
+            let mut readers = Vec::with_capacity(pool_size);
+            for _ in 0..pool_size {
+                let r = anchor
+                    .try_clone()
+                    .map_err(|e| AppError::Storage(format!("clone reader: {e}")))?;
+                readers.push(r);
+            }
+
+            // Swap each writer in place. The brief moment between two
+            // writer locks is acceptable — invalidated writers are
+            // already returning FATAL, so a request that races the
+            // swap and hits one of the not-yet-replaced writers just
+            // sees one more 500 before the next caller succeeds.
+            {
+                let mut g = calls_arc
+                    .lock()
+                    .map_err(|e| AppError::Storage(format!("lock calls writer: {e}")))?;
+                *g = anchor;
+            }
+            {
+                let mut g = turns_arc
+                    .lock()
+                    .map_err(|e| AppError::Storage(format!("lock turns writer: {e}")))?;
+                *g = turns_fresh;
+            }
+            {
+                let mut g = metrics_arc
+                    .lock()
+                    .map_err(|e| AppError::Storage(format!("lock metrics writer: {e}")))?;
+                *g = metrics_fresh;
+            }
+            {
+                let mut g = exchanges_arc
+                    .lock()
+                    .map_err(|e| AppError::Storage(format!("lock exchanges writer: {e}")))?;
+                *g = exchanges_fresh;
+            }
+            read_pool.replace_all(readers)?;
+            info!(
+                pool_size,
+                "reopened all DuckDB connections after FATAL invalidation"
+            );
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+}

@@ -6,7 +6,7 @@
 2. **Code Quality** — Modular, single source of truth, explicit over clever, types as documentation.
 3. **Documentation** — CLAUDE.md is the entry point (keep concise). Commands over prose. Update docs with code.
 4. **Project Structure** — `justfile` as command runner, `scripts/` for complex logic, `project.yaml` for metadata.
-5. **PR Hygiene** — Never leak internal LAN, host, app, deployment, screenshot, log, URL, or environment details into PR titles, bodies, comments, or review requests. Scrub private IPs, internal hostnames, internal app names, usernames, and machine-specific paths before creating PR text.
+5. **PR Hygiene** — Never leak internal LAN, host, app, deployment, screenshot, log, URL, or environment details into any outbound surface: PR titles/bodies, inline review comments, issue bodies, commit messages destined for public history, and any text submitted via `gh` to GitHub. Scrub private IPs, internal infrastructure hostnames (including the project's specific runner/staging machine names — refer to them generically as "the self-hosted runner" or "the staging VM"), internal app/team names, usernames, and machine-specific paths before sending. This rule also applies to `CLAUDE.md` itself and every file in the repo: never enumerate the actual sensitive identifiers here as "examples"; refer to them by category only.
 
 These apply to every artifact in this repo — code, docs, and CLAUDE.md itself.
 
