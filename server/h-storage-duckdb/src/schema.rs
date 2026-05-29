@@ -305,11 +305,24 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         // does not abort the rest; failures are logged (not propagated) so
         // the app can start even against an older DuckDB that doesn't support
         // `ADD COLUMN IF NOT EXISTS`.
+        //
+        // NOTE: the agent columns are added WITHOUT `NOT NULL` here, even
+        // though the canonical CREATE TABLE declares them NOT NULL. DuckDB
+        // refuses `ALTER TABLE ... ADD COLUMN ... NOT NULL DEFAULT ...`
+        // (verified on 1.10501.0), so a NOT NULL form silently fails and
+        // leaves the column absent — which then breaks every subsequent
+        // INSERT on an upgraded DB. Adding them nullable-with-default
+        // succeeds, is a metadata-only operation (instant even on a
+        // multi-GB table), and is behaviorally equivalent: the writer
+        // always supplies a value, and these columns sit at the end of
+        // the table in both CREATE and ALTER so the appender's positional
+        // writes stay aligned. Fresh installs still get NOT NULL via
+        // CREATE TABLE.
         let agent_columns = [
-            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS is_agent_request BOOLEAN NOT NULL DEFAULT FALSE;",
+            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS is_agent_request BOOLEAN DEFAULT FALSE;",
             "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS tool_surface VARCHAR;",
             "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS agent_topology VARCHAR;",
-            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS tool_call_count UINTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS tool_call_count UINTEGER DEFAULT 0;",
             "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS tool_names_json VARCHAR;",
         ];
         for stmt in agent_columns {
@@ -328,9 +341,10 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         // agent_turns. Same pattern as the llm_calls block above — each
         // statement runs independently so a failure on one column does not
         // abort the rest.
+        // Same NOT NULL-omission rationale as the llm_calls block above.
         let turn_agent_columns = [
             "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS tool_surfaces_json VARCHAR;",
-            "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS tool_call_total UINTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS tool_call_total UINTEGER DEFAULT 0;",
             "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS agent_topology VARCHAR;",
             "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS suspicious_skills_json VARCHAR;",
         ];
