@@ -45,7 +45,10 @@ jobs:
         github.event.workflow_run.pull_requests[0] != null
       )
     runs-on: [self-hosted, tokenscope]
-    timeout-minutes: 30
+    # 120 min covers large-PR reviews (e.g. rebrand-scale 200-file
+    # mechanical diffs). The earlier 30-min ceiling killed the agent
+    # mid-read on PR #66 even though the diff was reviewable.
+    timeout-minutes: 120
     env:
       # Agent endpoint + key live in repo secrets so this workflow
       # is portable across deployments without exposing internal

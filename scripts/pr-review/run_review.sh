@@ -49,9 +49,10 @@ ALLOWED_TOOLS="$(grep -v '^#' "$WORKDIR/allowed_tools.txt" \
   | grep -v '^[[:space:]]*$' \
   | paste -sd, -)"
 
-# Headless agent run. The 1800 s outer cap is a hard fence — if the
+# Headless agent run. The 7200 s outer cap is a hard fence — if the
 # model loops we'd rather post a "review timed out" than wedge the
-# workflow.
+# workflow. 7200 s lets large-diff reviews (200+ files, rebrand-class
+# refactors) complete instead of timing out mid-read.
 #
 # Feed the prompt over stdin instead of as a trailing positional arg —
 # `--allowed-tools` is variadic (<tools...>), so a positional prompt
@@ -69,7 +70,7 @@ attempt=0
 claude_rc=0
 while true; do
     set +e
-    timeout 1800 claude \
+    timeout 7200 claude \
       --print \
       --model "${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}" \
       --max-turns 60 \
