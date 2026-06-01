@@ -65,6 +65,32 @@ directory — `cd` into it, or pass `-c <path>` from elsewhere.
 
 For other targets, swap `TARGET` to the value from the table above.
 
+## Building from source
+
+```bash
+just build all       # frontend bundle + binary with embedded console
+```
+
+`just build all` is the supported path: it runs `bun run build` in
+`console/` and then `cargo build --release --features console`, so the web
+console gets embedded in the binary.
+
+> **Gotcha — a bare `cargo build` ships a blank console.** The web UI is
+> embedded via `rust-embed` behind the **non-default `console` cargo
+> feature**. If you build the binary directly with
+> `cargo build --release` (or `--bin heron`) and forget `--features
+> console`, the binary compiles and `/api/health` returns 200, but the
+> console at `:4500` serves a **blank page** — the assets were never
+> embedded. Build the frontend first, then build with the feature:
+>
+> ```bash
+> (cd console && bun run build)            # produces console/dist/
+> cargo build --release --bin heron --features console
+> ```
+>
+> Prefer `just build all`, which does both for you. The same applies when
+> you rebuild to deploy an upgrade — re-run with `--features console`.
+
 ## Verify the download
 
 Each release ships a `SHA256SUMS` file. Verify before running:
