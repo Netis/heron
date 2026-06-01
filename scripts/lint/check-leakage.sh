@@ -13,10 +13,16 @@
 #      Real infra hosts trip this; documentation ranges (RFC5737),
 #      loopback, and the docker0 default do not.
 #   2. Private-key PEM blocks (`-----BEGIN ... PRIVATE KEY-----`).
+#   3. Machine-specific home-directory paths with real usernames:
+#      `/home/<name>/` or `/Users/<name>/` where `<name>` is a concrete
+#      user (not a placeholder like `<user>`, `$HOME`, `~`, etc.).
+#      Wire-data fixtures in tests/fixtures and docs/examples may
+#      legitimately contain captured paths from other machines and are
+#      excluded via the file-pattern allowlist.
 #
 # Out of scope (left to the human/agent reviewer's semantic pass —
 # regex can't separate these from legitimate prose):
-#   * Plaintext passwords, internal hostnames, machine-specific paths.
+#   * Plaintext passwords, internal hostnames.
 #   The PR-review agent prompt carries a leakage dimension for those.
 #
 # Scope: tracked text files only (git ls-files; binary files skipped via
@@ -37,7 +43,20 @@ ALLOWLIST="scripts/lint/leakage-allowlist.txt"
 # Safe IP prefixes (string match), comments/blank stripped.
 # (Plain `while read` rather than `mapfile` so this runs on bash 3.x too.)
 SAFE_PREFIXES=()
-while IFS= read -r _l; do SAFE_PREFIXES+=("$_l"); done < <(grep -vE '^\s*#|^\s*$' "$ALLOWLIST")
+while IFS= read -r _l; do
+  case "$_l" in
+    file:*) continue ;;  # file patterns handled separately
+    *) SAFE_PREFIXES+=("$_l") ;;
+  esac
+done < <(grep -vE '^\s*#|^\s*$' "$ALLOWLIST")
+
+# File patterns that may contain legitimate captured home-directory paths.
+HOME_PATH_ALLOWLIST=()
+while IFS= read -r _l; do
+  case "$_l" in
+    file:*) HOME_PATH_ALLOWLIST+=("${_l#file:}") ;;
+  esac
+done < <(grep -vE '^\s*#|^\s*$' "$ALLOWLIST")
 
 # Files to scan: tracked, minus the exclusions described above.
 FILES=()
@@ -54,6 +73,17 @@ is_allowed_ip() {
   for pfx in "${SAFE_PREFIXES[@]}"; do
     case "$ip" in
       "$pfx"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Check if a file matches any pattern in the home-path allowlist.
+is_allowed_home_path_file() {
+  local file="$1" pattern
+  for pattern in "${HOME_PATH_ALLOWLIST[@]}"; do
+    case "$file" in
+      $pattern) return 0 ;;
     esac
   done
   return 1
@@ -86,6 +116,30 @@ for f in "${FILES[@]}"; do
   if grep -InE -- '-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----' "$f" >/dev/null 2>&1; then
     report "$f contains a PRIVATE KEY block — private keys must never be committed. Remove it and rotate the key."
   fi
+
+  # --- Class 3: machine-specific home-directory paths ---
+  # Skip files that are allowed to contain captured paths (fixtures, examples).
+  if ! is_allowed_home_path_file "$f"; then
+    # Match /home/<name>/ or /Users/<name>/ where <name> is NOT a placeholder.
+    # Placeholders we allow: <user>, <name>, $HOME, ~, USERNAME, you.
+    # The regex captures the username part to report it.
+    HOME_PATH_RE='/(home|Users)/([^/<$~]|([^/<$~][^/<]*[^/<$~]))/'
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      lineno="${line%%:*}"
+      rest="${line#*:}"
+      # Extract each match and filter out known placeholders.
+      while IFS= read -r match; do
+        [ -z "$match" ] && continue
+        # Extract the username from the match.
+        username=$(echo "$match" | sed -E 's@^/(home|Users)/([^/]+)/.*$@\2@')
+        case "$username" in
+          '<user>'|'<name>'|'user'|'name'|'$HOME'|'USERNAME'|'you') continue ;;
+        esac
+        report "$f:$lineno contains machine-specific home-directory path '$match' — replace with a placeholder like <user> or /home/user."
+      done < <(grep -oE "$HOME_PATH_RE" <<<"$rest" 2>/dev/null || true)
+    done < <(grep -InE "$HOME_PATH_RE" "$f" 2>/dev/null || true)
+  fi
 done
 
 if [ "$bad" -gt 0 ]; then
@@ -93,4 +147,4 @@ if [ "$bad" -gt 0 ]; then
   exit 1
 fi
 
-echo "check-leakage: ✓ no private IPs or key material in ${#FILES[@]} tracked files"
+echo "check-leakage: ✓ no private IPs, key material, or machine-specific paths in ${#FILES[@]} tracked files"

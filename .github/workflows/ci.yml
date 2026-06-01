@@ -68,6 +68,13 @@ jobs:
         # semantic half (plaintext passwords, internal hostnames, paths).
         run: bash scripts/lint/check-leakage.sh
 
+      - name: lint — leakage linter self-test
+        # Guards the leakage gate itself: a regression in check-leakage.sh
+        # (broken regex, mis-scoped allowlist) would otherwise silently
+        # weaken the gate without failing any build. Runs hermetically in
+        # a throwaway git repo, so it never touches the working tree.
+        run: bash scripts/lint/test-check-leakage.sh
+
       - name: cargo test
         working-directory: server
         env:
