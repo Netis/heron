@@ -18,6 +18,10 @@ on:
     workflows: [ci]
     types: [completed]
     branches: [main]
+  # Manual lever: deploy the latest successful main build on demand — e.g.
+  # when a CI run was cancelled by a rapid follow-up merge so the auto chain
+  # never fired. Pulls the most recent successful main CI's artifact.
+  workflow_dispatch: {}
 
 # Never run two staging deploys at once; let an in-flight one finish.
 concurrency:
@@ -26,20 +30,35 @@ concurrency:
 
 jobs:
   deploy:
-    # Only deploy when the triggering CI run actually passed.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Auto path: only when the triggering CI run passed. Manual path: always.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: [self-hosted, staging-deploy]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
+      - name: resolve the CI run to pull the artifact from
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Most recent successful main CI run (the one that built an artifact).
+            rid=$(gh run list --repo "${{ github.repository }}" --workflow ci.yml \
+                  --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          else
+            rid=${{ github.event.workflow_run.id }}
+          fi
+          [ -n "$rid" ] || { echo "::error::no CI run with a heron-staging artifact found"; exit 1; }
+          echo "run_id=$rid" >> "$GITHUB_OUTPUT"
+          echo "pulling artifact from CI run $rid"
 
       - name: download heron binary from the CI run
         uses: actions/download-artifact@v4
         with:
           name: heron-staging
           path: artifact
-          # Pull from the specific CI run that triggered us (cross-workflow).
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ steps.pick.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: deploy to the staging VM + health gate (rollback on failure)
