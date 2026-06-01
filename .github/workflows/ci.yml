@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: [self-hosted, tokenscope]
+    runs-on: [self-hosted, heron]
     timeout-minutes: 25
     env:
       # actions/checkout@v4 ships Node 20; GitHub is deprecating
