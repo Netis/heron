@@ -1,6 +1,16 @@
 # Heron
 
+[![CI](https://github.com/Netis/heron/actions/workflows/ci.yml/badge.svg)](https://github.com/Netis/heron/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Netis/heron?sort=semver)](https://github.com/Netis/heron/releases/latest)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-linux%20%C2%B7%20macOS-informational)](docs/install.md)
+
 **Agent observability from the network wire.** A passive analyzer that watches LLM traffic on the wire and reconstructs what your agents are actually *doing* — tool calls, multi-step plans, where time is spent, where loops happen, who calls whom — without an SDK, sidecar, or proxy in the request path.
+
+> **Try it in 30 seconds, no live capture, no privileges:** grab a `.pcap` with LLM
+> traffic and replay it —
+> `heron --pcap-file capture.pcap --no-retention` — then open
+> <http://localhost:3000>. See [Quickstart](#quickstart).
 
 ![Agent turn detail — a 247-call agent run, every tool call ordered on the Timeline, drilling into one call's request/response on the right](docs/images/agent-turn-detail.png)
 
