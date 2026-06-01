@@ -80,7 +80,7 @@ console gets embedded in the binary.
 > feature**. If you build the binary directly with
 > `cargo build --release` (or `--bin heron`) and forget `--features
 > console`, the binary compiles and `/api/health` returns 200, but the
-> console at `:4500` serves a **blank page** — the assets were never
+> console (default port `3000`) serves a **blank page** — the assets were never
 > embedded. Build the frontend first, then build with the feature:
 >
 > ```bash
