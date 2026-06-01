@@ -37,6 +37,10 @@ server/data/
 *.so
 *.dylib
 
+# Python bytecode (scripts/pr-review, scripts/lint helpers)
+__pycache__/
+*.pyc
+
 # Demo server live config (seeded from default.toml, maintained per-env)
 /server/config/demo.toml
 

@@ -92,6 +92,9 @@ def pick_event(body: str) -> str:
     )
     m = summary_pat.search(body)
     summary = (m.group(1) if m else "").upper()
+    # An explicit verdict token in the Summary takes precedence over the
+    # section-based inference below: the agent stated its intent directly,
+    # so trust it even if the surrounding sections would imply otherwise.
     for token in ("REQUEST_CHANGES", "APPROVE", "COMMENT"):
         if token in summary:
             return token
