@@ -1,0 +1,22 @@
+[Unit]
+Description=Heron capture server (staging)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=heron
+Group=heron
+ExecStart=/opt/heron/heron -v -c /opt/heron/config.toml
+WorkingDirectory=/opt/heron
+# Grant raw-capture privileges at runtime. The binary needs NO file caps,
+# so a `cargo` rebuild (which replaces the inode and drops file caps) can't
+# silently degrade capture to API-only — the unit re-grants them every start.
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
