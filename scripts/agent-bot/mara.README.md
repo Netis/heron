@@ -41,7 +41,13 @@ ENV
 sudo chmod 600 /etc/mara/env
 
 # `gh` must be authenticated for the User= in mara.service (gh auth login),
-# OR add GH_TOKEN=... to /etc/mara/env.
+# OR add GH_TOKEN=... to /etc/mara/env. (gh auth login needs a token with
+# read:org; GH_TOKEN-based use only needs repo scope.)
+
+# The issue labels must exist (gh won't auto-create them; mara falls back to
+# filing without labels if they're missing, but you lose the categorisation):
+gh label create mara --color 5319e7 --description "Filed by the mara prod observer"
+gh label create incident --color d73a4a --description "Production incident"
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now mara.timer

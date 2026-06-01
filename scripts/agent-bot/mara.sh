@@ -145,6 +145,15 @@ if [ -n "$existing" ]; then
   exit 0
 fi
 
-url="$("$GH_BIN" issue create --repo "$REPO" --title "$title" --label "$LABELS" --body "$body" 2>&1)" \
-  && { echo "mara: filed $url"; printf '%s\t%s\n' "$signature" "$now" >> "$SEEN"; } \
-  || { echo "mara: gh issue create FAILED: $url" >&2; exit 1; }
+url="$("$GH_BIN" issue create --repo "$REPO" --title "$title" --label "$LABELS" --body "$body" 2>&1)"
+if ! printf '%s' "$url" | grep -q 'github.com/'; then
+  # gh won't auto-create a missing label and fails the whole call — a missing
+  # label must not lose the incident, so retry without labels.
+  echo "mara: create with labels failed ($url); retrying without labels" >&2
+  url="$("$GH_BIN" issue create --repo "$REPO" --title "$title" --body "$body" 2>&1)"
+fi
+if printf '%s' "$url" | grep -q 'github.com/'; then
+  echo "mara: filed $url"; printf '%s\t%s\n' "$signature" "$now" >> "$SEEN"
+else
+  echo "mara: gh issue create FAILED: $url" >&2; exit 1
+fi
