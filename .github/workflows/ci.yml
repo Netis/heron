@@ -19,7 +19,11 @@ concurrency:
 jobs:
   test:
     runs-on: [self-hosted, heron]
-    timeout-minutes: 25
+    # 25 was fine for test+lint, but the on-main artifact build adds a full
+    # release compile (cargo build --release --features console) + the console
+    # bundle, which pushed main-push runs past 25m and got them auto-cancelled
+    # (so the staging deploy never fired). 60 covers a cold release build.
+    timeout-minutes: 60
     env:
       # actions/checkout@v4 ships Node 20; GitHub is deprecating
       # Node 20 on runners. Opt JS actions into Node 24 so each run
