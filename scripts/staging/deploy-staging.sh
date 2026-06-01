@@ -32,6 +32,11 @@ SSH_KEY="${HERON_STAGE_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 PORT="${HERON_STAGE_PORT:-4500}"
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-90}"
 
+# StrictHostKeyChecking=no + a throwaway known_hosts: the target is an
+# ephemeral VM on a controlled internal libvirt network whose host key
+# changes on every reprovision (and whose DHCP IP can be reused by a
+# different VM), so pinning the key would just wedge the deploy. The trust
+# boundary is the libvirt network + the deploy key, not TOFU.
 SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8)
 remote() { ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "$@"; }
 

@@ -92,6 +92,7 @@ package_update: true
 package_upgrade: false
 packages:
   - ca-certificates
+  - curl          # deploy-staging.sh health-gates via curl inside the VM
   - libpcap0.8
   - jq
 
