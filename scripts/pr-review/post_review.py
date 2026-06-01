@@ -45,10 +45,12 @@ def read_review() -> str:
 
 
 def section_nonempty(body: str, heading: str) -> bool:
-    """True if `### <heading>` exists and has at least one non-blank
-    line of content before the next `### ` or end-of-document."""
+    """True if `## <heading>` or `### <heading>` exists and has at least
+    one non-blank line of content before the next `## `/`### ` heading or
+    end-of-document."""
+    # Match either ## or ### for the heading itself
     pat = re.compile(
-        rf"^###\s+{re.escape(heading)}\s*\n(.*?)(?=^###\s+|\Z)",
+        rf"^(?:###?)\s+{re.escape(heading)}\s*\n(.*?)(?=^(?:###?)\s+|\Z)",
         re.MULTILINE | re.DOTALL,
     )
     m = pat.search(body)
@@ -78,20 +80,26 @@ def pick_event(body: str) -> str:
     stripped = body.lstrip()
     if stripped.startswith("ERROR:") or stripped.startswith("ERROR "):
         return "COMMENT"
-    if "### " not in body:
+    if not re.search(r"^(?:###?)\s+\w", body, re.MULTILINE):
         # No markdown headings at all — treat as a free-form note,
         # not a verdict.
         return "COMMENT"
 
+    # Look for Summary section (## Summary or ### Summary)
     summary_pat = re.compile(
-        r"^###\s+Summary\s*\n(.*?)(?=^###\s+|\Z)",
+        r"^(?:###?)\s+Summary\s*\n(.*?)(?=^(?:###?)\s+|\Z)",
         re.MULTILINE | re.DOTALL,
     )
     m = summary_pat.search(body)
     summary = (m.group(1) if m else "").upper()
+    # An explicit verdict token in the Summary takes precedence over the
+    # section-based inference below: the agent stated its intent directly,
+    # so trust it even if the surrounding sections would imply otherwise.
     for token in ("REQUEST_CHANGES", "APPROVE", "COMMENT"):
         if token in summary:
             return token
+
+    # Fall back to section-based inference
     if section_nonempty(body, "Blocking"):
         return "REQUEST_CHANGES"
     if section_nonempty(body, "Suggestions") or section_nonempty(body, "Questions"):
