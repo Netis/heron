@@ -1,0 +1,51 @@
+name: deploy-staging
+
+# Continuous staging deploy: after CI succeeds on `main`, push the freshly
+# built heron binary to the staging VM and gate on health.
+#
+# Security model: this runs ONLY on the dedicated `staging-deploy` self-hosted
+# runner and ONLY for successful `main`-branch CI runs. It never executes PR
+# (fork) code — `workflow_run` fires on the *base* repo with `main` already
+# merged, and the runner label is not shared with PR CI (which uses the
+# `heron` runner). So no untrusted code reaches the deploy host.
+#
+# Host-specific values (the VM name and its ssh user) come from repo
+# Variables, never the committed source: set them once with
+#   gh variable set HERON_STAGE_VM --body <domain>
+#   gh variable set HERON_STAGE_USER --body <login>
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+
+# Never run two staging deploys at once; let an in-flight one finish.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Only deploy when the triggering CI run actually passed.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, staging-deploy]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: download heron binary from the CI run
+        uses: actions/download-artifact@v4
+        with:
+          name: heron-staging
+          path: artifact
+          # Pull from the specific CI run that triggered us (cross-workflow).
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: deploy to the staging VM + health gate (rollback on failure)
+        env:
+          HERON_STAGE_VM: ${{ vars.HERON_STAGE_VM }}
+          HERON_STAGE_USER: ${{ vars.HERON_STAGE_USER }}
+        run: |
+          chmod +x artifact/heron
+          bash scripts/staging/deploy-staging.sh artifact/heron

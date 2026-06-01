@@ -1,0 +1,52 @@
+# Heron staging config. Mirrors the production schema; paths point at the
+# heron service's state dir. Capture runs on the VM NIC (the staging VM sees
+# little/no real LLM traffic — that's fine; a deploy is validated by the
+# pipeline coming up healthy, and a replay-server feed is a later addition).
+[[pipeline]]
+name = "local"
+dispatcher_count = 1
+flow_shard_count = 4
+
+[pipeline.turn]
+idle_timeout_secs = 600
+sweep_interval_secs = 10
+grace_ms = 1000
+shard_count = 1
+
+[pipeline.metrics]
+shard_count = 1
+
+[pipeline.pcap_dump]
+enabled = true
+dir = "/var/lib/heron/dumps"
+compression = "snappy"
+
+[pipeline.pcap_dump.retention]
+enabled = true
+check_interval_secs = 3600
+max_age_hours = 24
+max_size_mb = 10240
+
+[[pipeline.sources]]
+type = "pcap"
+interface = "any"
+bpf_filter = "tcp port 4000 or tcp port 4200 or tcp port 8000 or tcp port 9000 or tcp port 30000"
+snaplen = 262144
+
+[storage]
+backend = "duckdb"
+
+[storage.duckdb]
+path = "/var/lib/heron/data/heron.duckdb"
+
+[storage.sink]
+batch_size = 1000
+flush_interval_ms = 1000
+
+[internal_metrics]
+enabled = true
+interval_secs = 10
+
+[api]
+listen = "0.0.0.0"
+port = 4500
