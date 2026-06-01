@@ -190,6 +190,8 @@ just test all        # cargo test (all crates)
 
 Run `just help` for the full menu. Design docs under [docs/design/](docs/design/) describe the per-module contract — read the relevant one before changing anything load-bearing.
 
+> **Build via `just build all`, not a bare `cargo build`.** The web console is embedded behind the non-default `console` cargo feature; a raw `cargo build --release` yields a working API with a **blank console**. If you invoke cargo directly, run `bun run build` in `console/` first and pass `--features console` — see [docs/install.md → Building from source](docs/install.md#building-from-source).
+
 ## License
 
 [Apache 2.0](LICENSE).
