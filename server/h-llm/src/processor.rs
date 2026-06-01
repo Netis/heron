@@ -420,22 +420,30 @@ mod tests {
     }
 
     fn test_metrics() -> MetricsWorker {
+        // Build the test worker from the SAME list the production stage uses
+        // (crate::stage::LLM_WORKER_METRICS). This is what keeps the test and
+        // prod registrations from drifting: if LlmProcessor starts touching a
+        // metric absent from the production list, the existing processor tests
+        // here panic instead of passing against a hand-maintained superset
+        // (Netis/heron#81).
         let mut sys = MetricsSystem::new();
-        let w = sys.register_worker(
-            "test",
-            &[
-                Metric::WireDetected,
-                Metric::WireIgnored,
-                Metric::LlmGenericToolIdCanonicalized,
-                Metric::LlmGenericSessionIdSynthFailed,
-                Metric::LlmHeartbeatsReceived,
-                Metric::LlmTokensEstimated,
-                Metric::AgentClassifierUnknownCount,
-                Metric::AgentClassifierMixedCount,
-            ],
-        );
+        let w = sys.register_worker("test", crate::stage::LLM_WORKER_METRICS);
         let _svc = sys.start();
         w
+    }
+
+    #[test]
+    fn llm_worker_metrics_cover_agent_classifier_counters() {
+        // Regression for Netis/heron#81: the production worker registration
+        // must include every metric LlmProcessor can increment. These two were
+        // missing, so the first Unknown/Mixed classification panicked the
+        // worker and silently stopped capture. `.counter()` panics if the
+        // metric is unregistered, so this test fails loudly on a re-drift.
+        let mut sys = MetricsSystem::new();
+        let w = sys.register_worker("test", crate::stage::LLM_WORKER_METRICS);
+        let _svc = sys.start();
+        w.counter(Metric::AgentClassifierUnknownCount).inc();
+        w.counter(Metric::AgentClassifierMixedCount).inc();
     }
 
     fn flow() -> FlowKey {

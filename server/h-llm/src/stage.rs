@@ -18,6 +18,30 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use h_common::internal_metrics::{Metric, MetricsSystem};
+
+/// Metrics registered for every `llm.{i}` worker. SINGLE SOURCE OF TRUTH:
+/// the `register_worker` call below AND `LlmProcessor`'s unit tests build
+/// their worker from this exact list, so a metric that `LlmProcessor`
+/// increments can never be absent from the registration. A missing metric
+/// makes `MetricsWorker::counter()` panic, which kills the llm stage and
+/// tears down the whole capture pipeline (Netis/heron#81).
+pub const LLM_WORKER_METRICS: &[Metric] = &[
+    Metric::WireDetected,
+    Metric::WireIgnored,
+    Metric::LlmCallsWithAgent,
+    Metric::LlmCallsWithoutAgent,
+    Metric::LlmGenericToolIdCanonicalized,
+    Metric::LlmGenericSessionIdSynthFailed,
+    Metric::LlmHeartbeatsReceived,
+    Metric::LlmTokensEstimated,
+    Metric::MetricsHeartbeatsDropped,
+    Metric::TurnHeartbeatsDropped,
+    // Incremented by LlmProcessor when tool_surface is Unknown / Mixed
+    // (processor.rs). Previously omitted here → the worker panicked on the
+    // first such classification (data-dependent, ~hourly in prod).
+    Metric::AgentClassifierUnknownCount,
+    Metric::AgentClassifierMixedCount,
+];
 use h_protocol::joiner::HttpJoinerEvent;
 
 use crate::agent_classifier::ClassifierConfig;
@@ -66,21 +90,7 @@ pub fn spawn_llm_stage(
         let metrics_txs = metrics_shard_txs.clone();
         let calls_tx = calls_tx.clone();
         let classifier_cfg = classifier_cfg.clone();
-        let worker_metrics = metrics_sys.register_worker(
-            &format!("llm.{i}"),
-            &[
-                Metric::WireDetected,
-                Metric::WireIgnored,
-                Metric::LlmCallsWithAgent,
-                Metric::LlmCallsWithoutAgent,
-                Metric::LlmGenericToolIdCanonicalized,
-                Metric::LlmGenericSessionIdSynthFailed,
-                Metric::LlmHeartbeatsReceived,
-                Metric::LlmTokensEstimated,
-                Metric::MetricsHeartbeatsDropped,
-                Metric::TurnHeartbeatsDropped,
-            ],
-        );
+        let worker_metrics = metrics_sys.register_worker(&format!("llm.{i}"), LLM_WORKER_METRICS);
         handles.push(tokio::spawn(async move {
             let shard = i;
             let mut processor = LlmProcessor::new(wire_apis, reg, worker_metrics.clone())
