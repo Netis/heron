@@ -4,7 +4,7 @@
 # triage -> wiwi loop can pick it up. Closes the incident loop that a human
 # otherwise has to watch by hand.
 #
-# Runs on a host ISOLATED from prod (wukong, not the wuneng box it watches),
+# Runs on a host ISOLATED from prod (a separate box from the one it watches),
 # driven by a systemd timer (mara.timer). Each invocation is one poll; state
 # (for dedup) persists in $MARA_STATE_DIR.
 #
@@ -43,16 +43,27 @@ SEEN="$STATE_DIR/seen"   # lines: "<signature>\t<epoch>"
 touch "$SEEN"
 now=$(date +%s)
 
-# Scrub internal-infra identity before anything goes into a (public) issue:
-# mask every IPv4 dotted-quad and home-directory path. The heron DEBUG log is
-# full of internal IPs (RFC1918 + docker bridge) and the issue must not leak
-# them — same PR-hygiene rule the check-leakage linter enforces on the repo.
+# Scrub internal-infra identity before anything goes into a (public) issue.
+# The whole issue body is piped through this, so every rule added here covers
+# every field at once. Masks, in order:
+#   1. IPv4 dotted-quads          (the heron DEBUG log is full of RFC1918 +
+#                                  docker-bridge addresses)
+#   2. home-directory paths       (/home/<user>, /Users/<user>)
+#   3. URL authorities            (scheme://HOST:PORT → scheme://<host>) — so an
+#                                  internal hostname in MARA_HEALTH_URL or a
+#                                  logged URL never lands in the issue. IPv4
+#                                  hosts are already masked by rule 1.
+#   4. ssh-style user@host tokens (user@host → <user>@<host>)
+# Same PR-hygiene rule the check-leakage linter enforces on the repo; rules
+# 3/4 close the hostname gap that rules 1/2 (IP/path only) left open.
 scrub() {
   # Group the home/Users prefix so the literal pattern never spells out
   # "/home/<char>" or "/Users/<char>" (which would trip the leakage linter on
   # this very file). Username class excludes '/' so the path tail is kept.
   sed -E -e 's/\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b/<ip>/g' \
-         -e 's#(/home|/Users)/[A-Za-z0-9._-]+#\1/<user>#g'
+         -e 's#(/home|/Users)/[A-Za-z0-9._-]+#\1/<user>#g' \
+         -e 's#(https?://)[^/[:space:]]+#\1<host>#g' \
+         -e 's/\b[A-Za-z0-9._-]+@[A-Za-z0-9._-]+/<user>@<host>/g'
 }
 
 # ---- probe health -------------------------------------------------------

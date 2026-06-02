@@ -35,6 +35,10 @@ sudo install -d -m 0750 /etc/mara
 sudo tee /etc/mara/env >/dev/null <<'ENV'
 MARA_HEALTH_URL=http://<prod-host>:4500/api/health
 MARA_LOG_HOST=<user>@<prod-host>
+# NOTE: real hostnames / IPs / home paths you set above are automatically
+# masked (<host> / <ip> / <user>) by mara's scrub() before anything reaches a
+# filed issue — but still keep /etc/mara/env itself chmod 600 (it is the one
+# place the real values live in cleartext).
 MARA_REPO=Netis/heron
 # MARA_DRY_RUN=1   # log incidents without filing, until you're ready
 ENV
