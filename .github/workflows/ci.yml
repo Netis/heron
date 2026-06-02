@@ -125,6 +125,11 @@ jobs:
         working-directory: console
         run: bun test
 
+      - name: tara soak invariant-checker tests
+        # Guards the staging-soak judgement logic (scripts/staging/tara_invariants.py).
+        # Dependency-free (stdlib only) so it needs no pip install on the runner.
+        run: python3 scripts/staging/tests/test_tara_invariants.py
+
       # --- staging artifact ---------------------------------------------
       # On a push to main (post-merge), build the deployable binary and
       # publish it so deploy-staging.yml can roll it onto the heron-stage VM.

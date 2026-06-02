@@ -1,0 +1,39 @@
+name: staging-soak
+
+# Quality-infra L7: after a staging deploy succeeds, replay a known pcap
+# corpus through the freshly-deployed heron binary (tara) and assert
+# parse/pairing/turn/persistence invariants. Catches the regression class
+# that compiles + passes unit tests but mangles real wire traffic
+# (the PR#47 validator-bypass / PR#48 storage-poisoning families).
+#
+# Chains after deploy-staging: ci(main) -> deploy-staging -> staging-soak.
+# Runs ONLY on the dedicated `staging-deploy` self-hosted runner and ONLY for
+# a successful deploy-staging run, so no untrusted/PR code reaches the host.
+#
+# Host-specific values come from repo Variables, never committed source:
+#   gh variable set HERON_STAGE_VM   --body <domain>
+#   gh variable set HERON_STAGE_USER --body <login>
+on:
+  workflow_run:
+    workflows: [deploy-staging]
+    types: [completed]
+  # Manual lever: soak whatever is currently deployed on the VM, on demand.
+  workflow_dispatch: {}
+
+concurrency:
+  group: staging-soak
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, staging-deploy]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tara soak the deployed staging binary
+        env:
+          HERON_STAGE_VM: ${{ vars.HERON_STAGE_VM }}
+          HERON_STAGE_USER: ${{ vars.HERON_STAGE_USER }}
+        run: bash scripts/staging/soak-staging.sh
