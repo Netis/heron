@@ -11,9 +11,10 @@
 #   scripts/staging/deploy-staging.sh <path-to-heron-binary>
 #
 # Env (all optional, with safe defaults):
-#   HERON_STAGE_VM       libvirt domain name             (default: heron-stage)
+#   HERON_STAGE_VM       REQUIRED  libvirt domain name (CI: repo Variable
+#                                  vars.HERON_STAGE_VM — never hardcoded)
+#   HERON_STAGE_USER     REQUIRED  ssh login on the VM (CI: vars.HERON_STAGE_USER)
 #   HERON_STAGE_NET      libvirt network for the lease   (default: default)
-#   HERON_STAGE_USER     ssh user on the VM              (default: heron-admin)
 #   HERON_STAGE_SSH_KEY  ssh identity                    (default: ~/.ssh/id_ed25519)
 #   HERON_STAGE_PORT     heron API port inside the VM    (default: 4500)
 #   HEALTH_TIMEOUT_SECS  health-gate budget              (default: 90)
@@ -25,9 +26,11 @@ set -euo pipefail
 BIN="${1:?usage: deploy-staging.sh <heron-binary>}"
 [ -f "$BIN" ] || { echo "::error::binary not found: $BIN" >&2; exit 1; }
 
-VM="${HERON_STAGE_VM:-heron-stage}"
+# VM name + ssh login describe internal topology → never hardcode them in
+# source; CI supplies them from repo Variables (see deploy-staging.yml).
+VM="${HERON_STAGE_VM:?set HERON_STAGE_VM (libvirt domain; CI passes vars.HERON_STAGE_VM)}"
+SSH_USER="${HERON_STAGE_USER:?set HERON_STAGE_USER (VM ssh login; CI passes vars.HERON_STAGE_USER)}"
 NET="${HERON_STAGE_NET:-default}"
-SSH_USER="${HERON_STAGE_USER:-heron-admin}"
 SSH_KEY="${HERON_STAGE_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 PORT="${HERON_STAGE_PORT:-4500}"
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-90}"

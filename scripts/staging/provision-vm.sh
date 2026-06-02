@@ -18,7 +18,10 @@
 #                              for the VM's login user (deploy runner + ops)
 # Optional env:
 #   APT_PROXY                  http proxy for apt/egress (omitted if unset)
-#   VM_NAME (heron-stage)  VM_USER (heron-admin)  VM_RAM_MB (6144)  VM_VCPUS (4)
+#   VM_NAME / VM_USER          REQUIRED — the VM domain + login (keep in sync
+#                              with repo Variables HERON_STAGE_VM/USER; never
+#                              hardcoded in source, per the PR-hygiene rule)
+#   VM_RAM_MB (6144)  VM_VCPUS (4)
 #   VM_DISK_GB (40)  LIBVIRT_NET (default)  IMAGES_DIR (/var/lib/libvirt/images)
 #
 # Run on the libvirt host (needs sudo for virsh + the images dir).
@@ -30,8 +33,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$BASE_IMAGE" ] || { echo "BASE_IMAGE not found: $BASE_IMAGE" >&2; exit 1; }
 [ -f "$SSH_AUTHORIZED_KEYS_FILE" ] || { echo "keys file not found: $SSH_AUTHORIZED_KEYS_FILE" >&2; exit 1; }
 
-VM_NAME="${VM_NAME:-heron-stage}"
-VM_USER="${VM_USER:-heron-admin}"
+# VM domain + login describe internal topology → never hardcode in source;
+# keep these in sync with repo Variables HERON_STAGE_VM / HERON_STAGE_USER.
+VM_NAME="${VM_NAME:?set VM_NAME (the libvirt domain; matches HERON_STAGE_VM)}"
+VM_USER="${VM_USER:?set VM_USER (the VM login; matches HERON_STAGE_USER)}"
 VM_RAM_MB="${VM_RAM_MB:-6144}"
 VM_VCPUS="${VM_VCPUS:-4}"
 VM_DISK_GB="${VM_DISK_GB:-40}"
