@@ -1,0 +1,17 @@
+[Unit]
+Description=mara — heron prod observer (one poll)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Run as a host user that has: ssh access to the prod box (for log context)
+# and an authenticated `gh` (for filing issues). On the reference host that
+# is the same user the deploy runner uses.
+User=mara
+# Config + GH_TOKEN live here (chmod 600, NOT in the repo). The leading '-'
+# makes it optional so the unit loads even before the operator creates it.
+EnvironmentFile=-/etc/mara/env
+ExecStart=/usr/local/bin/mara.sh
+# A failed poll (e.g. transient network) must not wedge the timer.
+SuccessExitStatus=0 1
