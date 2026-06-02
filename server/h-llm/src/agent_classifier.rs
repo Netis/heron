@@ -193,6 +193,30 @@ mod toml_tests {
         assert!(cfg.cli_tool_allowlist.contains("zsh"));
         assert!(!cfg.cli_tool_allowlist.contains("bash"));
     }
+
+    #[test]
+    fn shipped_default_toml_inherits_full_registry() {
+        // Regression for #93: the shipped default.toml must leave
+        // known_tool_registry EMPTY so `from_toml` inherits the built-in list.
+        // A hardcoded copy there silently overrode the default ("non-empty TOML
+        // wins") and shipped a stale 8-tool set to every default deployment.
+        // Path is resolved from the crate manifest so it's CWD-independent.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../config/default.toml");
+        let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        #[derive(serde::Deserialize)]
+        struct Wrap {
+            #[serde(default)]
+            agent_classifier: ClassifierConfigToml,
+        }
+        let wrap: Wrap = toml::from_str(&raw).expect("default.toml should parse");
+        let cfg = ClassifierConfig::from_toml(&wrap.agent_classifier);
+        assert!(
+            cfg.known_tool_registry.contains("Glob")
+                && cfg.known_tool_registry.contains("TaskOutput"),
+            "default.toml must not hardcode known_tool_registry (#93) — leave it empty to \
+             inherit the built-in list"
+        );
+    }
 }
 
 #[cfg(test)]

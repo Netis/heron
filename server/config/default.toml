@@ -171,4 +171,11 @@ port = 3000
 cli_tool_allowlist      = ["bash", "shell", "exec", "run_command", "ShellExec"]
 orchestrator_tool_names = ["Task", "dispatch_agent"]
 mcp_tool_prefixes       = ["mcp__"]
-known_tool_registry     = ["Read", "Edit", "Write", "Grep", "Bash", "Task", "WebFetch", "WebSearch"]
+# Left EMPTY on purpose → inherits the authoritative built-in list in
+# ClassifierConfig::default(), which tracks the current Claude Code + Codex
+# CLI tool inventory. A hardcoded copy here silently OVERRODE that default
+# (from_toml prefers any non-empty TOML value), so this file used to ship a
+# stale 8-tool list that flagged Glob/TodoWrite/Task*/… as UnknownToolName
+# for every default deployment (#85/#93). Keep it empty so the list has a
+# single source of truth and can't drift again.
+known_tool_registry     = []
