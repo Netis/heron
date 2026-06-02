@@ -70,10 +70,15 @@ echo "==> health gate (<= ${HEALTH_TIMEOUT_SECS}s): status=ready AND pipeline ru
 deadline=$(( $(date +%s) + HEALTH_TIMEOUT_SECS ))
 ok=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
+  # status must be ready, and IF a capture pipeline is configured it must be
+  # running. Empty `pipelines` (API-only / maintenance) → treat as healthy
+  # (the process is up; there is nothing to supervise) rather than IndexError-
+  # crashing into a false rollback of a healthy deploy.
   res="$(curl -s -m 5 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null \
         | python3 -c 'import json,sys
 try:
-    d=json.load(sys.stdin)["data"]; print(d["status"]+"|"+str(d["pipelines"][0]["running"]).lower())
+    d=json.load(sys.stdin)["data"]; pl=d.get("pipelines") or []
+    print(d["status"]+"|"+str(pl[0]["running"] if pl else True).lower())
 except Exception: print("|")' 2>/dev/null || echo "|")"
   if [ "${res%%|*}" = "ready" ] && [ "${res##*|}" = "true" ]; then ok=1; break; fi
   sleep 5

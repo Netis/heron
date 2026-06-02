@@ -53,6 +53,18 @@ PR CI, so PR/fork code never executes on the prod host. Same trust model as the
 - `deploy-prod.sh` env knobs: `HERON_PROD_SERVICE` (default `heron.service`),
   `HERON_PROD_PORT` (4500), `HEALTH_TIMEOUT_SECS` (120), `CARGO_BIN`.
 
+Unlike staging (which ships `scripts/staging/{config.toml,heron.service}`), the
+**prod config and systemd unit are provisioned on the host, not in this repo** —
+they hold host-specific paths/ports and live at `~/.config/heron/config.toml`
+and `/etc/systemd/system/heron.service` on the prod box. `deploy-prod.sh` only
+swaps the binary + restarts the existing unit; it never templates either file.
+The unit must grant capture caps via `AmbientCapabilities=CAP_NET_RAW
+CAP_NET_ADMIN` (so a rebuild needs no `setcap`) and set `Restart=on-failure`.
+
+> Health gate: requires `status=ready`; if a capture pipeline is configured it
+> must be `running`. An empty `pipelines` array (API-only / maintenance) is
+> treated as healthy rather than failing the deploy.
+
 ## Manual deploy / dispatch
 
 ```bash
