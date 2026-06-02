@@ -1,0 +1,57 @@
+name: deploy-prod
+
+# Promote a staging-soaked build to PRODUCTION. Gated two ways:
+#   1. a manual approval — the `production` GitHub Environment's required
+#      reviewers must approve before the job runs;
+#   2. a post-deploy health gate with automatic rollback (deploy-prod.sh).
+#
+# Chains after the staging pipeline:
+#   ci(main) → deploy-staging → staging-soak → [approval] → deploy-prod
+#
+# Security: runs ONLY on the `prod-deploy` self-hosted runner ON the prod host
+# and ONLY after a successful staging-soak (or manual dispatch). The label is
+# not shared with PR CI, so PR/fork code never reaches the prod host. The prod
+# checkout path comes from a repo Variable, never committed source.
+on:
+  workflow_run:
+    workflows: [staging-soak]
+    types: [completed]
+  # Manual lever: deploy a chosen commit (default origin/main) on demand.
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: commit to deploy (default origin/main)
+        required: false
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, prod-deploy]
+    # Requires manual approval — the `production` environment is configured
+    # with required reviewers. GitHub pauses here until a reviewer approves.
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: resolve commit to deploy
+        id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.sha }}" ]; then
+            sha="${{ github.event.inputs.sha }}"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            sha="${{ github.event.workflow_run.head_sha }}"
+          else
+            sha="origin/main"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "deploying commit: $sha"
+
+      - name: deploy to prod + health gate (rollback on failure)
+        env:
+          HERON_PROD_REPO_DIR: ${{ vars.HERON_PROD_REPO_DIR }}
+        run: bash scripts/prod/deploy-prod.sh "${{ steps.pick.outputs.sha }}"
