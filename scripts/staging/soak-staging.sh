@@ -18,9 +18,13 @@
 #   - baseline itself fails (harness_broken, exit 3): env/corpus problem or the
 #     known-good needs re-baselining → warn, don't fail, don't advance.
 #
-# Env (all optional; same family as deploy-staging.sh):
-#   HERON_STAGE_VM/NET/USER/SSH_KEY  VM resolution + ssh (defaults heron-stage
-#                                    / default / heron-admin / ~/.ssh/id_ed25519)
+# Env (same family as deploy-staging.sh):
+#   HERON_STAGE_VM    REQUIRED  libvirt domain name (CI: repo Variable
+#                               vars.HERON_STAGE_VM — never hardcoded, per the
+#                               PR-hygiene/no-infra-in-source rule)
+#   HERON_STAGE_USER  REQUIRED  ssh login on the VM (CI: vars.HERON_STAGE_USER)
+#   HERON_STAGE_NET/SSH_KEY     libvirt net + ssh key (generic defaults:
+#                               default / ~/.ssh/id_ed25519)
 #   HERON_STAGE_BIN        binary on the VM to soak    (default /opt/heron/heron)
 #   HERON_STAGE_LASTGOOD   rolling known-good path on the VM
 #                                          (default /opt/heron/heron.last-good)
@@ -37,9 +41,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CORPUS="${1:-$HERE/../../server/h-protocol/tests/fixtures/keepalive_2sse_pipelined.pcap}"
 [ -f "$CORPUS" ] || { echo "::error::corpus not found: $CORPUS" >&2; exit 2; }
 
-VM="${HERON_STAGE_VM:-heron-stage}"
+# VM name + ssh login describe internal topology → never hardcode them in
+# source; CI supplies them from repo Variables (see deploy-staging.yml).
+VM="${HERON_STAGE_VM:?set HERON_STAGE_VM (libvirt domain; CI passes vars.HERON_STAGE_VM)}"
+SSH_USER="${HERON_STAGE_USER:?set HERON_STAGE_USER (VM ssh login; CI passes vars.HERON_STAGE_USER)}"
 NET="${HERON_STAGE_NET:-default}"
-SSH_USER="${HERON_STAGE_USER:-heron-admin}"
 SSH_KEY="${HERON_STAGE_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 STAGE_BIN="${HERON_STAGE_BIN:-/opt/heron/heron}"
 LAST_GOOD="${HERON_STAGE_LASTGOOD:-/opt/heron/heron.last-good}"
