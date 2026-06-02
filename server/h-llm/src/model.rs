@@ -68,6 +68,13 @@ pub struct LlmCall {
     pub tool_call_count: u32,
     /// Distinct tool names referenced in this call. Copied from `AgentCallInfo`.
     pub tool_names: Vec<String>,
+    /// Bytes elided from the stored `request_body` + `response_body` by the
+    /// body-cap policy (`BodyCapConfig`). `0` when nothing was dropped (body
+    /// fit the budget or the cap was disabled). Non-zero exactly when the
+    /// stored bodies were sampled (head + tail retained, middle elided).
+    /// Extraction (usage/model) always runs on the full body upstream, so a
+    /// non-zero value never implies lost metrics — only a truncated stored body.
+    pub body_bytes_dropped: u64,
 }
 
 /// Per-call agent-side info produced once an `AgentProfile` has matched —
@@ -385,6 +392,7 @@ mod extension_tests {
             agent_topology: None,
             tool_call_count: 0,
             tool_names: vec![],
+            body_bytes_dropped: 0,
         };
         let arc = Arc::new(call);
         let id = AgentCallInfo {
@@ -448,6 +456,7 @@ mod extension_tests {
             agent_topology: None,
             tool_call_count: 0,
             tool_names: vec![],
+            body_bytes_dropped: 0,
         };
         assert!(call.finish_reason.is_none());
     }

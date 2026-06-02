@@ -61,6 +61,7 @@ fn make_completed_call(request_time: i64, tool_surface: Option<ToolSurface>) -> 
             agent_topology: None,
             tool_call_count: 0,
             tool_names: vec![],
+            body_bytes_dropped: 0,
         }),
         agent: None,
     }

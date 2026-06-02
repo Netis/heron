@@ -123,6 +123,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
         &mut shared_metrics,
         h_turn::new_active_turn_registry(),
         h_llm::agent_classifier::ClassifierConfig::default(),
+        h_common::config::BodyCapConfig::default(),
     );
     let _metrics_svcs: Vec<_> = per_pipeline_metrics
         .into_iter()

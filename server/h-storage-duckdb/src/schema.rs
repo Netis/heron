@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     tool_surface      VARCHAR,
     agent_topology    VARCHAR,
     tool_call_count   UINTEGER NOT NULL DEFAULT 0,
-    tool_names_json   VARCHAR
+    tool_names_json   VARCHAR,
+    body_bytes_dropped UBIGINT NOT NULL DEFAULT 0
 );
 ";
 
@@ -334,6 +335,26 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
                 Err(e) => tracing::info!(
                     "phase5 migration: llm_calls agent columns add skipped: {e} (sql: {stmt})"
                 ),
+            }
+        }
+
+        // Phase 6 migration: add `body_bytes_dropped` to llm_calls — the
+        // count of request+response body bytes elided by the stored-body cap
+        // (`BodyCapConfig`). Added WITHOUT `NOT NULL` for the exact reason
+        // documented on the Phase 5 block above (DuckDB rejects
+        // `ALTER ... ADD COLUMN ... NOT NULL DEFAULT`, verified on 1.10501.0).
+        // Nullable-with-default is metadata-only and behaviorally equivalent:
+        // the writer always supplies a value, and the column sits at the tail
+        // of the table in both CREATE and ALTER so the appender's positional
+        // writes stay aligned. Fresh installs get NOT NULL via CREATE TABLE.
+        match conn.execute_batch(
+            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS body_bytes_dropped UBIGINT DEFAULT 0;",
+        ) {
+            Ok(()) => tracing::debug!(
+                "phase6 migration: llm_calls.body_bytes_dropped added (or already present)"
+            ),
+            Err(e) => {
+                tracing::info!("phase6 migration: llm_calls.body_bytes_dropped add skipped: {e}")
             }
         }
 

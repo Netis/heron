@@ -106,6 +106,7 @@ async fn run_pcap_full_sharded(
         registry,
         &mut metrics_sys,
         h_llm::agent_classifier::ClassifierConfig::default(),
+        h_common::config::BodyCapConfig::default(),
     );
 
     h_turn::spawn_turn_stage(
@@ -236,6 +237,7 @@ async fn run_pcap_collecting_calls(
         registry,
         &mut metrics_sys,
         h_llm::agent_classifier::ClassifierConfig::default(),
+        h_common::config::BodyCapConfig::default(),
     );
 
     h_turn::spawn_turn_stage(
@@ -849,6 +851,7 @@ async fn generic_profile_anthropic_two_call_session() {
             agent_topology: None,
             tool_call_count: 0,
             tool_names: vec![],
+            body_bytes_dropped: 0,
         }
     }
 

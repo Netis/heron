@@ -20,14 +20,58 @@
 //! `testdata/golden-dbs/README.md` for the binary-fixture flow if/when
 //! per-tag fixtures become necessary.
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use duckdb::Connection;
 use tempfile::TempDir;
 
+use h_llm::model::{ApiType, LlmCall};
 use h_storage::query::{DimensionFilter, TimeRange, TurnsQuery};
 use h_storage::StorageBackend;
 use h_storage_duckdb::DuckDbBackend;
+
+/// Minimal `LlmCall` for write-path round-trip assertions. `tool_call_count`
+/// and `body_bytes_dropped` are set to distinct sentinels so a positional
+/// appender misalignment (writing one tail column into another) is caught.
+fn sample_call(id: &str, tool_call_count: u32, body_bytes_dropped: u64) -> LlmCall {
+    LlmCall {
+        source_id: "test".into(),
+        id: id.into(),
+        wire_api: "openai-chat",
+        model: "gpt-test".into(),
+        api_type: ApiType::Chat,
+        request_time: 1_000_000,
+        response_time: Some(1_000_500),
+        complete_time: Some(1_001_000),
+        request_path: "/v1/chat/completions".into(),
+        is_stream: false,
+        request_body: Some("{}".into()),
+        status_code: Some(200),
+        finish_reason: Some("stop".into()),
+        response_body: Some("{}".into()),
+        input_tokens: Some(10),
+        output_tokens: Some(20),
+        total_tokens: Some(30),
+        cache_read_input_tokens: None,
+        cache_creation_input_tokens: None,
+        ttft_ms: Some(5.0),
+        e2e_latency_ms: Some(10.0),
+        client_ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+        client_port: 1234,
+        server_ip: IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2)),
+        server_port: 443,
+        response_id: Some("resp-1".into()),
+        request_headers: vec![],
+        response_headers: vec![],
+        is_agent_request: false,
+        tool_surface: None,
+        agent_topology: None,
+        tool_call_count,
+        tool_names: vec![],
+        body_bytes_dropped,
+    }
+}
 
 /// Schema shape immediately before Phase 5 added the agent-classification
 /// columns to `llm_calls`. Used to drive the
@@ -62,6 +106,48 @@ CREATE TABLE llm_calls (
     response_id       VARCHAR,
     request_headers   VARCHAR,
     response_headers  VARCHAR
+);
+";
+
+/// Schema shape immediately before Phase 6 added `body_bytes_dropped` to
+/// `llm_calls` — i.e. the full v0.4.0 layout (agent columns present) but
+/// without the body-cap counter. Drives the
+/// `phase6_adds_body_bytes_dropped_*` test.
+const LEGACY_LLM_CALLS_PRE_PHASE6: &str = "
+CREATE TABLE llm_calls (
+    id                VARCHAR NOT NULL PRIMARY KEY,
+    source_id         VARCHAR NOT NULL DEFAULT '',
+    client_ip         VARCHAR NOT NULL,
+    client_port       USMALLINT NOT NULL,
+    server_ip         VARCHAR NOT NULL,
+    server_port       USMALLINT NOT NULL,
+    request_time      TIMESTAMP NOT NULL,
+    response_time     TIMESTAMP,
+    complete_time     TIMESTAMP,
+    wire_api          VARCHAR NOT NULL,
+    model             VARCHAR NOT NULL,
+    api_type          VARCHAR NOT NULL,
+    is_stream         BOOLEAN NOT NULL,
+    request_path      VARCHAR NOT NULL,
+    status_code       USMALLINT,
+    finish_reason     VARCHAR,
+    input_tokens      UINTEGER,
+    output_tokens     UINTEGER,
+    total_tokens      UINTEGER,
+    cache_read_input_tokens   UINTEGER,
+    cache_creation_input_tokens UINTEGER,
+    ttft_ms           DOUBLE,
+    e2e_latency_ms    DOUBLE,
+    request_body      VARCHAR,
+    response_body     VARCHAR,
+    response_id       VARCHAR,
+    request_headers   VARCHAR,
+    response_headers  VARCHAR,
+    is_agent_request  BOOLEAN  NOT NULL DEFAULT FALSE,
+    tool_surface      VARCHAR,
+    agent_topology    VARCHAR,
+    tool_call_count   UINTEGER NOT NULL DEFAULT 0,
+    tool_names_json   VARCHAR
 );
 ";
 
@@ -199,6 +285,75 @@ async fn phase5_adds_agent_not_null_columns_to_llm_calls_on_legacy_db() {
             "post-migration llm_calls must contain {expected}, got: {cols:?}"
         );
     }
+}
+
+// Phase-6 migration: `body_bytes_dropped` must be added to a legacy
+// (pre-Phase-6) `llm_calls`, AND the positional appender must keep writing
+// the right columns afterward. The ALTER appends the new column at the table
+// tail; the CREATE TABLE also places it last, so a fresh-vs-migrated DB share
+// one column order and the positional `append_row` stays aligned. This test
+// proves alignment end-to-end by writing distinct sentinels into the two
+// trailing NOT-NULL-with-default columns (`tool_call_count`,
+// `body_bytes_dropped`) and reading both back — exactly the "PR#48 class"
+// regression that a same-name-only assertion would miss.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn phase6_adds_body_bytes_dropped_and_appender_stays_aligned_on_legacy_db() {
+    let tmp = TempDir::new().unwrap();
+    let path = synth_db(&tmp, &[LEGACY_LLM_CALLS_PRE_PHASE6]);
+
+    // Pre-condition: the body-cap counter is absent on the legacy DB.
+    {
+        let conn = Connection::open(&path).unwrap();
+        let cols = column_names(&conn, "llm_calls");
+        assert!(
+            !cols.iter().any(|c| c == "body_bytes_dropped"),
+            "synth pre-condition: body_bytes_dropped must be absent in pre-Phase-6 DB, got: {cols:?}"
+        );
+    }
+
+    let backend = Arc::new(
+        DuckDbBackend::open_with_pool(path.to_str().unwrap(), 2).expect("open backend"),
+    );
+    backend.init().await.expect("init must reconcile legacy schema");
+
+    // Column landed.
+    {
+        let conn = Connection::open(&path).unwrap();
+        let cols = column_names(&conn, "llm_calls");
+        assert!(
+            cols.iter().any(|c| c == "body_bytes_dropped"),
+            "post-migration llm_calls must contain body_bytes_dropped, got: {cols:?}"
+        );
+    }
+
+    // Write a call through the real appender into the just-migrated table and
+    // read both trailing columns back. Distinct sentinels (7 vs 4242) catch a
+    // positional swap.
+    backend
+        .write_calls(vec![sample_call("call-phase6", 7, 4242)])
+        .await
+        .expect("write_calls must succeed against a migrated table");
+
+    // Close the backend (checkpoints DuckDB to the file) before reading via a
+    // fresh connection — a second live connection sees the pre-write snapshot.
+    drop(backend);
+
+    let conn = Connection::open(&path).unwrap();
+    let (tool_call_count, body_bytes_dropped): (u32, u64) = conn
+        .query_row(
+            "SELECT tool_call_count, body_bytes_dropped FROM llm_calls WHERE id = 'call-phase6'",
+            [],
+            |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u64>(1)?)),
+        )
+        .expect("row must be present after write_calls");
+    assert_eq!(
+        tool_call_count, 7,
+        "tool_call_count must round-trip (appender column alignment)"
+    );
+    assert_eq!(
+        body_bytes_dropped, 4242,
+        "body_bytes_dropped must round-trip into the migrated column (appender alignment)"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

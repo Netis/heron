@@ -14,6 +14,7 @@ For cross-cutting terminology (TTFT/E2E/TPOT, wire_api, agent_kind, HttpExchange
 | 06 | [Storage](06-storage.md) | `ts-storage` | Pluggable backend trait, write buffer, batch flush |
 | 07 | [Schema](07-schema.md) | `ts-storage` | `agent_turns`, `llm_calls`, `llm_metrics` table definitions |
 | 08 | [Internal Metrics](08-internal-metrics.md) | `ts-common` | Operational self-monitoring (counters, gauges) |
+| 09 | [Body cap](09-body-cap.md) | `h-llm` / `h-common` | Stored-body head+tail sampling for 1M-token contexts |
 
 ## Pipeline Flow
 

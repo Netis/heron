@@ -332,6 +332,7 @@ async fn run_pipeline(cli: Cli) {
             internal_metrics: config.internal_metrics.clone(),
             api: config.api.clone(),
             agent_classifier: config.agent_classifier.clone(),
+            body_cap: config.body_cap,
         }),
         config_path: config_path
             .canonicalize()
@@ -551,6 +552,7 @@ async fn run_pipeline(cli: Cli) {
             &mut shared_metrics,
             active_turns.clone(),
             classifier_cfg,
+            config.body_cap,
         );
 
         // Start each per-pipeline MetricsSystem and, if enabled, one

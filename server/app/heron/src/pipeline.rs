@@ -120,6 +120,7 @@ impl Pipeline {
     /// `PipelineDef`, registered against that pipeline's `MetricsSystem`).
     /// There is no cross-pipeline metrics stage — the sink is the only truly
     /// shared stage.
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         pipeline_defs: &[PipelineDef],
         storage_config: &h_storage::StorageSinkConfig,
@@ -128,6 +129,7 @@ impl Pipeline {
         shared_metrics: &mut MetricsSystem,
         active_turns: h_turn::ActiveTurnRegistry,
         classifier_cfg: ClassifierConfig,
+        body_cap: h_common::config::BodyCapConfig,
     ) -> Self {
         // ---- Shared sinks (fan-in across every pipeline) ----
         // Each shared channel takes the max of its dedicated config across
@@ -339,6 +341,7 @@ impl Pipeline {
                 registry.clone(),
                 metrics_sys,
                 classifier_cfg.clone(),
+                body_cap,
             );
             debug_assert_eq!(llm_handles.len(), flow_shards);
             for (j, h) in llm_handles.into_iter().enumerate() {
