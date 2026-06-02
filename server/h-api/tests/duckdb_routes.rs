@@ -32,6 +32,7 @@ fn test_runtime_config_context() -> ApiRuntimeConfigContext {
             internal_metrics: h_common::config::InternalMetricsConfig::default(),
             api: h_common::config::ApiConfig::default(),
             agent_classifier: h_common::config::ClassifierConfigToml::default(),
+            body_cap: h_common::config::BodyCapConfig::default(),
         }),
         config_path: "test".to_string(),
         loaded_at_ms: 0,

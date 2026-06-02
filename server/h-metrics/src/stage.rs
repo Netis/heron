@@ -159,6 +159,7 @@ mod tests {
                 agent_topology: None,
                 tool_call_count: 0,
                 tool_names: vec![],
+                body_bytes_dropped: 0,
             }),
             agent: Some(AgentCallInfo {
                 agent_kind: "x",

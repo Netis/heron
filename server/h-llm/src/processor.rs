@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use serde_json::Value;
+use h_common::config::BodyCapConfig;
 use h_common::internal_metrics::{Metric, MetricsWorker};
 use h_protocol::joiner::HttpJoinerEvent;
 use h_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
@@ -12,6 +13,46 @@ use crate::parsed_json::ParsedJson;
 use crate::profile::{parse_bodies, AgentProfileRegistry, CallCtx};
 use crate::token_estimator::{CL100kEstimator, TokenEstimator};
 use crate::wire_api_registry::WireApiRegistry;
+
+/// Apply the stored-body cap: retain the first `head_bytes` and last
+/// `tail_bytes` of `body` (snapped to UTF-8 char boundaries so the stored
+/// `String` stays valid) and elide the middle, returning the (possibly
+/// sampled) body plus the count of elided bytes.
+///
+/// Returns the body unchanged with `0` dropped when the cap is disabled, the
+/// body is absent, or it already fits within `head_bytes + tail_bytes`. Used
+/// only at the storage boundary — extraction always sees the full body.
+fn cap_body(body: Option<String>, cap: &BodyCapConfig) -> (Option<String>, u64) {
+    let Some(body) = body else {
+        return (None, 0);
+    };
+    if !cap.enabled || body.len() <= cap.budget() {
+        return (Some(body), 0);
+    }
+    // Snap the head end down and the tail start up to char boundaries so a
+    // multi-byte UTF-8 sequence is never split (which would corrupt the
+    // String and panic byte-index slicing).
+    let mut head_end = cap.head_bytes.min(body.len());
+    while head_end > 0 && !body.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = body.len().saturating_sub(cap.tail_bytes);
+    while tail_start < body.len() && !body.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    // After snapping the windows could meet/overlap on a tiny overflow; then
+    // there is nothing worth eliding — keep the body verbatim.
+    if tail_start <= head_end {
+        return (Some(body), 0);
+    }
+    let dropped = (tail_start - head_end) as u64;
+    let marker = format!("\n...[heron body cap: {dropped} bytes elided]...\n");
+    let mut out = String::with_capacity(head_end + marker.len() + (body.len() - tail_start));
+    out.push_str(&body[..head_end]);
+    out.push_str(&marker);
+    out.push_str(&body[tail_start..]);
+    (Some(out), dropped)
+}
 
 /// Processes `HttpJoinerEvent`s and extracts `LlmCall` records. Stateless —
 /// request/response pairing now lives in `h_protocol::joiner::HttpJoiner`.
@@ -25,6 +66,10 @@ pub struct LlmProcessor {
     /// Classifier thresholds and allowlists. Task 8 will wire this from
     /// `AppConfig`; for now it defaults to the compile-time seeds.
     classifier_cfg: ClassifierConfig,
+    /// Stored-body cap. Applied to `request_body`/`response_body` *after*
+    /// extraction, so it never affects usage/model/agent accuracy — only how
+    /// much body is persisted. Wired from `AppConfig.body_cap`.
+    body_cap: BodyCapConfig,
 }
 
 impl LlmProcessor {
@@ -54,6 +99,7 @@ impl LlmProcessor {
             metrics,
             estimator,
             classifier_cfg: ClassifierConfig::default(),
+            body_cap: BodyCapConfig::default(),
         }
     }
 
@@ -61,6 +107,13 @@ impl LlmProcessor {
     /// `ClassifierConfig` with the one loaded from `AppConfig`.
     pub fn with_classifier_cfg(mut self, cfg: ClassifierConfig) -> Self {
         self.classifier_cfg = cfg;
+        self
+    }
+
+    /// Builder-style override for the stored-body cap. Replaces the default
+    /// `BodyCapConfig` with the one loaded from `AppConfig.body_cap`.
+    pub fn with_body_cap(mut self, cfg: BodyCapConfig) -> Self {
+        self.body_cap = cfg;
         self
     }
 
@@ -241,9 +294,18 @@ impl LlmProcessor {
             };
         }
 
-        let request_body = std::str::from_utf8(&request.body)
+        // Body-cap: every extraction above (wire detection, usage/model,
+        // token estimation, agent classification below) ran on the *full*
+        // request and response bodies. From here we only persist them, so
+        // sample head + tail to bound the bytes the storage write buffer and
+        // DB hold under 1M-token contexts. `cap_body` returns the (possibly
+        // sampled) body plus the count of elided bytes.
+        let request_body_full = std::str::from_utf8(&request.body)
             .ok()
             .map(|s| s.to_string());
+        let (request_body, req_body_dropped) = cap_body(request_body_full, &self.body_cap);
+        let (response_body, resp_body_dropped) = cap_body(resp_info.response_body, &self.body_cap);
+        let body_bytes_dropped = req_body_dropped.saturating_add(resp_body_dropped);
 
         let call = LlmCall {
             source_id: request.flow_key.source_id.clone(),
@@ -259,7 +321,7 @@ impl LlmProcessor {
             request_body,
             status_code: Some(response.status),
             finish_reason: resp_info.finish_reason,
-            response_body: resp_info.response_body,
+            response_body,
             input_tokens: resp_info.input_tokens,
             output_tokens: resp_info.output_tokens,
             total_tokens,
@@ -281,6 +343,7 @@ impl LlmProcessor {
             agent_topology: None,
             tool_call_count: 0,
             tool_names: vec![],
+            body_bytes_dropped,
         };
 
         let agent = build_agent_call_info_with_parsed(
@@ -627,6 +690,131 @@ mod tests {
                 assert_eq!(call.input_tokens, Some(1));
                 assert_eq!(call.output_tokens, Some(1));
                 assert_eq!(call.total_tokens, Some(2));
+            }
+            _ => panic!("expected Complete"),
+        }
+    }
+
+    // ── Stored-body cap (`cap_body`) unit tests ──
+
+    #[test]
+    fn cap_body_keeps_body_within_budget_verbatim() {
+        let cap = BodyCapConfig {
+            enabled: true,
+            head_bytes: 10,
+            tail_bytes: 10,
+        };
+        // 20 bytes == budget → stored verbatim, nothing dropped.
+        let (out, dropped) = cap_body(Some("x".repeat(20)), &cap);
+        assert_eq!(dropped, 0);
+        assert_eq!(out.as_deref(), Some("x".repeat(20).as_str()));
+    }
+
+    #[test]
+    fn cap_body_samples_head_and_tail_of_oversized_body() {
+        let cap = BodyCapConfig {
+            enabled: true,
+            head_bytes: 4,
+            tail_bytes: 4,
+        };
+        let body = format!("HEAD{}TAIL", "x".repeat(100)); // 108 bytes
+        let (out, dropped) = cap_body(Some(body), &cap);
+        // 108 - 4 (head) - 4 (tail) = 100 bytes elided.
+        assert_eq!(dropped, 100);
+        let out = out.unwrap();
+        assert!(out.starts_with("HEAD"), "head retained: {out}");
+        assert!(out.ends_with("TAIL"), "tail retained: {out}");
+        assert!(out.contains("100 bytes elided"), "elision marker present: {out}");
+        assert!(out.len() < 108, "stored body must be smaller than the original");
+    }
+
+    #[test]
+    fn cap_body_disabled_keeps_verbatim() {
+        let cap = BodyCapConfig {
+            enabled: false,
+            head_bytes: 4,
+            tail_bytes: 4,
+        };
+        let big = "y".repeat(10_000);
+        let (out, dropped) = cap_body(Some(big.clone()), &cap);
+        assert_eq!(dropped, 0);
+        assert_eq!(out, Some(big));
+    }
+
+    #[test]
+    fn cap_body_none_is_noop() {
+        let cap = BodyCapConfig::default();
+        let (out, dropped) = cap_body(None, &cap);
+        assert_eq!(out, None);
+        assert_eq!(dropped, 0);
+    }
+
+    #[test]
+    fn cap_body_snaps_to_utf8_char_boundaries() {
+        // Multi-byte chars (each "好" is 3 bytes). Byte offsets 10 and 50 fall
+        // mid-character; cap_body must snap to char boundaries so the produced
+        // String is valid and slicing never panics.
+        let cap = BodyCapConfig {
+            enabled: true,
+            head_bytes: 10,
+            tail_bytes: 10,
+        };
+        let body = "好".repeat(20); // 60 bytes, boundaries at multiples of 3
+        let (out, dropped) = cap_body(Some(body), &cap);
+        let out = out.expect("some body");
+        // head snaps 10 → 9, tail start snaps 50 → 51, so 51 - 9 = 42 elided.
+        assert_eq!(dropped, 42);
+        assert!(out.starts_with("好好好"), "head is whole chars: {out}");
+        assert!(out.ends_with("好好好"), "tail is whole chars: {out}");
+    }
+
+    #[test]
+    fn exchange_caps_huge_request_body_but_still_extracts_usage() {
+        // Success criterion (#68): a >1 MB request body must be sampled for
+        // storage (body_bytes_dropped > 0) WITHOUT breaking usage extraction —
+        // extraction runs on the full body upstream, the cap only trims what
+        // is persisted.
+        use serde_json::json;
+        let mut proc = LlmProcessor::new(wire_apis(), empty_registry(), test_metrics())
+            .with_body_cap(BodyCapConfig::default());
+        let huge = "x".repeat(1_100_000); // ~1.1 MB user message → body > 320 KiB budget
+        let req_body = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": huge}]
+        });
+        let original_len = req_body.to_string().len();
+        let req = openai_request(&req_body);
+        let resp_body = json!({
+            "id": "chatcmpl-huge",
+            "model": "gpt-4",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290}
+        });
+        let (request, response) = exchange_parts(req, Bytes::from(resp_body.to_string()), false);
+        let events = proc.process(HttpJoinerEvent::Exchange {
+            id: "xchg-huge".to_string(),
+            request,
+            response: Arc::new(response),
+            sse_events: vec![],
+        });
+        match &events[0] {
+            LlmEvent::Complete { call, .. } => {
+                // Wire usage extracted exactly (estimator did NOT run, and the
+                // cap did not corrupt extraction).
+                assert_eq!(call.input_tokens, Some(1234), "usage survives request-body cap");
+                assert_eq!(call.output_tokens, Some(56));
+                assert_eq!(call.total_tokens, Some(1290));
+                // Request body was sampled.
+                assert!(call.body_bytes_dropped > 0, "huge request body must be capped");
+                let stored = call.request_body.as_ref().expect("request_body stored");
+                assert!(
+                    stored.len() < original_len,
+                    "stored body ({}) must be smaller than original ({original_len})",
+                    stored.len()
+                );
+                assert!(stored.contains("bytes elided"), "stored body carries the cap marker");
+                // Small response stayed verbatim → all dropped bytes are the request's.
+                assert_eq!(call.response_body.as_deref(), Some(resp_body.to_string().as_str()));
             }
             _ => panic!("expected Complete"),
         }
@@ -981,6 +1169,7 @@ mod tests {
             agent_topology: None,
             tool_call_count: 0,
             tool_names: vec![],
+            body_bytes_dropped: 0,
         }
     }
 

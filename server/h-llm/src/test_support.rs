@@ -43,5 +43,6 @@ pub fn empty_llm_call() -> LlmCall {
         agent_topology: None,
         tool_call_count: 0,
         tool_names: vec![],
+        body_bytes_dropped: 0,
     }
 }

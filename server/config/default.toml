@@ -179,3 +179,21 @@ mcp_tool_prefixes       = ["mcp__"]
 # for every default deployment (#85/#93). Keep it empty so the list has a
 # single source of truth and can't drift again.
 known_tool_registry     = []
+
+# ---------------------------------------------------------------------------
+# Stored-body cap — bounds the size of request/response bodies kept for
+# display and re-classification. Usage / model / agent classification are
+# always extracted from the FULL body upstream, so this never reduces metric
+# accuracy; it only samples what is persisted. With 1M-token contexts a single
+# body can be many MB and the write buffer batches ~1000 rows, so an uncapped
+# body is a real capture-node memory risk. The first `head_bytes` and last
+# `tail_bytes` of each body are kept (the head holds model/params/system/tools;
+# the tail holds the trailing `usage` block on non-streaming responses); the
+# middle is elided and the dropped count lands in `llm_calls.body_bytes_dropped`.
+# A body that fits within head+tail is stored verbatim. Set enabled=false to
+# restore unbounded storage.
+# ---------------------------------------------------------------------------
+[body_cap]
+enabled    = true
+head_bytes = 262144   # 256 KiB
+tail_bytes = 65536    # 64 KiB

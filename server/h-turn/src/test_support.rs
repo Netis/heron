@@ -79,6 +79,7 @@ pub fn make_call(
         agent_topology: None,
         tool_call_count,
         tool_names: tool_names.iter().map(|s| s.to_string()).collect(),
+        body_bytes_dropped: 0,
     };
     let agent = AgentCallInfo {
         agent_kind: "test",

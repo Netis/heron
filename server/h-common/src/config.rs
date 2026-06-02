@@ -62,6 +62,57 @@ pub struct ClassifierConfigToml {
     pub known_tool_registry: Vec<String>,
 }
 
+/// Policy for bounding the size of stored HTTP bodies.
+///
+/// Heron stores each call's request and response body for display and
+/// re-classification. With 2026-era 1M-token contexts a single body can be
+/// many megabytes; the storage write buffer batches ~1000 rows, so holding
+/// full bodies is a real memory-pressure / stability risk on capture nodes.
+///
+/// This policy keeps the first `head_bytes` and last `tail_bytes` of each
+/// stored body (eliding the middle), so the head (model / params / system /
+/// tools / first messages) and the tail (final messages + the trailing
+/// `usage` block on non-streaming responses) are always retained while total
+/// stored bytes are bounded. `LlmCall.body_bytes_dropped` records how many
+/// bytes were elided.
+///
+/// The cap applies **only to what is stored** — usage / model / agent
+/// classification are always extracted from the full body upstream, so the
+/// cap never reduces metric accuracy. It is **symmetric**: the same head/tail
+/// budget applies to request and response bodies. The struct is shaped so a
+/// separate response budget can be added later without breaking configs.
+/// A body that fits within `head_bytes + tail_bytes` is stored verbatim.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BodyCapConfig {
+    /// Master switch. When `false`, bodies are stored verbatim (legacy
+    /// behavior, unbounded).
+    pub enabled: bool,
+    /// Bytes retained from the start of each stored body.
+    pub head_bytes: usize,
+    /// Bytes retained from the end of each stored body. Covers the trailing
+    /// `usage` block on non-streaming responses.
+    pub tail_bytes: usize,
+}
+
+impl Default for BodyCapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            head_bytes: 256 * 1024, // 256 KiB
+            tail_bytes: 64 * 1024,  // 64 KiB
+        }
+    }
+}
+
+impl BodyCapConfig {
+    /// Total bytes retained per body when the cap is active. A body at or
+    /// below this size is stored verbatim (no bytes dropped).
+    pub fn budget(&self) -> usize {
+        self.head_bytes.saturating_add(self.tail_bytes)
+    }
+}
+
 /// Top-level application configuration.
 ///
 /// Not directly deserializable — use [`AppConfig::load`] or [`AppConfig::from_toml`]
@@ -74,6 +125,8 @@ pub struct AppConfig {
     pub api: ApiConfig,
     #[serde(default)]
     pub agent_classifier: ClassifierConfigToml,
+    /// Stored-body size cap. See [`BodyCapConfig`].
+    pub body_cap: BodyCapConfig,
 }
 
 /// A single pipeline definition bundling sources and pipeline parameters.
@@ -137,6 +190,8 @@ struct RawAppConfig {
     api: ApiConfig,
     #[serde(default)]
     agent_classifier: ClassifierConfigToml,
+    #[serde(default)]
+    body_cap: BodyCapConfig,
 }
 
 #[derive(Deserialize)]
@@ -190,6 +245,7 @@ impl RawAppConfig {
             internal_metrics: self.internal_metrics,
             api: self.api,
             agent_classifier: self.agent_classifier,
+            body_cap: self.body_cap,
         }
     }
 }

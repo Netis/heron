@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use h_common::config::BodyCapConfig;
 use h_common::internal_metrics::{Metric, MetricsSystem};
 
 /// Metrics registered for every `llm.{i}` worker. SINGLE SOURCE OF TRUTH:
@@ -61,6 +62,7 @@ use crate::wire_api_registry::WireApiRegistry;
 ///   reaches storage regardless of agent attribution).
 /// * `LlmEvent::Complete` with `agent.is_some()` → one turn shard, chosen
 ///   by `hash(session_id) % turn_shard_txs.len()`.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_llm_stage(
     event_rxs: Vec<mpsc::Receiver<HttpJoinerEvent>>,
     turn_shard_txs: Vec<mpsc::Sender<TurnShardInput>>,
@@ -70,6 +72,7 @@ pub fn spawn_llm_stage(
     registry: Arc<AgentProfileRegistry>,
     metrics_sys: &mut MetricsSystem,
     classifier_cfg: ClassifierConfig,
+    body_cap: BodyCapConfig,
 ) -> Vec<JoinHandle<()>> {
     assert!(
         !metrics_shard_txs.is_empty(),
@@ -94,7 +97,8 @@ pub fn spawn_llm_stage(
         handles.push(tokio::spawn(async move {
             let shard = i;
             let mut processor = LlmProcessor::new(wire_apis, reg, worker_metrics.clone())
-                .with_classifier_cfg(classifier_cfg);
+                .with_classifier_cfg(classifier_cfg)
+                .with_body_cap(body_cap);
             let reason = 'main: loop {
                 let event = match rx.recv().await {
                     Some(e) => e,
@@ -358,6 +362,7 @@ mod tests {
             Arc::new(build_default_registry()),
             &mut metrics_sys,
             ClassifierConfig::default(),
+            BodyCapConfig::default(),
         );
         let _svc = metrics_sys.start();
 
@@ -417,6 +422,7 @@ mod tests {
             Arc::new(build_default_registry()),
             &mut metrics_sys,
             ClassifierConfig::default(),
+            BodyCapConfig::default(),
         );
         let _svc = metrics_sys.start();
 
@@ -471,6 +477,7 @@ mod tests {
             Arc::new(build_default_registry()),
             &mut metrics_sys,
             ClassifierConfig::default(),
+            BodyCapConfig::default(),
         );
         let _svc = metrics_sys.start();
 

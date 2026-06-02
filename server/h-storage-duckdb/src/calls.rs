@@ -48,6 +48,7 @@ struct PreparedCall {
     agent_topology: Option<String>,
     tool_call_count: u32,
     tool_names_json: String,
+    body_bytes_dropped: u64,
 }
 
 fn prepare_call(call: LlmCall) -> PreparedCall {
@@ -90,6 +91,7 @@ fn prepare_call(call: LlmCall) -> PreparedCall {
         tool_call_count: call.tool_call_count,
         tool_names_json: serde_json::to_string(&call.tool_names)
             .unwrap_or_else(|_| "[]".to_string()),
+        body_bytes_dropped: call.body_bytes_dropped,
     }
 }
 
@@ -305,6 +307,7 @@ impl DuckDbBackend {
                         p.agent_topology,
                         p.tool_call_count,
                         p.tool_names_json,
+                        p.body_bytes_dropped,
                     ])
                     .map_err(|e| AppError::Storage(format!("failed to append call: {e}")))?;
             }
@@ -749,6 +752,7 @@ mod tests {
             agent_topology: None,
             tool_call_count: 0,
             tool_names: vec![],
+            body_bytes_dropped: 0,
         }
     }
 
