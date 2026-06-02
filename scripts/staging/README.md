@@ -106,6 +106,29 @@ How it works — no NIC, no `tcpreplay`:
   build. A candidate that fails where the baseline passed is a real regression
   (exit 1).
 
+### Known-good promotion (the self-test is standing, not one-off)
+
+`soak-staging.sh` makes the dual-binary self-test continuous via a **rolling
+known-good**: the baseline is `/opt/heron/heron.last-good` on the VM — the
+last binary that *passed* a soak. Each deploy is soaked against it, and on a
+pass the freshly-deployed binary is **promoted** to become the next
+known-good. So every new build is compared against the previous good build and
+the pointer advances on its own — no stale, hand-pinned baseline.
+
+```
+deploy N   → soak vs last-good(N-1) → pass → promote: last-good := N
+deploy N+1 → soak vs last-good(N)   → …
+```
+
+- First ever run (no known-good): candidate-only **bootstrap**, then promote.
+- Candidate regresses (exit 1): job fails, **known-good unchanged**.
+- Baseline itself fails (`harness_broken`, exit 3): corpus/env problem, or the
+  known-good needs re-baselining → warn, don't fail, **don't advance**.
+
+Override knobs: `HERON_STAGE_BASELINE` pins an explicit baseline (debug),
+`HERON_STAGE_NO_PROMOTE=1` soaks without advancing,
+`HERON_STAGE_LASTGOOD` relocates the pointer.
+
 The invariant logic is unit-tested (stdlib-only, runs in CI):
 `python3 scripts/staging/tests/test_tara_invariants.py`.
 
