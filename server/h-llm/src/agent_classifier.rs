@@ -26,15 +26,29 @@ impl Default for ClassifierConfig {
                 .map(|s| (*s).to_string())
                 .collect(),
             mcp_tool_prefixes: vec!["mcp__".to_string()],
+            // Current Claude Code + Codex CLI built-in tool inventory. The old
+            // 8-entry seed flagged everything else (Glob, TodoWrite, the Task*
+            // family, …) as `UnknownToolName`, which surfaced legit agent
+            // traffic as "suspicious" and inflated AgentClassifierUnknownCount
+            // (#85). Grouped by source CLI; extend here as the CLIs add tools.
+            // A `[classifier] known_tool_registry = [...]` TOML override
+            // replaces this list wholesale (see `from_toml`).
             known_tool_registry: [
-                "Read",
-                "Edit",
-                "Write",
-                "Grep",
-                "Bash",
-                "Task",
-                "WebFetch",
-                "WebSearch",
+                // Claude Code — file & notebook ops
+                "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead",
+                // Claude Code — search
+                "Grep", "Glob",
+                // Claude Code — shell / background-process management
+                "Bash", "BashOutput", "KillShell", "KillBash",
+                // Claude Code — web
+                "WebFetch", "WebSearch",
+                // Claude Code — planning & meta
+                "TodoWrite", "ExitPlanMode", "SlashCommand", "Skill", "AskUserQuestion",
+                // Claude Code — subagent / task orchestration
+                "Task", "Agent", "TaskCreate", "TaskGet", "TaskList", "TaskOutput",
+                "TaskStop", "TaskUpdate",
+                // Codex CLI
+                "apply_patch", "update_plan", "view_image",
             ]
             .iter()
             .map(|s| (*s).to_string())
@@ -179,6 +193,30 @@ mod toml_tests {
         assert!(cfg.cli_tool_allowlist.contains("zsh"));
         assert!(!cfg.cli_tool_allowlist.contains("bash"));
     }
+
+    #[test]
+    fn shipped_default_toml_inherits_full_registry() {
+        // Regression for #93: the shipped default.toml must leave
+        // known_tool_registry EMPTY so `from_toml` inherits the built-in list.
+        // A hardcoded copy there silently overrode the default ("non-empty TOML
+        // wins") and shipped a stale 8-tool set to every default deployment.
+        // Path is resolved from the crate manifest so it's CWD-independent.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../config/default.toml");
+        let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        #[derive(serde::Deserialize)]
+        struct Wrap {
+            #[serde(default)]
+            agent_classifier: ClassifierConfigToml,
+        }
+        let wrap: Wrap = toml::from_str(&raw).expect("default.toml should parse");
+        let cfg = ClassifierConfig::from_toml(&wrap.agent_classifier);
+        assert!(
+            cfg.known_tool_registry.contains("Glob")
+                && cfg.known_tool_registry.contains("TaskOutput"),
+            "default.toml must not hardcode known_tool_registry (#93) — leave it empty to \
+             inherit the built-in list"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -192,6 +230,23 @@ mod config_tests {
         assert!(cfg.orchestrator_tool_names.contains("Task"));
         assert_eq!(cfg.mcp_tool_prefixes, vec!["mcp__".to_string()]);
         assert!(cfg.known_tool_registry.contains("Read"));
+    }
+
+    #[test]
+    fn registry_covers_current_cli_tools() {
+        // Regression for #85: every tool the issue named as falsely flagged
+        // must now be in the default registry.
+        let cfg = ClassifierConfig::default();
+        for t in [
+            "Glob", "TodoWrite", "MultiEdit", "NotebookEdit", "BashOutput",
+            "KillShell", "ExitPlanMode", "SlashCommand", "TaskOutput",
+            "TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskUpdate",
+        ] {
+            assert!(
+                cfg.known_tool_registry.contains(t),
+                "{t} should be a known tool, not flagged UnknownToolName (#85)"
+            );
+        }
     }
 
     #[test]
@@ -352,5 +407,21 @@ mod classify_tests {
     fn suspicious_empty_for_known_tools() {
         let c = classify(&prims_with_tools(&["Read", "Edit"]), &cfg());
         assert!(c.suspicious_signals.is_empty());
+    }
+
+    #[test]
+    fn modern_claude_code_toolset_is_clean() {
+        // #85: a realistic modern Claude Code tool array must classify as a
+        // clean FunctionCall surface — no suspicious signals, not Unknown.
+        let c = classify(
+            &prims_with_tools(&["Read", "Glob", "TodoWrite", "TaskOutput", "ExitPlanMode"]),
+            &cfg(),
+        );
+        assert!(
+            c.suspicious_signals.is_empty(),
+            "unexpected suspicious signals: {:?}",
+            c.suspicious_signals
+        );
+        assert_eq!(c.tool_surface, Some(ToolSurface::FunctionCall));
     }
 }
