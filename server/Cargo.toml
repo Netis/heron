@@ -69,6 +69,10 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 rust-embed = "8"
 mime_guess = "2"
+# Keep >= DuckDB 1.5.3 (crate 1.10503): 1.5.2/1.5.3 fix the checkpoint+ART
+# bugs behind the prod outage — #22591 (ARTOperator::Delete on nested leaf),
+# #22094 (RemoveFromIndexes / "remove all rows merging checkpoint deltas"),
+# #22503 (BlockAllocator invalid memory access → the SIGSEGV). Cargo.lock pins it.
 duckdb = { version = "1", features = ["bundled", "json"] }
 chrono = "0.4"
 tdigest = "0.2"
