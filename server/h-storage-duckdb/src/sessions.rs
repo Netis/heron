@@ -2,7 +2,6 @@
 //! grouped by `(source_id, session_id)` — no schema of their own.
 
 use h_common::error::{AppError, Result};
-use h_storage::dialect::parse_csv;
 use h_storage::query::*;
 
 use crate::util::{
@@ -31,11 +30,8 @@ impl DuckDbBackend {
             if let Some(sid) = &query.source_id {
                 where_parts.push(format!("source_id = '{}'", sid.replace('\'', "''")));
             }
-            if let Some(ak) = &query.agent_kind {
-                let kinds = parse_csv(ak);
-                if !kinds.is_empty() {
-                    where_parts.push(format!("agent_kind IN ({})", sql_in_list(&kinds)));
-                }
+            if !query.agent_kinds.is_empty() {
+                where_parts.push(format!("agent_kind IN ({})", sql_in_list(&query.agent_kinds)));
             }
             let where_sql = where_parts.join(" AND ");
 
@@ -680,65 +676,41 @@ mod tests {
             end_us: base + 10_000_000,
         };
 
-        // Test 1: Single kind filter (no regression)
+        // Single kind → only those sessions (no regression).
         let query_single = SessionListQuery {
             time_range: time_range.clone(),
             source_id: None,
-            agent_kind: Some("claude-cli".to_string()),
+            agent_kinds: vec!["claude-cli".to_string()],
             cursor: None,
             page_size: 100,
         };
         let page_single = backend.query_sessions(&query_single).await.unwrap();
         assert_eq!(page_single.items.len(), 2);
-        let kinds: Vec<_> = page_single.items.iter().map(|s| s.agent_kind.as_str()).collect();
-        assert!(kinds.iter().all(|k| *k == "claude-cli"));
+        assert!(page_single.items.iter().all(|s| s.agent_kind == "claude-cli"));
 
-        // Test 2: Multiple kinds (CSV) should return union
+        // Multiple kinds → union. (The bug: a raw-CSV exact-match returns 0 here.)
         let query_multi = SessionListQuery {
             time_range: time_range.clone(),
             source_id: None,
-            agent_kind: Some("claude-cli,codex-cli".to_string()),
+            agent_kinds: vec!["claude-cli".to_string(), "codex-cli".to_string()],
             cursor: None,
             page_size: 100,
         };
         let page_multi = backend.query_sessions(&query_multi).await.unwrap();
         assert_eq!(page_multi.items.len(), 3);
         let kinds: Vec<_> = page_multi.items.iter().map(|s| s.agent_kind.as_str()).collect();
-        assert!(kinds.contains(&"claude-cli"));
-        assert!(kinds.contains(&"codex-cli"));
+        assert!(kinds.contains(&"claude-cli") && kinds.contains(&"codex-cli"));
         assert!(!kinds.contains(&"openclaw"));
 
-        // Test 3: CSV with spaces
-        let query_spaces = SessionListQuery {
+        // Empty Vec → no filter → all sessions. (CSV parsing / trimming / empties
+        // are the API layer's job now; see h-api `parse_csv` tests.)
+        let query_all = SessionListQuery {
             time_range: time_range.clone(),
             source_id: None,
-            agent_kind: Some("claude-cli, codex-cli, openclaw".to_string()),
+            agent_kinds: vec![],
             cursor: None,
             page_size: 100,
         };
-        let page_spaces = backend.query_sessions(&query_spaces).await.unwrap();
-        assert_eq!(page_spaces.items.len(), 4);
-
-        // Test 4: Empty string should match all
-        let query_empty = SessionListQuery {
-            time_range: time_range.clone(),
-            source_id: None,
-            agent_kind: Some("".to_string()),
-            cursor: None,
-            page_size: 100,
-        };
-        let page_empty = backend.query_sessions(&query_empty).await.unwrap();
-        assert_eq!(page_empty.items.len(), 4);
-
-        // Test 5: None should match all
-        let query_none = SessionListQuery {
-            time_range: time_range.clone(),
-            source_id: None,
-            agent_kind: None,
-            cursor: None,
-            page_size: 100,
-        };
-        let page_none = backend.query_sessions(&query_none).await.unwrap();
-        assert_eq!(page_none.items.len(), 4);
+        assert_eq!(backend.query_sessions(&query_all).await.unwrap().items.len(), 4);
     }
 }

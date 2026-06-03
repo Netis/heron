@@ -638,7 +638,7 @@ async fn sessions_reads_smoke() {
         .query_sessions(&SessionListQuery {
             time_range: full_range(),
             source_id: None,
-            agent_kind: None,
+            agent_kinds: vec![],
             cursor: None,
             page_size: 10,
         })

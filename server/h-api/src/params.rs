@@ -135,6 +135,29 @@ mod to_time_range_tests {
     }
 }
 
+#[cfg(test)]
+mod parse_csv_tests {
+    use super::parse_csv;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn splits_trims_and_drops_empties() {
+        // The single CSV-parsing chokepoint for every multi-select filter
+        // (agent_kinds, statuses, finish_reasons, …). Parsing lives HERE, at the
+        // API boundary, so no storage backend ever sees a raw CSV to mis-handle.
+        assert_eq!(parse_csv(&Some("a,b,c".to_string())), v(&["a", "b", "c"]));
+        assert_eq!(parse_csv(&Some("a, b , c".to_string())), v(&["a", "b", "c"]));
+        assert_eq!(parse_csv(&Some("a,,b".to_string())), v(&["a", "b"]));
+        assert_eq!(parse_csv(&Some("single".to_string())), v(&["single"]));
+        assert_eq!(parse_csv(&Some("".to_string())), Vec::<String>::new());
+        assert_eq!(parse_csv(&Some("  ".to_string())), Vec::<String>::new());
+        assert_eq!(parse_csv(&None), Vec::<String>::new());
+    }
+}
+
 pub fn to_dimension_filter(
     wire_api: &Option<String>,
     model: &Option<String>,

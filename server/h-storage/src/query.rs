@@ -623,8 +623,13 @@ pub struct SessionListQuery {
     /// a `source_id` (TurnTracker partition key), so pushing this into the
     /// WHERE clause is safe and does not truncate lifetime aggregates.
     pub source_id: Option<String>,
-    /// Optional agent_kind filter. Also session-stable, so WHERE is safe.
-    pub agent_kind: Option<String>,
+    /// agent_kind multi-select filter, already CSV-parsed at the API layer
+    /// (empty = no filter). Held as a `Vec`, NOT a raw CSV string, so no storage
+    /// backend has to remember to parse it — the omission that made the
+    /// multi-select filter silently match nothing across turns→sessions→
+    /// clickhouse. Matches every other multi-select filter (statuses,
+    /// finish_reasons, …), which the API also parses up front.
+    pub agent_kinds: Vec<String>,
     pub cursor: Option<SessionListCursor>,
     pub page_size: u32,
 }

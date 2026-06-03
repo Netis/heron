@@ -9,7 +9,7 @@ use h_storage::query::{
 use h_storage::StorageBackend;
 
 use crate::extractors::{Path, Query};
-use crate::params::to_time_range;
+use crate::params::{parse_csv, to_time_range};
 use crate::response::{ApiError, ApiResponse};
 
 #[derive(Debug, Deserialize)]
@@ -57,7 +57,9 @@ pub async fn list(
     let query = SessionListQuery {
         time_range: to_time_range(params.start, params.end)?,
         source_id: params.source_id.filter(|s| !s.is_empty()),
-        agent_kind: params.agent_kind.filter(|s| !s.is_empty()),
+        // Parse the CSV multi-select here, at the API boundary, so storage
+        // backends consume a ready Vec (same as statuses/finish_reasons/…).
+        agent_kinds: parse_csv(&params.agent_kind),
         cursor,
         page_size: params.page_size.clamp(1, 200),
     };
