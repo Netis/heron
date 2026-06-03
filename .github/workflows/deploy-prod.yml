@@ -23,9 +23,19 @@ on:
         description: commit to deploy (default origin/main)
         required: false
 
+# Supersede, don't pile up. Every merge to main triggers a deploy-prod that
+# parks in `waiting` for manual approval. With cancel-in-progress: false those
+# unapproved runs accumulated, and because a waiting run holds the group, the
+# FIRST un-approved one blocked every later one as `pending` forever (the prod
+# pipeline wedge of 2026-06-03 — manual `gh run cancel` was the only way out).
+# cancel-in-progress: true makes a newer deploy-prod cancel the older waiting
+# one, so there is always exactly ONE waiting run — the latest main — ready to
+# approve. (deploy-prod.sh builds before touching the service and is health-
+# gated + auto-rollback, so a cancel during the brief approved-and-running
+# window is safe; the next run redeploys latest cleanly.)
 concurrency:
   group: deploy-prod
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy:
