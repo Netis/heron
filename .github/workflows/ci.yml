@@ -108,6 +108,19 @@ jobs:
           CARGO_TERM_COLOR: always
         run: cargo test -p h-storage-duckdb --test migrations --quiet
 
+      - name: compile hot-path benches (perf-bench bitrot gate)
+        # The criterion benches in h-protocol/benches/ measure the per-packet
+        # hot paths (decode, reassembly+parse, shard-hash). Building them in CI
+        # keeps them runnable as the public API evolves — an API change that
+        # breaks a bench is caught here, at the PR, not when someone next runs
+        # `cargo bench`. We compile only (`--no-run`): criterion's timings are
+        # too noisy on shared self-hosted runners to gate on, so the
+        # run-and-compare-to-baseline (enforcing) tier is a deliberate follow-up.
+        working-directory: server
+        env:
+          CARGO_TERM_COLOR: always
+        run: cargo bench -p h-protocol --no-run
+
       - name: cargo clippy (informational; not enforcing yet)
         working-directory: server
         # Clippy enforcement deferred — main has accumulated lint debt

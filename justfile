@@ -74,6 +74,12 @@ quality *args:
 test *args:
     @bash scripts/routers/shared/test.sh {{args}}
 
+# Benchmarking (criterion hot-path micro-benches — h-protocol/benches/hot_paths.rs)
+#   just bench                 run all hot-path benches
+#   just bench --no-run        compile only (the CI bitrot gate)
+bench *args:
+    @cd server && cargo bench -p h-protocol {{args}}
+
 # Worktree management (add, list, merge, remove)
 wt *args:
     @bash scripts/routers/shared/wt.sh {{args}}

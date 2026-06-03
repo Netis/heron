@@ -17,3 +17,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 pcap.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "hot_paths"
+harness = false
