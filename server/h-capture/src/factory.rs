@@ -33,7 +33,11 @@ pub fn build_source(
             )))
         }
         CaptureSourceConfig::PcapFile {
-            path, source_id, ..
+            path,
+            source_id,
+            loop_count,
+            loop_secs,
+            ..
         } => {
             let sid = source_id.clone().unwrap_or_else(|| {
                 std::path::Path::new(path)
@@ -42,7 +46,10 @@ pub fn build_source(
                     .unwrap_or(path)
                     .to_string()
             });
-            Ok(Box::new(PcapFileSource::new(path.into(), sid, pcap_dump)))
+            Ok(Box::new(
+                PcapFileSource::new(path.into(), sid, pcap_dump)
+                    .with_loop(*loop_count, *loop_secs),
+            ))
         }
         CaptureSourceConfig::CloudProbe { endpoint, recv_hwm } => Ok(Box::new(
             CloudProbeSource::new(endpoint.clone(), *recv_hwm, pcap_dump),
@@ -60,6 +67,8 @@ mod tests {
             path: "/tmp/test.pcap".to_string(),
             realtime: false,
             source_id: None,
+            loop_count: 1,
+            loop_secs: 0,
         };
         assert!(build_source(&config, None).is_ok());
     }

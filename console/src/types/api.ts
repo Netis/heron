@@ -621,6 +621,11 @@ export type CaptureSource =
       path: string
       realtime: boolean
       source_id: string | null
+      // Loop/duration replay (load-soak primitive). Mirror of the Rust
+      // CaptureSourceConfig::PcapFile fields; serde defaults loop_count=1
+      // (single pass) / loop_secs=0 (disabled) so older configs still parse.
+      loop_count: number
+      loop_secs: number
     }
   | {
       type: "cloud-probe"
