@@ -143,17 +143,26 @@ jobs:
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           AGENT_EXIT: ${{ steps.review.outcome }}
+          # Direct-PR auto-merge allowlist (GitHub logins, CSV). Kept out of
+          # committed source — set via `gh variable set AUTO_MERGE_AUTHORS`.
+          # Empty ⇒ no direct PR is auto-merged on APPROVE.
+          AUTO_MERGE_AUTHORS: ${{ vars.AUTO_MERGE_AUTHORS }}
         run: python3 scripts/pr-review/post_review.py "$PR_NUMBER"
 
       - name: Auto-merge if eligible
         # Only effective for wiwi-spawned PRs (label `auto-agent`) whose
-        # linked issue author is on the team. Idempotent + safe to call
-        # for every PR — bails out for human PRs. Needs AGENT_GH_TOKEN
-        # so the admin-merge call has admin bypass on branch protection.
+        # linked issue author is on the auto-merge allowlist. Idempotent +
+        # safe to call for every PR — bails out for human PRs. Needs
+        # AGENT_GH_TOKEN so the admin-merge call has admin bypass on branch
+        # protection.
         if: ${{ steps.review.outcome == 'success' }}
         env:
           GH_TOKEN:  ${{ secrets.AGENT_GH_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          # Auto-merge allowlist (GitHub logins, CSV). Kept out of committed
+          # source — set via `gh secret set AUTO_MERGE_TEAM`. Empty ⇒ no
+          # issue author is auto-merge-eligible (all PRs wait for a human).
+          AUTO_MERGE_TEAM: ${{ secrets.AUTO_MERGE_TEAM }}
         run: bash scripts/agent-bot/auto_merge.sh
 
       - name: Dispatch revise if vivi requested changes
