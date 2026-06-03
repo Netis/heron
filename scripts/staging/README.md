@@ -87,6 +87,17 @@ This catches the regression class that compiles and passes unit tests but
 mangles live traffic — the PR#47 (validator bypassed by a direct caller) and
 PR#48 (storage poisoning under load) families.
 
+**Prod go/no-go signal.** On every real soak the workflow stamps a
+`staging-soaked` **commit status** on the soaked commit — `success` when the
+soak passed, `failure` when it didn't. This is the single authoritative thing
+to check before approving the `production` deployment: a commit showing
+`staging-soaked ✅` cleared `ci → deploy-staging → staging-soak` end to end; a
+commit with **no** `staging-soaked` status was never actually soaked (its
+chain skipped because CI wasn't green yet) — don't promote it. Don't rely on
+the mere existence of a pending `deploy-prod` run: during a merge burst those
+appear and get superseded/cancelled, and a skipped chain can't reach the
+approval gate anyway (`deploy-prod`'s `if` requires a *successful* soak).
+
 How it works — no NIC, no `tcpreplay`:
 
 - [`tara.sh`](tara.sh) starts a throwaway heron instance on a private port

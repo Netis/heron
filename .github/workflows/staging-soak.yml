@@ -29,11 +29,49 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: [self-hosted, staging-deploy]
     timeout-minutes: 15
+    # statuses:write lets the final step stamp a `staging-soaked` commit
+    # status — the single authoritative "staging is green, safe to promote"
+    # signal an approver checks before approving the prod deployment.
+    permissions:
+      contents: read
+      statuses: write
     steps:
       - uses: actions/checkout@v4
 
       - name: tara soak the deployed staging binary
+        id: soak
         env:
           HERON_STAGE_VM: ${{ vars.HERON_STAGE_VM }}
           HERON_STAGE_USER: ${{ vars.HERON_STAGE_USER }}
         run: bash scripts/staging/soak-staging.sh
+
+      # Authoritative go/no-go signal for the prod-approval gate. Only the
+      # workflow_run path carries the exact deployed commit; a skipped chain
+      # (CI not green) never reaches this job, so a commit with NO
+      # `staging-soaked` status simply hasn't been soaked — don't promote it.
+      - name: Stamp `staging-soaked` commit status
+        if: ${{ always() && github.event_name == 'workflow_run' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          OUTCOME: ${{ steps.soak.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$OUTCOME" = "success" ]; then
+            state="success"; desc="tara soak passed — safe to promote to prod"
+          else
+            state="failure"; desc="tara soak ${OUTCOME} — do NOT promote"
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/${SHA}" \
+            -f state="$state" \
+            -f context="staging-soaked" \
+            -f description="$desc" \
+            -f target_url="$RUN_URL" >/dev/null
+          {
+            echo "### staging-soak → \`staging-soaked\` = **${state}**"
+            echo ""
+            echo "- commit: \`${SHA}\`"
+            echo "- $desc"
+            echo ""
+            echo "Promote to prod only when this commit shows \`staging-soaked\` ✅."
+          } >> "$GITHUB_STEP_SUMMARY"
