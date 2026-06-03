@@ -19,6 +19,21 @@ pub fn sql_in_list(values: &[String]) -> String {
         .join(", ")
 }
 
+/// Split a comma-separated multi-select filter value (e.g. the `agent_kind`
+/// query param `"claude-cli,codex-cli"`) into trimmed, non-empty parts.
+///
+/// Shared by every storage backend so the CSV → IN-list filter behaves
+/// identically across them — the `agent_kind` multi-select bug recurred
+/// precisely because each backend (and the turns vs sessions paths) kept its
+/// own copy and a fix missed one. One definition, no drift. The API layer has
+/// its own equivalent (`h-api`) for params it parses before they reach storage.
+pub fn parse_csv(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .collect()
+}
+
 /// Build a WHERE clause segment for dimension filters on an ungrouped query.
 ///
 /// The aggregator (see `h-metrics/src/aggregator.rs:dimension_keys`) only
@@ -105,6 +120,21 @@ fn build_tool_surface_clause(surfaces: &[String]) -> String {
         String::new()
     } else {
         format!(" AND tool_surface IN ({})", sql_in_list(surfaces))
+    }
+}
+
+#[cfg(test)]
+mod parse_csv_tests {
+    use super::parse_csv;
+
+    #[test]
+    fn splits_trims_and_drops_empties() {
+        assert_eq!(parse_csv("a,b,c"), vec!["a", "b", "c"]);
+        assert_eq!(parse_csv("a, b , c"), vec!["a", "b", "c"]);
+        assert_eq!(parse_csv("a,,b"), vec!["a", "b"]);
+        assert_eq!(parse_csv("single"), vec!["single"]);
+        assert_eq!(parse_csv(""), Vec::<String>::new());
+        assert_eq!(parse_csv("  "), Vec::<String>::new());
     }
 }
 

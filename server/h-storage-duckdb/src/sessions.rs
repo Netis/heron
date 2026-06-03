@@ -2,22 +2,13 @@
 //! grouped by `(source_id, session_id)` — no schema of their own.
 
 use h_common::error::{AppError, Result};
+use h_storage::dialect::parse_csv;
 use h_storage::query::*;
 
 use crate::util::{
     extract_full_text_batch, parse_json_string_list, sql_in_list, us_to_timestamp, ExtractKind,
 };
 use crate::DuckDbBackend;
-
-/// Split a comma-separated filter value (e.g. the multi-select `agent_kind`
-/// param) into trimmed, non-empty parts. Kept local: the equivalent in `h-api`
-/// lives a layer above this crate, so it can't be imported here.
-fn parse_csv(s: &str) -> Vec<String> {
-    s.split(',')
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .collect()
-}
 
 impl DuckDbBackend {
     pub(crate) async fn query_sessions(&self, query: &SessionListQuery) -> Result<SessionsPage> {
@@ -659,18 +650,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_parse_csv() {
-        use super::parse_csv;
-
-        assert_eq!(parse_csv("a,b,c"), vec!["a", "b", "c"]);
-        assert_eq!(parse_csv("a, b, c"), vec!["a", "b", "c"]);
-        assert_eq!(parse_csv("a,,b"), vec!["a", "b"]);
-        assert_eq!(parse_csv(""), Vec::<String>::new());
-        assert_eq!(parse_csv("   "), Vec::<String>::new());
-        assert_eq!(parse_csv("single"), vec!["single"]);
-    }
-    // (SQL list-building is now `util::sql_in_list`, covered by util's own tests.)
+    // parse_csv + SQL list-building now live in h_storage::dialect with their
+    // own unit tests; the integration test below covers their use end-to-end.
 
     #[tokio::test]
     async fn test_query_sessions_agent_kind_csv_filter() {
