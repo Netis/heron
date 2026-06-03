@@ -40,6 +40,7 @@ fn build_storage_config(db_path: &str) -> StorageConfig {
         },
         sink: StorageSinkConfig::default(),
         retention: RetentionConfig::default(),
+        ..Default::default()
     }
 }
 

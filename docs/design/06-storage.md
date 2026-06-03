@@ -35,6 +35,7 @@ See [schema.md](07-schema.md) for data schema and backend adaptation notes.
 
 ```
 ts-storage/
+h-storage/                 # backend-neutral trait + shared logic
 ├── Cargo.toml
 └── src/
     ├── lib.rs
@@ -43,7 +44,13 @@ ts-storage/
     ├── sink.rs            # Three-channel fan-in (calls / turns / metrics) → backend
     ├── query.rs           # Typed query shapes & response rows
     ├── retention.rs       # RetentionPolicy / Report + background sweeper
-    └── duckdb.rs          # DuckDB backend (postgres.rs / clickhouse.rs: future)
+    ├── dialect.rs         # Backend-neutral SQL dimension-filter builders
+    ├── convert.rs         # Header JSON / token-estimate helpers
+    └── classify.rs        # Serving-software (vLLM/SGLang/…) classifier
+
+h-storage-duckdb/          # DuckDB backend (embedded, single-node / edge)
+h-storage-clickhouse/      # ClickHouse backend (server, high-throughput analytics)
+                           #   PostgreSQL: future
 ```
 
 ## Retention

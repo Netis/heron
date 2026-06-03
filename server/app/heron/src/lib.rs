@@ -13,15 +13,17 @@ use std::sync::Arc;
 use h_common::config::StorageConfig;
 use h_common::error::{AppError, Result};
 use h_storage::StorageBackend;
+use h_storage_clickhouse::ClickHouseBackend;
 use h_storage_duckdb::DuckDbBackend;
 
 /// Dispatch on `config.backend` and instantiate the matching storage
-/// backend. Lives in the assembly layer so adding `h-storage-postgres` /
-/// `h-storage-clickhouse` later is a one-arm extension here, not a fan-in
-/// to a backend-specific crate.
+/// backend. Lives in the assembly layer so adding `h-storage-postgres`
+/// later is a one-arm extension here, not a fan-in to a backend-specific
+/// crate.
 pub fn create_backend(config: &StorageConfig) -> Result<Arc<dyn StorageBackend>> {
     match config.backend.as_str() {
         "duckdb" => Ok(Arc::new(DuckDbBackend::open(&config.duckdb.path)?)),
+        "clickhouse" => Ok(Arc::new(ClickHouseBackend::new(&config.clickhouse)?)),
         other => Err(AppError::Config(format!(
             "unknown storage backend: {other}"
         ))),
