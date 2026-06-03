@@ -7,6 +7,21 @@ use h_storage::query::*;
 use crate::util::{extract_full_text_batch, parse_json_string_list, us_to_timestamp, ExtractKind};
 use crate::DuckDbBackend;
 
+fn parse_csv(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .collect()
+}
+
+fn sql_string_list(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|s| format!("'{}'", s.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 impl DuckDbBackend {
     pub(crate) async fn query_sessions(&self, query: &SessionListQuery) -> Result<SessionsPage> {
         let conn = self.read_pool.acquire().await?;
@@ -29,7 +44,10 @@ impl DuckDbBackend {
                 where_parts.push(format!("source_id = '{}'", sid.replace('\'', "''")));
             }
             if let Some(ak) = &query.agent_kind {
-                where_parts.push(format!("agent_kind = '{}'", ak.replace('\'', "''")));
+                let kinds = parse_csv(ak);
+                if !kinds.is_empty() {
+                    where_parts.push(format!("agent_kind IN ({})", sql_string_list(&kinds)));
+                }
             }
             let where_sql = where_parts.join(" AND ");
 
@@ -589,5 +607,168 @@ impl DuckDbBackend {
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::DuckDbBackend;
+    use h_llm::wire_apis as wa;
+    use h_storage::query::{SessionListQuery, TimeRange};
+    use h_storage::StorageBackend;
+    use h_turn::{AgentTurn, TurnStatus};
+
+    fn in_memory() -> DuckDbBackend {
+        DuckDbBackend::open(":memory:").unwrap()
+    }
+
+    fn sample_turn(
+        turn_id: &str,
+        session_id: &str,
+        agent_kind: &str,
+        start_us: i64,
+    ) -> AgentTurn {
+        AgentTurn {
+            source_id: String::new(),
+            turn_id: turn_id.into(),
+            session_id: session_id.into(),
+            wire_api: wa::OPENAI_CHAT.to_string(),
+            agent_kind: agent_kind.into(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            server_ip: "10.0.0.1".parse().unwrap(),
+            start_time_us: start_us,
+            end_time_us: start_us + 100_000,
+            duration_ms: 100,
+            call_count: 1,
+            models_used: vec!["gpt-4".to_string()],
+            subagents_used: vec![],
+            total_input_tokens: 100,
+            total_output_tokens: 50,
+            total_cache_read_input_tokens: 0,
+            total_cache_creation_input_tokens: 0,
+            total_cost_usd: None,
+            status: TurnStatus::Complete,
+            final_finish_reason: Some("complete".into()),
+            user_input_preview: Some("hello".into()),
+            user_call_id: None,
+            final_answer_preview: Some("world".into()),
+            final_call_id: None,
+            call_ids: vec!["call-1".into()],
+            metadata: serde_json::json!({}),
+            tool_surfaces: vec![],
+            tool_call_total: 0,
+            agent_topology: None,
+            suspicious_skills: vec![],
+        }
+    }
+
+    #[test]
+    fn test_parse_csv() {
+        use super::parse_csv;
+
+        assert_eq!(parse_csv("a,b,c"), vec!["a", "b", "c"]);
+        assert_eq!(parse_csv("a, b, c"), vec!["a", "b", "c"]);
+        assert_eq!(parse_csv("a,,b"), vec!["a", "b"]);
+        assert_eq!(parse_csv(""), Vec::<String>::new());
+        assert_eq!(parse_csv("   "), Vec::<String>::new());
+        assert_eq!(parse_csv("single"), vec!["single"]);
+    }
+
+    #[test]
+    fn test_sql_string_list() {
+        use super::sql_string_list;
+
+        assert_eq!(sql_string_list(&["a".to_string(), "b".to_string()]), "'a', 'b'");
+        assert_eq!(sql_string_list(&["it's".to_string()]), "'it''s'");
+        assert_eq!(sql_string_list(&[]), "");
+    }
+
+    #[tokio::test]
+    async fn test_query_sessions_agent_kind_csv_filter() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+
+        let base = 1_700_000_000_000_000_i64;
+
+        // Create 4 sessions with different agent_kinds
+        backend
+            .write_turns(vec![
+                // Session 1: claude-cli
+                sample_turn("t1", "s1", "claude-cli", base + 1_000_000),
+                // Session 2: codex-cli
+                sample_turn("t2", "s2", "codex-cli", base + 2_000_000),
+                // Session 3: openclaw
+                sample_turn("t3", "s3", "openclaw", base + 3_000_000),
+                // Session 4: claude-cli (another session)
+                sample_turn("t4", "s4", "claude-cli", base + 4_000_000),
+            ])
+            .await
+            .unwrap();
+
+        let time_range = TimeRange {
+            start_us: base,
+            end_us: base + 10_000_000,
+        };
+
+        // Test 1: Single kind filter (no regression)
+        let query_single = SessionListQuery {
+            time_range: time_range.clone(),
+            source_id: None,
+            agent_kind: Some("claude-cli".to_string()),
+            cursor: None,
+            page_size: 100,
+        };
+        let page_single = backend.query_sessions(&query_single).await.unwrap();
+        assert_eq!(page_single.items.len(), 2);
+        let kinds: Vec<_> = page_single.items.iter().map(|s| s.agent_kind.as_str()).collect();
+        assert!(kinds.iter().all(|k| *k == "claude-cli"));
+
+        // Test 2: Multiple kinds (CSV) should return union
+        let query_multi = SessionListQuery {
+            time_range: time_range.clone(),
+            source_id: None,
+            agent_kind: Some("claude-cli,codex-cli".to_string()),
+            cursor: None,
+            page_size: 100,
+        };
+        let page_multi = backend.query_sessions(&query_multi).await.unwrap();
+        assert_eq!(page_multi.items.len(), 3);
+        let kinds: Vec<_> = page_multi.items.iter().map(|s| s.agent_kind.as_str()).collect();
+        assert!(kinds.contains(&"claude-cli"));
+        assert!(kinds.contains(&"codex-cli"));
+        assert!(!kinds.contains(&"openclaw"));
+
+        // Test 3: CSV with spaces
+        let query_spaces = SessionListQuery {
+            time_range: time_range.clone(),
+            source_id: None,
+            agent_kind: Some("claude-cli, codex-cli, openclaw".to_string()),
+            cursor: None,
+            page_size: 100,
+        };
+        let page_spaces = backend.query_sessions(&query_spaces).await.unwrap();
+        assert_eq!(page_spaces.items.len(), 4);
+
+        // Test 4: Empty string should match all
+        let query_empty = SessionListQuery {
+            time_range: time_range.clone(),
+            source_id: None,
+            agent_kind: Some("".to_string()),
+            cursor: None,
+            page_size: 100,
+        };
+        let page_empty = backend.query_sessions(&query_empty).await.unwrap();
+        assert_eq!(page_empty.items.len(), 4);
+
+        // Test 5: None should match all
+        let query_none = SessionListQuery {
+            time_range: time_range.clone(),
+            source_id: None,
+            agent_kind: None,
+            cursor: None,
+            page_size: 100,
+        };
+        let page_none = backend.query_sessions(&query_none).await.unwrap();
+        assert_eq!(page_none.items.len(), 4);
     }
 }
