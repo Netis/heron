@@ -106,6 +106,131 @@ def evaluate(m, fatals, ingest_pkts, *, min_reqs, min_turns):
     return [{"name": n, "ok": bool(ok), "detail": d} for n, ok, d in inv]
 
 
+def flatten_caps(metrics_json):
+    """name -> (value, capacity_or_None) from the /api/internal-metrics shape."""
+    out = {}
+    data = metrics_json.get("data", metrics_json)
+    for pipe in data.get("pipelines", []):
+        for m in pipe.get("metrics", []):
+            out[m["name"]] = (m.get("value", 0), m.get("capacity"))
+    return out
+
+
+# Backpressure drop counters — any non-zero means a stage couldn't keep up.
+BACKPRESSURE_DROPS = [
+    "batches_dropped_zmq", "flow_heartbeats_dropped",
+    "turn_heartbeats_dropped", "metrics_heartbeats_dropped",
+]
+
+
+def evaluate_load(samples, final_m, fatals, *, max_queue_pct, max_rss_growth_pct, min_pkts):
+    """Load/soak invariants from a time series of (rss, metrics) samples + the
+    final snapshot. Returns (invariants, summary)."""
+    g = lambda k: final_m.get(k, 0)
+
+    # Worst queue-depth utilisation seen across the whole window (any gauge that
+    # carries a capacity — the q_* channels).
+    worst_q = ("", 0.0)
+    for s in samples:
+        for name, (value, cap) in flatten_caps(s.get("metrics", {})).items():
+            if cap:
+                pct = 100.0 * value / cap
+                if pct > worst_q[1]:
+                    worst_q = (name, pct)
+
+    # RSS series (KB), skipping a 25% warm-up so one-time startup growth isn't
+    # mistaken for a leak.
+    rss = [s.get("rss_kb", 0) for s in samples if s.get("rss_kb", 0) > 0]
+    warm = rss[len(rss) // 4:] if len(rss) >= 4 else rss
+    rss_base = min(warm) if warm else 0
+    rss_peak = max(warm) if warm else 0
+    rss_growth_pct = (100.0 * (rss_peak - rss_base) / rss_base) if rss_base > 0 else 0.0
+
+    inv = [
+        ("no_fatal_logs", len(fatals) == 0,
+         "clean" if not fatals else f"{len(fatals)} fatal line(s): {fatals[0]}"),
+        ("load_ran",
+         g("pkts_received") >= min_pkts,
+         f"pkts_received={g('pkts_received')} (min {min_pkts}) — confirms sustained load"),
+        ("no_backpressure_drops",
+         all(g(k) == 0 for k in BACKPRESSURE_DROPS),
+         ", ".join(f"{k}={g(k)}" for k in BACKPRESSURE_DROPS)),
+        ("queues_bounded",
+         worst_q[1] < max_queue_pct,
+         f"worst {worst_q[0] or '-'}={worst_q[1]:.1f}% (limit {max_queue_pct}%)"),
+        ("capture_clean",
+         g("read_errors") == 0 and g("pkts_truncated") == 0
+         and g("pkts_dropped_malformed") == 0,
+         f"read_errors={g('read_errors')} truncated={g('pkts_truncated')} "
+         f"malformed={g('pkts_dropped_malformed')}"),
+        ("storage_no_flush_errors",
+         g("flush_errors") == 0,
+         f"flush_errors={g('flush_errors')}"),
+        ("rss_stable",
+         rss_growth_pct < max_rss_growth_pct,
+         f"RSS {rss_base}->{rss_peak} KB = +{rss_growth_pct:.1f}% post-warmup "
+         f"(limit {max_rss_growth_pct}%)"),
+    ]
+    invariants = [{"name": n, "ok": bool(ok), "detail": d} for n, ok, d in inv]
+    summary = {
+        "samples": len(samples),
+        "pkts_received": g("pkts_received"),
+        "pkts_parsed": g("pkts_parsed"),
+        "flushed_calls": g("flushed_calls"),
+        "worst_queue": {"metric": worst_q[0], "pct": round(worst_q[1], 1)},
+        "rss_kb": {"base": rss_base, "peak": rss_peak, "growth_pct": round(rss_growth_pct, 1)},
+    }
+    return invariants, summary
+
+
+def run_load(args):
+    samples = []
+    if args.samples:
+        try:
+            with open(args.samples) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        try:
+                            samples.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+        except FileNotFoundError:
+            pass
+
+    final_m = {}
+    if args.metrics_file:
+        try:
+            final_m = flatten(json.load(open(args.metrics_file)))
+        except Exception:  # noqa: BLE001
+            final_m = {}
+    if not final_m and samples:
+        final_m = flatten(samples[-1].get("metrics", {}))
+
+    fatals, _ = scan_log(args.logfile)
+    invariants, summary = evaluate_load(
+        samples, final_m, fatals,
+        max_queue_pct=args.max_queue_pct,
+        max_rss_growth_pct=args.max_rss_growth_pct,
+        min_pkts=args.min_pkts,
+    )
+    if not samples:
+        invariants.append({"name": "has_samples", "ok": False,
+                           "detail": "no load samples collected"})
+    passed = all(i["ok"] for i in invariants)
+    verdict = {
+        "label": args.label,
+        "pass": passed,
+        "mode": "load",
+        "invariants": invariants,
+        "failed": [i["name"] for i in invariants if not i["ok"]],
+        "load_summary": summary,
+        "fatal_lines": fatals,
+    }
+    print(json.dumps(verdict, indent=2))
+    return 0 if passed else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="run")
@@ -114,7 +239,17 @@ def main():
     ap.add_argument("--min-turns", type=int, default=1)
     ap.add_argument("--metrics-file", default="",
                     help="read metrics JSON from a file instead of stdin")
+    # Load/soak mode (--load): assert perf+reliability invariants from a sample
+    # series instead of single-pass correctness.
+    ap.add_argument("--load", action="store_true")
+    ap.add_argument("--samples", default="", help="JSONL of {ts,rss_kb,metrics} samples")
+    ap.add_argument("--max-queue-pct", type=float, default=80.0)
+    ap.add_argument("--max-rss-growth-pct", type=float, default=50.0)
+    ap.add_argument("--min-pkts", type=int, default=10000)
     args = ap.parse_args()
+
+    if args.load:
+        return run_load(args)
 
     raw = open(args.metrics_file).read() if args.metrics_file else sys.stdin.read()
     try:

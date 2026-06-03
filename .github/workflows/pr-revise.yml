@@ -1,0 +1,105 @@
+name: pr-revise
+
+# wiwi REVISION pass. Dispatched by pr-review.yml's tail (via
+# scripts/agent-bot/revise_dispatch.sh) when vivi posts a CHANGES_REQUESTED
+# review on a wiwi PR (label `auto-agent`) and the round cap isn't hit.
+#
+# It checks out the PR head branch, runs run_revise.sh to address vivi's
+# blocking feedback, and pushes back — which re-triggers ci → pr-review, so
+# vivi re-reviews the revised PR. The loop is bounded by the cap enforced in
+# revise_dispatch.sh (default 3 CHANGES_REQUESTED rounds → escalate to human).
+#
+# Dispatch-only (workflow_dispatch): the trigger comes from a PAT-authenticated
+# `gh workflow run`, because a review posted by GITHUB_TOKEN cannot start a new
+# workflow run (GitHub anti-recursion).
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to revise
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  # One revision in flight per PR; a fresh dispatch supersedes it.
+  group: pr-revise-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  revise:
+    runs-on: [self-hosted, heron]
+    # Agent pool (not ci-pool): run_revise.sh drives the `claude` CLI against
+    # the internal model gateway, which only this pool can reach.
+    timeout-minutes: 120
+    env:
+      ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+      ANTHROPIC_API_KEY:  ${{ secrets.LITELLM_API_KEY }}
+      ANTHROPIC_MODEL:    claude-3-5-sonnet-20241022
+    steps:
+      - name: Configure no_proxy for the model gateway
+        run: |
+          {
+            echo "no_proxy=${{ secrets.LITELLM_NO_PROXY }}"
+            echo "NO_PROXY=${{ secrets.LITELLM_NO_PROXY }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Resolve PR head branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REF=$(gh pr view "${{ inputs.pr_number }}" \
+                  --repo "$GITHUB_REPOSITORY" --json headRefName --jq .headRefName)
+          [ -n "$REF" ] || { echo "::error::cannot resolve PR head branch"; exit 1; }
+          echo "head_ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR head branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_ref }}
+          fetch-depth: 0
+
+      - name: Use AGENT_GH_TOKEN for git push (so ci / pr-review re-trigger)
+        env:
+          AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+        run: |
+          if [ -z "$AGENT_GH_TOKEN" ]; then
+            echo "::warning::AGENT_GH_TOKEN unset; revise push would use GITHUB_TOKEN and downstream ci/pr-review would be suppressed." >&2
+            exit 0
+          fi
+          # Same extraheader dance as issue-implement.yml: clear the
+          # checkout-installed GITHUB_TOKEN basic-auth header so the
+          # PAT-embedded push URL (which has `workflow` scope) is the sole
+          # credential on push.
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url --push origin \
+            "https://x-access-token:${AGENT_GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Fetch driver scripts from the default branch
+        # The PR head may predate this feature and not carry run_revise.sh /
+        # lib helpers. Extract the canonical driver from the default branch
+        # into /tmp (NOT the worktree, so it can't be accidentally committed
+        # by run_revise.sh's `git add -A`).
+        run: |
+          git fetch origin "${{ github.event.repository.default_branch }}" --depth 1
+          mkdir -p /tmp/revise-driver
+          git archive "origin/${{ github.event.repository.default_branch }}" \
+            scripts/agent-bot scripts/lib | tar -x -C /tmp/revise-driver
+
+      - name: Revise per vivi's review
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: bash /tmp/revise-driver/scripts/agent-bot/run_revise.sh
+
+      - name: Cleanup transient files
+        if: always()
+        run: rm -f /tmp/wiwi-revise-*.md /tmp/wiwi-revise-*.log /tmp/wiwi-revise-*.txt || true

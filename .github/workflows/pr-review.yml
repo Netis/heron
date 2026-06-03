@@ -1,7 +1,7 @@
 name: pr-review
 
 # Headless code-review agent. Fires AFTER the `ci` workflow completes
-# successfully on a PR — that gate keeps the agent from wasting GLM-5
+# successfully on a PR — that gate keeps the agent from wasting model backend
 # cycles on PRs that don't even compile, and ensures the review the
 # author sees is "tests are green, here's what to look at next".
 #
@@ -108,16 +108,19 @@ jobs:
       - name: Fetch base for diff
         run: git fetch origin "${{ steps.pr.outputs.base_ref }}" --depth 200
 
-      - name: Overlay reviewer scripts from default branch
-        # PRs older than the AI-reviewer feature don't carry
-        # scripts/pr-review/ on their head. Always overlay the latest
-        # reviewer scripts from the default branch so we run a single
-        # canonical reviewer regardless of PR vintage. The PR head's
-        # source tree is left otherwise untouched — the agent still
-        # sees the code under review, not main's code.
+      - name: Overlay reviewer + agent-bot scripts from default branch
+        # PRs older than a given agent-bot feature don't carry the matching
+        # scripts on their head. Always overlay the canonical versions from
+        # the default branch so the reviewer (scripts/pr-review), the
+        # auto-merge gate and the revise dispatcher (scripts/agent-bot) run
+        # one canonical implementation regardless of PR vintage. The PR
+        # head's source tree is left otherwise untouched — the agent still
+        # sees the code under review, not main's code. (Safe here because
+        # this workflow never commits; pr-revise.yml, which does, fetches its
+        # driver to /tmp instead.)
         run: |
           git fetch origin "${{ github.event.repository.default_branch }}" --depth 1
-          git checkout "origin/${{ github.event.repository.default_branch }}" -- scripts/pr-review
+          git checkout "origin/${{ github.event.repository.default_branch }}" -- scripts/pr-review scripts/agent-bot
 
       - name: Run review agent
         id: review
@@ -152,6 +155,20 @@ jobs:
           GH_TOKEN:  ${{ secrets.AGENT_GH_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
         run: bash scripts/agent-bot/auto_merge.sh
+
+      - name: Dispatch revise if vivi requested changes
+        # Mirror of the auto-merge gate for the other verdict: when vivi
+        # REQUEST_CHANGES a wiwi PR (label `auto-agent`), kick off the
+        # pr-revise workflow so wiwi addresses the feedback automatically.
+        # Idempotent + safe for every PR — bails for human PRs, non-blocking
+        # verdicts, and once the round cap is hit (then it escalates to a
+        # human). Needs AGENT_GH_TOKEN: a `gh workflow run` from GITHUB_TOKEN
+        # would be suppressed by GitHub's anti-recursion rule.
+        if: ${{ steps.review.outcome == 'success' }}
+        env:
+          GH_TOKEN:  ${{ secrets.AGENT_GH_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+        run: bash scripts/agent-bot/revise_dispatch.sh
 
       - name: Cleanup transient files
         if: always()
