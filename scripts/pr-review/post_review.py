@@ -33,8 +33,12 @@ AGENT_EXIT = os.environ.get("AGENT_EXIT", "")  # "success" / "failure" / ""
 # go through the same `pick_event` thresholding — but if the verdict
 # is APPROVE and the PR was opened by a trusted author, we squash
 # and delete the branch right after posting.
+#
+# The allowlist (GitHub logins, CSV) is supplied via the AUTO_MERGE_AUTHORS
+# env, injected from a repo variable by the workflow — kept out of committed
+# source. Empty default ⇒ no direct PR is auto-merged unless the variable is set.
 AUTO_MERGE_AUTHORS = {
-    a.strip() for a in os.environ.get("AUTO_MERGE_AUTHORS", "vaderyang").split(",") if a.strip()
+    a.strip() for a in os.environ.get("AUTO_MERGE_AUTHORS", "").split(",") if a.strip()
 }
 
 

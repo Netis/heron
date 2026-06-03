@@ -99,6 +99,11 @@ jobs:
           ISSUE_BODY:   ${{ github.event.issue.body }}
           ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
           GH_TOKEN:     ${{ secrets.AGENT_GH_TOKEN }}
+          # Auto-merge allowlist (GitHub logins, CSV). Kept out of committed
+          # source — set via `gh secret set AUTO_MERGE_TEAM`. Only used here to
+          # add a cosmetic "eligible for auto-merge" line to the PR body; the
+          # actual gate lives in auto_merge.sh (pr-review.yml).
+          AUTO_MERGE_TEAM: ${{ secrets.AUTO_MERGE_TEAM }}
         run: bash scripts/agent-bot/run_wiwi.sh
 
       - name: Cleanup transient files

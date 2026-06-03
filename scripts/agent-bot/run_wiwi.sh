@@ -4,8 +4,11 @@
 # downstream in pr-review.yml.
 set -euo pipefail
 
-HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-TEAM=$(grep -vE '^\s*(#|$)' "$HERE/TEAM" | tr '\n' ' ')
+# Auto-merge allowlist (GitHub logins). Sourced from the AUTO_MERGE_TEAM env
+# (CSV or whitespace-separated), injected from a repo secret by the workflow
+# — kept out of committed source. Used only to add a cosmetic
+# "eligible for auto-merge" line to the PR body; the real gate is auto_merge.sh.
+TEAM=$(printf '%s' "${AUTO_MERGE_TEAM:-}" | tr ',' ' ')
 is_team_member() {
   local who="$1"
   for m in $TEAM; do [ "$m" = "$who" ] && return 0; done
