@@ -55,6 +55,9 @@ httparse = "1"
 uuid = { version = "1", features = ["v7"] }
 bytemuck = { version = "1", features = ["derive"] }
 
+# Benchmarking (dev-only; hot-path micro-benches — see h-protocol/benches/)
+criterion = { version = "0.5", features = ["html_reports"] }
+
 # Internal crates
 h-common = { path = "h-common" }
 h-capture = { path = "h-capture" }
