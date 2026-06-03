@@ -167,6 +167,7 @@ out of anything you push back.
 - [Configure](docs/configure.md) — pipelines, sources, storage, retention
 - [Glossary](docs/glossary.md) — what every metric means
 - [Architecture](docs/design/01-architecture.md) — pipeline design and trade-offs
+- [Filing issues](docs/filing-issues.md) — how issues are triaged + how to file one an agent can pick up
 - [Mission](docs/mission.md) — long-arc vision
 
 ## Roadmap
