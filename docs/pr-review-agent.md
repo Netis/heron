@@ -115,6 +115,42 @@ If the merge fails (merge conflict, branch protection surprise,
 …) it's logged but the workflow stays green — the review is
 already posted, an operator can finish the merge by hand.
 
+## Auto-revise on CHANGES_REQUESTED (wiwi follow-up)
+
+The mirror image of auto-merge. When vivi's verdict is
+**REQUEST_CHANGES** on a **wiwi** PR (label `auto-agent`),
+`scripts/agent-bot/revise_dispatch.sh` (run from pr-review.yml's tail)
+dispatches the **`pr-revise`** workflow. That workflow checks out the PR
+head branch, runs `scripts/agent-bot/run_revise.sh` to feed vivi's
+blocking feedback + the diff back to the dev agent, and — once the build
+is green — commits and pushes. The push re-triggers `ci` → `pr-review`,
+so vivi re-reviews the revised PR. On the next APPROVE the existing
+auto-merge gate lands it; no human in the loop for the happy path.
+
+```
+vivi REQUEST_CHANGES (auto-agent PR)
+  → revise_dispatch.sh → gh workflow run pr-revise
+  → run_revise.sh: address review · build green · commit · push
+  → ci → pr-review (vivi re-review) ──┐
+        APPROVE → auto-merge          │
+        REQUEST_CHANGES again ────────┘  (loop, bounded)
+```
+
+Two implementation constraints worth knowing:
+
+- **PAT, not GITHUB_TOKEN.** The dispatch uses `AGENT_GH_TOKEN`. A
+  `gh workflow run` (or a review) issued with the default `GITHUB_TOKEN`
+  is dropped by GitHub's anti-recursion rule, and the dispatched run must
+  itself be able to push and re-trigger `ci`/`pr-review`.
+- **Bounded loop.** `revise_dispatch.sh` counts vivi's
+  CHANGES_REQUESTED reviews on the PR; at `MAX_REVISE_ROUNDS` (default 3)
+  it stops dispatching, adds a `needs-human` label, and comments — so a
+  wiwi ↔ vivi disagreement can't spin forever. Remove the label and
+  re-run `pr-revise` to resume.
+
+The agent pool (`heron`) runs `pr-revise` because `run_revise.sh` drives
+the model gateway, same as the reviewer and wiwi.
+
 ## Cost / latency
 
 The model runs on a locally-served backend. No per-request cost; the
