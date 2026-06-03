@@ -1279,7 +1279,7 @@ mod tests {
                     end_us: us(60),
                 },
                 source_id: None,
-                agent_kind: None,
+                agent_kinds: vec![],
                 cursor: None,
                 page_size: 10,
             })
@@ -1312,7 +1312,7 @@ mod tests {
                     end_us: us(60),
                 },
                 source_id: None,
-                agent_kind: None,
+                agent_kinds: vec![],
                 cursor: None,
                 page_size: 1,
             })
@@ -1330,7 +1330,7 @@ mod tests {
                     end_us: us(60),
                 },
                 source_id: None,
-                agent_kind: None,
+                agent_kinds: vec![],
                 cursor: Some(decoded),
                 page_size: 1,
             })

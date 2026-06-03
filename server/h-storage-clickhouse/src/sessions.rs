@@ -23,7 +23,7 @@ use serde::Deserialize;
 
 use h_common::error::Result;
 use h_storage::convert::parse_json_string_list;
-use h_storage::dialect::{parse_csv, sql_in_list};
+use h_storage::dialect::sql_in_list;
 use h_storage::query::*;
 
 use crate::client::ch_err;
@@ -100,14 +100,10 @@ impl ClickHouseBackend {
         if let Some(sid) = &query.source_id {
             where_parts.push(format!("source_id = '{}'", escape_str(sid)));
         }
-        if let Some(ak) = &query.agent_kind {
-            // `agent_kind` arrives as a CSV multi-select (e.g. "claude-cli,codex-cli").
-            // Parse + IN-match so multiple kinds union, instead of exact-matching the
-            // whole CSV string (which selects nothing). Mirrors the DuckDB backend.
-            let kinds = parse_csv(ak);
-            if !kinds.is_empty() {
-                where_parts.push(format!("agent_kind IN ({})", sql_in_list(&kinds)));
-            }
+        // agent_kinds is the CSV multi-select, already parsed at the API layer.
+        // IN-match so multiple kinds union; empty = no filter. Mirrors DuckDB.
+        if !query.agent_kinds.is_empty() {
+            where_parts.push(format!("agent_kind IN ({})", sql_in_list(&query.agent_kinds)));
         }
         let where_sql = where_parts.join(" AND ");
 
