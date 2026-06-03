@@ -277,6 +277,8 @@ async fn run_pipeline(cli: Cli) {
                 path: pcap_file.to_string_lossy().to_string(),
                 realtime: false,
                 source_id: None,
+                loop_count: 1,
+                loop_secs: 0,
             }],
             ..PipelineDef::default()
         }]

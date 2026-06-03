@@ -275,6 +275,19 @@ pub enum CaptureSourceConfig {
         realtime: bool,
         #[serde(default)]
         source_id: Option<String>,
+        /// Replay the file this many times back-to-back (default 1 = single
+        /// pass, today's behavior). Each pass is tagged with a fresh
+        /// per-iteration source_id so its flows are distinct (not deduped as
+        /// retransmits) — this is what lets the load soak drive sustained
+        /// full-pipeline + storage traffic from one corpus. Ignored when
+        /// `loop_secs` > 0.
+        #[serde(default = "default_loop_count")]
+        loop_count: u32,
+        /// Replay in a loop until this many seconds have elapsed (0 = disabled
+        /// → use `loop_count`). Takes precedence over `loop_count`. Used by the
+        /// duration-bounded load/longevity soak.
+        #[serde(default)]
+        loop_secs: u64,
     },
     CloudProbe {
         #[serde(default = "default_cloud_probe_endpoint")]
@@ -312,6 +325,10 @@ impl CaptureSourceConfig {
 
 fn default_interface() -> String {
     "eth0".to_string()
+}
+
+fn default_loop_count() -> u32 {
+    1
 }
 
 fn default_snaplen() -> u32 {
@@ -1273,6 +1290,8 @@ mod phase2_tests {
             path: "/data/captures/test.pcap".to_string(),
             realtime: false,
             source_id: None,
+            loop_count: 1,
+            loop_secs: 0,
         };
         assert_eq!(pcap_file.resolved_source_id(), Some("test".to_string()));
 
