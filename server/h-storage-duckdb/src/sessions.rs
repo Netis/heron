@@ -4,22 +4,19 @@
 use h_common::error::{AppError, Result};
 use h_storage::query::*;
 
-use crate::util::{extract_full_text_batch, parse_json_string_list, us_to_timestamp, ExtractKind};
+use crate::util::{
+    extract_full_text_batch, parse_json_string_list, sql_in_list, us_to_timestamp, ExtractKind,
+};
 use crate::DuckDbBackend;
 
+/// Split a comma-separated filter value (e.g. the multi-select `agent_kind`
+/// param) into trimmed, non-empty parts. Kept local: the equivalent in `h-api`
+/// lives a layer above this crate, so it can't be imported here.
 fn parse_csv(s: &str) -> Vec<String> {
     s.split(',')
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .collect()
-}
-
-fn sql_string_list(values: &[String]) -> String {
-    values
-        .iter()
-        .map(|s| format!("'{}'", s.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 impl DuckDbBackend {
@@ -46,7 +43,7 @@ impl DuckDbBackend {
             if let Some(ak) = &query.agent_kind {
                 let kinds = parse_csv(ak);
                 if !kinds.is_empty() {
-                    where_parts.push(format!("agent_kind IN ({})", sql_string_list(&kinds)));
+                    where_parts.push(format!("agent_kind IN ({})", sql_in_list(&kinds)));
                 }
             }
             let where_sql = where_parts.join(" AND ");
@@ -673,15 +670,7 @@ mod tests {
         assert_eq!(parse_csv("   "), Vec::<String>::new());
         assert_eq!(parse_csv("single"), vec!["single"]);
     }
-
-    #[test]
-    fn test_sql_string_list() {
-        use super::sql_string_list;
-
-        assert_eq!(sql_string_list(&["a".to_string(), "b".to_string()]), "'a', 'b'");
-        assert_eq!(sql_string_list(&["it's".to_string()]), "'it''s'");
-        assert_eq!(sql_string_list(&[]), "");
-    }
+    // (SQL list-building is now `util::sql_in_list`, covered by util's own tests.)
 
     #[tokio::test]
     async fn test_query_sessions_agent_kind_csv_filter() {
