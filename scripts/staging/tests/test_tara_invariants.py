@@ -124,6 +124,70 @@ def test_cli_exits_nonzero_on_failure():
         os.unlink(mf)
 
 
+# --- load-mode invariants -------------------------------------------------
+
+def load_sample(rss_kb, q_pct=10, drops=0, pkts=50000, flush_errors=0):
+    """One /api/internal-metrics-shaped load sample."""
+    metrics = [
+        {"name": "pkts_received", "value": pkts},
+        {"name": "pkts_parsed", "value": pkts},
+        {"name": "q_raw_pkts", "value": int(4096 * q_pct / 100), "capacity": 4096},
+        {"name": "batches_dropped_zmq", "value": drops},
+        {"name": "flow_heartbeats_dropped", "value": 0},
+        {"name": "turn_heartbeats_dropped", "value": 0},
+        {"name": "metrics_heartbeats_dropped", "value": 0},
+        {"name": "flush_errors", "value": flush_errors},
+        {"name": "read_errors", "value": 0},
+        {"name": "pkts_truncated", "value": 0},
+        {"name": "pkts_dropped_malformed", "value": 0},
+    ]
+    return {"ts": 0, "rss_kb": rss_kb,
+            "metrics": {"data": {"pipelines": [{"metrics": metrics}]}}}
+
+
+def ev_load(samples, **kw):
+    kw.setdefault("max_queue_pct", 80.0)
+    kw.setdefault("max_rss_growth_pct", 50.0)
+    kw.setdefault("min_pkts", 10000)
+    final = T.flatten(samples[-1]["metrics"]) if samples else {}
+    invs, _ = T.evaluate_load(samples, final, [], **kw)
+    return [i["name"] for i in invs if not i["ok"]]
+
+
+def test_load_healthy_passes():
+    s = [load_sample(100000, q_pct=10, pkts=50000) for _ in range(8)]
+    assert ev_load(s) == [], ev_load(s)
+
+
+def test_load_queue_over_limit_fails():
+    s = [load_sample(100000, q_pct=10) for _ in range(7)]
+    s.append(load_sample(100000, q_pct=95))  # one spike > 80%
+    assert "queues_bounded" in ev_load(s)
+
+
+def test_load_rss_growth_trips_leak():
+    # RSS climbs 100MB→240MB across the window → leak.
+    s = [load_sample(100000 + i * 20000, q_pct=10) for i in range(8)]
+    assert "rss_stable" in ev_load(s)
+
+
+def test_load_backpressure_drop_fails():
+    s = [load_sample(100000, q_pct=10) for _ in range(7)]
+    s.append(load_sample(100000, q_pct=10, drops=5))
+    assert "no_backpressure_drops" in ev_load(s)
+
+
+def test_load_insufficient_pkts_fails():
+    s = [load_sample(100000, q_pct=10, pkts=100) for _ in range(8)]
+    assert "load_ran" in ev_load(s)
+
+
+def test_load_flush_errors_fail():
+    s = [load_sample(100000, q_pct=10) for _ in range(7)]
+    s.append(load_sample(100000, q_pct=10, flush_errors=2))
+    assert "storage_no_flush_errors" in ev_load(s)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

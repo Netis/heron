@@ -17,11 +17,11 @@ const DEFAULT_CLOUD_PROBE_HWM = 1000
  *
  *   1234   LM Studio
  *   4000   LiteLLM proxy default
- *   4200   LiteLLM alt (in active use here)
+ *   4200   LiteLLM alt
  *   8000   vLLM default
  *   8001   vLLM alt / multi-instance
  *   8080   common HTTP backend (vLLM, OpenAI-compatible servers)
- *   9000   generic alt; SGLang served on this in our internal setup
+ *   9000   generic alt (e.g. SGLang)
  *   11434  Ollama default
  *   30000  SGLang default
  */
@@ -106,6 +106,7 @@ export function defaultFor(type: CaptureSource["type"]): CaptureSource {
     source_id: null,
     loop_count: 1,
     loop_secs: 0,
+    rate_pps: 0,
   }
 }
 

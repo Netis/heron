@@ -1,10 +1,11 @@
 name: ci
 
-# Runs on the project's self-hosted runner — toolchain (rustup stable +
-# Node 20 + bun) is pre-installed on the runner host. Internet egress
-# goes through the configured internal proxy (set in the runner's `.env`),
-# so any action that pulls from the network just works without extra
-# config.
+# Runs on the dedicated CI runner pool (label `ci-pool`) — a self-hosted
+# runner with the toolchain (rustup stable + bun + Node) pre-installed.
+# Kept separate from the agent runner pool (`heron`) so heavy CI compiles
+# run on dedicated capacity and no longer queue behind — or block — the
+# AI agent jobs (triage / wiwi / pr-review). Network egress works out of
+# the box on the pool host.
 
 on:
   pull_request:
@@ -18,7 +19,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: [self-hosted, heron]
+    runs-on: [self-hosted, ci-pool]
     # 25 was fine for test+lint, but the on-main artifact build adds a full
     # release compile (cargo build --release --features console) + the console
     # bundle, which pushed main-push runs past 25m and got them auto-cancelled

@@ -288,6 +288,12 @@ pub enum CaptureSourceConfig {
         /// duration-bounded load/longevity soak.
         #[serde(default)]
         loop_secs: u64,
+        /// Pace emission to this many packets/sec (0 = unthrottled = today's
+        /// behavior). Lets the load soak drive a steady, prod-like rate from a
+        /// looped corpus instead of an as-fast-as-possible firehose that just
+        /// saturates the channels. Applies across all passes.
+        #[serde(default)]
+        rate_pps: u32,
     },
     CloudProbe {
         #[serde(default = "default_cloud_probe_endpoint")]
@@ -449,6 +455,8 @@ pub struct StorageConfig {
     #[serde(default)]
     pub duckdb: DuckDbConfig,
     #[serde(default)]
+    pub clickhouse: ClickHouseConfig,
+    #[serde(default)]
     pub sink: StorageSinkConfig,
     #[serde(default)]
     pub retention: RetentionConfig,
@@ -459,6 +467,7 @@ impl Default for StorageConfig {
         Self {
             backend: default_backend(),
             duckdb: DuckDbConfig::default(),
+            clickhouse: ClickHouseConfig::default(),
             sink: StorageSinkConfig::default(),
             retention: RetentionConfig::default(),
         }
@@ -602,6 +611,53 @@ impl Default for DuckDbConfig {
 
 fn default_duckdb_path() -> String {
     "data/heron.duckdb".to_string()
+}
+
+/// Connection + behaviour settings for the ClickHouse storage backend. Only
+/// read when `storage.backend == "clickhouse"`. The `clickhouse` crate talks
+/// to the server over its HTTP interface (default port 8123).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClickHouseConfig {
+    /// HTTP endpoint, e.g. `http://clickhouse:8123`. The `clickhouse` crate
+    /// also accepts an `https://` URL.
+    #[serde(default = "default_clickhouse_url")]
+    pub url: String,
+    /// Target database; created on `init()` if absent.
+    #[serde(default = "default_clickhouse_database")]
+    pub database: String,
+    #[serde(default = "default_clickhouse_user")]
+    pub user: String,
+    #[serde(default)]
+    pub password: String,
+    /// Run `OPTIMIZE TABLE ... FINAL` after each retention sweep to reclaim
+    /// space eagerly. Off by default — TTL-driven background merges reclaim
+    /// space lazily and `OPTIMIZE FINAL` is expensive on large tables.
+    #[serde(default)]
+    pub optimize_on_sweep: bool,
+}
+
+impl Default for ClickHouseConfig {
+    fn default() -> Self {
+        Self {
+            url: default_clickhouse_url(),
+            database: default_clickhouse_database(),
+            user: default_clickhouse_user(),
+            password: String::new(),
+            optimize_on_sweep: false,
+        }
+    }
+}
+
+fn default_clickhouse_url() -> String {
+    "http://localhost:8123".to_string()
+}
+
+fn default_clickhouse_database() -> String {
+    "heron".to_string()
+}
+
+fn default_clickhouse_user() -> String {
+    "default".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1292,6 +1348,7 @@ mod phase2_tests {
             source_id: None,
             loop_count: 1,
             loop_secs: 0,
+            rate_pps: 0,
         };
         assert_eq!(pcap_file.resolved_source_id(), Some("test".to_string()));
 

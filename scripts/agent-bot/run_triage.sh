@@ -1,9 +1,36 @@
 #!/usr/bin/env bash
 # Triage agent: read issue, decide do/skip/needs_info under STRICT gates.
+# Fires automatically on every newly opened issue (TRIGGER_KIND=opened) and
+# on a manual `agent:assess` re-trigger (TRIGGER_KIND=assess).
 # verdict=do  → add `agent:try` label (kicks off wiwi).
-# else        → post a comment explaining gate failure; human can manually
-#               add `agent:try` to force, or `agent:skip` to mute.
+# else        → post a comment with a detailed, reporter-facing breakdown of
+#               which gates failed and what to add; human can manually add
+#               `agent:try` to force, or `agent:skip` to mute.
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Auto-path guards. On the auto path (TRIGGER_KIND=opened) we skip two classes
+# of issue so they never get auto-routed into the autonomous dev agent:
+#   - prod incidents filed by mara (incident/mara labels) — an operator routes
+#     these in deliberately via `agent:assess`.
+#   - issues already in the pipeline or muted (agent:try / agent:skip /
+#     auto-agent) — avoids duplicate triage and re-trigger loops.
+# A manual `agent:assess` (TRIGGER_KIND=assess) bypasses these guards entirely:
+# the human asked for triage explicitly.
+# ---------------------------------------------------------------------------
+if [ "${TRIGGER_KIND:-opened}" = "opened" ]; then
+  LABELS=$(gh issue view "$ISSUE_NUMBER" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
+  case ",$LABELS," in
+    *,incident,*|*,mara,*)
+      echo "auto-triage skipped: prod-incident issue #$ISSUE_NUMBER; add agent:assess to route it manually"
+      exit 0 ;;
+  esac
+  case ",$LABELS," in
+    *,agent:try,*|*,agent:skip,*|*,auto-agent,*)
+      echo "auto-triage skipped: issue #$ISSUE_NUMBER is already queued/muted/has-PR"
+      exit 0 ;;
+  esac
+fi
 
 PROMPT=$(mktemp)
 OUT=$(mktemp)
@@ -28,11 +55,23 @@ Verdict MUST be \`do\` only when ALL gates pass:
 If any gate fails, output verdict \`needs_info\` (gate 1 fails) or
 \`skip\` (gates 2–5 fail). Be strict: when in doubt → \`needs_info\`.
 
-Read the issue first (use \`gh issue view ${ISSUE_NUMBER}\`), inspect
-referenced files, then emit exactly one JSON object on the last line of
-your reply, no markdown fence:
+When the verdict is NOT \`do\`, you MUST fill \`detail\` with a thorough,
+reporter-facing explanation (this becomes the GitHub comment they read):
+  - List EACH failed gate by number and state concretely WHY it failed for
+    THIS issue, referencing the specific files/areas you inspected.
+  - For \`needs_info\`, spell out exactly what the reporter must add
+    (acceptance criteria as checkable assertions, a repro, a narrowed scope)
+    so it can pass on a manual \`agent:assess\` re-triage.
+  - For \`skip\`, explain why it is out of wiwi's safe envelope and what a
+    human would need to do instead.
+Keep \`reason\` a ≤200-char one-line summary; put the depth in \`detail\`.
 
-{"verdict":"do|skip|needs_info","scope":"<short>","reason":"<≤200 chars>","files":["..."],"gates":{"1":true,"2":true,"3":true,"4":true,"5":true}}
+Read the issue first (use \`gh issue view ${ISSUE_NUMBER}\`), inspect
+referenced files, then emit exactly ONE JSON object as the LAST line of your
+reply — a single line, no markdown fence, with any newlines inside string
+values escaped as \\n:
+
+{"verdict":"do|skip|needs_info","scope":"<short>","reason":"<≤200-char summary>","detail":"<required when verdict!=do: markdown enumerating each failed gate + what the reporter must add; use \\n for line breaks>","files":["..."],"gates":{"1":true,"2":true,"3":true,"4":true,"5":true}}
 
 Issue title: ${ISSUE_TITLE}
 Author: ${ISSUE_AUTHOR}
@@ -103,6 +142,7 @@ fi
 VERDICT=$(echo "$LAST" | jq -r '.verdict')
 REASON=$(echo  "$LAST" | jq -r '.reason')
 SCOPE=$(echo   "$LAST" | jq -r '.scope')
+DETAIL=$(echo  "$LAST" | jq -r '.detail // ""')
 
 # Defense-in-depth: require all 5 gates true for verdict=do.
 if [ "$VERDICT" = "do" ]; then
@@ -137,10 +177,14 @@ ${REASON}
 Auto-labeled \`agent:try\`. **wiwi** will pick this up shortly."
     ;;
   needs_info|skip)
-    gh issue comment "$ISSUE_NUMBER" --body "🤖 Triage: **${VERDICT}**
+    # Prefer the detailed, per-gate breakdown; fall back to the short reason
+    # (e.g. if a do→needs_info downgrade left detail empty).
+    BODY_DETAIL="${DETAIL:-$REASON}"
+    gh issue comment "$ISSUE_NUMBER" --body "🤖 Triage: **${VERDICT}** — ${SCOPE}
 
-${REASON}
+${BODY_DETAIL}
 
+---
 Manually add the \`agent:try\` label to override this verdict and run **wiwi** anyway, or \`agent:skip\` to mute future re-triage."
     ;;
   *)

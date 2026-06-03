@@ -1,5 +1,8 @@
 pub mod backend;
 pub mod buffer;
+pub mod classify;
+pub mod convert;
+pub mod dialect;
 pub mod pair_sweeper;
 pub mod query;
 pub mod retention;

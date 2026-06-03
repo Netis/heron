@@ -284,7 +284,7 @@ http_exchanges = 7
 Each backend implements `StorageBackend::apply_retention` with a dialect-appropriate strategy:
 - **DuckDB** (current): per-table DELETE + `CHECKPOINT` once per sweep to reclaim on-disk space (DuckDB DELETEs are MVCC tombstones until checkpoint).
 - **PostgreSQL** (planned): simple DELETE, or declarative partitioning + `DROP TABLE partition`; with TimescaleDB, `drop_chunks`.
-- **ClickHouse** (planned): declarative `TTL ... INTERVAL N DAY` on the MergeTree at init; `apply_retention` degrades to `OPTIMIZE TABLE ... FINAL` or a no-op.
+- **ClickHouse** (implemented): per-table lightweight `DELETE FROM ... WHERE <col> < cutoff` (counts gathered via a `count()` immediately before each delete, since CH `DELETE` returns no affected-row count); `agent_turns`/`llm_metrics` use the same per-table / per-granularity cutoffs as DuckDB. Optional `OPTIMIZE TABLE ... FINAL` per swept table when `optimize_on_sweep = true` (off by default — background merges reclaim lazily). No declarative `TTL` is set, so a single `apply_retention` path drives both backends identically.
 
 ---
 

@@ -1,7 +1,11 @@
-//! Cross-cutting helpers used by multiple entity modules:
-//! JSON header serialization, time conversion, body extraction (LlmCall →
-//! profile-driven user/assistant text), generic SQL fragment builders, and
-//! DuckDB `Value` constructors.
+//! DuckDB-specific cross-cutting helpers: SQL TIMESTAMP literal formatting,
+//! body extraction (LlmCall → profile-driven user/assistant text), and DuckDB
+//! `Value` constructors.
+//!
+//! Backend-neutral helpers (JSON header (de)serialization, the wire-vs-
+//! estimated token heuristic, and the dimension-filter SQL builders) live in
+//! `h_storage::convert` / `h_storage::dialect` and are re-exported here so the
+//! existing `crate::util::*` call sites stay unchanged.
 
 use std::time::SystemTime;
 
@@ -12,62 +16,13 @@ use h_llm::agents::build_default_registry;
 use h_llm::model::{ApiType, LlmCall};
 use h_llm::profile::{parse_bodies, CallCtx};
 use h_llm::wire_apis as wa;
-use h_storage::query::DimensionFilter;
 
-/// Decide whether a row's `(input_tokens, output_tokens)` came from the
-/// fallback estimator vs the wire `usage` block. Returns true when the row
-/// has any tokens AND the response body either lacks a `usage` object or
-/// every numeric field inside `usage` is zero. Wire-api-agnostic — looks for
-/// any of the four canonical fields under `usage` (OpenAI Chat / Anthropic
-/// / OpenAI Responses all use one of these names).
-pub(crate) fn derive_tokens_estimated(
-    input_tokens: Option<u32>,
-    output_tokens: Option<u32>,
-    response_body: Option<&str>,
-) -> bool {
-    let in_tok = input_tokens.unwrap_or(0);
-    let out_tok = output_tokens.unwrap_or(0);
-    if in_tok == 0 && out_tok == 0 {
-        return false;
-    }
-    let body = match response_body {
-        Some(s) if !s.is_empty() => s,
-        _ => return true,
-    };
-    let v: serde_json::Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        _ => return true,
-    };
-    let usage = match v.get("usage") {
-        Some(u) if u.is_object() => u,
-        _ => return true,
-    };
-    for key in [
-        "prompt_tokens",
-        "completion_tokens",
-        "input_tokens",
-        "output_tokens",
-    ] {
-        if let Some(n) = usage.get(key).and_then(|v| v.as_u64()) {
-            if n > 0 {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// Serialize HTTP headers as a JSON array of pairs.
-/// Output format: `[["content-type","application/json"],["x-request-id","req_xxx"]]`
-/// Preserves header order and allows duplicate keys.
-pub(crate) fn headers_to_json(headers: &[(String, String)]) -> String {
-    use serde_json::Value;
-    let pairs: Vec<Value> = headers
-        .iter()
-        .map(|(k, v)| Value::Array(vec![Value::String(k.clone()), Value::String(v.clone())]))
-        .collect();
-    Value::Array(pairs).to_string()
-}
+pub(crate) use h_storage::convert::{
+    derive_tokens_estimated, headers_to_json, parse_json_string_list,
+};
+pub(crate) use h_storage::dialect::{
+    build_dimension_where, build_dimension_where_for_group, sql_in_list,
+};
 
 /// Convert microseconds since epoch to a string DuckDB can parse as TIMESTAMP.
 ///
@@ -112,16 +67,6 @@ mod us_to_timestamp_tests {
     #[test]
     fn negative_clamped_to_epoch() {
         assert_eq!(us_to_timestamp(-1), "1970-01-01 00:00:00.000000");
-    }
-}
-
-/// Parse a JSON-encoded array-of-strings (as stored in agent_turns.models_used /
-/// subagents_used / call_ids) into a `Vec<String>`. Missing or malformed values
-/// degrade to an empty vec — the turn payload is still returnable.
-pub(crate) fn parse_json_string_list(raw: Option<&str>) -> Vec<String> {
-    match raw {
-        Some(s) if !s.is_empty() => serde_json::from_str::<Vec<String>>(s).unwrap_or_default(),
-        _ => Vec::new(),
     }
 }
 
@@ -337,104 +282,6 @@ pub(crate) fn extract_full_text_batch(
     out
 }
 
-/// Format a list of string values as a SQL IN list with single-quote escaping.
-pub(crate) fn sql_in_list(values: &[String]) -> String {
-    values
-        .iter()
-        .map(|s| format!("'{}'", s.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Build a WHERE clause segment for dimension filters on an ungrouped query.
-///
-/// The aggregator (see `h-metrics/src/aggregator.rs:dimension_keys`) only
-/// materializes 4 of the 8 possible wildcard combinations for
-/// `(wire_api, model, server_ip)`:
-///
-/// - `(W, M, S)` — finest
-/// - `(W, M, *)` — per (wire_api, model), summed across servers
-/// - `(*, *, S)` — per server_ip only
-/// - `(*, *, *)` — grand total
-///
-/// The mapping below picks the coarsest tier that covers the user's filter
-/// and SUMs across the remaining rows. A filter on wire_api or model forces
-/// us below the `(*, *, ·)` tier; a filter on server_ip forces us off the
-/// `server_ip = '*'` coordinate.
-pub(crate) fn build_dimension_where(filter: &DimensionFilter) -> String {
-    let has_wire = !filter.wire_apis.is_empty();
-    let has_model = !filter.models.is_empty();
-    let has_server = !filter.server_ips.is_empty();
-
-    let (wire_clause, model_clause) = if !has_wire && !has_model {
-        // Stay on (*, *, ·) tier.
-        ("wire_api = '*'".to_string(), "model = '*'".to_string())
-    } else {
-        // Drop to (W, M, ·) tier — either IN-list or all specific values.
-        let w = if has_wire {
-            format!("wire_api IN ({})", sql_in_list(&filter.wire_apis))
-        } else {
-            "wire_api != '*'".to_string()
-        };
-        let m = if has_model {
-            format!("model IN ({})", sql_in_list(&filter.models))
-        } else {
-            "model != '*'".to_string()
-        };
-        (w, m)
-    };
-
-    let server_clause = if has_server {
-        format!("server_ip IN ({})", sql_in_list(&filter.server_ips))
-    } else {
-        "server_ip = '*'".to_string()
-    };
-
-    let surface_clause = build_tool_surface_clause(&filter.tool_surfaces);
-    format!("{wire_clause} AND {model_clause} AND {server_clause}{surface_clause}")
-}
-
-/// Build WHERE clause for queries that GROUP BY `wire_api` or `model`. The
-/// group dimension is always forced to a specific value (never `'*'`); the
-/// remaining dimensions follow the same filter/tier rules as
-/// [`build_dimension_where`]. Any non-recognized `group_by` falls through to
-/// the ungrouped builder.
-pub(crate) fn build_dimension_where_for_group(filter: &DimensionFilter, group_by: &str) -> String {
-    match group_by {
-        "wire_api" | "model" => {
-            let wire_clause = if !filter.wire_apis.is_empty() {
-                format!("wire_api IN ({})", sql_in_list(&filter.wire_apis))
-            } else {
-                "wire_api != '*'".to_string()
-            };
-            let model_clause = if !filter.models.is_empty() {
-                format!("model IN ({})", sql_in_list(&filter.models))
-            } else {
-                "model != '*'".to_string()
-            };
-            let server_clause = if !filter.server_ips.is_empty() {
-                format!("server_ip IN ({})", sql_in_list(&filter.server_ips))
-            } else {
-                "server_ip = '*'".to_string()
-            };
-            let surface_clause = build_tool_surface_clause(&filter.tool_surfaces);
-            format!("{wire_clause} AND {model_clause} AND {server_clause}{surface_clause}")
-        }
-        _ => build_dimension_where(filter),
-    }
-}
-
-/// Optional `tool_surface IN (...)` segment, prefixed with ` AND ` when
-/// present. Returns an empty string when no filter is set so the query stays
-/// unchanged and rolls up across all surfaces (including NULL).
-fn build_tool_surface_clause(surfaces: &[String]) -> String {
-    if surfaces.is_empty() {
-        String::new()
-    } else {
-        format!(" AND tool_surface IN ({})", sql_in_list(surfaces))
-    }
-}
-
 /// Convert a `SystemTime` into a DuckDB microsecond-precision timestamp value.
 pub(crate) fn timestamp_value(t: SystemTime) -> Result<Value> {
     let dur = t
@@ -443,178 +290,4 @@ pub(crate) fn timestamp_value(t: SystemTime) -> Result<Value> {
     let micros = i64::try_from(dur.as_micros())
         .map_err(|_| AppError::Storage("retention cutoff out of i64 range".to_string()))?;
     Ok(Value::Timestamp(TimeUnit::Microsecond, micros))
-}
-
-#[cfg(test)]
-mod derive_tokens_estimated_tests {
-    use super::derive_tokens_estimated;
-
-    #[test]
-    fn zero_tokens_returns_false() {
-        assert!(!derive_tokens_estimated(Some(0), Some(0), None));
-        assert!(!derive_tokens_estimated(None, None, Some(r#"{"x":1}"#)));
-    }
-
-    #[test]
-    fn no_body_with_tokens_returns_true() {
-        assert!(derive_tokens_estimated(Some(10), Some(5), None));
-        assert!(derive_tokens_estimated(Some(10), Some(5), Some("")));
-    }
-
-    #[test]
-    fn malformed_body_with_tokens_returns_true() {
-        assert!(derive_tokens_estimated(Some(10), Some(5), Some("not json")));
-    }
-
-    #[test]
-    fn body_with_positive_usage_returns_false() {
-        let body = r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}"#;
-        assert!(!derive_tokens_estimated(Some(10), Some(5), Some(body)));
-    }
-
-    #[test]
-    fn body_with_zero_usage_returns_true() {
-        let body = r#"{"usage":{"prompt_tokens":0,"completion_tokens":0}}"#;
-        assert!(derive_tokens_estimated(Some(10), Some(5), Some(body)));
-    }
-
-    #[test]
-    fn anthropic_shape_recognized() {
-        let body = r#"{"usage":{"input_tokens":7,"output_tokens":3}}"#;
-        assert!(!derive_tokens_estimated(Some(7), Some(3), Some(body)));
-    }
-
-    #[test]
-    fn body_missing_usage_block_returns_true() {
-        let body = r#"{"choices":[{"message":{"content":"hi"}}]}"#;
-        assert!(derive_tokens_estimated(Some(5), Some(2), Some(body)));
-    }
-}
-
-#[cfg(test)]
-mod build_dimension_where_tests {
-    use super::*;
-
-    #[test]
-    fn test_build_dimension_where_no_filter() {
-        let f = DimensionFilter::default();
-        assert_eq!(
-            build_dimension_where(&f),
-            "wire_api = '*' AND model = '*' AND server_ip = '*'"
-        );
-    }
-
-    #[test]
-    fn test_build_dimension_where_server_only() {
-        let f = DimensionFilter {
-            server_ips: vec!["10.0.0.1".into()],
-            ..Default::default()
-        };
-        assert_eq!(
-            build_dimension_where(&f),
-            "wire_api = '*' AND model = '*' AND server_ip IN ('10.0.0.1')"
-        );
-    }
-
-    #[test]
-    fn test_build_dimension_where_wire_only() {
-        let f = DimensionFilter {
-            wire_apis: vec!["openai-chat".into()],
-            ..Default::default()
-        };
-        assert_eq!(
-            build_dimension_where(&f),
-            "wire_api IN ('openai-chat') AND model != '*' AND server_ip = '*'"
-        );
-    }
-
-    #[test]
-    fn test_build_dimension_where_model_only() {
-        let f = DimensionFilter {
-            models: vec!["gpt-4".into()],
-            ..Default::default()
-        };
-        assert_eq!(
-            build_dimension_where(&f),
-            "wire_api != '*' AND model IN ('gpt-4') AND server_ip = '*'"
-        );
-    }
-
-    #[test]
-    fn test_build_dimension_where_wire_and_model() {
-        let f = DimensionFilter {
-            wire_apis: vec!["openai-chat".into()],
-            models: vec!["gpt-4".into()],
-            ..Default::default()
-        };
-        assert_eq!(
-            build_dimension_where(&f),
-            "wire_api IN ('openai-chat') AND model IN ('gpt-4') AND server_ip = '*'"
-        );
-    }
-
-    #[test]
-    fn test_build_dimension_where_wire_and_server() {
-        let f = DimensionFilter {
-            wire_apis: vec!["openai-chat".into()],
-            server_ips: vec!["10.0.0.1".into()],
-            ..Default::default()
-        };
-        assert_eq!(
-            build_dimension_where(&f),
-            "wire_api IN ('openai-chat') AND model != '*' AND server_ip IN ('10.0.0.1')"
-        );
-    }
-
-    #[test]
-    fn test_build_dimension_where_model_and_server() {
-        let f = DimensionFilter {
-            models: vec!["gpt-4".into()],
-            server_ips: vec!["10.0.0.1".into()],
-            ..Default::default()
-        };
-        assert_eq!(
-            build_dimension_where(&f),
-            "wire_api != '*' AND model IN ('gpt-4') AND server_ip IN ('10.0.0.1')"
-        );
-    }
-
-    #[test]
-    fn test_build_dimension_where_all_three() {
-        let f = DimensionFilter {
-            wire_apis: vec!["openai-chat".into()],
-            models: vec!["gpt-4".into()],
-            server_ips: vec!["10.0.0.1".into()],
-            ..Default::default()
-        };
-        assert_eq!(
-            build_dimension_where(&f),
-            "wire_api IN ('openai-chat') AND model IN ('gpt-4') AND server_ip IN ('10.0.0.1')"
-        );
-    }
-
-    #[test]
-    fn test_build_dimension_where_for_group_wire_api_no_filter() {
-        let f = DimensionFilter::default();
-        assert_eq!(
-            build_dimension_where_for_group(&f, "wire_api"),
-            "wire_api != '*' AND model != '*' AND server_ip = '*'"
-        );
-    }
-
-    #[test]
-    fn test_build_dimension_where_for_group_with_server_filter() {
-        let f = DimensionFilter {
-            server_ips: vec!["10.0.0.1".into()],
-            ..Default::default()
-        };
-        assert_eq!(
-            build_dimension_where_for_group(&f, "wire_api"),
-            "wire_api != '*' AND model != '*' AND server_ip IN ('10.0.0.1')"
-        );
-        assert_eq!(
-            build_dimension_where_for_group(&f, "model"),
-            "wire_api != '*' AND model != '*' AND server_ip IN ('10.0.0.1')"
-        );
-    }
 }
