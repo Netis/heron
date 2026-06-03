@@ -31,6 +31,16 @@
 #   HERON_STAGE_BASELINE   pin an explicit baseline, overriding the rolling
 #                          known-good (manual/debug; unset → use known-good)
 #   HERON_STAGE_NO_PROMOTE set to 1 to soak without advancing the known-good
+#   HERON_STAGE_LOAD_SECS  load-soak window seconds        (default 45)
+#   HERON_STAGE_LOAD_PPS   load-soak steady rate (pkts/s)  (default 500)
+#   HERON_STAGE_LOAD_ENFORCE  1 → a load-soak regression fails the deploy
+#                          (default 0 = informational until thresholds are
+#                          calibrated on this VM's CPU; the dual-binary baseline
+#                          still flags relative regressions meanwhile)
+#
+# After the correctness soak passes, a deeper sustained-LOAD soak runs (steady
+# rate_pps replay; perf + reliability invariants). It is informational by
+# default — see HERON_STAGE_LOAD_ENFORCE.
 #
 # Exit: 0 pass · 1 candidate regressed · 2 setup error. A tara `harness_broken`
 # (baseline itself failed → corpus/env problem, never the candidate) is logged
@@ -92,6 +102,30 @@ remote "cat $RD/out.json 2>/dev/null" || echo "(no verdict file — tara aborted
 case "$rc" in
   0)
     echo "==> SOAK PASS — staging binary healthy under replay"
+
+    # Deeper check: a sustained-load soak (steady rate_pps replay for a window),
+    # asserting perf + reliability invariants — queue depth bounded, zero
+    # backpressure drops, RSS growth bounded, no flush errors. Runs only after
+    # the correctness soak is green. INFORMATIONAL by default: the absolute
+    # queue/RSS thresholds still need one calibration pass on this VM's CPU, so
+    # a load regression is logged + warned but does NOT fail the deploy yet (the
+    # dual-binary baseline still flags a *relative* regression). Flip to a hard
+    # gate with HERON_STAGE_LOAD_ENFORCE=1 once calibrated.
+    echo "==> running tara LOAD soak inside the VM (informational)"
+    set +e
+    remote "cd $RD && bash tara.sh --binary '$STAGE_BIN' --corpus '$CORPUS_VM' $base_arg --load --duration ${HERON_STAGE_LOAD_SECS:-45} --rate-pps ${HERON_STAGE_LOAD_PPS:-500} --json-out $RD/load.json"
+    lrc=$?
+    set -e
+    echo "==> load verdict:"
+    remote "cat $RD/load.json 2>/dev/null" || echo "(no load verdict file)"
+    if [ "$lrc" != 0 ] && [ "$lrc" != 3 ]; then
+      if [ "${HERON_STAGE_LOAD_ENFORCE:-0}" = 1 ]; then
+        echo "::error::LOAD SOAK FAILED (tara rc=$lrc) and HERON_STAGE_LOAD_ENFORCE=1 — failing deploy; known-good UNCHANGED"
+        exit 1
+      fi
+      echo "::warning::load soak reported a regression (tara rc=$lrc) — INFORMATIONAL only (set HERON_STAGE_LOAD_ENFORCE=1 to gate). Promotion below uses the correctness soak."
+    fi
+
     if [ "$PROMOTE" = 1 ]; then
       if remote "sudo install -m 0755 '$STAGE_BIN' '$LAST_GOOD'"; then
         echo "==> known-good advanced → $LAST_GOOD (next soak compares against this build)"
