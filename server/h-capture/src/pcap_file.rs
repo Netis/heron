@@ -29,6 +29,12 @@ pub struct PcapFileSource {
     /// Replay until this many seconds elapse (0 = disabled). Takes precedence
     /// over `loop_count` when > 0.
     loop_secs: u64,
+    /// Target sustained emission rate in packets/sec (0 = unthrottled = today's
+    /// behavior). When > 0, the reader paces packet emission to this aggregate
+    /// rate across all passes so a load soak drives a *steady, prod-like* load
+    /// instead of an as-fast-as-possible firehose that just saturates the
+    /// channels (which only exercises backpressure, not steady-state health).
+    rate_pps: u32,
 }
 
 impl PcapFileSource {
@@ -39,6 +45,7 @@ impl PcapFileSource {
             dump_cfg,
             loop_count: 1,
             loop_secs: 0,
+            rate_pps: 0,
         }
     }
 
@@ -50,6 +57,14 @@ impl PcapFileSource {
     pub fn with_loop(mut self, loop_count: u32, loop_secs: u64) -> Self {
         self.loop_count = loop_count.max(1);
         self.loop_secs = loop_secs;
+        self
+    }
+
+    /// Pace emission to a target aggregate packets/sec (0 = unthrottled).
+    /// Pairs with `with_loop` to drive a steady sustained load from a small
+    /// corpus for the load/longevity soak.
+    pub fn with_rate_pps(mut self, rate_pps: u32) -> Self {
+        self.rate_pps = rate_pps;
         self
     }
 }
@@ -68,6 +83,7 @@ impl CaptureSource for PcapFileSource {
         let dumper_metrics = metrics.clone();
         let loop_count = self.loop_count.max(1);
         let loop_secs = self.loop_secs;
+        let rate_pps = self.rate_pps;
         let looping = loop_secs > 0 || loop_count > 1;
 
         // Run pcap reading on a blocking thread since next_packet() is blocking.
@@ -113,8 +129,10 @@ impl CaptureSource for PcapFileSource {
                         "pcap-file: opened {} (link_type={}{})",
                         path.display(),
                         link_type,
-                        if looping {
-                            format!(", loop_count={loop_count} loop_secs={loop_secs}")
+                        if looping || rate_pps > 0 {
+                            format!(
+                                ", loop_count={loop_count} loop_secs={loop_secs} rate_pps={rate_pps}"
+                            )
                         } else {
                             String::new()
                         }
@@ -162,6 +180,31 @@ impl CaptureSource for PcapFileSource {
                             // signal — not a silent re-emergence of the bug.
                             if packet.header.caplen < packet.header.len {
                                 metrics.counter(Metric::CaptureTruncatedPackets).inc();
+                            }
+
+                            // Rate pacing: keep cumulative emission on a steady
+                            // `rate_pps` schedule. Referencing absolute (count vs
+                            // elapsed-since-start) instead of per-packet sleeps
+                            // avoids drift and naturally absorbs a slow burst.
+                            // Sleep in bounded chunks so cancellation (and a low
+                            // rate) stay responsive.
+                            if rate_pps > 0 {
+                                let target_ns =
+                                    count as u128 * 1_000_000_000u128 / rate_pps as u128;
+                                let elapsed_ns = start.elapsed().as_nanos();
+                                if target_ns > elapsed_ns {
+                                    let mut remaining = (target_ns - elapsed_ns) as u64;
+                                    while remaining > 0 {
+                                        if cancel.is_cancelled() {
+                                            break 'replay;
+                                        }
+                                        let chunk = remaining.min(50_000_000); // ≤50ms
+                                        std::thread::sleep(std::time::Duration::from_nanos(
+                                            chunk,
+                                        ));
+                                        remaining -= chunk;
+                                    }
+                                }
                             }
                         }
                         Err(pcap::Error::NoMorePackets) => {
@@ -435,5 +478,59 @@ mod tests {
         }
         assert_eq!(count, 4);
         assert_eq!(sids.into_iter().collect::<Vec<_>>(), vec!["base".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_rate_pps_paces_emission() {
+        // 6 packets @ 20 pps → schedule target ≈ 300 ms. Assert a clearly-
+        // throttled floor (≥200 ms). Lower-bound only: pacing sleeps can never
+        // make the replay FASTER, so this is robust on a loaded runner —
+        // unthrottled (rate_pps=0) the same replay finishes in ~1 ms.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rate.pcap");
+        std::fs::write(&path, build_pcap_file(6)).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = CancellationToken::new();
+        let source = PcapFileSource::new(path, "base".to_string(), None).with_rate_pps(20);
+        let t0 = std::time::Instant::now();
+        Box::new(source)
+            .run(RoutingSender::single(tx), test_metrics(), cancel)
+            .await
+            .unwrap();
+        let elapsed = t0.elapsed();
+
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 6, "all packets still delivered under rate control");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(200),
+            "rate-paced replay should take ≥200ms, took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_pps_zero_is_unthrottled() {
+        // rate_pps=0 (default) must not pace — functional check that the path
+        // is a no-op (all packets delivered, no hang).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("norate.pcap");
+        std::fs::write(&path, build_pcap_file(5)).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = CancellationToken::new();
+        let source = PcapFileSource::new(path, "base".to_string(), None).with_rate_pps(0);
+        Box::new(source)
+            .run(RoutingSender::single(tx), test_metrics(), cancel)
+            .await
+            .unwrap();
+
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 5);
     }
 }

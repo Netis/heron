@@ -37,6 +37,7 @@ pub fn build_source(
             source_id,
             loop_count,
             loop_secs,
+            rate_pps,
             ..
         } => {
             let sid = source_id.clone().unwrap_or_else(|| {
@@ -48,7 +49,8 @@ pub fn build_source(
             });
             Ok(Box::new(
                 PcapFileSource::new(path.into(), sid, pcap_dump)
-                    .with_loop(*loop_count, *loop_secs),
+                    .with_loop(*loop_count, *loop_secs)
+                    .with_rate_pps(*rate_pps),
             ))
         }
         CaptureSourceConfig::CloudProbe { endpoint, recv_hwm } => Ok(Box::new(
@@ -69,6 +71,7 @@ mod tests {
             source_id: None,
             loop_count: 1,
             loop_secs: 0,
+            rate_pps: 0,
         };
         assert!(build_source(&config, None).is_ok());
     }

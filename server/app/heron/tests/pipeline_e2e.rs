@@ -81,6 +81,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
                 source_id: None,
                 loop_count: 1,
                 loop_secs: 0,
+                rate_pps: 0,
             }],
             ..PipelineDef::default()
         })

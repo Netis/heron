@@ -288,6 +288,12 @@ pub enum CaptureSourceConfig {
         /// duration-bounded load/longevity soak.
         #[serde(default)]
         loop_secs: u64,
+        /// Pace emission to this many packets/sec (0 = unthrottled = today's
+        /// behavior). Lets the load soak drive a steady, prod-like rate from a
+        /// looped corpus instead of an as-fast-as-possible firehose that just
+        /// saturates the channels. Applies across all passes.
+        #[serde(default)]
+        rate_pps: u32,
     },
     CloudProbe {
         #[serde(default = "default_cloud_probe_endpoint")]
@@ -1292,6 +1298,7 @@ mod phase2_tests {
             source_id: None,
             loop_count: 1,
             loop_secs: 0,
+            rate_pps: 0,
         };
         assert_eq!(pcap_file.resolved_source_id(), Some("test".to_string()));
 
