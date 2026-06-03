@@ -85,3 +85,8 @@ bump *args:
 # Lines of code dashboard
 loc *args:
     @bash scripts/routers/shared/loc.sh {{args}}
+
+# Storage benchmark (ClickHouse vs DuckDB write throughput + read latency).
+# Run on the host where ClickHouse is on loopback. Env: CLICKHOUSE_URL, CALLS, …
+bench-storage:
+    @bash scripts/bench-storage.sh

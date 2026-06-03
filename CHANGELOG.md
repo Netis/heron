@@ -6,6 +6,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — ClickHouse storage backend
+
+- New `h-storage-clickhouse` crate: a drop-in `StorageBackend` implementation
+  backed by ClickHouse (HTTP interface, async serde RowBinary via the
+  `clickhouse` crate), selected with `storage.backend = "clickhouse"`. Mirrors
+  the DuckDB backend's full read + write surface. Fact tables use `MergeTree`;
+  `agent_turns` uses `ReplacingMergeTree(_version)` (FINAL reads; version-bumped
+  full-row re-insert for `update_turn_metadata`). Timestamps are
+  `DateTime64(6, 'UTC')` mapped to `i64` micros. Retention runs via lightweight
+  `DELETE` on the shared `[storage.retention]` schedule.
+- Backend-neutral logic (dimension-filter SQL builders, header/token-estimate
+  converters, the serving-software classifier) extracted from
+  `h-storage-duckdb` into `h-storage` (`dialect` / `convert` / `classify`) and
+  shared by both backends — single source of truth.
+- `storage_bench` binary + `scripts/bench-storage.sh` (`just bench-storage`):
+  ClickHouse-vs-DuckDB write-throughput + read-latency comparison through the
+  identical workload. Findings + methodology in
+  `docs/design/bench-clickhouse-vs-duckdb.md`.
+- ClickHouse `query_services` optimised 46× (5129 ms → 112 ms at 1M rows): the
+  body-sample `ROW_NUMBER` window (which read every row's ~2 KB body columns)
+  became an `id IN (… LIMIT N BY …)` two-phase fetch; `arrayDistinct(groupArray)`
+  → `groupUniqArray(N)`; `quantileExact` → `quantileTDigest`.
+
 ## [0.4.0] — 2026-05-29
 
 ### Changed — Rebrand to Heron
