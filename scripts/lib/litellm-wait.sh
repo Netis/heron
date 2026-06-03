@@ -2,7 +2,7 @@
 # configured API key, with exponential backoff. Source from any
 # agent script that's about to invoke `claude --print` (or any
 # OpenAI-compatible client) — the helper makes the agent tolerant of
-# LiteLLM / GLM-5 restarts that happen DURING a workflow's queue
+# LiteLLM / model backend restarts that happen DURING a workflow's queue
 # time. Without it, a transient backend hiccup causes the run to
 # exit immediately and the work (and 15-min queue wait, on a busy
 # self-hosted runner) is wasted.

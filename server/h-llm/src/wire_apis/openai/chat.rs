@@ -1,10 +1,17 @@
 //! OpenAI Chat Completions wire API (`POST /v1/chat/completions`).
 //!
-//! Strict to the Chat shape — `choices[0].finish_reason`,
+//! Strict to the Chat shape for structure — `choices[0].finish_reason`,
 //! `usage.prompt_tokens`, `usage.completion_tokens`,
-//! `usage.prompt_tokens_details.cached_tokens`. No `.or_else()` fallback to
-//! the Responses shape: this module only runs once the registry has already
-//! selected us, so ambiguity would be a bug, not something to tolerate.
+//! `usage.prompt_tokens_details.cached_tokens`. This module only runs once the
+//! registry has already selected us, so we do not fall back to the Responses
+//! shape: that ambiguity would be a bug, not something to tolerate.
+//!
+//! The one tolerated exception is the `usage` token block. A CLIproxy
+//! mixed-format deployment can take an OpenAI-Chat *request* yet return an
+//! Anthropic-Messages *response* (issue #96), so the usage extractors fall back
+//! to the Anthropic field names (`input_tokens` / `output_tokens` /
+//! `cache_read_input_tokens`) when the Chat names are absent. This is scoped to
+//! usage counts only — wire-API selection and structural parsing stay strict.
 
 use std::collections::BTreeMap;
 
@@ -112,14 +119,28 @@ fn extract_response(resp: &HttpResponseData, resp_body: &ParsedJson) -> Response
         .map(|s| s.to_string());
 
     let usage = parsed.and_then(|b| b.get("usage"));
+    // OpenAI Chat format: prompt_tokens, completion_tokens
+    // Anthropic format (proxy fallback): input_tokens, output_tokens
     let input_tokens = usage
         .and_then(|u| u.get("prompt_tokens"))
         .and_then(|v| v.as_u64())
-        .map(|v| v as u32);
+        .map(|v| v as u32)
+        .or_else(|| {
+            usage
+                .and_then(|u| u.get("input_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+        });
     let output_tokens = usage
         .and_then(|u| u.get("completion_tokens"))
         .and_then(|v| v.as_u64())
-        .map(|v| v as u32);
+        .map(|v| v as u32)
+        .or_else(|| {
+            usage
+                .and_then(|u| u.get("output_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+        });
     let total_tokens = usage
         .and_then(|u| u.get("total_tokens"))
         .and_then(|v| v.as_u64())
@@ -128,7 +149,13 @@ fn extract_response(resp: &HttpResponseData, resp_body: &ParsedJson) -> Response
         .and_then(|u| u.get("prompt_tokens_details"))
         .and_then(|d| d.get("cached_tokens"))
         .and_then(|v| v.as_u64())
-        .map(|v| v as u32);
+        .map(|v| v as u32)
+        .or_else(|| {
+            usage
+                .and_then(|u| u.get("cache_read_input_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+        });
 
     ResponseInfo {
         model,
@@ -238,11 +265,23 @@ fn extract_sse(events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
                 input_tokens = usage
                     .get("prompt_tokens")
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32);
+                    .map(|v| v as u32)
+                    .or_else(|| {
+                        usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32)
+                    });
                 output_tokens = usage
                     .get("completion_tokens")
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32);
+                    .map(|v| v as u32)
+                    .or_else(|| {
+                        usage
+                            .get("output_tokens")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32)
+                    });
                 total_tokens = usage
                     .get("total_tokens")
                     .and_then(|v| v.as_u64())
@@ -251,7 +290,13 @@ fn extract_sse(events: &[SseEventData]) -> (ResponseInfo, ParsedJson) {
                     .get("prompt_tokens_details")
                     .and_then(|d| d.get("cached_tokens"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32);
+                    .map(|v| v as u32)
+                    .or_else(|| {
+                        usage
+                            .get("cache_read_input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32)
+                    });
             }
         }
     }
@@ -561,8 +606,10 @@ pub fn extract_assistant_text_value(resp: &Value) -> Option<String> {
 
 use crate::token_estimator::{collect_chat_assistant_text, TokenEstimator};
 
-/// True iff the response body carried any Chat-shape `usage` field. The API
-/// handler uses this against `response_body` to decide `tokens_estimated`.
+/// True iff the response body carried a populated Chat-shape `usage` block
+/// (`prompt_tokens` / `completion_tokens` / `total_tokens` > 0). Mirrors
+/// `responses::usage_present` and `anthropic::usage_present` as the per-wire-API
+/// surface a caller can use for a `tokens_estimated` decision.
 pub fn usage_present(body: &Value) -> bool {
     let u = match body.get("usage") {
         Some(v) => v,
@@ -976,6 +1023,105 @@ mod tests {
         let cache = ParsedJson::from_bytes(resp.body.clone());
         let info = extract_response(&resp, &cache);
         assert_eq!(info.response_id.as_deref(), Some("chatcmpl-abc123"));
+    }
+
+    #[test]
+    fn test_extract_response_anthropic_usage_fallback() {
+        // Issue #96: CLIproxy mixed-format case where request is OpenAI Chat
+        // format but response is Anthropic Messages format. The usage block
+        // carries input_tokens/output_tokens (Anthropic) instead of
+        // prompt_tokens/completion_tokens (OpenAI). We must fall back to
+        // the Anthropic field names when the OpenAI fields are absent.
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let body = json!({
+            "id": "resp_0455a65d",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-5.5",
+            "content": [
+                {"type": "text", "text": "你是在与我对话的人。"}
+            ],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {
+                "input_tokens": 309,
+                "output_tokens": 37
+            }
+        });
+        let resp = HttpResponseData {
+            flow_key: FlowKey::new(String::new(), ip, 1234, ip, 8080),
+            client_addr: (ip, 1234),
+            server_addr: (ip, 8080),
+            status: 200,
+            version: 1,
+            headers: vec![],
+            body: bytes::Bytes::from(body.to_string()),
+            first_byte_timestamp_us: 0,
+            complete_timestamp_us: 0,
+        };
+        let cache = ParsedJson::from_bytes(resp.body.clone());
+        let info = extract_response(&resp, &cache);
+        assert_eq!(info.input_tokens, Some(309), "should extract input_tokens from Anthropic-style usage");
+        assert_eq!(info.output_tokens, Some(37), "should extract output_tokens from Anthropic-style usage");
+    }
+
+    #[test]
+    fn test_extract_response_openai_usage_precedence_over_anthropic() {
+        // When BOTH the OpenAI Chat names and the Anthropic fallback names are
+        // present, the OpenAI values win (the fallback is `.or_else()`, so it
+        // only fires when the Chat field is absent). Guards against a future
+        // refactor flipping the precedence.
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let body = json!({
+            "id": "chatcmpl-both",
+            "model": "gpt-5.5",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "input_tokens": 309,
+                "output_tokens": 37
+            }
+        });
+        let resp = HttpResponseData {
+            flow_key: FlowKey::new(String::new(), ip, 1234, ip, 8080),
+            client_addr: (ip, 1234),
+            server_addr: (ip, 8080),
+            status: 200,
+            version: 1,
+            headers: vec![],
+            body: bytes::Bytes::from(body.to_string()),
+            first_byte_timestamp_us: 0,
+            complete_timestamp_us: 0,
+        };
+        let cache = ParsedJson::from_bytes(resp.body.clone());
+        let info = extract_response(&resp, &cache);
+        assert_eq!(info.input_tokens, Some(10), "OpenAI prompt_tokens must win over Anthropic input_tokens");
+        assert_eq!(info.output_tokens, Some(5), "OpenAI completion_tokens must win over Anthropic output_tokens");
+    }
+
+    #[test]
+    fn test_extract_sse_anthropic_usage_fallback() {
+        // Issue #96: SSE streaming case with Anthropic-style usage in final chunk
+        let events = vec![
+            make_sse(
+                "",
+                r#"{"id":"chatcmpl-mixed","model":"gpt-5.5","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"id":"chatcmpl-mixed","model":"gpt-5.5","choices":[{"index":0,"delta":{"content":"Response"}}]}"#,
+            ),
+            make_sse(
+                "",
+                r#"{"id":"chatcmpl-mixed","model":"gpt-5.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"input_tokens":309,"output_tokens":37}}"#,
+            ),
+        ];
+        let (info, _body) = extract_sse(&events);
+        assert_eq!(info.input_tokens, Some(309), "should extract input_tokens from Anthropic-style usage in SSE");
+        assert_eq!(info.output_tokens, Some(37), "should extract output_tokens from Anthropic-style usage in SSE");
     }
 
     #[test]

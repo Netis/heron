@@ -68,10 +68,28 @@ journalctl -u mara.service -f      # watch polls
 | `MARA_REPO` | `Netis/heron` | repo to file into |
 | `MARA_LABELS` | `mara,incident` | issue labels |
 | `MARA_DEDUP_SECS` | `21600` | refile suppression window |
+| `MARA_CONFIRM_POLLS` | `3` | polls that must ALL fail before filing (`1` = off) |
+| `MARA_CONFIRM_DELAY_SECS` | `10` | seconds between confirm polls |
 | `MARA_DRY_RUN` | `0` | `1` → print instead of filing (no token needed) |
+
+## Confirm-debounce (no phantom incidents on deploy)
+
+A single failed poll is **not** filed on its own. A prod deploy restarts heron —
+`/api/health` is briefly unreachable, and the pipeline reads `running=false`
+until capture resumes (observed ~10 s) — which is indistinguishable from a
+one-off network hiccup. So on a failure mara re-polls `MARA_CONFIRM_POLLS`
+times; if **any** poll recovers, the hit was transient and nothing is filed.
+Only an all-polls-failed run opens an incident (the issue records
+`failed N/N consecutive polls`). Defaults (3 polls × 10 s) span ~20 s, covering
+the observed restart window. This is a *reducing* filter, not airtight: an
+unusually long restart could still straddle every poll — pair with a
+deploy-time maintenance-window sentinel if that ever bites.
+
+Tested by `tests/test_mara.py` (stdlib-only stub-server integration:
+transient-recovers→no-file, all-fail→file, off-switch).
 
 ## Status
 
-v1 = health-based DOWN/PARKED detection + scrubbed context + dedup. Not yet:
-a `/api/ops/heartbeat` push side, metric-regression detection, or the `/ops`
-dashboard — see the quality-infra plan.
+v1 = health-based DOWN/PARKED detection + scrubbed context + dedup +
+confirm-debounce. Not yet: a `/api/ops/heartbeat` push side, metric-regression
+detection, or the `/ops` dashboard — see the quality-infra plan.

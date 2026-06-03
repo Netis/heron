@@ -64,6 +64,7 @@ h-turn = { path = "h-turn" }
 h-metrics = { path = "h-metrics" }
 h-storage = { path = "h-storage" }
 h-storage-duckdb = { path = "h-storage-duckdb" }
+h-storage-clickhouse = { path = "h-storage-clickhouse" }
 h-pcap-extract = { path = "h-pcap-extract" }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
@@ -74,6 +75,9 @@ mime_guess = "2"
 # #22094 (RemoveFromIndexes / "remove all rows merging checkpoint deltas"),
 # #22503 (BlockAllocator invalid memory access → the SIGSEGV). Cargo.lock pins it.
 duckdb = { version = "1", features = ["bundled", "json"] }
+# ClickHouse backend client — HTTP interface, serde RowBinary, async/Tokio.
+# lz4 is the crate's default compression; kept explicit for clarity.
+clickhouse = { version = "0.15", features = ["lz4"] }
 chrono = "0.4"
 tdigest = "0.2"
 h-api = { path = "h-api" }

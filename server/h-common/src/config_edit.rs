@@ -107,12 +107,26 @@ fn source_to_table(s: &CaptureSourceConfig) -> Table {
             path,
             realtime,
             source_id,
+            loop_count,
+            loop_secs,
+            rate_pps,
         } => {
             t["type"] = value("pcap-file");
             t["path"] = value(path.as_str());
             t["realtime"] = value(*realtime);
             if let Some(id) = source_id {
                 t["source_id"] = value(id.as_str());
+            }
+            // Loop/duration/rate replay knobs are soak-only — emit them only
+            // when non-default so a normal capture source's TOML stays clean.
+            if *loop_count != 1 {
+                t["loop_count"] = value(i64::from(*loop_count));
+            }
+            if *loop_secs != 0 {
+                t["loop_secs"] = value(*loop_secs as i64);
+            }
+            if *rate_pps != 0 {
+                t["rate_pps"] = value(i64::from(*rate_pps));
             }
         }
         CaptureSourceConfig::CloudProbe { endpoint, recv_hwm } => {

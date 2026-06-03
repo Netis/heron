@@ -88,21 +88,32 @@ pub fn classify(primitives: &AgentPrimitives, cfg: &ClassifierConfig) -> Classif
             .contains(SystemPromptMarkers::MCP_SERVER);
         let mut has_cli = false;
         let mut has_function_call = false;
-        let mut suspicious = Vec::new();
+        // Retained for the return shape + stored `suspicious_skills` column, but
+        // no longer populated: we don't flag unrecognized tool names (see loop).
+        let suspicious: Vec<SuspiciousSignal> = Vec::new();
 
         for name in &primitives.tool_names {
             let is_mcp_tool = cfg.mcp_tool_prefixes.iter().any(|p| name.starts_with(p));
             let is_cli_tool = cfg.cli_tool_allowlist.contains(name);
-            let is_known = cfg.known_tool_registry.contains(name);
 
             if is_mcp_tool {
                 has_mcp = true;
             } else if is_cli_tool {
                 has_cli = true;
-            } else if is_known {
-                has_function_call = true;
             } else {
-                suspicious.push(SuspiciousSignal::UnknownToolName { name: name.clone() });
+                // Any other named tool is a function-call tool. We deliberately
+                // do NOT gate this on an allow-list: every agent (Claude Code,
+                // Codex, openclaw, …) ships dozens of differently-named,
+                // differently-cased tools (`read` vs `Read`, `web_fetch`,
+                // `memory_get`, `sessions_spawn`, `mattermost_send`, …). An
+                // unrecognized name means "a toolset we don't enumerate", NOT
+                // "suspicious" — flagging it tagged ~14% of real agent calls as
+                // suspicious (pure noise that buried any genuine signal) and was
+                // an un-winnable allow-list treadmill. See #85: expanding the
+                // registry only ever covered Claude Code; this removes the
+                // premise instead. `known_tool_registry` is retained in config
+                // for back-compat but no longer changes classification.
+                has_function_call = true;
             }
         }
 
@@ -329,6 +340,21 @@ mod classify_tests {
 
     #[test]
     fn surface_mcp_for_system_prompt_mcp_marker() {
+        // MCP system-prompt marker + an mcp__-prefixed tool → pure Mcp surface.
+        let p = AgentPrimitives {
+            tool_call_count: 1,
+            tool_names: vec!["mcp__svc__do".to_string()],
+            has_system_prompt: true,
+            system_prompt_markers: SystemPromptMarkers::MCP_SERVER,
+            ..Default::default()
+        };
+        let c = classify(&p, &cfg());
+        assert_eq!(c.tool_surface, Some(ToolSurface::Mcp));
+    }
+
+    #[test]
+    fn surface_mixed_for_mcp_marker_plus_function_tool() {
+        // An MCP marker AND a (non-mcp) function-call tool = both surfaces.
         let p = AgentPrimitives {
             tool_call_count: 1,
             tool_names: vec!["custom_tool".to_string()],
@@ -337,7 +363,7 @@ mod classify_tests {
             ..Default::default()
         };
         let c = classify(&p, &cfg());
-        assert_eq!(c.tool_surface, Some(ToolSurface::Mcp));
+        assert_eq!(c.tool_surface, Some(ToolSurface::Mixed));
     }
 
     #[test]
@@ -353,9 +379,12 @@ mod classify_tests {
     }
 
     #[test]
-    fn surface_unknown_for_unregistered_tool() {
-        let c = classify(&prims_with_tools(&["mystery_tool"]), &cfg());
-        assert_eq!(c.tool_surface, Some(ToolSurface::Unknown));
+    fn surface_function_call_for_unregistered_tool() {
+        // An unrecognized tool name is a function-call tool, NOT Unknown/suspicious
+        // — we don't allow-list every agent's vocabulary (#85 follow-up).
+        let c = classify(&prims_with_tools(&["mystery_tool", "web_search", "read"]), &cfg());
+        assert_eq!(c.tool_surface, Some(ToolSurface::FunctionCall));
+        assert!(c.suspicious_signals.is_empty());
     }
 
     // agent_topology rules -----------------------------------------------
@@ -393,14 +422,15 @@ mod classify_tests {
     // suspicious -----------------------------------------------------------
 
     #[test]
-    fn suspicious_flags_unknown_tool_name() {
-        let c = classify(&prims_with_tools(&["mystery_tool"]), &cfg());
-        assert_eq!(
-            c.suspicious_signals,
-            vec![SuspiciousSignal::UnknownToolName {
-                name: "mystery_tool".to_string()
-            }]
+    fn unrecognized_tools_are_not_flagged_suspicious() {
+        // Other agents' tools (openclaw etc.: snake_case, different vocab) must
+        // NOT be flagged suspicious — they are ordinary function calls (#85).
+        let c = classify(
+            &prims_with_tools(&["web_search", "read_file", "memory_get", "sessions_spawn"]),
+            &cfg(),
         );
+        assert!(c.suspicious_signals.is_empty(), "{:?}", c.suspicious_signals);
+        assert_eq!(c.tool_surface, Some(ToolSurface::FunctionCall));
     }
 
     #[test]

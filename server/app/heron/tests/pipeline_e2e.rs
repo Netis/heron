@@ -40,6 +40,7 @@ fn build_storage_config(db_path: &str) -> StorageConfig {
         },
         sink: StorageSinkConfig::default(),
         retention: RetentionConfig::default(),
+        ..Default::default()
     }
 }
 
@@ -79,6 +80,9 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
                 path: p.to_string_lossy().to_string(),
                 realtime: false,
                 source_id: None,
+                loop_count: 1,
+                loop_secs: 0,
+                rate_pps: 0,
             }],
             ..PipelineDef::default()
         })

@@ -24,8 +24,18 @@
 #   MARA_LABELS       issue labels (comma-sep)             (default mara,incident)
 #   MARA_STATE_DIR    dedup state dir                      (default $HOME/.mara)
 #   MARA_DEDUP_SECS   don't refile same signature within   (default 21600 = 6h)
+#   MARA_CONFIRM_POLLS    polls that must ALL fail to file (default 3, 1=off)
+#   MARA_CONFIRM_DELAY_SECS  seconds between confirm polls  (default 10)
 #   MARA_DRY_RUN      "1" → print the issue instead of filing (needs no token)
 #   GH_TOKEN          PAT for `gh` (from the unit's EnvironmentFile) unless dry-run
+#
+# A single failed poll is NOT filed on its own: a prod deploy restarts heron
+# (health is briefly down, and the pipeline reads running=false until capture
+# resumes — observed ~10 s), and a one-off network hiccup looks identical. mara
+# re-polls and only files when EVERY poll fails, so a deploy/restart blip never
+# opens a phantom incident. (For an airtight deploy guard, pair with a
+# maintenance-window sentinel — A reduces but can't fully eliminate the window
+# for an unusually long restart.)
 set -uo pipefail
 
 HEALTH_URL="${MARA_HEALTH_URL:?set MARA_HEALTH_URL}"
@@ -35,6 +45,8 @@ REPO="${MARA_REPO:-Netis/heron}"
 LABELS="${MARA_LABELS:-mara,incident}"
 STATE_DIR="${MARA_STATE_DIR:-$HOME/.mara}"
 DEDUP_SECS="${MARA_DEDUP_SECS:-21600}"
+CONFIRM_POLLS="${MARA_CONFIRM_POLLS:-3}"
+CONFIRM_DELAY="${MARA_CONFIRM_DELAY_SECS:-10}"
 DRY_RUN="${MARA_DRY_RUN:-0}"
 GH_BIN="${GH_BIN:-$(command -v gh || echo "$HOME/bin/gh")}"
 
@@ -67,33 +79,59 @@ scrub() {
 }
 
 # ---- probe health -------------------------------------------------------
-hbody="$(curl -s -m 8 -w '\n%{http_code}' "$HEALTH_URL" 2>/dev/null || printf '\n000')"
-code="${hbody##*$'\n'}"
-json="${hbody%$'\n'*}"
-
-signature=""
-summary=""
-if [ "$code" != "200" ]; then
-  signature="prod-heron-down"
-  summary="heron /api/health unreachable or non-200 (HTTP ${code})"
-else
-  running="$(printf '%s' "$json" | python3 -c 'import sys,json
+# One health probe. Sets globals: code, json, signature, summary.
+# Empty `signature` = healthy.
+probe_once() {
+  local hbody running
+  hbody="$(curl -s -m 8 -w '\n%{http_code}' "$HEALTH_URL" 2>/dev/null || printf '\n000')"
+  code="${hbody##*$'\n'}"
+  json="${hbody%$'\n'*}"
+  signature=""
+  summary=""
+  if [ "$code" != "200" ]; then
+    signature="prod-heron-down"
+    summary="heron /api/health unreachable or non-200 (HTTP ${code})"
+  else
+    running="$(printf '%s' "$json" | python3 -c 'import sys,json
 try:
     d=json.load(sys.stdin)["data"]; print(str(d["pipelines"][0]["running"]).lower())
 except Exception: print("parseerror")' 2>/dev/null)"
-  if [ "$running" = "false" ]; then
-    signature="prod-heron-parked"
-    summary="heron is up (health=ready) but the pipeline has stopped (running=false) — capture silently halted"
-  elif [ "$running" = "parseerror" ]; then
-    signature="prod-heron-healthbad"
-    summary="heron /api/health returned 200 but an unparseable body"
+    if [ "$running" = "false" ]; then
+      signature="prod-heron-parked"
+      summary="heron is up (health=ready) but the pipeline has stopped (running=false) — capture silently halted"
+    elif [ "$running" = "parseerror" ]; then
+      signature="prod-heron-healthbad"
+      summary="heron /api/health returned 200 but an unparseable body"
+    fi
   fi
-fi
+}
 
+probe_once
 if [ -z "$signature" ]; then
   echo "mara: prod heron OK (HTTP $code, pipeline running) — no incident"
   exit 0
 fi
+
+# ---- confirm the failure is SUSTAINED, not a transient blip -------------
+# Re-poll up to MARA_CONFIRM_POLLS times; if ANY confirmation comes back
+# healthy, the first hit was transient (deploy/restart window, one-off network
+# hiccup) → do NOT file. Only a failure on EVERY poll is reported, using the
+# freshest snapshot. CONFIRM_POLLS=1 disables this (file on first failure).
+first_sig="$signature"
+n=1
+while [ "$n" -lt "$CONFIRM_POLLS" ]; do
+  sleep "$CONFIRM_DELAY"
+  n=$((n + 1))
+  probe_once
+  if [ -z "$signature" ]; then
+    echo "mara: '$first_sig' cleared on confirm poll $n/$CONFIRM_POLLS — transient (likely a deploy/restart blip), not filing"
+    exit 0
+  fi
+  echo "mara: failure persists on confirm poll $n/$CONFIRM_POLLS (signature=$signature)" >&2
+done
+# Confirmed sustained. Refresh `now` so dedup/SEEN reflect confirm time, not the
+# first probe (the confirm polls added a few seconds).
+now=$(date +%s)
 
 # ---- dedup: skip if filed within the window ----------------------------
 last="$(awk -F'\t' -v s="$signature" '$1==s{print $2}' "$SEEN" | tail -1)"
@@ -120,6 +158,7 @@ body="$(cat <<EOF
 - **Health URL**: ${HEALTH_URL}
 - **HTTP**: ${code}
 - **Observed (UTC)**: ${stamp}
+- **Confirmed**: failed ${CONFIRM_POLLS}/${CONFIRM_POLLS} consecutive polls (~${CONFIRM_DELAY}s apart) — not a transient/deploy blip
 
 ### Health response
 \`\`\`json
