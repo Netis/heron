@@ -279,6 +279,7 @@ async fn run_pipeline(cli: Cli) {
                 source_id: None,
                 loop_count: 1,
                 loop_secs: 0,
+                rate_pps: 0,
             }],
             ..PipelineDef::default()
         }]

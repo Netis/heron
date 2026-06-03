@@ -106,6 +106,7 @@ export function defaultFor(type: CaptureSource["type"]): CaptureSource {
     source_id: null,
     loop_count: 1,
     loop_secs: 0,
+    rate_pps: 0,
   }
 }
 
