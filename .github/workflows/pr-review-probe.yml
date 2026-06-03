@@ -89,7 +89,7 @@ jobs:
             "$ANTHROPIC_BASE_URL/v1/models" \
             | python3 -c 'import sys,json; d=json.load(sys.stdin); print("models seen:", len(d["data"])); [print(" ", m["id"]) for m in d["data"][:8]]'
 
-      - name: Round-trip claude → LiteLLM → GLM-5
+      - name: Round-trip claude → model gateway → model backend
         run: |
           OUT="$(timeout 60 claude --print --model "$ANTHROPIC_MODEL" --max-turns 1 --output-format text "say PONG, nothing else" 2>&1)"
           echo "agent response: $OUT"

@@ -31,7 +31,7 @@ jobs:
     runs-on: [self-hosted, heron]
     # 120-minute fence. A clean, well-scoped wiwi run (per the triage
     # gates: <300 LOC, <10 files) typically completes in 10-25 min; the
-    # 120-min cap absorbs slower LiteLLM ↔ GLM-5 round-trips on busy
+    # 120-min cap absorbs slower model gateway ↔ model backend round-trips on busy
     # days and gives wiwi room to iterate when `cargo build` finds
     # something it has to fix mid-run. If you ever see this fence
     # actually hit, the triage gate is probably mis-sized — file an
