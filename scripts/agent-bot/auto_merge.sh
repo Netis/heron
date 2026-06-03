@@ -5,12 +5,13 @@
 #   - PR is not draft (wiwi may have flipped it; or the linked issue
 #     author was a team member and we promoted earlier — see below)
 #   - vivi's latest review state == APPROVED
-#   - the linked issue's author is in the TEAM file
+#   - the linked issue's author is on the auto-merge allowlist
 set -euo pipefail
 
-HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# TEAM file is the single source of truth, shared with run_wiwi.sh.
-TEAM=$(grep -vE '^\s*(#|$)' "$HERE/TEAM" | tr '\n' ' ')
+# Auto-merge allowlist (GitHub logins). Sourced from the AUTO_MERGE_TEAM env
+# (CSV or whitespace-separated), injected from a repo secret by the workflow
+# — kept out of committed source. Empty ⇒ no author is auto-merge-eligible.
+TEAM=$(printf '%s' "${AUTO_MERGE_TEAM:-}" | tr ',' ' ')
 
 PR="${PR_NUMBER:?PR_NUMBER required}"
 

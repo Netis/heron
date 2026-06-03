@@ -30,7 +30,7 @@ export PR_NUMBER HEAD_SHA BASE_REF
 envsubst < "$WORKDIR/prompt.md" > "$PROMPT"
 
 # Pre-flight: wait until LiteLLM is reachable AND our API key is
-# accepted. The wait covers the common case where GLM-5 / LiteLLM
+# accepted. The wait covers the common case where model backend / LiteLLM
 # is restarting when this workflow fires; if it's still down after
 # 30 min (MAX_LITELLM_WAIT_SECONDS) the function returns 2 and we
 # pass through with the same diagnostic shape as before. Shared

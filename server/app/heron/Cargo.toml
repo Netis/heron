@@ -16,6 +16,7 @@ h-llm.workspace = true
 h-metrics.workspace = true
 h-storage.workspace = true
 h-storage-duckdb.workspace = true
+h-storage-clickhouse.workspace = true
 h-turn.workspace = true
 h-api.workspace = true
 h-pcap-extract.workspace = true

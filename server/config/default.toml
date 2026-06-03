@@ -110,10 +110,23 @@
 # Storage
 # ---------------------------------------------------------------------------
 [storage]
+# Pluggable storage backend: "duckdb" (default, embedded single-node / edge)
+# or "clickhouse" (dedicated server for large-scale, high-throughput analytics).
 backend = "duckdb"
 
 [storage.duckdb]
 path = "data/heron.duckdb"
+
+# ClickHouse backend (used only when backend = "clickhouse"). Talks to the
+# server over its HTTP interface (default port 8123). The target database is
+# created on startup if absent. Retention runs via lightweight DELETE on the
+# shared schedule below — same as DuckDB.
+# [storage.clickhouse]
+# url               = "http://localhost:8123"
+# database          = "heron"
+# user              = "default"
+# password          = ""
+# optimize_on_sweep = false   # OPTIMIZE TABLE ... FINAL after each retention sweep
 
 # Storage sink batching. flush_interval_ms is the upper bound on how long a
 # single LlmCall / AgentTurn / metric row can sit in the in-memory buffer

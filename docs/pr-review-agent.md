@@ -10,15 +10,15 @@ to window width, etc.) so the human reviewer arrives at a PR with the
 ## Architecture
 
 ```
-GitHub                                  self-hosted runner VM
+GitHub                                  self-hosted runner
 ┌──────────────┐  ci passes (workflow_run)  ┌─────────────────────────┐
 │  PR opened   │ ─────────────────────────► │ self-hosted GH runner   │
 │  PR sync     │                            │  ┌───────────────────┐  │
 │              │                            │  │ pr-review.yml     │  │
 │              │                            │  │  ↓                │  │
-│              │                            │  │ run_review.sh ────┼──┼─► LiteLLM :4200
+│              │                            │  │ run_review.sh ────┼──┼─► model gateway
 │              │                            │  │   claude -p       │  │     ↓
-│              │                            │  │   read-only tools │  │   SGLang GLM-5 :9000
+│              │                            │  │   read-only tools │  │   model backend
 │              │                            │  │  ↓                │  │
 │              │  gh pr review              │  │ post_review.py    │  │
 │              │ ◄──────────────────────────┤  └───────────────────┘  │
@@ -34,7 +34,7 @@ GitHub                                  self-hosted runner VM
   run pr-review.yml -f pr_number=27`).
 * `scripts/pr-review/run_review.sh`
   Substitutes `PR_NUMBER` / `HEAD_SHA` / `BASE_REF` into the prompt
-  template, pre-flights LiteLLM, runs `claude -p` with the read-only
+  template, pre-flights the model gateway, runs `claude -p` with the read-only
   tool allowlist + 7200 s outer timeout, writes the model's stdout to
   `/tmp/pr-review-${N}-out.md`.
 * `scripts/pr-review/prompt.md`
@@ -86,23 +86,23 @@ The `heron` self-hosted runner needs:
 2. **GitHub CLI** — comes free with the actions runner via the
    `GH_TOKEN` the workflow exports.
 3. **Python 3** — `post_review.py` uses stdlib only.
-4. **Network path + key** to a LiteLLM proxy that maps
-   `claude-3-5-sonnet-20241022` onto a locally-served backend.
-   Configured entirely via repo secrets so this stays portable:
-   * `LITELLM_BASE_URL` — proxy origin (e.g. `http://host:port`)
-   * `LITELLM_API_KEY` — proxy master key
+4. **Network path + key** to a model gateway that maps the requested
+   model alias onto a locally-served backend. Configured entirely via
+   repo secrets so this stays portable:
+   * `LITELLM_BASE_URL` — gateway origin (e.g. `http://host:port`)
+   * `LITELLM_API_KEY` — gateway master key
    * `LITELLM_NO_PROXY` — comma-separated host list to bypass any
      ambient `HTTP_PROXY` set on the runner
 5. **No ambient HTTP proxy interference**: if the runner has
    `HTTP_PROXY` / `HTTPS_PROXY` set (cloud-init defaults often
-   do), `LITELLM_NO_PROXY` should include the LiteLLM host so curl
+   do), `LITELLM_NO_PROXY` should include the gateway host so curl
    from the agent bypasses it.
 
 ## Auto-merge for trusted authors
 
 When the AI's verdict is **APPROVE** and the PR's author is in
-`AUTO_MERGE_AUTHORS` (default `vaderyang`; comma-CSV override via
-the workflow env), `post_review.py` follows up the review with
+`AUTO_MERGE_AUTHORS` (a maintainer allowlist supplied via the
+workflow env; empty by default), `post_review.py` follows up the review with
 `gh pr merge --admin --squash --delete-branch`. The repo doesn't
 have native `--auto` enabled, so we squash inline.
 
@@ -115,10 +115,46 @@ If the merge fails (merge conflict, branch protection surprise,
 …) it's logged but the workflow stays green — the review is
 already posted, an operator can finish the merge by hand.
 
+## Auto-revise on CHANGES_REQUESTED (wiwi follow-up)
+
+The mirror image of auto-merge. When vivi's verdict is
+**REQUEST_CHANGES** on a **wiwi** PR (label `auto-agent`),
+`scripts/agent-bot/revise_dispatch.sh` (run from pr-review.yml's tail)
+dispatches the **`pr-revise`** workflow. That workflow checks out the PR
+head branch, runs `scripts/agent-bot/run_revise.sh` to feed vivi's
+blocking feedback + the diff back to the dev agent, and — once the build
+is green — commits and pushes. The push re-triggers `ci` → `pr-review`,
+so vivi re-reviews the revised PR. On the next APPROVE the existing
+auto-merge gate lands it; no human in the loop for the happy path.
+
+```
+vivi REQUEST_CHANGES (auto-agent PR)
+  → revise_dispatch.sh → gh workflow run pr-revise
+  → run_revise.sh: address review · build green · commit · push
+  → ci → pr-review (vivi re-review) ──┐
+        APPROVE → auto-merge          │
+        REQUEST_CHANGES again ────────┘  (loop, bounded)
+```
+
+Two implementation constraints worth knowing:
+
+- **PAT, not GITHUB_TOKEN.** The dispatch uses `AGENT_GH_TOKEN`. A
+  `gh workflow run` (or a review) issued with the default `GITHUB_TOKEN`
+  is dropped by GitHub's anti-recursion rule, and the dispatched run must
+  itself be able to push and re-trigger `ci`/`pr-review`.
+- **Bounded loop.** `revise_dispatch.sh` counts vivi's
+  CHANGES_REQUESTED reviews on the PR; at `MAX_REVISE_ROUNDS` (default 3)
+  it stops dispatching, adds a `needs-human` label, and comments — so a
+  wiwi ↔ vivi disagreement can't spin forever. Remove the label and
+  re-run `pr-revise` to resume.
+
+The agent pool (`heron`) runs `pr-revise` because `run_revise.sh` drives
+the model gateway, same as the reviewer and wiwi.
+
 ## Cost / latency
 
-GLM-5 runs on-prem (locally-served via SGLang on the GPU host). No
-per-request cost; the constraint is GPU minutes.
+The model runs on a locally-served backend. No per-request cost; the
+constraint is local compute capacity.
 
 | PR size | Files | Input tokens | Output tokens | Wall clock |
 |---|---|---|---|---|
@@ -130,7 +166,7 @@ Concurrency cap: GH Actions `concurrency` is per-PR, but the runner
 itself is single-tenant (one job at a time). Multiple PRs serialize
 naturally. If we hit a "many PRs at once" pattern we can raise the
 runner's job-slot count, but two concurrent reviews is the ceiling
-before we start crowding training jobs on the same box.
+before we start crowding other workloads on the runner host.
 
 ## Tuning the prompt
 
@@ -149,9 +185,9 @@ footguns.
 
 | Failure | What happens | Mitigation |
 |---|---|---|
-| LiteLLM down | Pre-flight curl fails, `run_review.sh` exits 2 | `post_review.py` posts a brief "agent failed" comment with link to workflow log; PR is not blocked |
+| Model gateway down | Pre-flight curl fails, `run_review.sh` exits 2 | `post_review.py` posts a brief "agent failed" comment with link to workflow log; PR is not blocked |
 | Agent loops | `timeout 7200` kills the agent | Same: failure comment, no block |
-| GLM-5 returns garbage / no `### Summary` | `run_review.sh` appends a warning to the output | `post_review.py` still posts it as COMMENT — the agent's broken output is visible, which is signal |
+| Model returns garbage / no `### Summary` | `run_review.sh` appends a warning to the output | `post_review.py` still posts it as COMMENT — the agent's broken output is visible, which is signal |
 | Bot can't `--approve` its own PR | `gh pr review` rc != 0 | `post_review.py` falls back to `gh pr comment` |
 | Schema mirror miss inside the agent | Agent under-reports | Add the missed signature to `prompt.md` § "Things this repo has been bitten by" — encode the lesson |
 

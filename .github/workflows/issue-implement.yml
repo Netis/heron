@@ -31,7 +31,7 @@ jobs:
     runs-on: [self-hosted, heron]
     # 120-minute fence. A clean, well-scoped wiwi run (per the triage
     # gates: <300 LOC, <10 files) typically completes in 10-25 min; the
-    # 120-min cap absorbs slower LiteLLM ↔ GLM-5 round-trips on busy
+    # 120-min cap absorbs slower model gateway ↔ model backend round-trips on busy
     # days and gives wiwi room to iterate when `cargo build` finds
     # something it has to fix mid-run. If you ever see this fence
     # actually hit, the triage gate is probably mis-sized — file an
@@ -99,6 +99,11 @@ jobs:
           ISSUE_BODY:   ${{ github.event.issue.body }}
           ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
           GH_TOKEN:     ${{ secrets.AGENT_GH_TOKEN }}
+          # Auto-merge allowlist (GitHub logins, CSV). Kept out of committed
+          # source — set via `gh secret set AUTO_MERGE_TEAM`. Only used here to
+          # add a cosmetic "eligible for auto-merge" line to the PR body; the
+          # actual gate lives in auto_merge.sh (pr-review.yml).
+          AUTO_MERGE_TEAM: ${{ secrets.AUTO_MERGE_TEAM }}
         run: bash scripts/agent-bot/run_wiwi.sh
 
       - name: Cleanup transient files

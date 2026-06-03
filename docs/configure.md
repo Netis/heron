@@ -151,11 +151,12 @@ reddens; lower them if memory is tight.
 
 ```toml
 [storage]
-backend = "duckdb"             # only "duckdb" is shipped in v0.1.x
+backend = "duckdb"             # "duckdb" (default) or "clickhouse"
 ```
 
-PostgreSQL and ClickHouse backends are designed but not yet wired up;
-see `docs/design/06-storage.md`.
+`duckdb` (embedded, single-node / edge) and `clickhouse` (dedicated server for
+large-scale, high-throughput analytics) are both shipped. PostgreSQL is designed
+but not yet wired up; see `docs/design/06-storage.md`.
 
 ### DuckDB-specific
 
@@ -166,6 +167,24 @@ path = "data/heron.duckdb"
 
 The path is relative to the working directory. Parent directories are
 created automatically on first run.
+
+### ClickHouse-specific
+
+```toml
+[storage.clickhouse]
+url               = "http://localhost:8123"   # HTTP interface (default port 8123)
+database          = "heron"                    # created on startup if absent
+user              = "default"
+password          = ""
+optimize_on_sweep = false                      # OPTIMIZE TABLE ... FINAL after retention
+```
+
+The backend talks to ClickHouse over its HTTP interface and creates the schema
+(MergeTree fact tables + a ReplacingMergeTree `agent_turns`) on first run.
+Retention runs through the same `[storage.retention]` schedule as DuckDB, using
+lightweight `DELETE`. `optimize_on_sweep` eagerly reclaims space after each
+sweep at the cost of a full-table merge; off by default (TTL-style background
+merges reclaim lazily).
 
 ### Sink batching
 

@@ -1,28 +1,39 @@
 name: issue-triage
 
-# Triage agent. Fires only when a human (or repo automation) adds the
-# `agent:assess` label to an issue. The triage agent decides whether
-# the issue is small/safe enough for the dev agent **wiwi** to attempt
-# unattended. Strict 5-gate verdict — see scripts/agent-bot/run_triage.sh.
+# Triage agent. Auto-fires on every newly **opened** issue, and can be
+# re-triggered manually by adding the `agent:assess` label (e.g. after the
+# reporter edits the issue or adds acceptance criteria). The triage agent
+# decides whether the issue is small/safe enough for the dev agent **wiwi**
+# to attempt unattended. Strict 5-gate verdict — see
+# scripts/agent-bot/run_triage.sh.
+#
+# Prod-incident issues (mara) are NOT auto-triaged — an operator routes them
+# in deliberately via `agent:assess`. That guard (plus skip-if-already-
+# queued/muted) lives in run_triage.sh, keyed off TRIGGER_KIND below.
 
 on:
   issues:
-    types: [labeled]
+    types: [opened, labeled]
 
 permissions:
   contents: read
   issues: write
 
 concurrency:
+  # One triage at a time per issue. cancel-in-progress is OFF on purpose:
+  # when triage adds `agent:try`, that label event spawns a second triage
+  # run in this same group whose job is skipped by the `if` below. With
+  # cancel-in-progress it would kill the still-finishing real run mid-comment;
+  # queuing lets the real run finish and the skipped one then no-ops.
   group: triage-${{ github.event.issue.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   triage:
-    if: ${{ github.event.label.name == 'agent:assess' }}
+    if: ${{ github.event.action == 'opened' || (github.event.action == 'labeled' && github.event.label.name == 'agent:assess') }}
     runs-on: [self-hosted, heron]
     timeout-minutes: 10
     env:
@@ -47,6 +58,10 @@ jobs:
           ISSUE_TITLE:  ${{ github.event.issue.title }}
           ISSUE_BODY:   ${{ github.event.issue.body }}
           ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          # 'opened' = auto path: run_triage.sh applies the mara/incident +
+          # already-queued/muted exclusions. 'assess' = a human manually
+          # re-triggered, which bypasses those guards (they asked for it).
+          TRIGGER_KIND: ${{ github.event.action == 'opened' && 'opened' || 'assess' }}
           # Default token: posts the triage comment as github-actions[bot].
           GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
           # PAT used ONLY to add the `agent:try` label on verdict=do.
