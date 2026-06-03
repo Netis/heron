@@ -1,7 +1,7 @@
 name: pr-review
 
 # Headless code-review agent. Fires AFTER the `ci` workflow completes
-# successfully on a PR — that gate keeps the agent from wasting GLM-5
+# successfully on a PR — that gate keeps the agent from wasting model backend
 # cycles on PRs that don't even compile, and ensures the review the
 # author sees is "tests are green, here's what to look at next".
 #

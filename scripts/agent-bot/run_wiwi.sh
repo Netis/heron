@@ -49,7 +49,7 @@ You are **wiwi**, the dev agent. Implement the change requested by issue
 - **You may be a RESUMED run.** If \`git log origin/main..HEAD\` shows
   existing commits OR \`git status\` shows uncommitted edits when you
   start, the previous attempt crashed mid-run (typically a LiteLLM /
-  GLM-5 hiccup) and the driver is retrying. Treat that state as your
+  model backend hiccup) and the driver is retrying. Treat that state as your
   starting point: do NOT redo work that's already committed; do
   verify the partial state makes sense (read the diffs, build, run
   tests); then continue toward the issue's acceptance criteria. If
@@ -66,7 +66,7 @@ Issue title: ${ISSUE_TITLE}
 EOF
 
 # Wait for LiteLLM to be reachable before launching claude. Without
-# this, a transient GLM-5 / LiteLLM restart that happens during the
+# this, a transient model backend / LiteLLM restart that happens during the
 # (often-15+ min) self-hosted runner queue wait kills the run
 # immediately and wastes the queue wait + branch-prep work. Caps at
 # 30 min by default; configurable via MAX_LITELLM_WAIT_SECONDS.
