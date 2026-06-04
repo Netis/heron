@@ -8,7 +8,7 @@
       "finish_reason": "stop",
       "input_tokens": 309,
       "is_agent_request": false,
-      "is_stream": false,
+      "is_stream": true,
       "model": "gpt-4o-2024-08-06",
       "output_tokens": 37,
       "response_id_present": true,
