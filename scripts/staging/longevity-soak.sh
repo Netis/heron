@@ -172,12 +172,15 @@ if [ "${LONGEVITY_NO_FILE:-0}" = 1 ] || [ -z "${GH_TOKEN:-}" ]; then
   exit 1
 fi
 
-# Mask any internal infra identity before the body leaves the host (same rule
-# as mara's scrub()).
+# Mask any internal infra identity before the body leaves the host. Keep the
+# rule set IN SYNC with mara.sh's scrub() (the canonical copy): IPv4, home
+# paths, URL authorities, and ssh-style user@host — a fatal log line pulled into
+# the issue can carry any of them.
 scrub() {
   sed -E -e 's/\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b/<ip>/g' \
          -e 's#(/home|/Users)/[A-Za-z0-9._-]+#\1/<user>#g' \
-         -e 's#(https?://)[^/[:space:]]+#\1<host>#g'
+         -e 's#(https?://)[^/[:space:]]+#\1<host>#g' \
+         -e 's/\b[A-Za-z0-9._-]+@[A-Za-z0-9._-]+/<user>@<host>/g'
 }
 SIG="longevity-regression"
 FAILED="$(printf '%s' "$VERDICT" | python3 -c 'import json,sys;print(",".join(json.load(sys.stdin).get("failed",[])))' 2>/dev/null)"
