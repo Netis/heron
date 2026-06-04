@@ -1,6 +1,6 @@
 # Launch posts — Heron
 
-Ready-to-paste copy for the v0.4.0 launch. Tune the personal/“why I built
+Ready-to-paste copy for the v0.5.0 launch. Tune the personal/“why I built
 this” lines to your own voice before posting. **Do not** paste any internal
 host/IP/credential anywhere — keep it to the public repo + public demo only.
 
@@ -38,7 +38,8 @@ OpenAI/Azure/Anthropic/Bedrock/Vertex/Gemini and any OpenAI-compatible local
 server (vLLM, SGLang, Ollama, llama.cpp).
 
 Single statically-linked binary with the web console embedded; Linux (musl)
-+ macOS. Apache-2.0, no telemetry.
++ macOS. Apache-2.0, no telemetry. Stores to an embedded DuckDB out of the
+box, or ClickHouse when you need columnar analytics at high volume.
 
 You can try it with zero privileges by replaying a pcap:
   heron --pcap-file capture.pcap --no-retention
