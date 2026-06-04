@@ -269,6 +269,17 @@ fn response_tool_uses(c: &h_llm::model::LlmCall) -> serde_json::Value {
             out.push(serde_json::json!({"name": name, "has_input": has_input}));
         }
     }
+    // openai responses: output[].type==function_call {name, arguments}
+    if let Some(items) = v.get("output").and_then(|o| o.as_array()) {
+        for it in items {
+            if it.get("type").and_then(|t| t.as_str()) == Some("function_call") {
+                let name = it.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                let args = it.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
+                let has_input = !args.trim().is_empty() && args.trim() != "{}";
+                out.push(serde_json::json!({"name": name, "has_input": has_input}));
+            }
+        }
+    }
     out.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
     serde_json::Value::Array(out)
 }

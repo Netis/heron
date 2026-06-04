@@ -143,24 +143,26 @@ turn_count = 2
 [[fixture]]
 id = "opencode-openai-chat"
 file = "opencode-openai-chat.pcap"
-status = "pending"
+status = "active"
 agent_kind = "opencode"
 wire_apis = ["openai-chat"]
 backend_label = "openai-direct"
-scenarios = ["multi-turn", "tool-calls"]
-notes = "opencode UA + x-session-affinity. NEEDS FRESH CAPTURE (not in the original 7)."
+scenarios = ["streaming", "tool-calls", "synthesized"]
+notes = "Synthesized: opencode UA + x-session-affinity over openai-chat SSE, tool roundtrip → 1 complete turn."
+[fixture.expect]
+turn_count = 1
 
 [[fixture]]
 id = "openclaw-openai-chat"
 file = "openclaw-openai-chat.pcap"
-status = "pending"
+status = "active"
 agent_kind = "openclaw"
 wire_apis = ["openai-chat"]
 backend_label = "litellm"
-scenarios = ["multi-session", "tool-calls", "tool-id-canonicalization"]
-notes = "Two sessions; client echoes tool_calls[].id without underscore — exercises canonicalize_tool_id. 4 turns / 2 sessions."
+scenarios = ["streaming", "tool-calls", "synthesized"]
+notes = "Synthesized: openclaw body-fingerprint (sessions_spawn+subagents) over openai-chat SSE → 1 complete turn. (A richer 2-session/4-turn real capture remains a future cell.)"
 [fixture.expect]
-turn_count = 4
+turn_count = 1
 
 [[fixture]]
 id = "openclaw-anthropic"
@@ -180,12 +182,50 @@ usage_field_style = "anthropic"
 [[fixture]]
 id = "hermes-openai-chat"
 file = "hermes-openai-chat.pcap"
-status = "pending"
+status = "active"
 agent_kind = "hermes"
 wire_apis = ["openai-chat"]
 backend_label = "litellm"
-scenarios = ["tool-calls", "title-gen"]
-notes = "Body-fingerprint (skill_view/delegate_task/...). 4-call main turn + 1 title-gen one-shot."
+scenarios = ["streaming", "tool-calls", "synthesized"]
+notes = "Synthesized: hermes body-fingerprint (skill_view+delegate_task) over openai-chat SSE → 1 complete turn."
+[fixture.expect]
+turn_count = 1
+
+[[fixture]]
+id = "generic-openai-chat"
+file = "generic-openai-chat.pcap"
+status = "active"
+agent_kind = "generic"
+wire_apis = ["openai-chat"]
+backend_label = "openai-direct"
+scenarios = ["streaming", "tool-calls", "synthesized"]
+notes = "Synthesized: no agent headers/markers → generic fallback over openai-chat SSE; session from first tool_call id → 1 complete turn."
+[fixture.expect]
+turn_count = 1
+
+[[fixture]]
+id = "codex-responses"
+file = "codex-responses.pcap"
+status = "active"
+agent_kind = "codex-cli"
+wire_apis = ["openai-responses"]
+backend_label = "openai-direct"
+scenarios = ["non-streaming", "tool-calls", "synthesized"]
+notes = "Synthesized: codex-cli (Originator + X-Codex-Turn-Metadata) over /v1/responses, function_call roundtrip → 1 complete turn. Exercises responses extractor + codex session-from-metadata."
+[fixture.expect]
+turn_count = 1
+
+[[fixture]]
+id = "generic-openai-responses"
+file = "generic-openai-responses.pcap"
+status = "active"
+agent_kind = "generic"
+wire_apis = ["openai-responses"]
+backend_label = "openai-direct"
+scenarios = ["non-streaming", "tool-calls", "synthesized"]
+notes = "Synthesized: /v1/responses with no codex headers → generic fallback; function_call roundtrip → 1 complete turn."
+[fixture.expect]
+turn_count = 1
 
 [[fixture]]
 id = "gemini-cli-apikey"

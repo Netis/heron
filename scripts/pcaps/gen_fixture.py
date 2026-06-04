@@ -394,6 +394,134 @@ def scen_claude_cli_anthropic_nonstream():
         user_text="read it (nonstream)")
 
 
+# --- openai column: chat (streaming) + responses (non-stream) ---------------
+
+OAI_MODEL = "gpt-4o-2024-08-06"
+
+
+def _oai_tool(name):
+    return {"type": "function", "function": {"name": name, "description": f"{name} tool",
+            "parameters": {"type": "object", "properties": {"x": {"type": "string"}}}}}
+
+
+def oai_chat_request(tool_names, messages, headers, stream=True):
+    h = {"authorization": f"Bearer {FAKE_OAI_KEY}", "content-type": "application/json"}
+    h.update(headers)
+    body = {"model": OAI_MODEL, "messages": messages,
+            "tools": [_oai_tool(n) for n in tool_names], "stream": stream,
+            "stream_options": {"include_usage": True}}
+    return http_request("POST", "/v1/chat/completions", h,
+                        json.dumps(body, separators=(",", ":")).encode())
+
+
+def _chunk(choices, usage=None):
+    d = {"id": "chatcmpl-synth", "object": "chat.completion.chunk",
+         "model": OAI_MODEL, "choices": choices}
+    if usage is not None:
+        d["usage"] = usage
+    return f"data: {json.dumps(d, separators=(',', ':'))}\n\n".encode()
+
+
+def oai_chat_stream(text, tool_calls, finish_reason, usage):
+    out = [_chunk([{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}])]
+    for w in (text.split(" ") if text else []):
+        out.append(_chunk([{"index": 0, "delta": {"content": w + " "}, "finish_reason": None}]))
+    for k, tc in enumerate(tool_calls):
+        js = json.dumps(tc["arguments"], separators=(",", ":"))
+        mid = len(js) // 2
+        out.append(_chunk([{"index": 0, "delta": {"tool_calls": [{"index": k, "id": tc["id"],
+                    "type": "function", "function": {"name": tc["name"], "arguments": ""}}]},
+                    "finish_reason": None}]))
+        out.append(_chunk([{"index": 0, "delta": {"tool_calls": [{"index": k,
+                    "function": {"arguments": js[:mid]}}]}, "finish_reason": None}]))
+        out.append(_chunk([{"index": 0, "delta": {"tool_calls": [{"index": k,
+                    "function": {"arguments": js[mid:]}}]}, "finish_reason": None}]))
+    out.append(_chunk([{"index": 0, "delta": {}, "finish_reason": finish_reason}]))
+    out.append(_chunk([], usage=usage))
+    out.append(b"data: [DONE]\n\n")
+    return out
+
+
+OAI_USAGE1 = {"prompt_tokens": 1400, "completion_tokens": 35, "total_tokens": 1435,
+              "prompt_tokens_details": {"cached_tokens": 512}}
+OAI_USAGE2 = {"prompt_tokens": 1500, "completion_tokens": 25, "total_tokens": 1525,
+              "prompt_tokens_details": {"cached_tokens": 1400}}
+
+CHAT_AGENTS = {
+    "opencode": {"headers": {"User-Agent": "opencode/1.14.50 ai-sdk/provider-utils/4.0.23",
+                             "x-session-affinity": "ses_synth0001"}, "tools": ["Read"]},
+    "openclaw": {"headers": {"User-Agent": "node"},
+                 "tools": ["sessions_spawn", "subagents", "Read"]},
+    "hermes":   {"headers": {"User-Agent": "openai-python/1.40.0"},
+                 "tools": ["skill_view", "delegate_task", "Read"]},
+    "generic":  {"headers": {"User-Agent": "some-sdk/1.0"}, "tools": ["Read"]},
+}
+
+
+def scen_openai_chat(agent):
+    """openai-chat streaming tool roundtrip → 1 complete turn for the given
+    agent (detection via headers for opencode, body fingerprint for
+    openclaw/hermes, fallback for generic)."""
+    cfg = CHAT_AGENTS[agent]
+    u_msg = {"role": "user", "content": "do the thing"}
+    tc = {"id": "call_synth01", "name": "Read", "arguments": {"path": "x"}}
+    req1 = oai_chat_request(cfg["tools"], [u_msg], cfg["headers"])
+    resp1 = http_response_sse(oai_chat_stream("on it", [tc], "tool_calls", OAI_USAGE1))
+    assistant = {"role": "assistant", "content": None, "tool_calls": [
+        {"id": tc["id"], "type": "function", "function": {"name": tc["name"],
+         "arguments": json.dumps(tc["arguments"], separators=(",", ":"))}}]}
+    toolmsg = {"role": "tool", "tool_call_id": tc["id"], "content": "ok"}
+    req2 = oai_chat_request(cfg["tools"], [u_msg, assistant, toolmsg], cfg["headers"])
+    resp2 = http_response_sse(oai_chat_stream("all done", [], "stop", OAI_USAGE2))
+    return [(req1, resp1), (req2, resp2)]
+
+
+def oai_responses_request(tool_names, input_items, headers):
+    h = {"authorization": f"Bearer {FAKE_OAI_KEY}", "content-type": "application/json"}
+    h.update(headers)
+    body = {"model": OAI_MODEL, "input": input_items, "stream": False,
+            "tools": [{"type": "function", "name": n, "description": f"{n} tool",
+                       "parameters": {"type": "object", "properties": {"x": {"type": "string"}}}}
+                      for n in tool_names]}
+    return http_request("POST", "/v1/responses", h,
+                        json.dumps(body, separators=(",", ":")).encode())
+
+
+def responses_json(output, usage):
+    return json.dumps({"id": "resp_synth", "object": "response", "status": "completed",
+                       "model": OAI_MODEL, "output": output, "usage": usage},
+                      separators=(",", ":")).encode()
+
+
+RESP_USAGE1 = {"input_tokens": 1400, "output_tokens": 35, "input_tokens_details": {"cached_tokens": 512}}
+RESP_USAGE2 = {"input_tokens": 1500, "output_tokens": 25, "input_tokens_details": {"cached_tokens": 1400}}
+
+
+def scen_openai_responses(agent):
+    """openai-responses non-stream tool roundtrip → 1 complete turn. codex via
+    Originator + X-Codex-Turn-Metadata; generic via fallback. ex1 output carries
+    a function_call (not terminal); ex2 output is a message (terminal)."""
+    if agent == "codex":
+        headers = {"User-Agent": "codex_cli_rs/0.41.0", "Originator": "codex_cli_rs",
+                   "X-Codex-Turn-Metadata": json.dumps({"session_id": SESSION})}
+        tool_names = ["shell"]
+    else:
+        headers = {"User-Agent": "openai-python/1.40.0"}
+        tool_names = ["lookup"]
+    user_item = {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "do the thing"}]}
+    req1 = oai_responses_request(tool_names, [user_item], headers)
+    fc = {"type": "function_call", "id": "fc_synth01", "call_id": "call_synth01",
+          "name": tool_names[0], "arguments": json.dumps({"x": "y"}, separators=(",", ":"))}
+    resp1 = http_response_json(responses_json([fc], RESP_USAGE1))
+    fc_out = {"type": "function_call_output", "call_id": "call_synth01", "output": "ok"}
+    msg = {"type": "message", "role": "assistant",
+           "content": [{"type": "output_text", "text": "all done"}]}
+    req2 = oai_responses_request(tool_names, [user_item, fc, fc_out], headers)
+    resp2 = http_response_json(responses_json([msg], RESP_USAGE2))
+    return [(req1, resp1), (req2, resp2)]
+
+
 SCENARIOS = {
     "claude-cli-anthropic-stream": scen_claude_cli_anthropic_stream,
     "claude-cli-anthropic-nonstream": scen_claude_cli_anthropic_nonstream,
@@ -401,6 +529,13 @@ SCENARIOS = {
     "hermes-anthropic": scen_hermes_anthropic,
     "generic-anthropic": scen_generic_anthropic,
     "cliproxy-mixed-format": scen_cliproxy_mixed_format,
+    # openai column (below)
+    "opencode-openai-chat": lambda: scen_openai_chat("opencode"),
+    "openclaw-openai-chat": lambda: scen_openai_chat("openclaw"),
+    "hermes-openai-chat": lambda: scen_openai_chat("hermes"),
+    "generic-openai-chat": lambda: scen_openai_chat("generic"),
+    "codex-responses": lambda: scen_openai_responses("codex"),
+    "generic-openai-responses": lambda: scen_openai_responses("generic"),
 }
 
 

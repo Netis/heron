@@ -1,0 +1,79 @@
+{
+  "call_count": 2,
+  "calls": [
+    {
+      "agent_topology": "single_agent",
+      "cache_creation_input_tokens": null,
+      "cache_read_input_tokens": 1400,
+      "finish_reason": "stop",
+      "input_tokens": 1500,
+      "is_agent_request": true,
+      "is_stream": true,
+      "model": "gpt-4o-2024-08-06",
+      "output_tokens": 25,
+      "response_id_present": true,
+      "response_tool_uses": [],
+      "status_code": 200,
+      "tool_call_count": 1,
+      "tool_names": [
+        "Read",
+        "delegate_task",
+        "skill_view"
+      ],
+      "tool_surface": "function_call",
+      "wire_api": "openai-chat"
+    },
+    {
+      "agent_topology": null,
+      "cache_creation_input_tokens": null,
+      "cache_read_input_tokens": 512,
+      "finish_reason": "tool_calls",
+      "input_tokens": 1400,
+      "is_agent_request": false,
+      "is_stream": true,
+      "model": "gpt-4o-2024-08-06",
+      "output_tokens": 35,
+      "response_id_present": true,
+      "response_tool_uses": [
+        {
+          "has_input": true,
+          "name": "Read"
+        }
+      ],
+      "status_code": 200,
+      "tool_call_count": 0,
+      "tool_names": [
+        "Read",
+        "delegate_task",
+        "skill_view"
+      ],
+      "tool_surface": null,
+      "wire_api": "openai-chat"
+    }
+  ],
+  "turn_count": 1,
+  "turns": [
+    {
+      "agent_kind": "hermes",
+      "agent_topology": "single_agent",
+      "call_count": 2,
+      "final_answer_preview_present": true,
+      "final_finish_reason": "stop",
+      "models_used": [
+        "gpt-4o-2024-08-06"
+      ],
+      "status": "complete",
+      "subagents_used": [],
+      "tool_call_total": 1,
+      "tool_surfaces": [
+        "function_call"
+      ],
+      "total_cache_creation_input_tokens": 0,
+      "total_cache_read_input_tokens": 1912,
+      "total_input_tokens": 2900,
+      "total_output_tokens": 60,
+      "user_input_preview_present": true,
+      "wire_api": "openai-chat"
+    }
+  ]
+}
