@@ -1,0 +1,13 @@
+[Unit]
+Description=longevity-soak — nightly heron endurance run
+
+[Timer]
+# Nightly, off-hours. Randomize a little so multiple hosts don't all start at
+# the same instant.
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=20min
+# Fire on resume if a window was missed (host asleep / restarted).
+Persistent=true
+
+[Install]
+WantedBy=timers.target

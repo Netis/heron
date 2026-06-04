@@ -1,0 +1,13 @@
+{
+  "input": "keepalive_2sse_pipelined.pcap",
+  "output": "keepalive-claude-chat.pcap",
+  "size_bytes": 367220,
+  "length_preserved": true,
+  "seed": "heron-pcap-scrub-v1",
+  "rules_fired": {
+    "authorization_header": 4,
+    "rfc1918_ip": 4,
+    "home_path": 8,
+    "email": 8
+  }
+}

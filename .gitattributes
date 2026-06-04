@@ -1,0 +1,6 @@
+# Curated pcap corpus is stored via git-LFS (large binary wire captures).
+# Only testdata/pcaps/corpus/ is LFS-tracked; the legacy hand-distributed
+# fixtures under testdata/pcaps/*.pcap stay gitignored, and the small plain
+# protocol fixture under server/h-protocol/tests/fixtures/ stays committed
+# in-tree (unchanged).
+testdata/pcaps/corpus/*.pcap filter=lfs diff=lfs merge=lfs -text
