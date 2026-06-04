@@ -64,6 +64,7 @@ heron/
 │   ├── h-metrics/               # Sliding-window aggregation → LlmMetric
 │   ├── h-storage/               # StorageBackend trait + DuckDB/PG/ClickHouse + write buffer
 │   ├── h-storage-duckdb/        # DuckDB implementation of StorageBackend
+│   ├── h-storage-clickhouse/    # ClickHouse implementation of StorageBackend
 │   ├── h-api/                   # Axum REST API
 │   ├── app/
 │   │   └── heron/               # Binary entry crate
@@ -92,3 +93,52 @@ Three entities: `agent_turns` (agent turn), `llm_calls` (per-call detail + full 
 | ClickHouse | Large-scale, high-throughput columnar analytics |
 
 See [docs/design/07-schema.md](docs/design/07-schema.md) for full schema design.
+
+## Quality & release pipeline
+
+Code reaches production — and a release — through a layered, gated chain. Each
+class of past failure has a deterministic gate before it can ship.
+
+**Per-PR (CI, before merge)** — on a dedicated CI runner pool:
+- `cargo test --workspace`, plus a `--features fault-injection` run whose
+  `concurrent_tests` drive **fault injection under sustained concurrent write
+  load** (DuckDB FATAL/invalidate + ENOSPC/`DiskFull`): a write either commits
+  or returns `Err` — never silently lost, never partial — and
+  `reopen_all_connections` recovers with no lost rows.
+- Schema-migration tests over synthesized legacy DB shapes.
+- Lint gates: referenced-secret provisioning, secret-value sanity,
+  validated-constructor scoping, and an internal-infra **leakage** gate (no
+  private IP / key material / machine path in any tracked file).
+- `cargo bench -p h-protocol --no-run` — criterion hot-path benches compiled so
+  they can't bitrot (timings are too noisy on shared runners to gate on).
+- Stdlib unit tests for the staging-soak and longevity judges.
+- An automated PR-review agent reviews the diff.
+
+**On merge to `main`** — `ci → deploy-staging → staging-soak`:
+- **staging-soak** replays a known pcap corpus through the freshly deployed
+  binary on the staging VM and asserts parse/pairing/turn/persistence
+  invariants, then runs a **rate-controlled sustained-load soak** (bounded
+  queues, stable RSS, zero drops/flush-errors). Both compare against a rolling
+  dual-binary known-good — a too-tight environment surfaces as `harness_broken`,
+  not a false candidate-reject. On pass it stamps a `staging-soaked` commit
+  status.
+
+**Before production** — `staging-soak → [manual approval] → deploy-prod`:
+- deploy-prod builds on the prod host, restarts the service, gates on a health
+  check with **automatic rollback**, and supersedes older waiting approvals so
+  the queue can't wedge. The load soak is **enforcing** here — a regression vs
+  known-good blocks the deploy.
+
+**Before a release** — push a `v*` tag → `release.yml`:
+- A `gate` job refuses to build/publish unless the tagged commit carries a
+  passing `staging-soaked` status, so the multi-arch binaries are never cut from
+  un-soaked code. Cutting a release: `just bump` (the `VERSION` file is the SSOT
+  for the binary's embedded version) → tag `v<version>` on the soaked commit →
+  `release.yml` builds the binaries and creates the Release, keyed by the tag,
+  with notes from the matching `CHANGELOG.md` section. (Tag/`VERSION` agreement
+  is by the `just bump` → tag convention, not yet enforced in the workflow.)
+
+**Out of band** — a **nightly longevity soak** (a timer on the staging VM) runs
+the load soak for hours, tracking RSS + on-disk DB size to catch slow leaks /
+unbounded growth (the checkpoint-bloat class), and files a scrubbed, deduplicated
+issue on regression.
