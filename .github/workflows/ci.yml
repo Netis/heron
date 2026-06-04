@@ -144,6 +144,11 @@ jobs:
         # Dependency-free (stdlib only) so it needs no pip install on the runner.
         run: python3 scripts/staging/tests/test_tara_invariants.py
 
+      - name: longevity-soak checker tests
+        # Guards the nightly endurance judgement logic
+        # (scripts/staging/longevity_check.py). Stdlib-only.
+        run: python3 scripts/staging/tests/test_longevity_check.py
+
       # --- staging artifact ---------------------------------------------
       # On a push to main (post-merge), build the deployable binary and
       # publish it so deploy-staging.yml can roll it onto the heron-stage VM.
