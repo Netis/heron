@@ -43,6 +43,13 @@ jobs:
         env:
           HERON_STAGE_VM: ${{ vars.HERON_STAGE_VM }}
           HERON_STAGE_USER: ${{ vars.HERON_STAGE_USER }}
+          # Make the sustained-load soak a real pre-prod GATE: a load regression
+          # now fails the deploy (was informational). Safe because tara's
+          # dual-binary baseline reports a too-tight-threshold environment as
+          # `harness_broken` (non-blocking) — only a candidate that regresses
+          # against the rolling known-good blocks. Operators can set the repo
+          # Variable HERON_STAGE_LOAD_ENFORCE=0 to fall back to informational.
+          HERON_STAGE_LOAD_ENFORCE: ${{ vars.HERON_STAGE_LOAD_ENFORCE || '1' }}
         run: bash scripts/staging/soak-staging.sh
 
       # Authoritative go/no-go signal for the prod-approval gate. Only the
