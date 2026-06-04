@@ -1,0 +1,26 @@
+[Unit]
+Description=longevity-soak — heron endurance run (one pass)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Dedicated service user (operator-created), matching mara's pattern. No NIC /
+# capture capabilities are needed — the soak replays a pcap FILE, not a device.
+User=longevity
+# Required config lives here (chmod 600, NOT in the repo). At minimum:
+#   LONGEVITY_BINARY=/opt/heron/heron
+#   LONGEVITY_CORPUS=/opt/heron/corpus.pcap
+# Optional: LONGEVITY_DURATION (default 14400=4h), LONGEVITY_RATE_PPS (500),
+#   LONGEVITY_REPO, GH_TOKEN (to file a regression issue via the REST API).
+EnvironmentFile=/etc/longevity/env
+ExecStart=/usr/local/bin/longevity-soak.sh --json-out /var/log/longevity/last.json
+# The run is hours long — never let systemd time it out. A regression exits 1
+# (it files an issue); SuccessExitStatus keeps that from wedging the timer.
+TimeoutStartSec=infinity
+SuccessExitStatus=0 1
+# Keep memory honest even here — a runaway soak must not threaten the VM.
+MemoryMax=4G
+
+[Install]
+WantedBy=multi-user.target
