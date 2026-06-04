@@ -232,6 +232,47 @@ fn project_turn(t: &h_turn::AgentTurn) -> serde_json::Value {
     })
 }
 
+/// Tool calls in the RECONSTRUCTED response body, with whether each carried a
+/// non-empty parsed input/arguments. This is what guards SSE reconstruction
+/// (esp. parallel `tool_use` via index-keyed accumulation — an `input: ""` is
+/// the pre-fix symptom). Covers anthropic (`content[].tool_use`) and openai
+/// chat (`choices[0].message.tool_calls[]`).
+fn response_tool_uses(c: &h_llm::model::LlmCall) -> serde_json::Value {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let Some(body) = c.response_body.as_deref() else {
+        return serde_json::json!([]);
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return serde_json::json!([]);
+    };
+    if let Some(content) = v.get("content").and_then(|x| x.as_array()) {
+        for b in content {
+            if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                let name = b.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                let has_input = matches!(b.get("input"),
+                    Some(serde_json::Value::Object(o)) if !o.is_empty());
+                out.push(serde_json::json!({"name": name, "has_input": has_input}));
+            }
+        }
+    }
+    if let Some(tcs) = v.get("choices").and_then(|c| c.get(0))
+        .and_then(|c| c.get("message")).and_then(|m| m.get("tool_calls"))
+        .and_then(|t| t.as_array())
+    {
+        for tc in tcs {
+            let f = tc.get("function");
+            let name = f.and_then(|f| f.get("name")).and_then(|n| n.as_str())
+                .unwrap_or("").to_string();
+            let args = f.and_then(|f| f.get("arguments")).and_then(|a| a.as_str())
+                .unwrap_or("");
+            let has_input = !args.trim().is_empty() && args.trim() != "{}";
+            out.push(serde_json::json!({"name": name, "has_input": has_input}));
+        }
+    }
+    out.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+    serde_json::Value::Array(out)
+}
+
 fn project_call(c: &h_llm::model::LlmCall) -> serde_json::Value {
     serde_json::json!({
         "wire_api": c.wire_api,
@@ -248,6 +289,9 @@ fn project_call(c: &h_llm::model::LlmCall) -> serde_json::Value {
         "tool_call_count": c.tool_call_count,
         "tool_names": sorted_strings(&c.tool_names),
         "agent_topology": opt_str(&c.agent_topology),
+        // reconstructed response tool calls + input-presence — guards SSE
+        // (parallel) tool_use reconstruction
+        "response_tool_uses": response_tool_uses(c),
         // synthetic id VALUE is non-deterministic — assert shape/presence only
         "response_id_present": c.response_id.is_some(),
     })

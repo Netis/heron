@@ -12,6 +12,16 @@
       "model": "exp_model",
       "output_tokens": 165,
       "response_id_present": true,
+      "response_tool_uses": [
+        {
+          "has_input": true,
+          "name": "Bash"
+        },
+        {
+          "has_input": true,
+          "name": "Glob"
+        }
+      ],
       "status_code": 200,
       "tool_call_count": 1,
       "tool_names": [
@@ -31,6 +41,12 @@
       "model": "exp_model",
       "output_tokens": 98,
       "response_id_present": true,
+      "response_tool_uses": [
+        {
+          "has_input": true,
+          "name": "SlashCommand"
+        }
+      ],
       "status_code": 200,
       "tool_call_count": 0,
       "tool_names": [],

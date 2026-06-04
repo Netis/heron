@@ -2,35 +2,37 @@
   "call_count": 2,
   "calls": [
     {
-      "agent_topology": "single_agent",
-      "cache_creation_input_tokens": 0,
-      "cache_read_input_tokens": 1500,
-      "finish_reason": "end_turn",
-      "input_tokens": 1600,
-      "is_agent_request": true,
-      "is_stream": true,
-      "model": "claude-sonnet-4-20250514",
-      "output_tokens": 30,
-      "response_id_present": true,
-      "response_tool_uses": [],
-      "status_code": 200,
-      "tool_call_count": 1,
-      "tool_names": [
-        "Read"
-      ],
-      "tool_surface": "function_call",
-      "wire_api": "anthropic"
-    },
-    {
       "agent_topology": null,
-      "cache_creation_input_tokens": 256,
-      "cache_read_input_tokens": 1024,
-      "finish_reason": "tool_use",
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 1400,
+      "finish_reason": "end_turn",
       "input_tokens": 1500,
       "is_agent_request": false,
       "is_stream": true,
       "model": "claude-sonnet-4-20250514",
-      "output_tokens": 40,
+      "output_tokens": 25,
+      "response_id_present": true,
+      "response_tool_uses": [],
+      "status_code": 200,
+      "tool_call_count": 0,
+      "tool_names": [
+        "Read",
+        "delegate_task",
+        "skill_view"
+      ],
+      "tool_surface": null,
+      "wire_api": "anthropic"
+    },
+    {
+      "agent_topology": null,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 512,
+      "finish_reason": "tool_use",
+      "input_tokens": 1400,
+      "is_agent_request": false,
+      "is_stream": true,
+      "model": "claude-sonnet-4-20250514",
+      "output_tokens": 35,
       "response_id_present": true,
       "response_tool_uses": [
         {
@@ -40,7 +42,11 @@
       ],
       "status_code": 200,
       "tool_call_count": 0,
-      "tool_names": [],
+      "tool_names": [
+        "Read",
+        "delegate_task",
+        "skill_view"
+      ],
       "tool_surface": null,
       "wire_api": "anthropic"
     }
@@ -48,8 +54,8 @@
   "turn_count": 1,
   "turns": [
     {
-      "agent_kind": "claude-cli",
-      "agent_topology": "single_agent",
+      "agent_kind": "hermes",
+      "agent_topology": null,
       "call_count": 2,
       "final_answer_preview_present": true,
       "final_finish_reason": "end_turn",
@@ -58,14 +64,12 @@
       ],
       "status": "complete",
       "subagents_used": [],
-      "tool_call_total": 1,
-      "tool_surfaces": [
-        "function_call"
-      ],
-      "total_cache_creation_input_tokens": 256,
-      "total_cache_read_input_tokens": 2524,
-      "total_input_tokens": 3100,
-      "total_output_tokens": 70,
+      "tool_call_total": 0,
+      "tool_surfaces": [],
+      "total_cache_creation_input_tokens": 0,
+      "total_cache_read_input_tokens": 1912,
+      "total_input_tokens": 2900,
+      "total_output_tokens": 60,
       "user_input_preview_present": true,
       "wire_api": "anthropic"
     }

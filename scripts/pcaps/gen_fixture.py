@@ -302,8 +302,104 @@ def scen_cliproxy_mixed_format():
     return [(req, resp)]
 
 
+# --- shared anthropic roundtrip builder (fills the rest of the column) -------
+
+def _tool_def(name):
+    return {"name": name, "description": f"{name} tool",
+            "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}}}
+
+
+def ant_req(tool_names, messages, stream, headers):
+    h = {"anthropic-version": "2023-06-01",
+         "authorization": f"Bearer {FAKE_ANT_KEY}", "content-type": "application/json"}
+    h.update(headers)
+    body = {"model": "claude-sonnet-4-20250514", "max_tokens": 1024,
+            "messages": messages, "tools": [_tool_def(n) for n in tool_names],
+            "stream": stream}
+    return http_request("POST", "/v1/messages", h, json.dumps(body, separators=(",", ":")).encode())
+
+
+def ant_roundtrip(tool_names, headers, stream, tools_called, user_text):
+    """2-exchange tool roundtrip on one connection → 1 complete turn.
+    tools_called = assistant tool_use blocks emitted in exchange 1 (>1 = parallel)."""
+    u_msg = {"role": "user", "content": [{"type": "text", "text": user_text}]}
+    req1 = ant_req(tool_names, [u_msg], stream, headers)
+    u1 = {"input_tokens": 1400, "output_tokens": 35,
+          "cache_read_input_tokens": 512, "cache_creation_input_tokens": 0}
+    if stream:
+        resp1 = http_response_sse(anthropic_stream(
+            text="working on it", tools=tools_called, stop_reason="tool_use", usage=u1))
+    else:
+        resp1 = http_response_json(anthropic_nonstream(
+            text="working on it", tool=tools_called[0], stop_reason="tool_use", usage=u1))
+    assistant_blocks = [{"type": "tool_use", "id": t["id"], "name": t["name"],
+                         "input": t["input"]} for t in tools_called]
+    tool_results = [{"type": "tool_result", "tool_use_id": t["id"], "content": "ok"}
+                    for t in tools_called]
+    msgs2 = [u_msg, {"role": "assistant", "content": assistant_blocks},
+             {"role": "user", "content": tool_results}]
+    req2 = ant_req(tool_names, msgs2, stream, headers)
+    u2 = {"input_tokens": 1500, "output_tokens": 25,
+          "cache_read_input_tokens": 1400, "cache_creation_input_tokens": 0}
+    if stream:
+        resp2 = http_response_sse(anthropic_stream(
+            text="all done", tools=[], stop_reason="end_turn", usage=u2))
+    else:
+        resp2 = http_response_json(anthropic_nonstream(
+            text="all done", tool=None, stop_reason="end_turn", usage=u2))
+    return [(req1, resp1), (req2, resp2)]
+
+
+def scen_openclaw_anthropic_parallel():
+    """openclaw over Anthropic, streaming, PARALLEL tool_use (two blocks) →
+    1 complete openclaw turn. Body-fingerprint match (sessions_spawn+subagents);
+    parallel tool_use exercises the index-keyed SSE accumulator."""
+    return ant_roundtrip(
+        tool_names=["sessions_spawn", "subagents", "Read", "Grep"],
+        headers={"User-Agent": "node"}, stream=True,
+        tools_called=[{"id": "toolu_par1", "name": "Read", "input": {"path": "a.txt"}},
+                      {"id": "toolu_par2", "name": "Grep", "input": {"pattern": "foo"}}],
+        user_text="search the repo")
+
+
+def scen_hermes_anthropic():
+    """hermes over Anthropic, streaming → 1 complete hermes turn. Body
+    fingerprint (skill_view + delegate_task); no Hermes-specific UA."""
+    return ant_roundtrip(
+        tool_names=["skill_view", "delegate_task", "Read"],
+        headers={"User-Agent": "anthropic-sdk-python/0.40.0"}, stream=True,
+        tools_called=[{"id": "toolu_herm1", "name": "Read", "input": {"path": "x"}}],
+        user_text="use a skill")
+
+
+def scen_generic_anthropic():
+    """generic fallback over Anthropic (no claude-cli headers, no openclaw/hermes
+    markers, no Agent tool) → 1 complete generic turn; session synthesized from
+    the first tool_use id."""
+    return ant_roundtrip(
+        tool_names=["Read"],
+        headers={"User-Agent": "some-sdk/1.0"}, stream=True,
+        tools_called=[{"id": "toolu_gen1", "name": "Read", "input": {"path": "x"}}],
+        user_text="read a file")
+
+
+def scen_claude_cli_anthropic_nonstream():
+    """claude-cli over Anthropic, NON-streaming (Content-Length JSON) → 1
+    complete claude-cli turn. Exercises the non-stream Anthropic extractor."""
+    return ant_roundtrip(
+        tool_names=["Agent", "Read"],
+        headers={"User-Agent": "claude-cli/2.1.0 (external, cli)",
+                 "X-Claude-Code-Session-Id": SESSION}, stream=False,
+        tools_called=[{"id": "toolu_ns1", "name": "Read", "input": {"path": "x"}}],
+        user_text="read it (nonstream)")
+
+
 SCENARIOS = {
     "claude-cli-anthropic-stream": scen_claude_cli_anthropic_stream,
+    "claude-cli-anthropic-nonstream": scen_claude_cli_anthropic_nonstream,
+    "openclaw-anthropic-parallel": scen_openclaw_anthropic_parallel,
+    "hermes-anthropic": scen_hermes_anthropic,
+    "generic-anthropic": scen_generic_anthropic,
     "cliproxy-mixed-format": scen_cliproxy_mixed_format,
 }
 

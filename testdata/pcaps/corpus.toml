@@ -51,6 +51,59 @@ turn_count = 1
 sse_framing = "anthropic-events"
 usage_field_style = "anthropic"
 
+[[fixture]]
+id            = "claude-cli-anthropic-nonstream"
+file          = "claude-cli-anthropic-nonstream.pcap"
+status        = "active"
+agent_kind    = "claude-cli"
+wire_apis     = ["anthropic"]
+backend_label = "anthropic-direct"
+scenarios     = ["non-streaming", "tool-calls", "synthesized"]
+notes         = "Synthesized: claude-cli /v1/messages NON-streaming (Content-Length JSON), one tool roundtrip → 1 complete turn. Exercises the non-stream Anthropic extractor."
+[fixture.expect]
+turn_count = 1
+[fixture.expect.quirks]
+usage_field_style = "anthropic"
+
+[[fixture]]
+id            = "openclaw-anthropic-parallel"
+file          = "openclaw-anthropic-parallel.pcap"
+status        = "active"
+agent_kind    = "openclaw"
+wire_apis     = ["anthropic"]
+backend_label = "litellm"
+scenarios     = ["streaming", "parallel-tool-use", "synthesized"]
+notes         = "Synthesized: openclaw body-fingerprint (sessions_spawn+subagents) over Anthropic SSE with PARALLEL tool_use → 1 complete turn. Exercises index-keyed accumulator on parallel blocks."
+[fixture.expect]
+turn_count = 1
+[fixture.expect.quirks]
+sse_framing = "anthropic-events"
+usage_field_style = "anthropic"
+
+[[fixture]]
+id            = "hermes-anthropic"
+file          = "hermes-anthropic.pcap"
+status        = "active"
+agent_kind    = "hermes"
+wire_apis     = ["anthropic"]
+backend_label = "litellm"
+scenarios     = ["streaming", "tool-calls", "synthesized"]
+notes         = "Synthesized: hermes body-fingerprint (skill_view+delegate_task) over Anthropic SSE → 1 complete turn."
+[fixture.expect]
+turn_count = 1
+
+[[fixture]]
+id            = "generic-anthropic"
+file          = "generic-anthropic.pcap"
+status        = "active"
+agent_kind    = "generic"
+wire_apis     = ["anthropic"]
+backend_label = "anthropic-direct"
+scenarios     = ["streaming", "tool-calls", "synthesized"]
+notes         = "Synthesized: no claude-cli headers / openclaw|hermes markers / Agent tool → generic fallback over Anthropic; session synthesized from first tool_use id → 1 complete turn."
+[fixture.expect]
+turn_count = 1
+
 # --- PENDING: agent detection cells (seed from the 7 hand-distributed caps) --
 
 [[fixture]]

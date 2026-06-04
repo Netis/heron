@@ -12,6 +12,7 @@
       "model": "claude-sonnet-4-20250514",
       "output_tokens": 37,
       "response_id_present": true,
+      "response_tool_uses": [],
       "status_code": 200,
       "tool_call_count": 0,
       "tool_names": [],
