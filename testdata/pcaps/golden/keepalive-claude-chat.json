@@ -1,0 +1,66 @@
+{
+  "call_count": 2,
+  "calls": [
+    {
+      "agent_topology": "single_agent",
+      "cache_creation_input_tokens": null,
+      "cache_read_input_tokens": null,
+      "finish_reason": "tool_calls",
+      "input_tokens": 16848,
+      "is_agent_request": true,
+      "is_stream": true,
+      "model": "exp_model",
+      "output_tokens": 165,
+      "response_id_present": true,
+      "status_code": 200,
+      "tool_call_count": 1,
+      "tool_names": [
+        "SlashCommand"
+      ],
+      "tool_surface": "function_call",
+      "wire_api": "openai-chat"
+    },
+    {
+      "agent_topology": null,
+      "cache_creation_input_tokens": null,
+      "cache_read_input_tokens": null,
+      "finish_reason": "tool_calls",
+      "input_tokens": 13165,
+      "is_agent_request": false,
+      "is_stream": true,
+      "model": "exp_model",
+      "output_tokens": 98,
+      "response_id_present": true,
+      "status_code": 200,
+      "tool_call_count": 0,
+      "tool_names": [],
+      "tool_surface": null,
+      "wire_api": "openai-chat"
+    }
+  ],
+  "turn_count": 1,
+  "turns": [
+    {
+      "agent_kind": "generic",
+      "agent_topology": "single_agent",
+      "call_count": 2,
+      "final_answer_preview_present": false,
+      "final_finish_reason": null,
+      "models_used": [
+        "exp_model"
+      ],
+      "status": "incomplete",
+      "subagents_used": [],
+      "tool_call_total": 1,
+      "tool_surfaces": [
+        "function_call"
+      ],
+      "total_cache_creation_input_tokens": 0,
+      "total_cache_read_input_tokens": 0,
+      "total_input_tokens": 30013,
+      "total_output_tokens": 263,
+      "user_input_preview_present": true,
+      "wire_api": "openai-chat"
+    }
+  ]
+}

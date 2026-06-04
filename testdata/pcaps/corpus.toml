@@ -1,0 +1,185 @@
+# Heron pcap regression corpus — the (backend × agent × wire_api × scenario)
+# matrix that `server/h-turn/tests/corpus_golden.rs` replays and asserts against
+# committed goldens in testdata/pcaps/golden/<id>.json.
+#
+# - `status = "active"`  → a scrubbed pcap is committed under
+#   testdata/pcaps/corpus/<file> (git-LFS) and a golden exists. Runs in CI.
+#   (Skipped automatically if the LFS object isn't pulled — see the harness.)
+# - `status = "pending"` → a target matrix cell whose real capture hasn't been
+#   obtained + scrubbed yet. Listed here so the matrix is visible in one place;
+#   the test skips it. To activate: capture → `scripts/pcaps/scrub_pcap.sh` →
+#   drop under corpus/ → flip status → `just corpus bless` → commit.
+#
+# `backend_label` is a PROVENANCE LABEL ONLY — vllm/sglang/ollama/litellm/
+# cliproxy all speak openai-chat/openai-responses on the wire and are NOT a
+# detection output. Their value is the parsing QUIRK each one locks in
+# (see [fixture.expect.quirks]).
+
+schema_version = 1
+
+# --- ACTIVE -----------------------------------------------------------------
+
+[[fixture]]
+id            = "keepalive-claude-chat"
+file          = "keepalive-claude-chat.pcap"
+status        = "active"
+agent_kind    = "generic"
+wire_apis     = ["openai-chat"]
+backend_label = "openai-direct"
+scenarios     = ["keepalive", "pipelined", "streaming"]
+notes         = """Seed/vertical-slice fixture: two pipelined SSE responses on one \
+keep-alive connection (Claude Agent SDK system prompt over /v1/chat/completions). \
+Scrubbed from server/h-protocol/tests/fixtures/keepalive_2sse_pipelined.pcap. \
+Ground truth is captured in the golden; this cell proves the scrub→commit→golden→CI slice."""
+
+# --- PENDING: agent detection cells (seed from the 7 hand-distributed caps) --
+
+[[fixture]]
+id = "claude-cli-anthropic-single"
+file = "claude-cli-anthropic-single.pcap"
+status = "pending"
+agent_kind = "claude-cli"
+wire_apis = ["anthropic"]
+backend_label = "anthropic-direct"
+scenarios = ["single-turn", "streaming", "tool-calls"]
+notes = "Anthropic /v1/messages, claude-cli UA + X-Claude-Code-Session-Id. 1 complete turn."
+[fixture.expect]
+turn_count = 1
+
+[[fixture]]
+id = "claude-cli-anthropic-multi"
+file = "claude-cli-anthropic-multi.pcap"
+status = "pending"
+agent_kind = "claude-cli"
+wire_apis = ["anthropic"]
+backend_label = "anthropic-direct"
+scenarios = ["multi-turn", "streaming", "tool-calls", "subagent"]
+notes = "Long session, single session_id; auto title-gen filtered; Task sub-agent attaches to parent."
+
+[[fixture]]
+id = "codex-cli-responses-multi"
+file = "codex-cli-responses-multi.pcap"
+status = "pending"
+agent_kind = "codex-cli"
+wire_apis = ["openai-responses"]
+backend_label = "openai-direct"
+scenarios = ["multi-turn", "streaming", "tool-calls"]
+notes = "OpenAI /v1/responses, codex-cli. 2 turns (1 complete, 1 EOF-cut)."
+[fixture.expect]
+turn_count = 2
+
+[[fixture]]
+id = "opencode-openai-chat"
+file = "opencode-openai-chat.pcap"
+status = "pending"
+agent_kind = "opencode"
+wire_apis = ["openai-chat"]
+backend_label = "openai-direct"
+scenarios = ["multi-turn", "tool-calls"]
+notes = "opencode UA + x-session-affinity. NEEDS FRESH CAPTURE (not in the original 7)."
+
+[[fixture]]
+id = "openclaw-openai-chat"
+file = "openclaw-openai-chat.pcap"
+status = "pending"
+agent_kind = "openclaw"
+wire_apis = ["openai-chat"]
+backend_label = "litellm"
+scenarios = ["multi-session", "tool-calls", "tool-id-canonicalization"]
+notes = "Two sessions; client echoes tool_calls[].id without underscore — exercises canonicalize_tool_id. 4 turns / 2 sessions."
+[fixture.expect]
+turn_count = 4
+
+[[fixture]]
+id = "openclaw-anthropic"
+file = "openclaw-anthropic.pcap"
+status = "pending"
+agent_kind = "openclaw"
+wire_apis = ["anthropic"]
+backend_label = "litellm"
+scenarios = ["streaming", "parallel-tool-use", "compaction"]
+notes = "GLM-5 parallel tool_use; index-keyed SSE accumulator. 4 turns / 1 session."
+[fixture.expect]
+turn_count = 4
+[fixture.expect.quirks]
+sse_framing = "anthropic-events"
+usage_field_style = "anthropic"
+
+[[fixture]]
+id = "hermes-openai-chat"
+file = "hermes-openai-chat.pcap"
+status = "pending"
+agent_kind = "hermes"
+wire_apis = ["openai-chat"]
+backend_label = "litellm"
+scenarios = ["tool-calls", "title-gen"]
+notes = "Body-fingerprint (skill_view/delegate_task/...). 4-call main turn + 1 title-gen one-shot."
+
+[[fixture]]
+id = "gemini-cli-apikey"
+file = "gemini-cli-apikey.pcap"
+status = "pending"
+agent_kind = "generic"
+wire_apis = ["gemini-aistudio"]
+backend_label = "gemini-direct"
+scenarios = ["multi-turn", "streaming", "tool-calls"]
+notes = "Gemini AI Studio streamGenerateContent; generic profile. 2 turns split 4+3, one session."
+[fixture.expect]
+turn_count = 2
+
+# --- PENDING: backend-quirk cells (same wire_api, different bytes) -----------
+
+[[fixture]]
+id = "vllm-openai-chat-stream"
+file = "vllm-openai-chat-stream.pcap"
+status = "pending"
+agent_kind = "generic"
+wire_apis = ["openai-chat"]
+backend_label = "vllm"
+scenarios = ["streaming", "tool-calls"]
+notes = "vLLM OpenAI-compatible SSE framing + usage placement. NEEDS FRESH CAPTURE."
+[fixture.expect.quirks]
+sse_framing = "openai-chunks"
+
+[[fixture]]
+id = "sglang-openai-chat-stream"
+file = "sglang-openai-chat-stream.pcap"
+status = "pending"
+agent_kind = "generic"
+wire_apis = ["openai-chat"]
+backend_label = "sglang"
+scenarios = ["streaming", "tool-calls"]
+notes = "SGLang finish_reason vocabulary + SSE chunking. NEEDS FRESH CAPTURE."
+
+[[fixture]]
+id = "ollama-openai-chat"
+file = "ollama-openai-chat.pcap"
+status = "pending"
+agent_kind = "generic"
+wire_apis = ["openai-chat"]
+backend_label = "ollama"
+scenarios = ["streaming"]
+notes = "Ollama OpenAI-compat usage field style + model-name strings. NEEDS FRESH CAPTURE."
+
+[[fixture]]
+id = "litellm-openai-responses"
+file = "litellm-openai-responses.pcap"
+status = "pending"
+agent_kind = "generic"
+wire_apis = ["openai-responses"]
+backend_label = "litellm"
+scenarios = ["streaming", "tool-calls"]
+notes = "LiteLLM proxy passthrough on /v1/responses. NEEDS FRESH CAPTURE."
+
+[[fixture]]
+id = "cliproxy-mixed-format"
+file = "cliproxy-mixed-format.pcap"
+status = "pending"
+agent_kind = "generic"
+wire_apis = ["openai-chat"]
+backend_label = "cliproxy"
+scenarios = ["mixed-format", "usage-fallback"]
+notes = "HIGH VALUE (#96): OpenAI-Chat request → Anthropic-shaped usage in response. Exercises chat.rs usage fallback. NEEDS FRESH CAPTURE."
+[fixture.expect.quirks]
+mixed_format = true
+usage_field_style = "anthropic"
