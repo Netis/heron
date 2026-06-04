@@ -1,0 +1,25 @@
+{
+  "call_count": 1,
+  "calls": [
+    {
+      "agent_topology": null,
+      "cache_creation_input_tokens": null,
+      "cache_read_input_tokens": null,
+      "finish_reason": null,
+      "input_tokens": 309,
+      "is_agent_request": false,
+      "is_stream": false,
+      "model": "claude-sonnet-4-20250514",
+      "output_tokens": 37,
+      "response_id_present": true,
+      "response_tool_uses": [],
+      "status_code": 200,
+      "tool_call_count": 0,
+      "tool_names": [],
+      "tool_surface": null,
+      "wire_api": "openai-chat"
+    }
+  ],
+  "turn_count": 0,
+  "turns": []
+}

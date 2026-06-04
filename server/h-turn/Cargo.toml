@@ -20,3 +20,4 @@ tokio-util = { workspace = true }
 h-capture.workspace = true
 h-metrics.workspace = true
 h-protocol.workspace = true
+toml = "0.8"

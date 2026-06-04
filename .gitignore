@@ -29,8 +29,12 @@ server/data/
 *.duckdb
 *.duckdb.wal
 
-# Test pcap fixtures (large; not checked in)
+# Legacy hand-distributed pcap fixtures (large; not checked in). The curated,
+# scrubbed corpus under testdata/pcaps/corpus/ IS committed (via git-LFS — see
+# .gitattributes) and is deliberately NOT matched by this top-level-only glob.
 /testdata/pcaps/*.pcap
+# Scratch area for raw, unscrubbed captures — never commit these.
+/testdata/pcaps/raw/
 
 # Build artifacts
 *.o

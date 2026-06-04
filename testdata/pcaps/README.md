@@ -42,5 +42,51 @@ cargo run -p heron -- --pcap testdata/pcaps/claude-cli-messages-multi.pcap
 
 ## Obtaining the files
 
-These pcaps are not in git. Ask @timmy.yuan for a copy or capture your own
-loopback traffic against `127.0.0.1:8317` while using claude-cli / codex-cli.
+These (legacy, hand-distributed) pcaps are not in git. Ask @timmy.yuan for a
+copy or capture your own loopback traffic against `127.0.0.1:8317`. They feed
+the turn-grouping tests in `server/h-turn/tests/integration.rs`, which skip
+when absent.
+
+---
+
+# Committed regression corpus (`corpus/`)
+
+Separate from the legacy fixtures above: `testdata/pcaps/corpus/` holds a
+**curated, secret-scrubbed, git-LFS-committed** corpus that runs as a golden
+regression gate in CI (`server/h-turn/tests/corpus_golden.rs`,
+`cargo test --workspace`).
+
+- **`corpus.toml`** — the single source of truth for the
+  (backend × agent × wire_api × scenario) matrix. Each `[[fixture]]` is either
+  `status = "active"` (a scrubbed `corpus/<file>.pcap` + `golden/<id>.json` are
+  committed) or `status = "pending"` (a target cell whose capture isn't obtained
+  yet — listed for visibility, skipped by the test).
+- **`corpus/*.pcap`** — scrubbed fixtures, stored via git-LFS (`.gitattributes`).
+  Run `git lfs pull` to materialize them; CI checks out with `lfs: true`. An
+  unsmudged LFS pointer is treated as "absent" and skipped.
+- **`golden/<id>.json`** — the deterministic extracted projection (no uuids /
+  timing). Regenerate with `just corpus bless` and review the diff.
+- **`<id>.scrub.json`** — per-fixture redaction audit (which rules fired, size),
+  so reviewers can confirm scrubbing happened without seeing secrets.
+
+### Why "backend" is a label, not a detection output
+
+vLLM / SGLang / Ollama / LiteLLM / CLIproxy all speak `openai-chat` /
+`openai-responses` on the wire — Heron does not distinguish them per-deployment.
+Their value as fixtures is the **parsing quirk** each one locks in (SSE framing,
+usage-block field names, finish_reason vocab, the CLIproxy mixed-format usage
+fallback). `backend_label` + `[fixture.expect.quirks]` document that; the hard
+detection assertion is `wire_apis`.
+
+### Adding / refreshing a cell
+
+See [`scripts/pcaps/README.md`](../../scripts/pcaps/README.md) for the
+capture → scrub → bless → commit workflow and the capture recipes. Quick:
+
+```bash
+scripts/pcaps/scrub_pcap.sh testdata/pcaps/raw/<id>.raw.pcap --id <id>
+# flip status="active" in corpus.toml, then:
+just corpus bless && just corpus test && just corpus lint
+```
+
+Never commit raw captures — `testdata/pcaps/raw/` is gitignored.

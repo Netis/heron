@@ -96,3 +96,17 @@ loc *args:
 # Run on the host where ClickHouse is on loopback. Env: CLICKHOUSE_URL, CALLS, …
 bench-storage:
     @bash scripts/bench-storage.sh
+
+# 🧪 PCAP regression corpus (test | bless | lint)
+#   just corpus test    Replay corpus/*.pcap, assert goldens (skips absent/LFS-pointer)
+#   just corpus bless   Regenerate goldens (review the diff before committing)
+#   just corpus lint    Manifest consistency + binary-payload leakage scan
+corpus action="test":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{action}}" in
+      test)  cd server && cargo test -p h-turn --test corpus_golden -- --nocapture ;;
+      bless) cd server && HERON_BLESS_GOLDENS=1 cargo test -p h-turn --test corpus_golden -- --nocapture ;;
+      lint)  bash scripts/lint/check-pcap-corpus.sh ;;
+      *) echo "usage: just corpus [test|bless|lint]"; exit 2 ;;
+    esac

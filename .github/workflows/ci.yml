@@ -32,6 +32,12 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Pull the git-LFS pcap corpus (testdata/pcaps/corpus/*.pcap) so the
+          # corpus_golden regression tests run instead of skipping. Needs
+          # git-lfs on the runner; if a fixture stays an unsmudged pointer the
+          # harness skips it rather than parsing the pointer as a pcap.
+          lfs: true
 
       - name: Toolchain versions
         run: |
@@ -72,6 +78,12 @@ jobs:
         # IP or a private-key PEM block. The PR-review agent carries the
         # semantic half (plaintext passwords, internal hostnames, paths).
         run: bash scripts/lint/check-leakage.sh
+
+      - name: lint — pcap corpus (manifest consistency + binary leakage)
+        # check-leakage.sh skips binary files, so committed corpus pcaps are
+        # NOT scanned there — this is the secret gate for the binary corpus,
+        # plus manifest↔file↔golden consistency.
+        run: bash scripts/lint/check-pcap-corpus.sh
 
       - name: lint — leakage linter self-test
         # Guards the leakage gate itself: a regression in check-leakage.sh
