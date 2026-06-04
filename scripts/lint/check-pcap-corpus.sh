@@ -77,10 +77,13 @@ scan_one() {
   if head -c 64 "$f" 2>/dev/null | grep -q "version https://git-lfs"; then
     note "skip leakage scan (LFS pointer, not smudged): $(basename "$f")"; return 0
   fi
+  # IP class MUST stay in sync with check-leakage.sh PRIV_IP_RE (RFC1918 + CGNAT
+  # 100.64/10). CGNAT matters here — the host's tailscale range (100.x) is the
+  # kind of internal addr a real capture could carry.
   hits=$(LC_ALL=C grep -aoE \
-    'sk-(ant-)?[A-Za-z0-9_-]{12,}|eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3})\b' \
+    'sk-(ant-)?[A-Za-z0-9_-]{12,}|eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3}|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3})\b' \
     "$f" 2>/dev/null | grep -avE '^X+$' | sort -u | head -20 || true)
-  paths=$(LC_ALL=C grep -aoE '/(Users|home)/[A-Za-z0-9._-]+' "$f" 2>/dev/null | grep -avE '/(Users|home)/X+$' | sort -u | head -10 || true)
+  paths=$(LC_ALL=C grep -aoE '/(Users|home|root)/[A-Za-z0-9._-]+' "$f" 2>/dev/null | grep -avE '/(Users|home|root)/X+$' | sort -u | head -10 || true)
   if [ -n "$hits" ] || [ -n "$paths" ]; then
     note "LEAKAGE in $(basename "$f"):"
     [ -n "$hits" ] && echo "$hits" | sed 's/^/    /'

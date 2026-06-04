@@ -112,18 +112,19 @@ def build_rules(seed: str):
         re.compile(rb"(?i)((?:x-claude-code-session-id|x-codex-turn-metadata|x-session-affinity|x-session-id)\s*:\s*)([^\r\n]+)"),
         lambda m: m.group(1) + _fake_token(m.group(2), seed, ALNUM),
     ))
-    # RFC1918 private IPs (ASCII, in payloads) → same-length filler (no longer an IP)
+    # Internal IPs (ASCII, in payloads): RFC1918 + CGNAT 100.64/10 — kept in
+    # sync with check-leakage.sh PRIV_IP_RE. → same-length filler (no longer an IP)
     rules.append((
         "rfc1918_ip",
-        re.compile(rb"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b"),
+        re.compile(rb"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3})\b"),
         lambda m: _same_len(m.group(0)),
     ))
-    # home-directory paths → redact the username component only.
+    # home-directory paths (incl. /root) → redact the user/first component only.
     # (The literal prefixes are spelled with a char-class so this source file
     # itself doesn't trip the repo's home-path leakage gate.)
     rules.append((
         "home_path",
-        re.compile(rb"(/Us[e]rs/|/h[o]me/)([^/\r\n\s\"']+)"),
+        re.compile(rb"(/Us[e]rs/|/h[o]me/|/r[o]ot/)([^/\r\n\s\"']+)"),
         lambda m: m.group(1) + _same_len(m.group(2)),
     ))
     # e-mail addresses
@@ -141,8 +142,8 @@ RESIDUAL_FORBIDDEN = [
     ("provider_key", re.compile(rb"sk-(?:ant-)?[A-Za-z0-9_\-]{12,}")),
     ("jwt", re.compile(rb"eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}")),
     ("pem", re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-    ("rfc1918_ip", re.compile(rb"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b")),
-    ("home_path", re.compile(rb"(?:/Us[e]rs/|/h[o]me/)[A-Za-z0-9][^/\r\n\s\"']*")),
+    ("rfc1918_ip", re.compile(rb"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3})\b")),
+    ("home_path", re.compile(rb"(?:/Us[e]rs/|/h[o]me/|/r[o]ot/)[A-Za-z0-9][^/\r\n\s\"']*")),
 ]
 
 
