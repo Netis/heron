@@ -132,8 +132,11 @@ class of past failure has a deterministic gate before it can ship.
 **Before a release** — push a `v*` tag → `release.yml`:
 - A `gate` job refuses to build/publish unless the tagged commit carries a
   passing `staging-soaked` status, so the multi-arch binaries are never cut from
-  un-soaked code. `VERSION` is the SSOT (`just bump`); the GitHub Release notes
-  come from the matching `CHANGELOG.md` section.
+  un-soaked code. Cutting a release: `just bump` (the `VERSION` file is the SSOT
+  for the binary's embedded version) → tag `v<version>` on the soaked commit →
+  `release.yml` builds the binaries and creates the Release, keyed by the tag,
+  with notes from the matching `CHANGELOG.md` section. (Tag/`VERSION` agreement
+  is by the `just bump` → tag convention, not yet enforced in the workflow.)
 
 **Out of band** — a **nightly longevity soak** (a timer on the staging VM) runs
 the load soak for hours, tracking RSS + on-disk DB size to catch slow leaks /

@@ -80,7 +80,7 @@ This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Ver
 
 ![Overview — agent activity timeseries + per-kind distribution at the top, call-rate / latency / error rate / per-model panels below](docs/images/overview.png)
 
-**Storage** in DuckDB (default, embedded, single-file) with per-table retention enabled out of the box, or **ClickHouse** for high-volume columnar analytics — select it with `storage.backend`. Pluggable backend trait; PostgreSQL is designed but not yet wired.
+**Storage** in DuckDB (default, embedded, single-file) with per-table retention enabled out of the box, or **ClickHouse** for high-volume columnar analytics — select it with `storage.backend = "clickhouse"` in the config. Pluggable backend trait; PostgreSQL is designed but not yet wired.
 
 **Console** at `http://localhost:3000`: overview · performance · usage · errors · services (table / path / model views) · agent turns · agent sessions · LLM calls (with full request/response body drill-down) · raw HTTP exchanges · pipeline-health debug views.
 
