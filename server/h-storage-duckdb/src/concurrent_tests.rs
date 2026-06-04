@@ -480,3 +480,136 @@ async fn read_pool_poisoned_fault_propagates_to_reads() {
     let page = backend.query_turns(&turns_q).await.unwrap();
     assert_eq!(page.total, 1);
 }
+
+// ── Chaos under load (PR3) ──────────────────────────────────────────────────
+//
+// The fault tests above are deterministic single writes: arm → one write fails
+// → reopen → one write succeeds. These drive a SUSTAINED concurrent write load
+// and arm the fault *while writers are hammering the storage*, asserting the
+// property that actually matters in production: a write either commits (its rows
+// are queryable) or returns Err (the caller is told) — never silently lost, never
+// partially inserted — and the backend stays alive and recovers via the same
+// `reopen_all_connections` path the pair-sweeper drives on a real FATAL.
+//
+// Structured in phases (healthy → armed → recovered) rather than timing-raced so
+// the fault is *guaranteed* exercised under concurrency without flakiness.
+//
+// Deliberately out of scope (documented, not silently omitted): a real ENOSPC
+// via a small tmpfs and a checkpoint-at-102 GB repro — both need a mounted
+// filesystem / privileges a unit test doesn't have. The injected `DiskFull`
+// here exercises the write-path *handling* of that error class.
+
+#[cfg(feature = "fault-injection")]
+const CHAOS_BATCH: usize = 25;
+
+/// Run a concurrent burst: `writers` tasks each flush `rounds` batches of
+/// `CHAOS_BATCH` calls. Ids are offset by `id_base` so they never collide across
+/// phases (→ row COUNT equals exactly the rows inserted). Returns
+/// `(ok_batches, err_batches)` summed across writers. A faulted write must come
+/// back as Err — a panicking writer task fails the test.
+#[cfg(feature = "fault-injection")]
+async fn chaos_burst(
+    backend: &Arc<DuckDbBackend>,
+    writers: usize,
+    rounds: usize,
+    id_base: usize,
+) -> (usize, usize) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let ok = Arc::new(AtomicUsize::new(0));
+    let err = Arc::new(AtomicUsize::new(0));
+    let mut tasks = Vec::new();
+    for w in 0..writers {
+        let be = backend.clone();
+        let ok = ok.clone();
+        let err = err.clone();
+        tasks.push(tokio::spawn(async move {
+            for r in 0..rounds {
+                let base = id_base + (w * rounds + r) * CHAOS_BATCH;
+                let batch: Vec<_> = (0..CHAOS_BATCH).map(|i| mk_call(base + i)).collect();
+                match be.write_calls(batch).await {
+                    Ok(_) => {
+                        ok.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(_) => {
+                        err.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }));
+    }
+    for t in tasks {
+        t.await
+            .expect("writer task must not panic — an injected fault must surface as Err");
+    }
+    (ok.load(Ordering::Relaxed), err.load(Ordering::Relaxed))
+}
+
+#[cfg(feature = "fault-injection")]
+fn count_calls(backend: &DuckDbBackend) -> usize {
+    let conn = backend.test_conn().lock().unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM llm_calls", [], |r| r.get(0))
+        .unwrap();
+    n as usize
+}
+
+#[cfg(feature = "fault-injection")]
+async fn chaos_under_load(fault: crate::fault_injection::FaultPoint) {
+    const WRITERS: usize = 3;
+    const ROUNDS: usize = 8;
+    let healthy = WRITERS * ROUNDS; // batches every burst commits when un-faulted
+
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("chaos.duckdb");
+    let backend = Arc::new(DuckDbBackend::open(path.to_str().unwrap()).unwrap());
+    backend.init().await.unwrap();
+
+    // Phase 1 — healthy concurrent load: everything commits.
+    let (ok1, err1) = chaos_burst(&backend, WRITERS, ROUNDS, 0).await;
+    assert_eq!((ok1, err1), (healthy, 0), "no fault armed yet");
+
+    // Phase 2 — fault armed while writers hammer: every write must fail with Err
+    // (no panic, no partial insert) and nothing must land in the table.
+    backend.fault_set().arm(fault);
+    let (ok2, err2) = chaos_burst(&backend, WRITERS, ROUNDS, 10_000).await;
+    backend.fault_set().disarm(fault);
+    assert_eq!(ok2, 0, "every write under the armed fault must fail");
+    assert_eq!(err2, healthy, "the fault must be exercised on every batch");
+    assert_eq!(
+        count_calls(&backend),
+        healthy * CHAOS_BATCH,
+        "faulted batches inserted nothing — only Phase 1 rows present"
+    );
+
+    // Recover via the production path (the pair-sweeper calls this on a FATAL).
+    backend.reopen_all_connections().await.unwrap();
+
+    // Phase 3 — post-recovery concurrent load: writes succeed again.
+    let (ok3, err3) = chaos_burst(&backend, WRITERS, ROUNDS, 20_000).await;
+    assert_eq!((ok3, err3), (healthy, 0), "writes must succeed after recovery");
+
+    // No silent loss, no double-count: rows == exactly the committed batches
+    // (Phase 1 + Phase 3); the faulted Phase 2 contributed nothing.
+    assert_eq!(
+        count_calls(&backend),
+        (ok1 + ok3) * CHAOS_BATCH,
+        "row count must equal exactly the committed batches — no silent loss"
+    );
+}
+
+/// A DuckDB FATAL/invalidation arriving mid-load: writes during the window fail
+/// cleanly, `reopen_all_connections` recovers, and no committed row is lost.
+#[cfg(feature = "fault-injection")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duckdb_invalidate_mid_load_recovers_with_no_silent_loss() {
+    chaos_under_load(crate::fault_injection::FaultPoint::DuckDbInvalidate).await;
+}
+
+/// ENOSPC/`DiskFull` arriving mid-load. This is the first test to ARM the
+/// `DiskFull` fault — it is wired into every write path but was previously
+/// defined-but-never-triggered. Writes fail gracefully and recovery is clean.
+#[cfg(feature = "fault-injection")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disk_full_mid_load_is_graceful_and_recovers() {
+    chaos_under_load(crate::fault_injection::FaultPoint::DiskFull).await;
+}
