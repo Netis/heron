@@ -283,22 +283,48 @@ def scen_claude_cli_anthropic_stream():
     return [(req1, resp1), (req2, resp2)]
 
 
+# The exact #96 shape: the proxy speaks the OpenAI Chat API (response is
+# chat.completion-SHAPED — choices[].message, finish_reason) but the usage block
+# carries ANTHROPIC field names (input_tokens / output_tokens /
+# cache_read_input_tokens) because it forwarded the upstream Anthropic usage
+# without remapping. Heron detects openai-chat from the request; the chat
+# extractor must fall back to the Anthropic usage names.
+CLIPROXY_USAGE = {"input_tokens": 309, "output_tokens": 37, "cache_read_input_tokens": 256}
+
+
+def _oai_chat_nonstream_body(text, finish_reason, usage):
+    return json.dumps({
+        "id": "chatcmpl-proxy", "object": "chat.completion", "model": OAI_MODEL,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                     "finish_reason": finish_reason}],
+        "usage": usage,
+    }, separators=(",", ":")).encode()
+
+
 def scen_cliproxy_mixed_format():
-    """cliproxy mixed-format (#96): OpenAI-Chat REQUEST, Anthropic-shaped
-    RESPONSE. Heron detects openai-chat from the request; usage extraction must
-    fall back to Anthropic field names (input_tokens/output_tokens)."""
-    hdr = {
-        "User-Agent": "openai-python/1.40.0",
-        "authorization": f"Bearer {FAKE_OAI_KEY}",
-        "content-type": "application/json",
-    }
+    """cliproxy mixed-format (#96), NON-streaming: OpenAI-Chat request + an
+    OpenAI chat.completion-SHAPED response whose `usage` uses ANTHROPIC field
+    names. Detected openai-chat; usage falls back to input_tokens / output_tokens
+    / cache_read_input_tokens."""
+    hdr = {"User-Agent": "openai-python/1.40.0",
+           "authorization": f"Bearer {FAKE_OAI_KEY}", "content-type": "application/json"}
     req = http_request("POST", "/v1/chat/completions", hdr, json.dumps({
-        "model": "gpt-4o", "stream": False,
+        "model": OAI_MODEL, "stream": False,
         "messages": [{"role": "user", "content": "hello"}]}, separators=(",", ":")).encode())
-    # Response is Anthropic Messages shape (proxy returned upstream shape):
-    resp = http_response_json(anthropic_nonstream(
-        text="hi there", stop_reason="end_turn",
-        usage={"input_tokens": 309, "output_tokens": 37}))
+    resp = http_response_json(_oai_chat_nonstream_body("hi there", "stop", CLIPROXY_USAGE))
+    return [(req, resp)]
+
+
+def scen_cliproxy_mixed_stream():
+    """cliproxy mixed-format (#96), STREAMING: OpenAI-Chat request + OpenAI SSE
+    chunks whose final usage chunk uses ANTHROPIC field names. Exercises the
+    SSE-path usage fallback (a separate code path from the non-stream one)."""
+    hdr = {"User-Agent": "openai-python/1.40.0",
+           "authorization": f"Bearer {FAKE_OAI_KEY}", "content-type": "application/json"}
+    req = http_request("POST", "/v1/chat/completions", hdr, json.dumps({
+        "model": OAI_MODEL, "stream": True, "stream_options": {"include_usage": True},
+        "messages": [{"role": "user", "content": "hello"}]}, separators=(",", ":")).encode())
+    resp = http_response_sse(oai_chat_stream("hi there", [], "stop", CLIPROXY_USAGE))
     return [(req, resp)]
 
 
@@ -529,6 +555,7 @@ SCENARIOS = {
     "hermes-anthropic": scen_hermes_anthropic,
     "generic-anthropic": scen_generic_anthropic,
     "cliproxy-mixed-format": scen_cliproxy_mixed_format,
+    "cliproxy-mixed-format-stream": scen_cliproxy_mixed_stream,
     # openai column (below)
     "opencode-openai-chat": lambda: scen_openai_chat("opencode"),
     "openclaw-openai-chat": lambda: scen_openai_chat("openclaw"),
