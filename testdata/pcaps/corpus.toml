@@ -32,6 +32,25 @@ keep-alive connection (Claude Agent SDK system prompt over /v1/chat/completions)
 Scrubbed from server/h-protocol/tests/fixtures/keepalive_2sse_pipelined.pcap. \
 Ground truth is captured in the golden; this cell proves the scrub→commit→golden→CI slice."""
 
+# --- ACTIVE: deterministically synthesized (scripts/pcaps/gen_fixture.py) ----
+# No real capture/scrub needed — the generator emits faithful, secret-free wire
+# bytes and frames them into a pcap. Regenerate with `gen_fixture.py --all`.
+
+[[fixture]]
+id            = "claude-cli-anthropic-stream"
+file          = "claude-cli-anthropic-stream.pcap"
+status        = "active"
+agent_kind    = "claude-cli"
+wire_apis     = ["anthropic"]
+backend_label = "anthropic-direct"
+scenarios     = ["streaming", "tool-calls", "synthesized"]
+notes         = "Synthesized: claude-cli /v1/messages SSE, one tool roundtrip → 1 complete turn. Exercises claude-cli header detection, index-keyed SSE accumulator, usage+cache extraction."
+[fixture.expect]
+turn_count = 1
+[fixture.expect.quirks]
+sse_framing = "anthropic-events"
+usage_field_style = "anthropic"
+
 # --- PENDING: agent detection cells (seed from the 7 hand-distributed caps) --
 
 [[fixture]]
@@ -174,12 +193,12 @@ notes = "LiteLLM proxy passthrough on /v1/responses. NEEDS FRESH CAPTURE."
 [[fixture]]
 id = "cliproxy-mixed-format"
 file = "cliproxy-mixed-format.pcap"
-status = "pending"
+status = "active"
 agent_kind = "generic"
 wire_apis = ["openai-chat"]
 backend_label = "cliproxy"
-scenarios = ["mixed-format", "usage-fallback"]
-notes = "HIGH VALUE (#96): OpenAI-Chat request → Anthropic-shaped usage in response. Exercises chat.rs usage fallback. NEEDS FRESH CAPTURE."
+scenarios = ["mixed-format", "usage-fallback", "synthesized"]
+notes = "HIGH VALUE (#96), synthesized by gen_fixture.py: OpenAI-Chat request → Anthropic-shaped response. Exercises openai-chat detection + chat.rs usage fallback to input_tokens/output_tokens."
 [fixture.expect.quirks]
 mixed_format = true
 usage_field_style = "anthropic"

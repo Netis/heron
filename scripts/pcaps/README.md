@@ -47,6 +47,32 @@ just corpus lint
 #    golden/<id>.json and <id>.scrub.json.
 ```
 
+## Synthesized fixtures — `gen_fixture.py` (no capture needed)
+
+For the `anthropic` column and the **cliproxy mixed-format** cell, capturing real
+traffic needs real API access (and scrubbing). Instead, `gen_fixture.py`
+**deterministically synthesizes** the wire bytes — we control the request
+headers/body AND a faithful Anthropic Messages responder (non-stream JSON + full
+SSE: `message_start` → `content_block_start/delta` (text + `input_json_delta`,
+incl. parallel `tool_use`) → `content_block_stop` → `message_delta` (usage,
+stop_reason) → `message_stop`) — and frames them into a classic pcap (Ethernet/
+IPv4/TCP over loopback, 3-way handshake, monotonic seq, MTU-segmented, FIN).
+Output is **secret-free by construction** (non-secret-shaped auth values), so no
+scrub pass is needed.
+
+```bash
+python3 scripts/pcaps/gen_fixture.py --list                 # scenarios
+python3 scripts/pcaps/gen_fixture.py --all                  # (re)generate all → corpus/
+python3 scripts/pcaps/gen_fixture.py --scenario <name> --out <file.pcap>
+# then: flip status="active" in corpus.toml, `just corpus bless`, `just corpus test`
+```
+
+Add a scenario by writing a `scen_*()` (returns `(request, response)` byte pairs
+on one connection) and registering it in `SCENARIOS`. Cheapest way to fill
+anthropic/openai/cliproxy cells — and it doubles as a conformance harness: the
+golden test replays the synthesized bytes through the real pipeline, so a parser
+regression breaks the golden.
+
 ## Capture recipes
 
 All captures are loopback `127.0.0.1:8317` plaintext HTTP (Heron's post-TLS
