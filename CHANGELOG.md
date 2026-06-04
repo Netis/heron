@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-06-04
+
 ### Added — ClickHouse storage backend
 
 - New `h-storage-clickhouse` crate: a drop-in `StorageBackend` implementation
@@ -28,6 +30,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   body-sample `ROW_NUMBER` window (which read every row's ~2 KB body columns)
   became an `id IN (… LIMIT N BY …)` two-phase fetch; `arrayDistinct(groupArray)`
   → `groupUniqArray(N)`; `quantileExact` → `quantileTDigest`.
+
+### Fixed
+
+- **Agent-sessions `agent_kind` multi-select returned nothing.** Selecting more
+  than one agent kind sent a CSV (`claude-cli,codex-cli`) that the sessions
+  query exact-matched as a single literal, so the list went empty; selecting one
+  kind worked. Fixed in both the DuckDB and ClickHouse backends. Root-caused
+  beyond the symptom: `agent_kind` is now CSV-parsed once at the API boundary
+  into a `Vec` (like every other multi-select filter), so no storage backend
+  ever sees a raw CSV to mis-handle.
+- **Agent classifier no longer flags unrecognized tool names as "suspicious".**
+  Tools from non-Claude-Code agents (e.g. `web_search`, `read_file`,
+  `memory_get`) were tagged suspicious purely for being absent from a hardcoded
+  registry. Any named tool is now classified as a function-call surface; the
+  registry treadmill is gone.
+
+### Internal
+
+- Perf/reliability gate for the release pipeline: a `rate_pps`-throttled
+  pcap-file load-soak (`tara --load`) and criterion hot-path micro-benchmarks.
+- Deploy pipeline hardening: staging-soak stamps its `staging-soaked` status via
+  the REST API (the runner has no `gh`), and `deploy-prod` supersedes older
+  waiting approvals instead of letting them pile up and wedge the queue.
 
 ## [0.4.0] — 2026-05-29
 
