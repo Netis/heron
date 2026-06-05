@@ -34,8 +34,8 @@ CI ──► vivi (review agent) ──► structured review ──► gated aut
   running five gates to decide the verdict. The gates decide *only* whether the
   dev agent can safely implement it unattended; they are **not** a judgement on
   whether the issue is worth doing. Every reporter gets a warm, investigated
-  reply, whatever the verdict. On `do` it also labels `agent:try`, which starts
-  **wiwi**.
+  reply **in the language they filed the issue in**, whatever the verdict. On
+  `do` it also labels `agent:try`, which starts **wiwi**.
 - **wiwi** is allowed to open a PR only if `cargo build` and the tests pass;
   otherwise it aborts and explains why on the issue. The PR is a **draft**
   labelled `auto-agent`.

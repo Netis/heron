@@ -33,6 +33,10 @@ set -euo pipefail
 compose_comment_body() {
   local reply="$1" verdict="$2" downgraded="${3:-0}"
 
+  # The agent writes `reply` in the reporter's own language. The two bits this
+  # function adds are intentionally English: the fallback below only fires on a
+  # model failure (downgrade / missing reply) where there's no trustworthy
+  # language signal, and the controls block is a maintainer-only affordance.
   if [ "$downgraded" = "1" ] || [ -z "$reply" ]; then
     reply="Thanks so much for taking the time to file this — I really appreciate it. 🙏
 
@@ -137,6 +141,12 @@ WRITE THE REPLY (the \`reply\` field)
 ──────────────────────────────────────────────────────────────────────────
 \`reply\` is the COMPLETE GitHub comment, in your own warm, first-person human
 voice — a maintainer who is honestly glad this was filed. Requirements:
+  - LANGUAGE: write the reply in the SAME language the reporter used in the
+    issue (title + body). A Chinese issue gets a Chinese reply; Japanese →
+    Japanese; Spanish → Spanish; and so on. Match them naturally and fluently.
+    Fall back to English only if the issue's language is genuinely unclear or
+    mixed with no clear primary. (Code, identifiers, file paths, and the
+    \`agent:*\` label names always stay verbatim.)
   - NO robotic header ("Triage: do"), NO gate numbers, NO checklist. Translate
     any gate concern into plain, friendly language.
   - Open by thanking them for THIS specific report.
