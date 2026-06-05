@@ -161,6 +161,14 @@ jobs:
         # (scripts/staging/longevity_check.py). Stdlib-only.
         run: python3 scripts/staging/tests/test_longevity_check.py
 
+      - name: agent-bot tests (triage reply composition + mara debounce)
+        # Guards the triage comment composition (scripts/agent-bot/run_triage.sh
+        # compose_comment_body) and mara's confirm-debounce. Stdlib-only, no
+        # network: the triage test sources run_triage.sh in TRIAGE_LIB_ONLY mode.
+        run: |
+          python3 scripts/agent-bot/tests/test_triage.py
+          python3 scripts/agent-bot/tests/test_mara.py
+
       # --- staging artifact ---------------------------------------------
       # On a push to main (post-merge), build the deployable binary and
       # publish it so deploy-staging.yml can roll it onto the heron-stage VM.
