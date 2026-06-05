@@ -1,15 +1,18 @@
 name: issue-triage
 
-# Triage agent. Auto-fires on every newly **opened** issue, and can be
-# re-triggered manually by adding the `agent:assess` label (e.g. after the
-# reporter edits the issue or adds acceptance criteria). The triage agent
-# decides whether the issue is small/safe enough for the dev agent **wiwi**
-# to attempt unattended. Strict 5-gate verdict — see
-# scripts/agent-bot/run_triage.sh.
+# Triage now DELEGATES to the shared agent-ops mechanism (Netis/agent-ops).
+# This repo's triage policy — gates, labels, reply language, agent names —
+# lives in `.agent-ops.json`; the agent code + reusable workflow live in
+# agent-ops, pinned to a tag. Upgrading the mechanism = bumping the @ref below
+# (and `agent_ops_ref`) in lockstep.
 #
-# Prod-incident issues (mara) are NOT auto-triaged — an operator routes them
-# in deliberately via `agent:assess`. That guard (plus skip-if-already-
-# queued/muted) lives in run_triage.sh, keyed off TRIGGER_KIND below.
+# This is heron dogfooding the framework it spun out: agent-ops was extracted
+# FROM heron's in-tree scripts/agent-bot/run_triage.sh, which is retained as a
+# one-release fallback and removed once this delegation is proven in production.
+#
+# The reusable workflow carries the same opened/agent:assess gating, the
+# mara/incident + already-queued guards, and the warm-reply behavior that used
+# to live here.
 
 on:
   issues:
@@ -19,57 +22,10 @@ permissions:
   contents: read
   issues: write
 
-concurrency:
-  # One triage at a time per issue. cancel-in-progress is OFF on purpose:
-  # when triage adds `agent:try`, that label event spawns a second triage
-  # run in this same group whose job is skipped by the `if` below. With
-  # cancel-in-progress it would kill the still-finishing real run mid-comment;
-  # queuing lets the real run finish and the skipped one then no-ops.
-  group: triage-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
 jobs:
   triage:
-    if: ${{ github.event.action == 'opened' || (github.event.action == 'labeled' && github.event.label.name == 'agent:assess') }}
-    runs-on: [self-hosted, heron]
-    timeout-minutes: 10
-    env:
-      ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
-      ANTHROPIC_API_KEY:  ${{ secrets.LITELLM_API_KEY }}
-      ANTHROPIC_MODEL:    claude-3-5-sonnet-20241022
-    steps:
-      - name: Configure no_proxy for LiteLLM
-        run: |
-          {
-            echo "no_proxy=${{ secrets.LITELLM_NO_PROXY }}"
-            echo "NO_PROXY=${{ secrets.LITELLM_NO_PROXY }}"
-          } >> "$GITHUB_ENV"
-
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Triage issue
-        env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE:  ${{ github.event.issue.title }}
-          ISSUE_BODY:   ${{ github.event.issue.body }}
-          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
-          # 'opened' = auto path: run_triage.sh applies the mara/incident +
-          # already-queued/muted exclusions. 'assess' = a human manually
-          # re-triggered, which bypasses those guards (they asked for it).
-          TRIGGER_KIND: ${{ github.event.action == 'opened' && 'opened' || 'assess' }}
-          # Default token: posts the triage comment as github-actions[bot].
-          GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
-          # PAT used ONLY to add the `agent:try` label on verdict=do.
-          # GitHub suppresses labeled events emitted under GITHUB_TOKEN,
-          # which would block issue-implement.yml from firing.
-          AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
-        run: bash scripts/agent-bot/run_triage.sh
-
-      - name: Cleanup transient files
-        if: always()
-        run: rm -f /tmp/triage-*.md /tmp/triage-*.log /tmp/triage-*.json || true
+    uses: Netis/agent-ops/.github/workflows/triage.yml@v0.1.0
+    with:
+      agent_ops_ref: v0.1.0
+      runner_labels: '["self-hosted","heron"]'
+    secrets: inherit          # LITELLM_BASE_URL / API_KEY / NO_PROXY + AGENT_GH_TOKEN
