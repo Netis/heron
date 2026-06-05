@@ -1,10 +1,29 @@
 name: issue-implement
 
-# Dev agent **wiwi**. Fires only when label `agent:try` lands on an
-# issue — typically added by the triage agent when verdict=do, or by
-# a human bypassing triage. wiwi branches off main, implements the
-# change, runs the build, and opens a DRAFT PR labelled `auto-agent`.
-# Downstream auto-merge gating happens in pr-review.yml.
+# Dev agent **wiwi** — now DELEGATES to the shared agent-ops mechanism
+# (Netis/agent-ops). This repo's implement policy — the default branch wiwi
+# branches off, the build+test command it must make green, the scope ceiling,
+# the `auto-agent` label on the DRAFT PR, and the agent name — all live in
+# `.agent-ops.json`. The agent code + reusable workflow live in agent-ops,
+# pinned to a tag. Upgrading the mechanism = bumping the @ref below (and
+# `agent_ops_ref`) in lockstep.
+#
+# This is heron dogfooding the framework it spun out: agent-ops was extracted
+# FROM heron's in-tree scripts/agent-bot/run_wiwi.sh, which is retained as a
+# one-release fallback and removed once this delegation is proven in production
+# (same staged approach used for issue-triage.yml).
+#
+# wiwi still fires only when label `agent:try` lands on an issue — added by the
+# triage agent on verdict=do, or by a human bypassing triage. The reusable
+# workflow checks out THIS repo with the PAT, implements within the triaged
+# scope, runs the build, and opens a DRAFT PR labelled `auto-agent`. Auto-merge
+# gating remains downstream in pr-review.yml.
+#
+# Behavioral note (intentional): the in-tree workflow used
+# `concurrency: cancel-in-progress: true` (re-labelling cancelled an in-flight
+# wiwi). agent-ops's implement.yml fixes concurrency to cancel-in-progress:
+# false — safer, since it never kills wiwi mid-push/half-PR. To retry a stuck
+# run, cancel it explicitly via `gh run cancel` rather than re-labelling.
 
 on:
   issues:
@@ -15,97 +34,11 @@ permissions:
   issues: write
   pull-requests: write
 
-concurrency:
-  # Re-labelling `agent:try` on the same issue cancels any in-flight
-  # wiwi run and starts a fresh attempt. Useful when an operator
-  # spots a stuck run and wants to retry without manual cleanup.
-  group: implement-${{ github.event.issue.number }}
-  cancel-in-progress: true
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
 jobs:
   implement:
     if: ${{ github.event.label.name == 'agent:try' }}
-    runs-on: [self-hosted, heron]
-    # 120-minute fence. A clean, well-scoped wiwi run (per the triage
-    # gates: <300 LOC, <10 files) typically completes in 10-25 min; the
-    # 120-min cap absorbs slower model gateway ↔ model backend round-trips on busy
-    # days and gives wiwi room to iterate when `cargo build` finds
-    # something it has to fix mid-run. If you ever see this fence
-    # actually hit, the triage gate is probably mis-sized — file an
-    # issue rather than bumping the fence again.
-    timeout-minutes: 120
-    env:
-      ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
-      ANTHROPIC_API_KEY:  ${{ secrets.LITELLM_API_KEY }}
-      ANTHROPIC_MODEL:    claude-3-5-sonnet-20241022
-    steps:
-      - name: Configure no_proxy for LiteLLM
-        run: |
-          {
-            echo "no_proxy=${{ secrets.LITELLM_NO_PROXY }}"
-            echo "NO_PROXY=${{ secrets.LITELLM_NO_PROXY }}"
-          } >> "$GITHUB_ENV"
-
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          # Use the default GITHUB_TOKEN for the initial fetch.
-          # We tried `token: secrets.AGENT_GH_TOKEN` (both fine-grained
-          # and classic PATs) and the actions/checkout extraheader
-          # basic-auth flow failed on this self-hosted runner with
-          # `could not read Username for 'https://github.com'`, even
-          # though identical commands work against the same PAT from
-          # other hosts. Root cause is runner-environment specific
-          # (likely a stale credential helper or system git config
-          # that overrides the per-repo extraheader); the safest
-          # workaround is to take the GITHUB_TOKEN code path that
-          # CI already uses successfully, then swap in the PAT only
-          # for the push step below.
-
-      - name: Use AGENT_GH_TOKEN for `git push` (so downstream CI / pr-review trigger)
-        env:
-          AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
-        run: |
-          if [ -z "$AGENT_GH_TOKEN" ]; then
-            echo "::warning::AGENT_GH_TOKEN is not set; wiwi pushes will use GITHUB_TOKEN and downstream workflows will be suppressed by GitHub's anti-recursion rule." >&2
-            exit 0
-          fi
-          # actions/checkout writes
-          #   http.https://github.com/.extraheader = AUTHORIZATION: basic <base64(x-access-token:GITHUB_TOKEN)>
-          # as part of its persist-credentials path. That header is
-          # sent on every subsequent git operation against github.com
-          # — INCLUDING `git push`, even after we override the push
-          # URL with a PAT-embedded URL. When the request lands at
-          # GitHub the extraheader's GITHUB_TOKEN (a GitHub App
-          # token without `workflows` permission) is picked over the
-          # URL-embedded PAT, and any push that touches a file under
-          # `.github/workflows/` is rejected with:
-          #   refusing to allow a GitHub App to create or update workflow
-          #   <path> without `workflows` permission
-          # Clearing the extraheader here lets the URL-embedded PAT
-          # (which DOES have `workflow` scope) be the sole credential
-          # on push.
-          git config --local --unset-all http.https://github.com/.extraheader || true
-          git remote set-url --push origin \
-            "https://x-access-token:${AGENT_GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-
-      - name: Implement issue
-        env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE:  ${{ github.event.issue.title }}
-          ISSUE_BODY:   ${{ github.event.issue.body }}
-          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
-          GH_TOKEN:     ${{ secrets.AGENT_GH_TOKEN }}
-          # Auto-merge allowlist (GitHub logins, CSV). Kept out of committed
-          # source — set via `gh secret set AUTO_MERGE_TEAM`. Only used here to
-          # add a cosmetic "eligible for auto-merge" line to the PR body; the
-          # actual gate lives in auto_merge.sh (pr-review.yml).
-          AUTO_MERGE_TEAM: ${{ secrets.AUTO_MERGE_TEAM }}
-        run: bash scripts/agent-bot/run_wiwi.sh
-
-      - name: Cleanup transient files
-        if: always()
-        run: rm -f /tmp/wiwi-*.md /tmp/wiwi-*.log /tmp/wiwi-*.txt || true
+    uses: Netis/agent-ops/.github/workflows/implement.yml@v0.1.0
+    with:
+      agent_ops_ref: v0.1.0
+      runner_labels: '["self-hosted","heron"]'
+    secrets: inherit          # LITELLM_BASE_URL / API_KEY / NO_PROXY + AGENT_GH_TOKEN + AUTO_MERGE_TEAM
