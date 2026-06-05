@@ -1,12 +1,72 @@
 #!/usr/bin/env bash
-# Triage agent: read issue, decide do/skip/needs_info under STRICT gates.
-# Fires automatically on every newly opened issue (TRIGGER_KIND=opened) and
-# on a manual `agent:assess` re-trigger (TRIGGER_KIND=assess).
-# verdict=do  → add `agent:try` label (kicks off wiwi).
-# else        → post a comment with a detailed, reporter-facing breakdown of
-#               which gates failed and what to add; human can manually add
-#               `agent:try` to force, or `agent:skip` to mute.
+# Triage agent: investigate EVERY newly-filed issue for real (read the code,
+# reproduce where feasible), then reply in a warm, first-person maintainer
+# voice — no matter the verdict.
+#
+# The strict 5-gate verdict decides ONLY whether the autonomous dev agent
+# (wiwi) may implement the issue UNATTENDED — it does NOT decide whether the
+# issue is valid or whether it deserves a careful, friendly answer. It always
+# does.
+#   verdict=do  → reproduce/confirm, add `agent:try` (kicks off wiwi), and post
+#                 a warm "I've reproduced it, it's tracked, I'm on it" reply.
+#   else        → post an equally warm, equally investigated reply that thanks
+#                 the reporter, explains in plain language why it can't be
+#                 auto-queued, and asks concrete follow-ups / offers a
+#                 workaround. A non-`do` verdict is NEVER a brush-off.
+#
+# Fires automatically on every newly opened issue (TRIGGER_KIND=opened) and on
+# a manual `agent:assess` re-trigger (TRIGGER_KIND=assess).
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# compose_comment_body — build the exact GitHub comment body for a verdict.
+#   $1 reply      : the maintainer-voice markdown the triage agent wrote
+#                   (may be empty — a fallback is substituted)
+#   $2 verdict    : do | needs_info | skip
+#   $3 downgraded : "1" when a do→needs_info safety downgrade fired. The agent
+#                   wrote `reply` for a `do` verdict (it promises the work is
+#                   queued), so it would mislead now — replace it with an
+#                   honest fallback.
+# Emits the body on stdout. Pure: no gh / claude / network, so tests drive it
+# directly (see tests/test_triage.py).
+# ---------------------------------------------------------------------------
+compose_comment_body() {
+  local reply="$1" verdict="$2" downgraded="${3:-0}"
+
+  # The agent writes `reply` in the reporter's own language. The two bits this
+  # function adds are intentionally English: the fallback below only fires on a
+  # model failure (downgrade / missing reply) where there's no trustworthy
+  # language signal, and the controls block is a maintainer-only affordance.
+  if [ "$downgraded" = "1" ] || [ -z "$reply" ]; then
+    reply="Thanks so much for taking the time to file this — I really appreciate it. 🙏
+
+I had a look into it, but before I pick it up I want to be sure I'd be fixing exactly the right thing. Could you add a couple of concrete, checkable acceptance criteria — and a quick way to reproduce it, if you have one? With those in hand I'll gladly take another pass and get it moving."
+  fi
+
+  printf '%s\n' "$reply"
+
+  # For anything we are NOT auto-queuing, surface the manual overrides — but
+  # tucked into a collapsed block so they never intrude on the human reply.
+  if [ "$verdict" = "needs_info" ] || [ "$verdict" = "skip" ]; then
+    cat <<'FOOT'
+
+<details><summary>Maintainer controls</summary>
+
+This isn't auto-queued for the dev agent. A maintainer can add **`agent:try`** to have it attempted anyway, or **`agent:skip`** to mute re-triage. After editing the issue, re-add **`agent:assess`** to run triage again.
+</details>
+FOOT
+  fi
+
+  # Invisible breadcrumb (no rendered output) so re-triage / tooling can tell a
+  # triage-authored comment from a human one without polluting the voice.
+  printf '\n<!-- heron-triage:%s -->\n' "$verdict"
+}
+
+# Sourced by tests with TRIAGE_LIB_ONLY=1: load the helpers above and stop
+# before the live triage flow (which needs gh / claude / the network).
+if [ "${TRIAGE_LIB_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Auto-path guards. On the auto path (TRIGGER_KIND=opened) we skip two classes
@@ -35,43 +95,89 @@ fi
 PROMPT=$(mktemp)
 OUT=$(mktemp)
 
+# NOTE: unquoted heredoc — \${ISSUE_*} interpolate. Every literal backtick is
+# escaped as \` and the JSON's literal newline marker is written as \\n.
 cat > "$PROMPT" <<EOF
-You are the **triage agent**. Decide if issue #${ISSUE_NUMBER} should be
-auto-implemented by the dev agent **wiwi** running on this repo's
-self-hosted runner with no human in the loop until PR review.
+You are a **Heron maintainer** triaging a freshly-filed issue (#${ISSUE_NUMBER}).
+You have two jobs, in this order.
 
-Verdict MUST be \`do\` only when ALL gates pass:
+──────────────────────────────────────────────────────────────────────────
+JOB A — INVESTIGATE FOR REAL (always, regardless of the verdict below)
+──────────────────────────────────────────────────────────────────────────
+Before you decide or write anything, genuinely look into it:
+  - Read the whole issue: \`gh issue view ${ISSUE_NUMBER}\`.
+  - Inspect the code/area it concerns (Read / Grep / Glob) and, when it's
+    feasible in a couple of minutes, **reproduce it** — run the relevant
+    command, trace the code path, replay a fixture pcap, whatever gives you
+    real evidence. Time-box it: a focused code read plus a quick check. Never
+    kick off a long build.
+  - Form an honest opinion: is the report accurate? what's the real cause, or
+    the real gap? This investigation is REQUIRED on every issue.
 
-1. Issue has a concrete actionable description AND explicit acceptance
-   criteria (you can list 2+ checkable assertions).
-2. Estimated diff < 300 LOC across < 10 files.
-3. Change is contained: console/, docs/, one crate, or one workflow —
-   not cross-cutting architecture work.
-4. No new runtime dependency, no new secret, no new external network
-   call required.
-5. The fix has a deterministic test (unit/integration/cargo check) that
-   can be added in the same PR — not "needs manual QA".
+──────────────────────────────────────────────────────────────────────────
+JOB B — DECIDE if the autonomous dev agent can implement it UNATTENDED
+──────────────────────────────────────────────────────────────────────────
+Verdict \`do\` ONLY when ALL of these hold:
+  1. Concrete, actionable description AND explicit acceptance criteria (you can
+     list 2+ objectively checkable assertions).
+  2. Estimated diff < 300 LOC across < 10 files.
+  3. Contained: console/, docs/, one crate, or one workflow — not cross-cutting
+     architecture work.
+  4. No new runtime dependency, no new secret, no new external network call.
+  5. Ships with a deterministic test (unit / integration / \`cargo check\`) in
+     the same PR — not "needs manual QA".
+If gate 1 fails → \`needs_info\`. If gates 2–5 fail → \`skip\`. When in doubt,
+be strict → \`needs_info\`.
 
-If any gate fails, output verdict \`needs_info\` (gate 1 fails) or
-\`skip\` (gates 2–5 fail). Be strict: when in doubt → \`needs_info\`.
+CRUCIAL FRAMING: this gate decides ONLY whether an unattended agent can safely
+take the issue. It does NOT decide whether the issue is worthwhile or whether
+it earns a thoughtful answer. **Every** reporter gets a warm, genuine,
+investigated reply. A \`needs_info\` or \`skip\` is never a rejection of the
+idea or of the person — plenty of excellent issues are simply bigger than an
+unattended agent should attempt.
 
-When the verdict is NOT \`do\`, you MUST fill \`detail\` with a thorough,
-reporter-facing explanation (this becomes the GitHub comment they read):
-  - List EACH failed gate by number and state concretely WHY it failed for
-    THIS issue, referencing the specific files/areas you inspected.
-  - For \`needs_info\`, spell out exactly what the reporter must add
-    (acceptance criteria as checkable assertions, a repro, a narrowed scope)
-    so it can pass on a manual \`agent:assess\` re-triage.
-  - For \`skip\`, explain why it is out of wiwi's safe envelope and what a
-    human would need to do instead.
-Keep \`reason\` a ≤200-char one-line summary; put the depth in \`detail\`.
+──────────────────────────────────────────────────────────────────────────
+WRITE THE REPLY (the \`reply\` field)
+──────────────────────────────────────────────────────────────────────────
+\`reply\` is the COMPLETE GitHub comment, in your own warm, first-person human
+voice — a maintainer who is honestly glad this was filed. Requirements:
+  - LANGUAGE: write the reply in the SAME language the reporter used in the
+    issue (title + body). A Chinese issue gets a Chinese reply; Japanese →
+    Japanese; Spanish → Spanish; and so on. Match them naturally and fluently.
+    Fall back to English only if the issue's language is genuinely unclear or
+    mixed with no clear primary. (Code, identifiers, file paths, and the
+    \`agent:*\` label names always stay verbatim.)
+  - NO robotic header ("Triage: do"), NO gate numbers, NO checklist. Translate
+    any gate concern into plain, friendly language.
+  - Open by thanking them for THIS specific report.
+  - Show your work: say what you actually looked at / tried to reproduce and
+    what you found — concretely, naming the real behavior or code area.
+  - Then, by verdict:
+    • \`do\`: confirm you've reproduced/understood it, that it's now tracked and
+      queued to be worked on, and that you'll keep this issue posted. Be warm
+      but don't over-promise a fix time.
+    • \`needs_info\`: explain plainly what you'd need to be confident you'd fix
+      the RIGHT thing, and ask 1–3 specific, concrete questions. Offer a
+      workaround or your best guess if you have one. Make following up feel
+      easy and welcome.
+    • \`skip\`: make clear the idea is welcome — it's just larger or more
+      cross-cutting than is safe to hand an unattended agent, so it's better as
+      a human-guided change. Suggest how to break it down or what the next step
+      is, and offer to help scope it.
+  - Close warmly.
 
-Read the issue first (use \`gh issue view ${ISSUE_NUMBER}\`), inspect
-referenced files, then emit exactly ONE JSON object as the LAST line of your
-reply — a single line, no markdown fence, with any newlines inside string
-values escaped as \\n:
+HYGIENE (hard rule): write only about the PUBLIC repository. NEVER mention any
+internal infrastructure — no private IPs, internal hostnames, CI/runner machine
+names, internal model/proxy names, or internal agent code-names. Speak as
+"I" / "we" / "the team". This comment is public.
 
-{"verdict":"do|skip|needs_info","scope":"<short>","reason":"<≤200-char summary>","detail":"<required when verdict!=do: markdown enumerating each failed gate + what the reporter must add; use \\n for line breaks>","files":["..."],"gates":{"1":true,"2":true,"3":true,"4":true,"5":true}}
+──────────────────────────────────────────────────────────────────────────
+OUTPUT
+──────────────────────────────────────────────────────────────────────────
+Emit exactly ONE JSON object as the LAST line of your reply — a single line, no
+markdown fence, with every newline inside a string value escaped as \\n:
+
+{"verdict":"do|skip|needs_info","scope":"<short>","reason":"<=200-char log summary>","reply":"<the full maintainer-voice GitHub comment markdown; \\n for line breaks>","files":["..."],"gates":{"1":true,"2":true,"3":true,"4":true,"5":true}}
 
 Issue title: ${ISSUE_TITLE}
 Author: ${ISSUE_AUTHOR}
@@ -142,18 +248,26 @@ fi
 VERDICT=$(echo "$LAST" | jq -r '.verdict')
 REASON=$(echo  "$LAST" | jq -r '.reason')
 SCOPE=$(echo   "$LAST" | jq -r '.scope')
-DETAIL=$(echo  "$LAST" | jq -r '.detail // ""')
+REPLY=$(echo   "$LAST" | jq -r '.reply // ""')
 
-# Defense-in-depth: require all 5 gates true for verdict=do.
+# Defense-in-depth: require all 5 gates true for verdict=do. A model that
+# returns do with a failing gate gets downgraded — and its `do`-flavored reply
+# (which promises the work is queued) is dropped in favor of an honest fallback
+# inside compose_comment_body.
+DOWNGRADED=0
 if [ "$VERDICT" = "do" ]; then
   ALLPASS=$(echo "$LAST" | jq -r '[.gates."1",.gates."2",.gates."3",.gates."4",.gates."5"] | all')
   if [ "$ALLPASS" != "true" ]; then
     echo "verdict=do but not all gates true; downgrading to needs_info" >&2
     VERDICT=needs_info
     REASON="triage gates incomplete: $REASON"
+    DOWNGRADED=1
   fi
 fi
 
+echo "triage verdict=$VERDICT scope=$SCOPE reason=$REASON" >&2
+
+TMP_BODY=$(mktemp)
 case "$VERDICT" in
   do)
     # Add the `agent:try` label using AGENT_GH_TOKEN (a PAT) rather
@@ -170,23 +284,14 @@ case "$VERDICT" in
       echo "warning: AGENT_GH_TOKEN unset; labeling under GITHUB_TOKEN — wiwi will NOT auto-start" >&2
       gh issue edit "$ISSUE_NUMBER" --add-label "agent:try"
     fi
-    gh issue comment "$ISSUE_NUMBER" --body "🤖 Triage: **${VERDICT}** — scope: ${SCOPE}
-
-${REASON}
-
-Auto-labeled \`agent:try\`. **wiwi** will pick this up shortly."
+    compose_comment_body "$REPLY" do 0 > "$TMP_BODY"
+    gh issue comment "$ISSUE_NUMBER" --body-file "$TMP_BODY"
     ;;
   needs_info|skip)
-    # Prefer the detailed, per-gate breakdown; fall back to the short reason
-    # (e.g. if a do→needs_info downgrade left detail empty).
-    BODY_DETAIL="${DETAIL:-$REASON}"
-    gh issue comment "$ISSUE_NUMBER" --body "🤖 Triage: **${VERDICT}** — ${SCOPE}
-
-${BODY_DETAIL}
-
----
-Manually add the \`agent:try\` label to override this verdict and run **wiwi** anyway, or \`agent:skip\` to mute future re-triage."
+    compose_comment_body "$REPLY" "$VERDICT" "$DOWNGRADED" > "$TMP_BODY"
+    gh issue comment "$ISSUE_NUMBER" --body-file "$TMP_BODY"
     ;;
   *)
-    echo "unknown verdict: $VERDICT" >&2; exit 1 ;;
+    echo "unknown verdict: $VERDICT" >&2; rm -f "$TMP_BODY"; exit 1 ;;
 esac
+rm -f "$TMP_BODY"

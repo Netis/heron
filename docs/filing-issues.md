@@ -29,8 +29,13 @@ CI ──► vivi (review agent) ──► structured review ──► gated aut
 - **Routing.** An issue does nothing automatic until it carries the
   `agent:assess` label. Add it when the issue is ready to be assessed; leave
   it off for discussion/parking. (Filing alone never triggers an agent.)
-- **Triage** reads the issue, runs five gates, and **comments its verdict**.
-  On `do` it labels `agent:try`, which starts **wiwi**.
+- **Triage** actually investigates every issue — reads the relevant code and
+  reproduces it where it can — then **replies in a maintainer's voice** before
+  running five gates to decide the verdict. The gates decide *only* whether the
+  dev agent can safely implement it unattended; they are **not** a judgement on
+  whether the issue is worth doing. Every reporter gets a warm, investigated
+  reply **in the language they filed the issue in**, whatever the verdict. On
+  `do` it also labels `agent:try`, which starts **wiwi**.
 - **wiwi** is allowed to open a PR only if `cargo build` and the tests pass;
   otherwise it aborts and explains why on the issue. The PR is a **draft**
   labelled `auto-agent`.
