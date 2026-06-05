@@ -1,0 +1,40 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Netis/agent-ops/main/schema/agent-ops.schema.json",
+  "project": {
+    "name": "heron",
+    "default_branch": "main"
+  },
+  "agents": {
+    "review_bot_login": "vivi",
+    "dev_agent_name": "wiwi"
+  },
+  "labels": {
+    "assess": "agent:assess",
+    "try": "agent:try",
+    "skip": "agent:skip",
+    "auto_agent": "auto-agent"
+  },
+  "triage": {
+    "gates": {
+      "max_loc": 300,
+      "max_files": 10,
+      "contained_areas": ["console/", "docs/", "one crate", "one workflow"],
+      "test_hint": "a unit / integration / cargo check test"
+    },
+    "language": "auto"
+  },
+  "implement": {
+    "build_cmd": "just build all && just test all"
+  },
+  "observer": {
+    "service_name": "heron",
+    "health_url": "",
+    "repo": "Netis/heron",
+    "labels": "mara,incident",
+    "readiness": {
+      "jq": ".data.pipelines[0].running",
+      "expect": "true"
+    }
+  },
+  "model": "claude-3-5-sonnet-20241022"
+}
