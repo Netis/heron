@@ -7,8 +7,8 @@ name: issue-triage
 # (and `agent_ops_ref`) in lockstep.
 #
 # This is heron dogfooding the framework it spun out: agent-ops was extracted
-# FROM heron's in-tree scripts/agent-bot/run_triage.sh, which is retained as a
-# one-release fallback and removed once this delegation is proven in production.
+# FROM heron's in-tree scripts/agent-bot/run_triage.sh, which has since been
+# removed now that this delegation is proven in production.
 #
 # The reusable workflow carries the same opened/agent:assess gating, the
 # mara/incident + already-queued guards, and the warm-reply behavior that used

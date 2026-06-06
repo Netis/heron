@@ -13,9 +13,8 @@ name: pr-revise
 # Dispatch-only: the trigger is a PAT-authenticated `gh workflow run` (a review
 # posted by GITHUB_TOKEN can't start a workflow run — GitHub anti-recursion).
 #
-# In-tree scripts/agent-bot/run_revise.sh is retained as a one-release fallback
-# and removed once this delegation is proven (same staged approach as the other
-# surfaces).
+# In-tree scripts/agent-bot/run_revise.sh has since been removed now that
+# this delegation is proven (same staged approach as the other surfaces).
 
 on:
   workflow_dispatch:
