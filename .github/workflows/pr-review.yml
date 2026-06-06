@@ -1,16 +1,24 @@
 name: pr-review
 
-# Headless code-review agent. Fires AFTER the `ci` workflow completes
-# successfully on a PR — that gate keeps the agent from wasting model backend
-# cycles on PRs that don't even compile, and ensures the review the
-# author sees is "tests are green, here's what to look at next".
+# Headless code-review agent (vivi) — now DELEGATES to the shared agent-ops
+# mechanism (Netis/agent-ops). The review bot's identity, the auto-agent label,
+# the default branch, and the build command all live in this repo's
+# `.agent-ops.json`; the reviewer code + reusable workflow live in agent-ops,
+# pinned to a tag. Upgrading the mechanism = bumping the @ref below (and
+# `agent_ops_ref`) in lockstep.
 #
-# Manual `workflow_dispatch` is kept as a fallback for re-runs.
+# heron dogfooding the framework it spun out: agent-ops's review.yml was
+# extracted FROM this repo's in-tree scripts/pr-review/* + scripts/agent-bot/
+# {auto_merge,revise_dispatch}.sh, which are retained as a one-release fallback
+# and removed once this delegation is proven in production (same staged
+# approach as issue-triage.yml / issue-implement.yml).
 #
-# Runs on the self-hosted runner. Reaches LiteLLM via the
-# `LITELLM_*` repo secrets; LiteLLM rewrites the Anthropic-shaped
-# request onto the locally-served backend. See
-# docs/pr-review-agent.md.
+# The reusable workflow carries the same gating that used to live here: fires
+# after `ci` succeeds on a same-repo PR, reviews the diff, posts a structured
+# review, then for auto-agent PRs either admin-merges (APPROVE + allowlisted
+# author) or dispatches the pr-revise workflow (CHANGES_REQUESTED). Manual
+# re-review via workflow_dispatch is preserved (needs agent-ops ≥ v0.2.0, which
+# added the pr_number input).
 
 on:
   workflow_run:
@@ -23,162 +31,19 @@ on:
         required: true
         type: number
 
-concurrency:
-  # One review per PR. A re-trigger cancels an in-flight review of
-  # the same PR so we don't post conflicting comments.
-  group: pr-review-${{ github.event.workflow_run.pull_requests[0].number || inputs.pr_number }}
-  cancel-in-progress: true
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  statuses: read
 
 jobs:
   review:
-    # Gate the workflow_run path on:
-    #   * CI actually succeeded (we never review red builds)
-    #   * the upstream run was triggered by a PR (push events have no
-    #     PR to comment on)
-    #   * pull_requests[] is populated (empty for fork PRs — by design
-    #     we only review same-repo PRs from this internal repo)
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'pull_request' &&
-        github.event.workflow_run.pull_requests[0] != null
-      )
-    runs-on: [self-hosted, heron]
-    # 120 min covers large-PR reviews (e.g. rebrand-scale 200-file
-    # mechanical diffs). The earlier 30-min ceiling killed the agent
-    # mid-read on PR #66 even though the diff was reviewable.
-    timeout-minutes: 120
-    env:
-      # Agent endpoint + key live in repo secrets so this workflow
-      # is portable across deployments without exposing internal
-      # addressing. The LiteLLM proxy at LITELLM_BASE_URL maps
-      # `claude-3-5-sonnet-20241022` onto whatever local backend
-      # is configured.
-      ANTHROPIC_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
-      ANTHROPIC_API_KEY: ${{ secrets.LITELLM_API_KEY }}
-      ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
-      # actions/checkout@v4 ships a Node 20 runtime; GitHub is
-      # deprecating Node 20 on runners. Opt the JS actions into the
-      # Node 24 runtime so the workflow doesn't annotate every run
-      # with a deprecation warning.
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-    steps:
-      - name: Configure no_proxy for LiteLLM
-        # See pr-review-probe.yml. We keep the cloud-init-installed
-        # http_proxy intact (gh CLI needs it to reach api.github.com)
-        # and only ensure no_proxy lists the in-cluster LiteLLM host
-        # so curl / claude CLI go direct there.
-        run: |
-          {
-            echo "no_proxy=${{ secrets.LITELLM_NO_PROXY }}"
-            echo "NO_PROXY=${{ secrets.LITELLM_NO_PROXY }}"
-          } >> "$GITHUB_ENV"
-
-      - name: Resolve PR + head SHA
-        id: pr
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            PR_NUMBER="${{ inputs.pr_number }}"
-          else
-            PR_NUMBER="${{ github.event.workflow_run.pull_requests[0].number }}"
-          fi
-          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
-            echo "::error::could not resolve PR number"
-            exit 1
-          fi
-          eval "$(gh pr view "$PR_NUMBER" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json headRefOid,baseRefName \
-            --jq '"HEAD_SHA=\(.headRefOid)\nBASE_REF=\(.baseRefName)"')"
-          {
-            echo "pr_number=$PR_NUMBER"
-            echo "head_sha=$HEAD_SHA"
-            echo "base_ref=$BASE_REF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Checkout PR head
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.pr.outputs.head_sha }}
-          fetch-depth: 0
-
-      - name: Fetch base for diff
-        run: git fetch origin "${{ steps.pr.outputs.base_ref }}" --depth 200
-
-      - name: Overlay reviewer + agent-bot scripts from default branch
-        # PRs older than a given agent-bot feature don't carry the matching
-        # scripts on their head. Always overlay the canonical versions from
-        # the default branch so the reviewer (scripts/pr-review), the
-        # auto-merge gate and the revise dispatcher (scripts/agent-bot) run
-        # one canonical implementation regardless of PR vintage. The PR
-        # head's source tree is left otherwise untouched — the agent still
-        # sees the code under review, not main's code. (Safe here because
-        # this workflow never commits; pr-revise.yml, which does, fetches its
-        # driver to /tmp instead.)
-        run: |
-          git fetch origin "${{ github.event.repository.default_branch }}" --depth 1
-          git checkout "origin/${{ github.event.repository.default_branch }}" -- scripts/pr-review scripts/agent-bot
-
-      - name: Run review agent
-        id: review
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
-        run: bash scripts/pr-review/run_review.sh "$PR_NUMBER"
-
-      - name: Post review
-        if: always()
-        env:
-          # GITHUB_TOKEN posts the review/comment as the GitHub Actions
-          # bot (preferred — keeps vivi's footer attribution clean).
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # ADMIN_GH_TOKEN is used ONLY for the auto-merge fallback
-          # inside post_review.py; GITHUB_TOKEN can't `gh pr merge --admin`
-          # because it lacks branch-protection bypass. With AGENT_GH_TOKEN
-          # (a PAT owned by a repo admin) the call succeeds.
-          ADMIN_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
-          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          AGENT_EXIT: ${{ steps.review.outcome }}
-          # Direct-PR auto-merge allowlist (GitHub logins, CSV). Kept out of
-          # committed source — set via `gh variable set AUTO_MERGE_AUTHORS`.
-          # Empty ⇒ no direct PR is auto-merged on APPROVE.
-          AUTO_MERGE_AUTHORS: ${{ vars.AUTO_MERGE_AUTHORS }}
-        run: python3 scripts/pr-review/post_review.py "$PR_NUMBER"
-
-      - name: Auto-merge if eligible
-        # Only effective for wiwi-spawned PRs (label `auto-agent`) whose
-        # linked issue author is on the auto-merge allowlist. Idempotent +
-        # safe to call for every PR — bails out for human PRs. Needs
-        # AGENT_GH_TOKEN so the admin-merge call has admin bypass on branch
-        # protection.
-        if: ${{ steps.review.outcome == 'success' }}
-        env:
-          GH_TOKEN:  ${{ secrets.AGENT_GH_TOKEN }}
-          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
-          # Auto-merge allowlist (GitHub logins, CSV). Kept out of committed
-          # source — set via `gh secret set AUTO_MERGE_TEAM`. Empty ⇒ no
-          # issue author is auto-merge-eligible (all PRs wait for a human).
-          AUTO_MERGE_TEAM: ${{ secrets.AUTO_MERGE_TEAM }}
-        run: bash scripts/agent-bot/auto_merge.sh
-
-      - name: Dispatch revise if vivi requested changes
-        # Mirror of the auto-merge gate for the other verdict: when vivi
-        # REQUEST_CHANGES a wiwi PR (label `auto-agent`), kick off the
-        # pr-revise workflow so wiwi addresses the feedback automatically.
-        # Idempotent + safe for every PR — bails for human PRs, non-blocking
-        # verdicts, and once the round cap is hit (then it escalates to a
-        # human). Needs AGENT_GH_TOKEN: a `gh workflow run` from GITHUB_TOKEN
-        # would be suppressed by GitHub's anti-recursion rule.
-        if: ${{ steps.review.outcome == 'success' }}
-        env:
-          GH_TOKEN:  ${{ secrets.AGENT_GH_TOKEN }}
-          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
-        run: bash scripts/agent-bot/revise_dispatch.sh
-
-      - name: Cleanup transient files
-        if: always()
-        run: rm -f /tmp/pr-review-*.md /tmp/pr-review-*.log /tmp/pr-review-*.json || true
+    uses: Netis/agent-ops/.github/workflows/review.yml@v0.2.0
+    with:
+      agent_ops_ref: v0.2.0
+      runner_labels: '["self-hosted","heron"]'
+      # Empty on the workflow_run path (resolved from the run event); the PR
+      # number typed on a manual workflow_dispatch re-review.
+      pr_number: ${{ inputs.pr_number }}
+    secrets: inherit          # LITELLM_* + AGENT_GH_TOKEN + AUTO_MERGE_TEAM
