@@ -72,12 +72,10 @@ jobs:
       - name: lint — validated constructors are scoped
         run: python3 scripts/lint/check-validated-constructors.py
 
-      - name: lint — no internal-infra leakage
-        # Deterministic gate behind CLAUDE.md's PR-hygiene rule: fails on
-        # any tracked file carrying a non-allow-listed private/internal
-        # IP or a private-key PEM block. The PR-review agent carries the
-        # semantic half (plaintext passwords, internal hostnames, paths).
-        run: bash scripts/lint/check-leakage.sh
+      # NOTE: the generic internal-infra LEAKAGE gate now runs in the separate
+      # guard.yml workflow (delegated to agent-ops guard.yml@v0.2.0). The in-tree
+      # scripts/lint/check-leakage.sh is retained only for the pcap-corpus gate +
+      # the self-test below; heron-specific lints stay here.
 
       - name: lint — pcap corpus (manifest consistency + binary leakage)
         # check-leakage.sh skips binary files, so committed corpus pcaps are
@@ -161,13 +159,10 @@ jobs:
         # (scripts/staging/longevity_check.py). Stdlib-only.
         run: python3 scripts/staging/tests/test_longevity_check.py
 
-      - name: agent-bot tests (triage reply composition + mara debounce)
-        # Guards the triage comment composition (scripts/agent-bot/run_triage.sh
-        # compose_comment_body) and mara's confirm-debounce. Stdlib-only, no
-        # network: the triage test sources run_triage.sh in TRIAGE_LIB_ONLY mode.
-        run: |
-          python3 scripts/agent-bot/tests/test_triage.py
-          python3 scripts/agent-bot/tests/test_mara.py
+      # NOTE: the agent-bot tests (triage reply composition + mara debounce)
+      # moved to agent-ops with the agent loop; they run in agent-ops's own CI
+      # against the canonical scripts/agent-bot/* now that heron delegates those
+      # surfaces. heron no longer carries the in-tree scripts or their tests.
 
       # --- staging artifact ---------------------------------------------
       # On a push to main (post-merge), build the deployable binary and

@@ -9,9 +9,9 @@ name: pr-review
 #
 # heron dogfooding the framework it spun out: agent-ops's review.yml was
 # extracted FROM this repo's in-tree scripts/pr-review/* + scripts/agent-bot/
-# {auto_merge,revise_dispatch}.sh, which are retained as a one-release fallback
-# and removed once this delegation is proven in production (same staged
-# approach as issue-triage.yml / issue-implement.yml).
+# {auto_merge,revise_dispatch}.sh, which have since been removed
+# now that this delegation is proven (same staged approach as
+# issue-triage.yml / issue-implement.yml).
 #
 # The reusable workflow carries the same gating that used to live here: fires
 # after `ci` succeeds on a same-repo PR, reviews the diff, posts a structured

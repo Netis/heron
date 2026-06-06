@@ -9,9 +9,9 @@ name: issue-implement
 # `agent_ops_ref`) in lockstep.
 #
 # This is heron dogfooding the framework it spun out: agent-ops was extracted
-# FROM heron's in-tree scripts/agent-bot/run_wiwi.sh, which is retained as a
-# one-release fallback and removed once this delegation is proven in production
-# (same staged approach used for issue-triage.yml).
+# FROM heron's in-tree scripts/agent-bot/run_wiwi.sh, which has since been
+# removed now that this delegation is proven (same staged approach as
+# issue-triage.yml).
 #
 # wiwi still fires only when label `agent:try` lands on an issue — added by the
 # triage agent on verdict=do, or by a human bypassing triage. The reusable
