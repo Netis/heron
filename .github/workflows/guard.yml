@@ -1,0 +1,38 @@
+name: guard
+
+# Hygiene gate — DELEGATES the generic, LLM-free leakage check to the shared
+# agent-ops mechanism (Netis/agent-ops). agent-ops's check-leakage.sh was
+# extracted FROM this repo; the reusable workflow runs it on GitHub-hosted
+# ubuntu against THIS repo's tracked files + THIS repo's
+# scripts/lint/leakage-allowlist.txt, so the gate is single-sourced and any
+# future hardening in agent-ops applies here automatically.
+#
+# Scope note (intentional): only the LEAKAGE gate is delegated.
+#   - secret-EXISTENCE / secret-VALUE checks stay in ci.yml — they validate
+#     THIS repo's specific secrets (AGENT_GH_TOKEN / LITELLM_*) with the values
+#     passed in as env, which is inherently consumer-specific. (agent-ops
+#     guard.yml's run_secret_checks also mis-invokes check-secret-values.sh —
+#     tracked as an agent-ops follow-up — so we pass run_secret_checks: false.)
+#   - heron-specific lints (pcap-corpus, validated-constructors,
+#     test-check-leakage self-test) stay in ci.yml — not part of the framework.
+#
+# During the migration this runs in PARALLEL with ci.yml's leakage step; that
+# redundant ci.yml step is removed in the final cleanup. The in-tree
+# scripts/lint/check-leakage.sh is retained (heron's test-check-leakage.sh
+# self-test + the pcap-corpus gate still reference it).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    uses: Netis/agent-ops/.github/workflows/guard.yml@v0.2.0
+    with:
+      agent_ops_ref: v0.2.0
+      run_secret_checks: false
+    secrets: inherit

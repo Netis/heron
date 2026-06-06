@@ -24,8 +24,8 @@ permissions:
 
 jobs:
   triage:
-    uses: Netis/agent-ops/.github/workflows/triage.yml@v0.1.0
+    uses: Netis/agent-ops/.github/workflows/triage.yml@v0.2.0
     with:
-      agent_ops_ref: v0.1.0
+      agent_ops_ref: v0.2.0
       runner_labels: '["self-hosted","heron"]'
     secrets: inherit          # LITELLM_BASE_URL / API_KEY / NO_PROXY + AGENT_GH_TOKEN

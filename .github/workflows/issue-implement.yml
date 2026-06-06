@@ -37,8 +37,8 @@ permissions:
 jobs:
   implement:
     if: ${{ github.event.label.name == 'agent:try' }}
-    uses: Netis/agent-ops/.github/workflows/implement.yml@v0.1.0
+    uses: Netis/agent-ops/.github/workflows/implement.yml@v0.2.0
     with:
-      agent_ops_ref: v0.1.0
+      agent_ops_ref: v0.2.0
       runner_labels: '["self-hosted","heron"]'
     secrets: inherit          # LITELLM_BASE_URL / API_KEY / NO_PROXY + AGENT_GH_TOKEN + AUTO_MERGE_TEAM
