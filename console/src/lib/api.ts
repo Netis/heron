@@ -37,3 +37,48 @@ export async function apiFetch<T>(
   }
   return json.data
 }
+
+export interface DownloadResult {
+  /** Items skipped during a batch export (unsupported wire / unavailable body). */
+  skipped: number
+  total: number
+  written: number
+}
+
+/**
+ * Download a raw (non-`ApiResponse`) endpoint as a file via a blob + anchor
+ * click — used for the trajectory export endpoints, which serve NDJSON with a
+ * `Content-Disposition` attachment rather than the JSON envelope. Returns the
+ * `X-Export-*` counters when present (batch export) so callers can surface how
+ * many turns were skipped.
+ */
+export async function downloadFile(path: string, fallbackName: string): Promise<DownloadResult> {
+  const res = await fetch(path)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ code: res.status, message: res.statusText }))
+    throw new ApiError(body.code ?? res.status, body.message ?? res.statusText)
+  }
+
+  const num = (h: string) => Number(res.headers.get(h) ?? "0") || 0
+  const result: DownloadResult = {
+    skipped: num("x-export-skipped"),
+    total: num("x-export-total"),
+    written: num("x-export-written"),
+  }
+
+  const disposition = res.headers.get("content-disposition") ?? ""
+  const match = disposition.match(/filename="?([^"]+)"?/)
+  const filename = match?.[1] ?? fallbackName
+
+  const blob = await res.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = objectUrl
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(objectUrl)
+
+  return result
+}

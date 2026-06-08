@@ -209,6 +209,10 @@ pub fn router(
             "/api/agent-sessions/{source_id}/{session_id}/turns",
             get(routes::agent_sessions::turns),
         )
+        // Trajectory export — reconstruct a turn/session (single) or every turn
+        // matching the agent-turns filters (batch) into OpenAI-style SFT JSONL.
+        .route("/api/export/trajectory", get(routes::export::single))
+        .route("/api/export/trajectories", get(routes::export::batch))
         .with_state(storage)
         .merge(internal_metrics_routes)
         .merge(runtime_config_routes)

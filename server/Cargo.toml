@@ -63,6 +63,7 @@ h-common = { path = "h-common" }
 h-capture = { path = "h-capture" }
 h-protocol = { path = "h-protocol" }
 h-llm = { path = "h-llm" }
+h-export = { path = "h-export" }
 h-turn = { path = "h-turn" }
 h-metrics = { path = "h-metrics" }
 h-storage = { path = "h-storage" }

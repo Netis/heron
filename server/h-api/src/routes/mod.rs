@@ -2,6 +2,7 @@ pub mod agent_sessions;
 pub mod agent_turns;
 pub mod capture_interfaces;
 pub mod capture_sources;
+pub mod export;
 pub mod filters;
 pub mod health;
 pub mod http_exchanges;

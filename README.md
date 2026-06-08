@@ -76,6 +76,8 @@ This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Ver
 
 **Per-call drill-down when you need it** — every LLM call is also captured with structured request/response *and* the raw body. Stalled tool calls, malformed prompts, unexpected token counts: the evidence is on the page, not behind a re-run.
 
+**Export turns as training data.** Any reconstructed turn — or a whole session — exports as an **SFT trajectory**: OpenAI-style `messages` JSONL with tool calls, tool results, and assistant reasoning preserved, and tool-call arguments rehydrated to objects. Download a single turn or session straight from its detail view, or batch-export from the Agent Turns list — the current filter (time window · agent kind · model · wire API) becomes a one-line-per-turn JSONL, so a slice of real captured agent traffic turns into a fine-tuning set with one click. Anthropic and OpenAI-chat wire formats today; unsupported formats are reported and skipped rather than failing the batch.
+
 **Metrics** are framed first at the **agent layer** — turn count and duration distribution per agent kind, call count per turn, tool-call success rate — and then at the **call layer**: TTFT · E2E latency · TPOT · token throughput · call rate · active calls · call error rate · prompt-cache hit ratio. The Overview page is built around both. See [glossary](docs/glossary.md) for what each means and why.
 
 ![Overview — agent activity timeseries + per-kind distribution at the top, call-rate / latency / error rate / per-model panels below](docs/images/overview.png)
@@ -105,6 +107,7 @@ This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Ver
 - **AI platform / inference ops** — see the real service-to-service topology your traffic flows through (clients → litellm → vLLM / SGLang), measure each hop independently, and catch silent model substitutions
 - **FinOps & engineering managers** — attribute spend across teams/repos/projects from real turns, not periodic SDK exports that can drift
 - **Compliance & security** — capture-once evidence chain of what crossed the wire, scoped per agent kind and per session
+- **Model trainers / fine-tuners** — turn real captured agent runs into SFT datasets, per turn or whole session, without hand-labeling or re-running the agent
 
 ## Quickstart
 

@@ -8,6 +8,7 @@ license.workspace = true
 h-capture.workspace = true
 h-common.workspace = true
 h-llm.workspace = true
+h-export.workspace = true
 h-storage.workspace = true
 h-turn.workspace = true
 h-pcap-extract = { workspace = true }
