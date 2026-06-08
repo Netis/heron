@@ -160,7 +160,7 @@ export function ServicesPage() {
       ) : view === "model" ? (
         <ModelsPage />
       ) : (
-      <div className="rounded-lg border border-border bg-card">
+      <div className="rounded-lg border border-border/50 bg-card card-elevated">
         <div className="overflow-auto">
           <table className="w-full text-sm">
             <thead>

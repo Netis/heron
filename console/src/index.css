@@ -4,6 +4,7 @@
 @import "@fontsource-variable/geist";
 
 @custom-variant dark (&:is(.dark *));
+@custom-variant kami (&:is(.kami *));
 
 @theme inline {
     --font-heading: var(--font-sans);
@@ -48,73 +49,120 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* ============================================================================
+ * Theme B — Light Atelier (default :root)
+ * Warm white + shadow-driven depth, teal accent
+ * ========================================================================= */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
+    --background: oklch(0.985 0.002 90);
+    --foreground: oklch(0.205 0.015 260);
     --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
+    --card-foreground: oklch(0.205 0.015 260);
     --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.205 0.015 260);
+    --primary: oklch(0.50 0.12 175);
     --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.965 0.003 260);
+    --secondary-foreground: oklch(0.205 0.015 260);
+    --muted: oklch(0.965 0.003 260);
+    --muted-foreground: oklch(0.52 0.015 260);
+    --accent: oklch(0.965 0.003 260);
+    --accent-foreground: oklch(0.205 0.015 260);
     --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
+    --border: oklch(0.935 0.005 260);
+    --input: oklch(0.935 0.005 260);
+    --ring: oklch(0.50 0.12 175);
+    --chart-1: oklch(0.60 0.13 175);
+    --chart-2: oklch(0.55 0.14 270);
+    --chart-3: oklch(0.65 0.15 145);
+    --chart-4: oklch(0.70 0.15 55);
+    --chart-5: oklch(0.55 0.18 25);
     --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar: oklch(0.975 0.003 260);
+    --sidebar-foreground: oklch(0.205 0.015 260);
+    --sidebar-primary: oklch(0.50 0.12 175);
     --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    --sidebar-accent: oklch(0.96 0.008 175);
+    --sidebar-accent-foreground: oklch(0.205 0.015 260);
+    --sidebar-border: oklch(0.935 0.005 260);
+    --sidebar-ring: oklch(0.50 0.12 175);
 }
 
+/* ============================================================================
+ * Theme A — Dark Observatory
+ * Deep charcoal + teal accent, like a nighttime control room
+ * ========================================================================= */
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
+    --background: oklch(0.145 0.015 265);
+    --foreground: oklch(0.93 0.005 250);
+    --card: oklch(0.185 0.015 265);
+    --card-foreground: oklch(0.93 0.005 250);
+    --popover: oklch(0.185 0.015 265);
+    --popover-foreground: oklch(0.93 0.005 250);
+    --primary: oklch(0.75 0.12 175);
+    --primary-foreground: oklch(0.145 0.015 265);
+    --secondary: oklch(0.23 0.015 265);
+    --secondary-foreground: oklch(0.93 0.005 250);
+    --muted: oklch(0.23 0.015 265);
+    --muted-foreground: oklch(0.62 0.01 250);
+    --accent: oklch(0.23 0.015 265);
+    --accent-foreground: oklch(0.93 0.005 250);
     --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --border: oklch(1 0 0 / 8%);
+    --input: oklch(1 0 0 / 12%);
+    --ring: oklch(0.75 0.12 175);
+    --chart-1: oklch(0.75 0.12 175);
+    --chart-2: oklch(0.70 0.14 270);
+    --chart-3: oklch(0.65 0.15 145);
+    --chart-4: oklch(0.72 0.15 55);
+    --chart-5: oklch(0.65 0.18 25);
+    --sidebar: oklch(0.17 0.015 265);
+    --sidebar-foreground: oklch(0.93 0.005 250);
+    --sidebar-primary: oklch(0.75 0.12 175);
+    --sidebar-primary-foreground: oklch(0.93 0.005 250);
+    --sidebar-accent: oklch(0.22 0.02 175);
+    --sidebar-accent-foreground: oklch(0.93 0.005 250);
+    --sidebar-border: oklch(1 0 0 / 8%);
+    --sidebar-ring: oklch(0.75 0.12 175);
+}
+
+/* ============================================================================
+ * Theme C — Kami 紙神
+ * Washi paper warmth, mineral pigment colors, zen contemplation
+ * ========================================================================= */
+.kami {
+    --background: oklch(0.97 0.012 80);
+    --foreground: oklch(0.22 0.02 60);
+    --card: oklch(0.96 0.015 75);
+    --card-foreground: oklch(0.22 0.02 60);
+    --popover: oklch(0.96 0.015 75);
+    --popover-foreground: oklch(0.22 0.02 60);
+    --primary: oklch(0.45 0.08 155);
+    --primary-foreground: oklch(0.97 0.012 80);
+    --secondary: oklch(0.93 0.018 75);
+    --secondary-foreground: oklch(0.22 0.02 60);
+    --muted: oklch(0.93 0.018 75);
+    --muted-foreground: oklch(0.58 0.025 60);
+    --accent: oklch(0.93 0.018 75);
+    --accent-foreground: oklch(0.22 0.02 60);
+    --destructive: oklch(0.52 0.16 25);
+    --border: oklch(0.87 0.025 70);
+    --input: oklch(0.90 0.02 70);
+    --ring: oklch(0.45 0.08 155);
+    --chart-1: oklch(0.45 0.08 155);
+    --chart-2: oklch(0.42 0.10 265);
+    --chart-3: oklch(0.50 0.10 55);
+    --chart-4: oklch(0.52 0.16 25);
+    --chart-5: oklch(0.60 0.12 85);
+    --radius: 0.5rem;
+    --sidebar: oklch(0.94 0.02 75);
+    --sidebar-foreground: oklch(0.22 0.02 60);
+    --sidebar-primary: oklch(0.45 0.08 155);
+    --sidebar-primary-foreground: oklch(0.97 0.012 80);
+    --sidebar-accent: oklch(0.91 0.025 75);
+    --sidebar-accent-foreground: oklch(0.22 0.02 60);
+    --sidebar-border: oklch(0.87 0.025 70);
+    --sidebar-ring: oklch(0.45 0.08 155);
 }
 
 @layer base {
@@ -130,4 +178,17 @@
   button:not(:disabled) {
     @apply cursor-pointer;
     }
+}
+
+/* Theme-specific card shadow styles */
+@layer utilities {
+  .card-elevated {
+    box-shadow: 0 1px 3px oklch(0 0 0 / 0.06), 0 1px 2px oklch(0 0 0 / 0.04);
+  }
+}
+.dark .card-elevated {
+  box-shadow: 0 1px 3px oklch(0 0 0 / 0.3), 0 1px 2px oklch(0 0 0 / 0.2);
+}
+.kami .card-elevated {
+  box-shadow: 0 2px 6px oklch(0.4 0.04 60 / 0.12), 0 1px 2px oklch(0.4 0.04 60 / 0.08);
 }

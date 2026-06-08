@@ -59,7 +59,7 @@ function ChartCard({
   children: React.ReactNode
 }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
       <h3 className="text-sm font-medium">{title}</h3>
       {subtitle && (
         <p className="mb-3 text-xs text-muted-foreground">{subtitle}</p>
