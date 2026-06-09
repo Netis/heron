@@ -86,6 +86,8 @@ This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Ver
 
 **Console** at `http://localhost:3000`: overview · performance · usage · errors · services (table / path / model views) · agent turns · agent sessions · LLM calls (with full request/response body drill-down) · raw HTTP exchanges · pipeline-health debug views.
 
+**Three themes, one toggle.** Cycle from the sidebar between **Kami** (`紙神` — a warm washi-paper light theme with mineral-pigment accents, the default and what the screenshots here show), **Dark** (slate, for the dim room), and **Light** (clean high-contrast). The choice persists per browser; everything — charts, the topology graph, the timeline gantt — re-themes with it.
+
 <details>
 <summary>More console screenshots</summary>
 

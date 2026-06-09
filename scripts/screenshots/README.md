@@ -18,9 +18,16 @@ npx playwright install chromium
 # WINDOW_HOURS controls the time-range query string (default 24).
 # TURN_ID deep-links the agent-turn-detail shot to a specific
 # many-call run — pick one with ≥100 calls so the gantt is dense.
+# SESSION deep-links the agent-session-detail shot to a specific
+# "source_id/session_id" with many turns (unset → first row of the list).
+# THEME picks the console theme to capture (default kami — the README
+# default; also dark | light). It's seeded into localStorage before the
+# app boots, so you don't need the instance's default to match.
 BASE=http://heron-host:4500 \
 WINDOW_HOURS=24 \
 TURN_ID=019e4242-9b82-7083-8cba-a046f3477e44 \
+SESSION=any/call_fcb9ec8ef2694d17b9bf572d \
+THEME=kami \
 OUT=$PWD/../../docs/images \
 node snap.mjs
 ```
@@ -41,7 +48,9 @@ curl -sS "$BASE/api/agent-turns?start=...&end=...&page_size=20&sort_by=call_coun
 | `agent-turn-detail.png` | `/agent-turns?selected=<id>` — gantt timeline + per-call drilldown (skipped if `TURN_ID` not set) |
 | `services-table.png` | `/services` — per-endpoint table |
 | `services-path.png` | `/services` — Path tab, the service-to-service topology graph |
-| `agent-session-detail.png` | `/agent-sessions` with first row clicked open |
+| `traffic.png` | `/traffic` — call rate + token throughput over time |
+| `agent-session-detail.png` | `/agent-sessions/<source>/<session>` (or first row of the list) |
+| `pipeline-health.png` | `/debug/pipeline-health` — queue depth, drop counters, leak canaries |
 
 Each shot is 1600×1000 viewport @2× device-scale, no full-page —
 that keeps the README images digestible without scroll.
