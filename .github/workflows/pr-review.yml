@@ -39,9 +39,9 @@ permissions:
 
 jobs:
   review:
-    uses: Netis/agent-ops/.github/workflows/review.yml@v0.2.0
+    uses: Netis/agent-ops/.github/workflows/review.yml@v0.3.1
     with:
-      agent_ops_ref: v0.2.0
+      agent_ops_ref: v0.3.1
       runner_labels: '["self-hosted","heron"]'
       # Empty on the workflow_run path (resolved from the run event); the PR
       # number typed on a manual workflow_dispatch re-review.
