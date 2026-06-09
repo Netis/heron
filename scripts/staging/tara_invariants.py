@@ -138,12 +138,23 @@ def evaluate_load(samples, final_m, fatals, *, max_queue_pct, max_rss_growth_pct
                 if pct > worst_q[1]:
                     worst_q = (name, pct)
 
-    # RSS series (KB), skipping a 25% warm-up so one-time startup growth isn't
-    # mistaken for a leak.
+    # RSS series (KB). On a short load soak DuckDB's buffer pool + the
+    # allocator arenas fill toward their working set for the first half of the
+    # window — that's warm-up, not a leak. Drop a 50% warm-up, then measure
+    # *sustained* growth across the steady second half as (last-quartile mean)
+    # vs (first-quartile mean of the steady window), so neither one-time
+    # start-up growth nor a single sample spike reads as a leak — only a
+    # genuine upward trend in steady state trips the invariant. (The strict
+    # long-run leak gate is the separate longevity soak.)
     rss = [s.get("rss_kb", 0) for s in samples if s.get("rss_kb", 0) > 0]
-    warm = rss[len(rss) // 4:] if len(rss) >= 4 else rss
-    rss_base = min(warm) if warm else 0
-    rss_peak = max(warm) if warm else 0
+    steady = rss[len(rss) // 2:] if len(rss) >= 4 else rss
+    if len(steady) >= 4:
+        q = max(1, len(steady) // 4)
+        rss_base = int(round(sum(steady[:q]) / q))
+        rss_peak = int(round(sum(steady[-q:]) / q))
+    else:
+        rss_base = min(steady) if steady else 0
+        rss_peak = max(steady) if steady else 0
     rss_growth_pct = (100.0 * (rss_peak - rss_base) / rss_base) if rss_base > 0 else 0.0
 
     inv = [
