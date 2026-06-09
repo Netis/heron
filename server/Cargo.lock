@@ -1280,6 +1280,7 @@ dependencies = [
  "chrono",
  "h-capture",
  "h-common",
+ "h-export",
  "h-llm",
  "h-metrics",
  "h-pcap-extract",
@@ -1326,6 +1327,16 @@ dependencies = [
  "tokio",
  "toml_edit 0.22.27",
  "tracing",
+]
+
+[[package]]
+name = "h-export"
+version = "0.5.0"
+dependencies = [
+ "h-llm",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

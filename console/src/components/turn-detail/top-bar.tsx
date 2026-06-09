@@ -3,6 +3,8 @@ import { Info, X } from "lucide-react"
 import { MetadataPopover } from "./metadata-popover"
 import type { AgentTurnDetail } from "@/types/api"
 import { ExtractPacketsButton } from "@/features/pcap-extract/ExtractPacketsButton"
+import { DownloadTrajectoryButton } from "@/components/trajectory-actions"
+import { turnTrajectoryUrl } from "@/lib/trajectory-export"
 
 interface Props {
   turn: AgentTurnDetail
@@ -22,6 +24,11 @@ export function TopBar({ turn, onClose }: Props) {
         <span>{turn.agent_kind}</span>
         <span>·</span>
         <span className="font-mono" title={turn.turn_id}>{truncateMid(turn.turn_id)}</span>
+        <DownloadTrajectoryButton
+          url={turnTrajectoryUrl(turn.turn_id)}
+          fallbackName={`trajectory-${turn.turn_id}.jsonl`}
+          title="Download this turn as an SFT trajectory (.jsonl)"
+        />
         <ExtractPacketsButton anchor={{ type: "agent_turn", row: turn }} />
         <button
           onClick={() => setMetaOpen((o) => !o)}

@@ -4,6 +4,8 @@ import { ArrowLeft, Loader2 } from "lucide-react"
 import { useAgentSessionDetail, useSessionTurns } from "@/hooks/use-agent-sessions"
 import { SessionHeader, TurnBlock } from "@/components/session-detail"
 import { AgentTurnDetailPanel } from "@/pages/agent-turn-detail-panel"
+import { DownloadTrajectoryButton } from "@/components/trajectory-actions"
+import { sessionTrajectoryUrl } from "@/lib/trajectory-export"
 
 export function AgentSessionDetailPage() {
   const { source_id = "", session_id = "" } = useParams()
@@ -46,12 +48,19 @@ export function AgentSessionDetailPage() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="shrink-0 border-b border-border px-4 py-3">
-        <Link
-          to="/agent-sessions"
-          className="mb-2 inline-flex items-center gap-1 text-xs text-primary hover:underline"
-        >
-          <ArrowLeft className="size-3" /> Agent Sessions
-        </Link>
+        <div className="mb-2 flex items-center justify-between">
+          <Link
+            to="/agent-sessions"
+            className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+          >
+            <ArrowLeft className="size-3" /> Agent Sessions
+          </Link>
+          <DownloadTrajectoryButton
+            url={sessionTrajectoryUrl(source_id, session_id)}
+            fallbackName={`trajectory-${session_id}.jsonl`}
+            title="Download this session as one multi-turn SFT trajectory (.jsonl)"
+          />
+        </div>
         <SessionHeader detail={detail} />
       </div>
 

@@ -10,6 +10,10 @@ import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import { ProxyBadge } from "@/components/ui/proxy-badge"
 import { AgentTurnDetailPanel } from "./agent-turn-detail-panel"
 import { ToolSurfacePill, TopologyPill, SuspiciousMarker } from "@/components/agent-pills"
+import { BatchExportButton } from "@/components/trajectory-actions"
+import { batchTrajectoriesUrl } from "@/lib/trajectory-export"
+import { useToolbarStore } from "@/stores/toolbar"
+import { useSupportedFilterParams } from "@/hooks/use-supported-filters"
 import type { AgentTurnListItem, ToolSurface, AgentTopology } from "@/types/api"
 
 const STATUS_OPTIONS = ["in_progress", "complete", "incomplete"]
@@ -136,6 +140,24 @@ export function AgentTurnsPage() {
   const topologyFilter = topologyStr ? (topologyStr.split(",") as AgentTopology[]) : []
   const surfaceFilter = surfaceStr ? (surfaceStr.split(",") as ToolSurface[]) : []
   const { data: agentKindsData } = useAgentKinds()
+
+  // Inputs for the batch trajectory export — mirror exactly what the list
+  // query sends to the server (toolbar window + supported filters + the
+  // page's server-side filters). The client-only topology/surface/suspicious
+  // narrowing is not part of the export set.
+  const start = useToolbarStore((s) => s.start)
+  const end = useToolbarStore((s) => s.end)
+  const { params: fp } = useSupportedFilterParams()
+  const exportUrl = batchTrajectoriesUrl({
+    start,
+    end,
+    ...fp,
+    status: statusStr || undefined,
+    agent_kind: agentKindStr || undefined,
+    client_ip: clientIpStr || undefined,
+    server_port: serverPortStr || undefined,
+    include_proxy_hops: includeProxyHops,
+  })
 
   const [selectedId, setSelectedId] = useSearchParamState("selected", "")
   // Anchor (unix seconds) shared alongside `?selected` so a recipient who
@@ -290,6 +312,9 @@ export function AgentTurnsPage() {
           />
           Show proxy hops
         </label>
+        <div className="ml-auto">
+          <BatchExportButton url={exportUrl} fallbackName="trajectories.jsonl" />
+        </div>
       </div>
 
       {/* Table */}
