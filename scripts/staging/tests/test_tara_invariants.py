@@ -166,9 +166,20 @@ def test_load_queue_over_limit_fails():
 
 
 def test_load_rss_growth_trips_leak():
-    # RSS climbs 100MB→240MB across the window → leak.
-    s = [load_sample(100000 + i * 20000, q_pct=10) for i in range(8)]
+    # A genuine leak keeps climbing steeply in the *steady* second half, not
+    # just during warm-up: flat warm-up, then 150MB→450MB (+200%) post-warmup.
+    s = [load_sample(r, q_pct=10) for r in
+         (100000, 100000, 100000, 100000, 150000, 250000, 350000, 450000)]
     assert "rss_stable" in ev_load(s)
+
+
+def test_load_warmup_growth_does_not_trip():
+    # Memory climbs during warm-up (first half) then plateaus — its working
+    # set, not a leak. The post-warmup steady half is flat, so rss_stable must
+    # NOT trip (this is the false-positive that was blocking prod promotion).
+    s = [load_sample(r, q_pct=10) for r in
+         (100000, 100000, 100000, 100000, 200000, 200000, 200000, 200000)]
+    assert "rss_stable" not in ev_load(s), ev_load(s)
 
 
 def test_load_backpressure_drop_fails():
