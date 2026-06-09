@@ -23,6 +23,7 @@
 #   HERON_PROD_PORT      heron API port           (default: 4500)
 #   HEALTH_TIMEOUT_SECS  health-gate budget secs  (default: 120)
 #   CARGO_BIN            cargo path               (default: ~/.cargo/bin/cargo)
+#   BUN_BIN              bun path                 (default: bun on PATH)
 #
 # Exit: 0 = deployed + healthy; non-zero = failed (rolled back if possible).
 set -euo pipefail
@@ -33,9 +34,11 @@ SERVICE="${HERON_PROD_SERVICE:-heron.service}"
 PORT="${HERON_PROD_PORT:-4500}"
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-120}"
 CARGO="${CARGO_BIN:-$HOME/.cargo/bin/cargo}"
+BUN="${BUN_BIN:-bun}"
 
 [ -d "$REPO/.git" ] || { echo "::error::HERON_PROD_REPO_DIR not a git checkout: $REPO" >&2; exit 1; }
 [ -x "$CARGO" ] || { echo "::error::cargo not executable at $CARGO" >&2; exit 1; }
+command -v "$BUN" >/dev/null 2>&1 || { echo "::error::bun not found ($BUN) — cannot rebuild the console bundle; refusing to ship a stale embedded UI" >&2; exit 1; }
 cd "$REPO"
 
 BIN="$REPO/server/target/release/heron"
@@ -55,6 +58,23 @@ else
   echo "    (no existing binary to back up — first deploy)"
   HAVE_BAK=0
 fi
+
+# Rebuild the console bundle FIRST. `--features console` embeds console/dist at
+# COMPILE TIME via rust-embed (main.rs `#[folder = "../../../console/dist/"]`),
+# and console/dist is gitignored — so `git checkout` never updates it. Without
+# this step the cargo build below re-embeds whatever stale dist happened to be
+# on the prod host from a prior manual build, and front-end changes (themes,
+# pages) silently never reach prod even though the deploy reports success and
+# the health gate (process-up + capture-running, not a UI check) stays green.
+# Mirrors `just build all` (scripts/routers/shared/build.sh run_console).
+echo "==> build console bundle (bun) — embedded into the binary via --features console"
+( cd console && "$BUN" install && "$BUN" run build )
+[ -n "$(ls -A "$REPO/console/dist" 2>/dev/null)" ] \
+  || { echo "::error::console build produced no console/dist — refusing to embed an empty UI" >&2; exit 1; }
+# rust-embed snapshots the folder at compile time and only re-embeds when the
+# embedding crate recompiles; touch its source so an incremental cargo build
+# actually picks up the freshly-built bundle instead of cached embedded bytes.
+touch server/app/heron/src/main.rs
 
 echo "==> build (release + console, incremental — MUST pass --features console)"
 ( cd server && "$CARGO" build --release --bin heron --features console )
