@@ -28,6 +28,19 @@ const START = NOW - WINDOW_HOURS * 3600
 // show off the agent reconstruction.
 const TURN_ID = process.env.TURN_ID || ""
 
+// Which console theme to capture in. The console persists the choice in
+// localStorage under "heron-theme" (zustand persist), so we seed it before
+// any page script runs rather than relying on the deployed default. "kami"
+// (washi-paper light theme) is the README default; override with THEME=dark
+// or THEME=light.
+const THEME = process.env.THEME || "kami"
+
+// Optional: deep-link the session-detail shot to a specific session, given as
+// "source_id/session_id" (mirrors TURN_ID for turns). Pick a session with many
+// turns so the transcript is rich. Unset → fall back to opening the first row
+// of the sessions list.
+const SESSION = process.env.SESSION || ""
+
 const SHOTS = [
   {
     name: "overview.png",
@@ -61,12 +74,36 @@ const SHOTS = [
     },
   },
   {
-    name: "agent-session-detail.png",
-    path: `/agent-sessions?start=${START}&end=${NOW}&preset=custom`,
-    waitFor: "table tbody tr",
+    name: "traffic.png",
+    path: `/traffic?start=${START}&end=${NOW}&preset=custom`,
+    waitFor: "text=Input Tokens",
     afterLoad: async (page) => {
-      await page.locator("table tbody tr").first().click()
+      // let the recharts series animate in before snapping
+      await page.waitForTimeout(1000)
+    },
+  },
+  {
+    // The sessions list renders rows as <Link> anchors, not a <table>, so
+    // target the row href. Deep-link via SESSION when provided (richer
+    // transcript), else open the first row.
+    name: "agent-session-detail.png",
+    path: SESSION
+      ? `/agent-sessions/${SESSION}?start=${START}&end=${NOW}&preset=custom`
+      : `/agent-sessions?start=${START}&end=${NOW}&preset=custom`,
+    waitFor: SESSION ? null : `a[href*="/agent-sessions/"]`,
+    afterLoad: async (page) => {
+      if (!SESSION) {
+        await page.locator('a[href*="/agent-sessions/"]').first().click()
+      }
       await page.waitForTimeout(1500)
+    },
+  },
+  {
+    name: "pipeline-health.png",
+    path: `/debug/pipeline-health`,
+    waitFor: "text=Pipeline Health",
+    afterLoad: async (page) => {
+      await page.waitForTimeout(800)
     },
   },
 ]
@@ -77,7 +114,18 @@ const ctx = await browser.newContext({
   viewport: { width: 1600, height: 1000 },
   deviceScaleFactor: 2,
 })
+// Seed the persisted theme before the app boots so every shot renders in the
+// chosen theme. Must match the zustand-persist envelope used by the store
+// (stores/theme.ts, key "heron-theme").
+await ctx.addInitScript((theme) => {
+  try {
+    localStorage.setItem("heron-theme", JSON.stringify({ state: { theme }, version: 0 }))
+  } catch {
+    /* localStorage unavailable — fall back to the deployed default */
+  }
+}, THEME)
 const page = await ctx.newPage()
+console.log(`theme: ${THEME}`)
 
 for (const shot of SHOTS) {
   if (shot.skip) {

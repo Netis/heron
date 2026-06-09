@@ -14,7 +14,7 @@ const THEME_ORDER: ThemeMode[] = ["dark", "light", "kami"]
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set, get) => ({
-      theme: "dark" as ThemeMode,
+      theme: "kami" as ThemeMode,
       setTheme: (theme) => set({ theme }),
       cycleTheme: () => {
         const current = get().theme
