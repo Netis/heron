@@ -34,11 +34,16 @@ SERVICE="${HERON_PROD_SERVICE:-heron.service}"
 PORT="${HERON_PROD_PORT:-4500}"
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-120}"
 CARGO="${CARGO_BIN:-$HOME/.cargo/bin/cargo}"
-BUN="${BUN_BIN:-bun}"
+# bun: explicit override → PATH → bun's canonical install dir. A non-login
+# deploy shell often lacks ~/.bun/bin on PATH (same reason CARGO defaults to
+# ~/.cargo/bin above), so fall back to the official-installer location rather
+# than failing on a host where bun is installed but just not on PATH.
+BUN="${BUN_BIN:-$(command -v bun 2>/dev/null || true)}"
+[ -n "$BUN" ] || BUN="$HOME/.bun/bin/bun"
 
 [ -d "$REPO/.git" ] || { echo "::error::HERON_PROD_REPO_DIR not a git checkout: $REPO" >&2; exit 1; }
 [ -x "$CARGO" ] || { echo "::error::cargo not executable at $CARGO" >&2; exit 1; }
-command -v "$BUN" >/dev/null 2>&1 || { echo "::error::bun not found ($BUN) — cannot rebuild the console bundle; refusing to ship a stale embedded UI" >&2; exit 1; }
+[ -x "$BUN" ] || { echo "::error::bun not executable at '$BUN' — cannot rebuild the console bundle; set BUN_BIN or install bun; refusing to ship a stale embedded UI" >&2; exit 1; }
 cd "$REPO"
 
 BIN="$REPO/server/target/release/heron"
