@@ -89,7 +89,7 @@ function buildFinishChart(series: FinishReasonSeries[] | undefined): FinishChart
 
 function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
       <h3 className="mb-3 text-sm font-medium">{title}</h3>
       {children}
     </div>

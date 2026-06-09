@@ -149,12 +149,17 @@ function PageHeader({
   onRefresh: () => void
 }) {
   return (
-    <div className="rounded-lg border border-border bg-card">
+    <div className="rounded-lg border border-border/50 bg-card card-elevated">
       <div className="flex flex-wrap items-center gap-3 px-4 py-2.5">
         <span className="text-sm font-semibold">Settings</span>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <span>
-            version <span className="font-mono text-foreground">{version}</span>
+            version <span className="font-mono text-foreground">{__APP_VERSION__}</span>
+            {version !== __APP_VERSION__ && (
+              <span className="ml-1.5 text-amber-600 dark:text-amber-400" title={`Server reports ${version} — version mismatch`}>
+                (server: {version})
+              </span>
+            )}
           </span>
           <span className="break-all">
             config <span className="font-mono text-foreground">{configPath}</span>
@@ -213,7 +218,7 @@ function PipelineCard({
   disabled: boolean
 }) {
   return (
-    <div className="rounded-lg border border-border bg-card">
+    <div className="rounded-lg border border-border/50 bg-card card-elevated">
       <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
         <Cpu className="size-4 text-muted-foreground" />
         <span className="text-sm font-semibold">Pipeline · {pipeline.name}</span>
@@ -734,7 +739,7 @@ function InterfaceHelpExpander({ interfaces }: { interfaces: CaptureInterface[] 
   if (interfaces.length === 0) return null
   const groups = groupInterfaces(interfaces)
   return (
-    <div className="rounded-lg border border-border bg-card">
+    <div className="rounded-lg border border-border/50 bg-card card-elevated">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-4 py-2.5 text-left"

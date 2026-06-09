@@ -47,8 +47,8 @@ function KpiCard({
           : "text-foreground"
 
   return (
-    <div className="flex flex-col gap-1 rounded-lg border border-border bg-card p-4">
-      <span className="text-xs font-medium text-muted-foreground">{title}</span>
+    <div className="flex flex-col gap-1 rounded-lg border border-border/50 bg-card p-4 card-elevated">
+      <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{title}</span>
       <span className={cn("text-2xl font-semibold tabular-nums", valueColor)}>{value}</span>
       {subtext && <span className="text-xs text-muted-foreground">{subtext}</span>}
     </div>
@@ -57,7 +57,7 @@ function KpiCard({
 
 function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
       <h3 className="mb-3 text-sm font-medium">{title}</h3>
       {children}
     </div>

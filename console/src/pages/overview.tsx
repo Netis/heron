@@ -34,8 +34,8 @@ function KpiCard({
           : "text-foreground"
 
   return (
-    <div className="flex flex-col gap-1 rounded-lg border border-border bg-card p-4">
-      <span className="text-xs font-medium text-muted-foreground">{title}</span>
+    <div className="flex flex-col gap-1 rounded-lg border border-border/50 bg-card p-4 card-elevated">
+      <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{title}</span>
       <span className={cn("text-2xl font-semibold tabular-nums", valueColor)}>{value}</span>
       {subtext && <span className="text-xs text-muted-foreground">{subtext}</span>}
     </div>
@@ -116,11 +116,11 @@ export function OverviewPage() {
 
       {/* Middle row — 2 charts */}
       <div className="grid grid-cols-2 gap-4">
-        <div className="rounded-lg border border-border bg-card p-4">
+        <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
           <h3 className="mb-3 text-sm font-medium">Call Volume</h3>
           <RequestVolumeChart data={volumeTs ?? null} />
         </div>
-        <div className="rounded-lg border border-border bg-card p-4">
+        <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
           <h3 className="mb-3 text-sm font-medium">Latency Overview</h3>
           <LatencyOverviewChart data={latencyTs ?? null} />
         </div>
@@ -128,11 +128,11 @@ export function OverviewPage() {
 
       {/* Agent row — activity timeseries + distribution */}
       <div className="grid grid-cols-2 gap-4">
-        <div className="rounded-lg border border-border bg-card p-4">
+        <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
           <h3 className="mb-3 text-sm font-medium">Agent Activity</h3>
           <AgentActivityChart points={agentActivity?.points ?? []} />
         </div>
-        <div className="rounded-lg border border-border bg-card p-4">
+        <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
           <h3 className="mb-3 text-sm font-medium">Agent Distribution</h3>
           <AgentDistributionChart rows={agentSummary?.summary ?? []} />
         </div>
@@ -140,7 +140,7 @@ export function OverviewPage() {
 
       {/* Active concurrency — live gauges from internal_metrics ring */}
       <div className="grid grid-cols-2 gap-4">
-        <div className="rounded-lg border border-border bg-card p-4">
+        <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
           <h3 className="mb-3 text-sm font-medium">
             Active TCP Connections
             <span className="ml-2 text-xs font-normal text-muted-foreground">
@@ -154,7 +154,7 @@ export function OverviewPage() {
             data={gauges}
           />
         </div>
-        <div className="rounded-lg border border-border bg-card p-4">
+        <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
           <h3 className="mb-3 text-sm font-medium">
             Active Agent Turns
             <span className="ml-2 text-xs font-normal text-muted-foreground">
@@ -172,11 +172,11 @@ export function OverviewPage() {
 
       {/* Bottom row — 2 panels */}
       <div className="grid grid-cols-2 gap-4">
-        <div className="rounded-lg border border-border bg-card p-4">
+        <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
           <h3 className="mb-3 text-sm font-medium">Model Breakdown</h3>
           <ModelBreakdownChart models={modelsData?.models ?? []} />
         </div>
-        <div className="rounded-lg border border-border bg-card p-4">
+        <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
           <h3 className="mb-3 text-sm font-medium">Call Error Rate by Model</h3>
           <ErrorByModelChart models={modelsData?.models ?? []} />
         </div>

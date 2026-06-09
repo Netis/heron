@@ -74,13 +74,13 @@ function ModelDetailCharts({ model }: { model: string }) {
 
   return (
     <div className="grid grid-cols-2 gap-4">
-      <div className="rounded-lg border border-border bg-card p-4">
+      <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
         <h3 className="mb-3 text-sm font-medium">
           Latency Over Time — <span className="text-muted-foreground">{model}</span>
         </h3>
         <TimeseriesLineChart data={modelLatency} series={LATENCY_SERIES} yFormatter={formatMs} />
       </div>
-      <div className="rounded-lg border border-border bg-card p-4">
+      <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
         <h3 className="mb-3 text-sm font-medium">
           Call Volume & Errors — <span className="text-muted-foreground">{model}</span>
         </h3>
