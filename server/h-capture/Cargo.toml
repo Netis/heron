@@ -6,10 +6,10 @@ license.workspace = true
 
 [features]
 # eBPF SSL-uprobe capture (Linux only). Off by default so macOS dev builds and
-# the Linux CI stay green without the aya/BPF toolchain. Phase 1b adds the aya
-# loader (`src/ebpf/source.rs`) + BPF program under this gate; the cross-platform
-# pump (`src/ebpf/mod.rs`) is always built and tested.
-ebpf = []
+# the Linux CI stay green without the aya/BPF toolchain. Enables the aya loader
+# (`src/ebpf/source.rs`) + the out-of-band BPF program build (build.rs +
+# aya-build). The cross-platform pump (`src/ebpf/mod.rs`) is always built/tested.
+ebpf = ["dep:aya", "dep:h-ebpf-common", "tokio/net"]
 
 [dependencies]
 h-common.workspace = true
@@ -25,6 +25,18 @@ tokio-util.workspace = true
 serde.workspace = true
 snap = "1"
 
+# eBPF deps are Linux-only and optional (pulled in only by the `ebpf` feature),
+# so neither macOS nor a default Linux build compiles them.
+[target.'cfg(target_os = "linux")'.dependencies]
+aya = { version = "0.13", optional = true }
+h-ebpf-common = { path = "../h-ebpf-common", optional = true }
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+# Smoke test for live eBPF capture: runs EbpfSource and prints captured HTTP
+# request lines. Linux + `--features ebpf` + CAP_BPF only.
+[[example]]
+name = "ebpf_smoke"
+required-features = ["ebpf"]

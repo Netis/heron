@@ -1,5 +1,10 @@
 [workspace]
 members = ["h-*", "app/*"]
+# h-ebpf-prog is the BPF program: it builds for `bpfel-unknown-none` with a
+# pinned nightly toolchain (see its rust-toolchain.toml) and must never be
+# pulled into a host `cargo build`. h-capture's build.rs compiles it out-of-band
+# via aya-build when the `ebpf` feature is on.
+exclude = ["h-ebpf-prog"]
 resolver = "2"
 
 [workspace.package]

@@ -1,0 +1,7 @@
+# Build this crate for the BPF target with a freshly-built `core`. bpf-linker
+# (cargo install bpf-linker) performs the final link.
+[build]
+target = "bpfel-unknown-none"
+
+[unstable]
+build-std = ["core"]
