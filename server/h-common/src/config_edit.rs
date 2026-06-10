@@ -178,6 +178,12 @@ fn source_to_table(s: &CaptureSourceConfig) -> Table {
                     if let Some(sig) = &target.read_sig {
                         tt["read_sig"] = value(sig.as_str());
                     }
+                    if let Some(off) = target.write_offset {
+                        tt["write_offset"] = value(off as i64);
+                    }
+                    if let Some(off) = target.read_offset {
+                        tt["read_offset"] = value(off as i64);
+                    }
                     arr.push(tt);
                 }
                 t["targets"] = toml_edit::Item::ArrayOfTables(arr);

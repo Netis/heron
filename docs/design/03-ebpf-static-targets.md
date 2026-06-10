@@ -80,37 +80,85 @@ libssl (which has symbols, giving ground truth):
 
 ## Deriving a signature for a Bun / Claude Code release
 
-Because the signature is build-specific, deriving it is a per-release step:
+Because the signature is build-specific, deriving it is a per-release step. Two
+config paths exist:
 
-1. Find a symbolized reference of the **same BoringSSL** (or disassemble the
-   target around the function located by xref to a vendored source-path string),
-   and read the first ~48 bytes of the `SSL_write` / `SSL_read` prologue.
-2. Wildcard (`??`) the 4-byte RIP-relative displacements (e.g. the `e8 ?? ?? ??
-   ??` call near the end) so the signature survives PIE/ASLR-independent relocs
-   across rebuilds of the same source.
-3. Validate uniqueness against the actual target binary:
+- `write_offset` / `read_offset` — explicit file offsets, bypass scanning. The
+  fast path once the offset is known (and the validation path while deriving a
+  signature). The loader attaches directly.
+- `write_sig` / `read_sig` — byte-signature patterns, resolved to a unique
+  offset at attach time. The resilient path: a signature survives ASLR and
+  matches any process mapping the binary.
+
+To derive either, you must first **locate `SSL_write` / `SSL_read` in the
+stripped binary**. What we learned probing Bun 1.3.13 (see below) makes the
+recipe concrete:
+
+1. Find the TLS write call chain dynamically — `bpftrace` ustack on the write
+   syscall from the runtime:
    ```
-   cargo run -p h-capture --example sigscan_probe -- /path/to/bun "55 41 57 ?? …"
+   bpftrace -e 'tracepoint:syscalls:sys_enter_write /comm=="bun"/ { @[ustack(perf,12)] = count(); }'
    ```
-   A good signature reports exactly **one** match (`OK: unique offset`).
-4. Put the validated patterns in config:
+   For a non-PIE EXEC (Bun is `ET_EXEC`), the frame addresses are link-time
+   vaddrs; convert to file offsets via the executable `PT_LOAD` delta
+   (`file_off = vaddr - (p_vaddr - p_offset)`; 0x318000 for this Bun).
+2. The plaintext-bearing functions (`SSL_write` / `ssl_write_internal`, arg1 =
+   `buf` in RSI) are the **outer** frames; the inner cluster is the record /
+   encryption layer (ciphertext). Validate a candidate **function entry** by
+   attaching there and checking RSI:
+   ```
+   HERON_EBPF_TARGET_BIN=/path/to/bun HERON_EBPF_WRITE_OFFSET=0x… \
+     ./target/debug/examples/ebpf_smoke   # prints captured HTTP/1.1 if RSI is plaintext
+   ```
+3. Read the first ~48 bytes at the validated entry, wildcard (`??`) the 4-byte
+   RIP-relative displacements (e.g. the `e8 ?? ?? ?? ??` call operands), and
+   confirm uniqueness:
+   ```
+   cargo run -p h-capture --example sigscan_probe -- /path/to/bun "55 48 89 e5 …"
+   ```
+4. Put the validated offset (or signature) in config:
    ```toml
    [[sources.targets]]
    binary = "/path/to/claude/bun"
    flavor = "boringssl"
-   write_sig = "…"   # validated SSL_write prologue
-   read_sig  = "…"   # validated SSL_read prologue
+   write_sig = "…"   # or write_offset = 0x…
+   read_sig  = "…"   # or read_offset  = 0x…
    ```
 
 No built-in BoringSSL signature ships (`flavor_signatures` returns none): a
 guessed-wrong signature is worse than none (it could attach to the wrong
 function), so the unique-match requirement plus operator-supplied, validated
-patterns is the safe default.
+patterns/offsets is the safe default.
+
+## What we measured on Bun 1.3.13 (the hard part: entry identification)
+
+The mechanism is proven; the open work is **reliably finding the function
+entry** in this specific binary shape. Recorded so a follow-up doesn't re-walk it:
+
+- Bun's BoringSSL is compiled **without CET** — functions do **not** start with
+  `endbr64`, so the easy entry marker the system libssl has is absent here.
+  Prologues are plain (`55 48 89 e5 …` push-rbp, or frame-pointer-omitted).
+- `bpftrace` located the exact write call chain: an inner cluster (`~0x3c2xxxx`,
+  the record/encrypt layer that calls `write@plt`) and outer frames
+  (`~0x42xxxxx`) on the plaintext side.
+- Offset-attach **registers correctly** against the EXEC binary
+  (`bpftool link list` shows `uprobe /…/bun+0x…` at the computed file offset;
+  the r-xp mapping `…r-xp 02808000 …/bun` confirms the delta), so aya + the
+  loader are sound on a non-PIE target.
+- The remaining blocker: int3-padding / prologue heuristics yield **basic-block
+  boundaries**, not guaranteed function entries on the executed path, in this
+  jump-dense optimized code. Pinning the true entry needs proper
+  disassembly-based function-boundary analysis (or a symbol-matched BoringSSL
+  build — out of reach without the matching toolchain). `bpftrace`'s numeric
+  uprobe (`uprobe:bin:0xADDR`) can't help validate here: it resolves addresses
+  via the symbol table, which is empty for BoringSSL, so use the
+  `HERON_EBPF_WRITE_OFFSET` path above instead.
 
 ## Status
 
-- Mechanism (sigscan + offset-attach + config + discovery tool): **done,
-  verified end-to-end** on a real SSL function.
-- A validated Bun/Claude Code signature: **per-release data**, derived with the
-  procedure above. Wildcarding the displacement bytes (step 2) is what makes a
-  signature resilient across patch rebuilds of one Bun line.
+- Mechanism (sigscan + offset/sig attach + config + `sigscan_probe`): **done,
+  verified end-to-end** on a real SSL function (system libssl).
+- De-risking: **done** — Bun fetch is HTTP/1.1; Bun is stripped static BoringSSL,
+  non-CET.
+- A validated Bun/Claude Code offset or signature: **open** — needs
+  disassembly-based entry identification (above), then it is per-release data.

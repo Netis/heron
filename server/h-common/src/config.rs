@@ -352,6 +352,14 @@ pub struct EbpfTarget {
     /// [`Self::write_sig`].
     #[serde(default)]
     pub read_sig: Option<String>,
+    /// Explicit `SSL_write` file offset, bypassing signature scanning entirely.
+    /// For when the offset is already known (e.g. from `sigscan_probe` or RE) —
+    /// also the validation path used while deriving a signature for a new build.
+    #[serde(default)]
+    pub write_offset: Option<u64>,
+    /// Explicit `SSL_read` file offset. See [`Self::write_offset`].
+    #[serde(default)]
+    pub read_offset: Option<u64>,
 }
 
 fn default_ebpf_target_flavor() -> String {

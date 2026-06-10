@@ -406,33 +406,49 @@ fn attach_target(ebpf: &mut Ebpf, target: &EbpfTarget) -> crate::Result<bool> {
     let (builtin_w, builtin_r) = flavor_signatures(&target.flavor);
     let write_pat = target.write_sig.clone().or(builtin_w);
     let read_pat = target.read_sig.clone().or(builtin_r);
-    if write_pat.is_none() && read_pat.is_none() {
+    if target.write_offset.is_none()
+        && target.read_offset.is_none()
+        && write_pat.is_none()
+        && read_pat.is_none()
+    {
         tracing::warn!(
-            "ebpf: target {} (flavor={}) has no signature — set write_sig/read_sig in config",
+            "ebpf: target {} (flavor={}) has no offset or signature — set \
+             write_offset/read_offset or write_sig/read_sig in config",
             target.binary,
             target.flavor
         );
         return Ok(false);
     }
 
-    let data = std::fs::read(&path)
-        .map_err(|e| crate::CaptureError::Other(format!("read target {}: {e}", target.binary)))?;
+    // Read the binary only if a signature scan is actually needed.
+    let data = if (target.write_offset.is_none() && write_pat.is_some())
+        || (target.read_offset.is_none() && read_pat.is_some())
+    {
+        std::fs::read(&path)
+            .map_err(|e| crate::CaptureError::Other(format!("read target {}: {e}", target.binary)))?
+    } else {
+        Vec::new()
+    };
+
+    // Explicit offset wins over signature scanning for each function.
+    let write_off = target
+        .write_offset
+        .or_else(|| write_pat.and_then(|p| resolve_single_offset(&data, &p, "SSL_write", &target.binary)));
+    let read_off = target
+        .read_offset
+        .or_else(|| read_pat.and_then(|p| resolve_single_offset(&data, &p, "SSL_read", &target.binary)));
 
     let mut any = false;
-    if let Some(pat) = write_pat {
-        if let Some(off) = resolve_single_offset(&data, &pat, "SSL_write", &target.binary) {
-            attach_offset(ebpf, "ssl_write", off, &path, false)?;
-            any = true;
-        }
+    if let Some(off) = write_off {
+        attach_offset(ebpf, "ssl_write", off, &path, false)?;
+        any = true;
     }
-    if let Some(pat) = read_pat {
-        if let Some(off) = resolve_single_offset(&data, &pat, "SSL_read", &target.binary) {
-            // Entry probe captures the buffer pointer; the return probe reads
-            // the bytes SSL_read filled in. Both attach at the function entry.
-            attach_offset(ebpf, "ssl_read_enter", off, &path, false)?;
-            attach_offset(ebpf, "ssl_read_exit", off, &path, true)?;
-            any = true;
-        }
+    if let Some(off) = read_off {
+        // Entry probe captures the buffer pointer; the return probe reads the
+        // bytes SSL_read filled in. Both attach at the function entry.
+        attach_offset(ebpf, "ssl_read_enter", off, &path, false)?;
+        attach_offset(ebpf, "ssl_read_exit", off, &path, true)?;
+        any = true;
     }
     Ok(any)
 }

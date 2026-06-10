@@ -30,11 +30,20 @@ async fn main() {
     // end-to-end (signature → scan → offset → attach → capture).
     let (ssl_libs, targets) = match std::env::var("HERON_EBPF_TARGET_BIN") {
         Ok(bin) if !bin.is_empty() => {
+            let parse_off = |k: &str| -> Option<u64> {
+                std::env::var(k).ok().and_then(|s| {
+                    let s = s.trim();
+                    let s = s.strip_prefix("0x").unwrap_or(s);
+                    u64::from_str_radix(s, 16).ok()
+                })
+            };
             let target = h_common::config::EbpfTarget {
                 binary: bin,
                 flavor: std::env::var("HERON_EBPF_FLAVOR").unwrap_or_else(|_| "boringssl".into()),
                 write_sig: std::env::var("HERON_EBPF_WRITE_SIG").ok().filter(|s| !s.is_empty()),
                 read_sig: std::env::var("HERON_EBPF_READ_SIG").ok().filter(|s| !s.is_empty()),
+                write_offset: parse_off("HERON_EBPF_WRITE_OFFSET"),
+                read_offset: parse_off("HERON_EBPF_READ_OFFSET"),
             };
             eprintln!("ebpf-smoke: Phase-3 offset-attach target = {}", target.binary);
             (vec!["/heron/no-dynamic-libssl".to_string()], vec![target])
