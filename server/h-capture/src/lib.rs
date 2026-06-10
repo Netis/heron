@@ -14,6 +14,7 @@
 //! strictly an I/O boundary.
 
 mod cloud_probe;
+pub mod ebpf;
 mod factory;
 pub mod heartbeat;
 pub mod interfaces;
@@ -27,6 +28,7 @@ mod source;
 pub mod synth;
 
 pub use cloud_probe::CloudProbeSource;
+pub use ebpf::{BootClock, EbpfPump, SslEvent};
 pub use factory::build_source;
 pub use packet::{RawPacket, HEARTBEAT_ETHER_TYPE, HEARTBEAT_PACKET_LEN};
 pub use pcap_dump::{pcap_dump_dir_for, PacketDumper, PacketDumperConfig};

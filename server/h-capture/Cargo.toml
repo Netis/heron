@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# eBPF SSL-uprobe capture (Linux only). Off by default so macOS dev builds and
+# the Linux CI stay green without the aya/BPF toolchain. Phase 1b adds the aya
+# loader (`src/ebpf/source.rs`) + BPF program under this gate; the cross-platform
+# pump (`src/ebpf/mod.rs`) is always built and tested.
+ebpf = []
+
 [dependencies]
 h-common.workspace = true
 pcap.workspace = true
