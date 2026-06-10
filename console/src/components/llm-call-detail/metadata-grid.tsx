@@ -11,6 +11,16 @@ export function MetadataGrid({ detail }: Props) {
     ["Response ID", detail.response_id ?? "—"],
     ["Path", detail.request_path],
     ["Client", `${detail.client_ip}:${detail.client_port}`],
+    // Process attribution (eBPF sources only); omitted entirely for passive
+    // taps where `process` is null.
+    ...(detail.process
+      ? ([
+          ["Process", `${detail.process.comm} (pid ${detail.process.pid})`],
+          ...(detail.process.exe
+            ? [["Executable", detail.process.exe] as [string, string]]
+            : []),
+        ] as [string, string][])
+      : []),
     ["Server", `${detail.server_ip}:${detail.server_port}`],
     ["Stream", detail.is_stream ? "Yes" : "No"],
     ["API Type", detail.api_type],
