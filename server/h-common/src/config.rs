@@ -339,6 +339,19 @@ pub struct EbpfTarget {
     /// e.g. `"openssl"`, `"boringssl"`.
     #[serde(default = "default_ebpf_target_flavor")]
     pub flavor: String,
+    /// Optional byte-signature override for `SSL_write`'s prologue, as a pattern
+    /// of space-separated hex bytes with `??` wildcards
+    /// (e.g. `"55 41 57 ?? 48 8b"`). Signatures are version-specific to one
+    /// statically-linked TLS build, so they live in config (data) rather than
+    /// code: an operator can pin their exact Bun / Claude Code release without a
+    /// rebuild. When unset, the loader falls back to the built-in signature for
+    /// `flavor` (if any).
+    #[serde(default)]
+    pub write_sig: Option<String>,
+    /// Optional byte-signature override for `SSL_read`'s prologue. See
+    /// [`Self::write_sig`].
+    #[serde(default)]
+    pub read_sig: Option<String>,
 }
 
 fn default_ebpf_target_flavor() -> String {

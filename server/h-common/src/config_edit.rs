@@ -172,6 +172,12 @@ fn source_to_table(s: &CaptureSourceConfig) -> Table {
                     let mut tt = Table::new();
                     tt["binary"] = value(target.binary.as_str());
                     tt["flavor"] = value(target.flavor.as_str());
+                    if let Some(sig) = &target.write_sig {
+                        tt["write_sig"] = value(sig.as_str());
+                    }
+                    if let Some(sig) = &target.read_sig {
+                        tt["read_sig"] = value(sig.as_str());
+                    }
                     arr.push(tt);
                 }
                 t["targets"] = toml_edit::Item::ArrayOfTables(arr);

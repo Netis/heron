@@ -38,6 +38,11 @@ mod source;
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
 pub use source::EbpfSource;
 
+// Byte-signature scanning for offset-based uprobe attach on symbol-stripped
+// static TLS stacks (Bun/BoringSSL, Phase 3). Pure + cross-platform so the
+// matcher is built and unit-tested on every host, like `synth`.
+pub mod sigscan;
+
 /// Maximum length of a process `comm` (matches the kernel `TASK_COMM_LEN`).
 pub const COMM_LEN: usize = 16;
 

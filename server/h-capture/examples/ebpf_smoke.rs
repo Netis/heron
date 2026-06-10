@@ -23,10 +23,29 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() {
+    // Phase-3 mode: when HERON_EBPF_TARGET_BIN is set, attach by byte-signature
+    // offset to a static target instead of dynamic libssl. `*_SIG` are prologue
+    // patterns (see `sigscan_probe`). A sentinel `ssl_libs` path is filtered out
+    // by the loader, isolating the offset-attach path so this exercises Phase 3
+    // end-to-end (signature → scan → offset → attach → capture).
+    let (ssl_libs, targets) = match std::env::var("HERON_EBPF_TARGET_BIN") {
+        Ok(bin) if !bin.is_empty() => {
+            let target = h_common::config::EbpfTarget {
+                binary: bin,
+                flavor: std::env::var("HERON_EBPF_FLAVOR").unwrap_or_else(|_| "boringssl".into()),
+                write_sig: std::env::var("HERON_EBPF_WRITE_SIG").ok().filter(|s| !s.is_empty()),
+                read_sig: std::env::var("HERON_EBPF_READ_SIG").ok().filter(|s| !s.is_empty()),
+            };
+            eprintln!("ebpf-smoke: Phase-3 offset-attach target = {}", target.binary);
+            (vec!["/heron/no-dynamic-libssl".to_string()], vec![target])
+        }
+        _ => (vec![], vec![]), // default: autodetect dynamic libssl
+    };
+
     let config = CaptureSourceConfig::Ebpf {
         source_id: Some("ebpf-smoke".to_string()),
-        ssl_libs: vec![],     // autodetect
-        targets: vec![],
+        ssl_libs,
+        targets,
         pid_allowlist: vec![], // all processes
         segment_size: 16 * 1024,
     };
