@@ -26,6 +26,7 @@ use std::sync::Arc;
 use duckdb::Connection;
 use tempfile::TempDir;
 
+use h_common::process::ProcessInfo;
 use h_llm::model::{ApiType, LlmCall};
 use h_storage::query::{DimensionFilter, TimeRange, TurnsQuery};
 use h_storage::StorageBackend;
@@ -70,6 +71,7 @@ fn sample_call(id: &str, tool_call_count: u32, body_bytes_dropped: u64) -> LlmCa
         tool_call_count,
         tool_names: vec![],
         body_bytes_dropped,
+        process: None,
     }
 }
 
@@ -148,6 +150,49 @@ CREATE TABLE llm_calls (
     agent_topology    VARCHAR,
     tool_call_count   UINTEGER NOT NULL DEFAULT 0,
     tool_names_json   VARCHAR
+);
+";
+
+/// Schema shape immediately before Phase 7 added the `process_*` attribution
+/// columns to `llm_calls` — the full post-Phase-6 layout (body-cap counter
+/// present) but without process pid/comm/exe. Drives the
+/// `phase7_adds_process_columns_*` test.
+const LEGACY_LLM_CALLS_PRE_PHASE7: &str = "
+CREATE TABLE llm_calls (
+    id                VARCHAR NOT NULL PRIMARY KEY,
+    source_id         VARCHAR NOT NULL DEFAULT '',
+    client_ip         VARCHAR NOT NULL,
+    client_port       USMALLINT NOT NULL,
+    server_ip         VARCHAR NOT NULL,
+    server_port       USMALLINT NOT NULL,
+    request_time      TIMESTAMP NOT NULL,
+    response_time     TIMESTAMP,
+    complete_time     TIMESTAMP,
+    wire_api          VARCHAR NOT NULL,
+    model             VARCHAR NOT NULL,
+    api_type          VARCHAR NOT NULL,
+    is_stream         BOOLEAN NOT NULL,
+    request_path      VARCHAR NOT NULL,
+    status_code       USMALLINT,
+    finish_reason     VARCHAR,
+    input_tokens      UINTEGER,
+    output_tokens     UINTEGER,
+    total_tokens      UINTEGER,
+    cache_read_input_tokens   UINTEGER,
+    cache_creation_input_tokens UINTEGER,
+    ttft_ms           DOUBLE,
+    e2e_latency_ms    DOUBLE,
+    request_body      VARCHAR,
+    response_body     VARCHAR,
+    response_id       VARCHAR,
+    request_headers   VARCHAR,
+    response_headers  VARCHAR,
+    is_agent_request  BOOLEAN  NOT NULL DEFAULT FALSE,
+    tool_surface      VARCHAR,
+    agent_topology    VARCHAR,
+    tool_call_count   UINTEGER NOT NULL DEFAULT 0,
+    tool_names_json   VARCHAR,
+    body_bytes_dropped UBIGINT NOT NULL DEFAULT 0
 );
 ";
 
@@ -353,6 +398,90 @@ async fn phase6_adds_body_bytes_dropped_and_appender_stays_aligned_on_legacy_db(
     assert_eq!(
         body_bytes_dropped, 4242,
         "body_bytes_dropped must round-trip into the migrated column (appender alignment)"
+    );
+}
+
+// Phase-7 migration: the `process_*` attribution columns must be added to a
+// legacy (pre-Phase-7) `llm_calls`, AND the positional appender must keep
+// writing the right columns afterward. Same alignment contract as Phase 6:
+// the three columns append at the table tail in both CREATE and ALTER, so a
+// fresh-vs-migrated DB share one column order. This writes a call carrying
+// real process attribution and reads pid/comm/exe back to prove the eBPF
+// attribution round-trips through the migrated columns intact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn phase7_adds_process_columns_and_appender_stays_aligned_on_legacy_db() {
+    let tmp = TempDir::new().unwrap();
+    let path = synth_db(&tmp, &[LEGACY_LLM_CALLS_PRE_PHASE7]);
+
+    // Pre-condition: the process columns are absent on the legacy DB.
+    {
+        let conn = Connection::open(&path).unwrap();
+        let cols = column_names(&conn, "llm_calls");
+        assert!(
+            !cols.iter().any(|c| c == "process_pid"),
+            "synth pre-condition: process_pid must be absent in pre-Phase-7 DB, got: {cols:?}"
+        );
+    }
+
+    let backend = Arc::new(
+        DuckDbBackend::open_with_pool(path.to_str().unwrap(), 2).expect("open backend"),
+    );
+    backend.init().await.expect("init must reconcile legacy schema");
+
+    // Columns landed.
+    {
+        let conn = Connection::open(&path).unwrap();
+        let cols = column_names(&conn, "llm_calls");
+        for col in ["process_pid", "process_comm", "process_exe"] {
+            assert!(
+                cols.iter().any(|c| c == col),
+                "post-migration llm_calls must contain {col}, got: {cols:?}"
+            );
+        }
+    }
+
+    // Write a call carrying eBPF process attribution through the real appender
+    // into the just-migrated table. The trailing sentinel body_bytes_dropped
+    // (4242) plus the process columns catch a positional swap among tail cols.
+    let mut call = sample_call("call-phase7", 7, 4242);
+    call.process = Some(ProcessInfo {
+        pid: 31337,
+        comm: "python3".into(),
+        exe: Some("/usr/bin/python3.12".into()),
+    });
+    backend
+        .write_calls(vec![call])
+        .await
+        .expect("write_calls must succeed against a migrated table");
+
+    drop(backend);
+
+    let conn = Connection::open(&path).unwrap();
+    let (pid, comm, exe, body_bytes_dropped): (Option<u32>, Option<String>, Option<String>, u64) =
+        conn.query_row(
+            "SELECT process_pid, process_comm, process_exe, body_bytes_dropped \
+             FROM llm_calls WHERE id = 'call-phase7'",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, Option<u32>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, u64>(3)?,
+                ))
+            },
+        )
+        .expect("row must be present after write_calls");
+    assert_eq!(pid, Some(31337), "process_pid must round-trip");
+    assert_eq!(comm.as_deref(), Some("python3"), "process_comm must round-trip");
+    assert_eq!(
+        exe.as_deref(),
+        Some("/usr/bin/python3.12"),
+        "process_exe must round-trip"
+    );
+    assert_eq!(
+        body_bytes_dropped, 4242,
+        "body_bytes_dropped must stay aligned after the process columns append"
     );
 }
 

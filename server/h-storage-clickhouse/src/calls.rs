@@ -4,6 +4,7 @@ use clickhouse::Row;
 use serde::Deserialize;
 
 use h_common::error::Result;
+use h_common::process::ProcessInfo;
 use h_llm::model::LlmCall;
 use h_storage::convert::{derive_tokens_estimated, parse_json_string_list};
 use h_storage::dialect::sql_in_list;
@@ -53,6 +54,9 @@ struct CallListRow {
     agent_topology: Option<String>,
     tool_call_count: u32,
     tool_names_json: Option<String>,
+    process_pid: Option<u32>,
+    process_comm: Option<String>,
+    process_exe: Option<String>,
 }
 
 #[derive(Row, Deserialize)]
@@ -88,6 +92,9 @@ struct CallDetailRow {
     agent_topology: Option<String>,
     tool_call_count: u32,
     tool_names_json: Option<String>,
+    process_pid: Option<u32>,
+    process_comm: Option<String>,
+    process_exe: Option<String>,
 }
 
 #[derive(Row, Deserialize)]
@@ -192,7 +199,7 @@ impl ClickHouseBackend {
              wire_api, model, status_code, is_stream, finish_reason, ttft_ms, e2e_latency_ms, \
              input_tokens, output_tokens, client_ip, server_ip, server_port, request_path, \
              response_body, is_agent_request, tool_surface, agent_topology, tool_call_count, \
-             tool_names_json \
+             tool_names_json, process_pid, process_comm, process_exe \
              FROM llm_calls WHERE {where_sql} \
              ORDER BY {} {sort_order} LIMIT {} OFFSET {offset}",
             query.sort_by, query.page_size,
@@ -218,7 +225,7 @@ impl ClickHouseBackend {
              input_tokens, output_tokens, total_tokens, ttft_ms, e2e_latency_ms, response_id, \
              client_ip, client_port, server_ip, server_port, request_body, response_body, \
              request_headers, response_headers, is_agent_request, tool_surface, agent_topology, \
-             tool_call_count, tool_names_json \
+             tool_call_count, tool_names_json, process_pid, process_comm, process_exe \
              FROM llm_calls WHERE id = '{}' LIMIT 1",
             escape_str(id)
         );
@@ -370,10 +377,21 @@ fn join_nums<T: std::fmt::Display>(values: &[T]) -> String {
         .join(", ")
 }
 
+/// Build `Option<ProcessInfo>` from the three nullable `process_*` columns.
+/// `None` exactly when `pid` is NULL (passive-tap rows).
+fn row_process(pid: Option<u32>, comm: Option<String>, exe: Option<String>) -> Option<ProcessInfo> {
+    pid.map(|pid| ProcessInfo {
+        pid,
+        comm: comm.unwrap_or_default(),
+        exe,
+    })
+}
+
 fn call_list_item(r: CallListRow) -> CallListItem {
     let tokens_estimated =
         derive_tokens_estimated(r.input_tokens, r.output_tokens, r.response_body.as_deref());
     let tool_names = parse_json_string_list(r.tool_names_json.as_deref());
+    let process = row_process(r.process_pid, r.process_comm, r.process_exe);
     CallListItem {
         id: r.id,
         source_id: r.source_id,
@@ -397,6 +415,7 @@ fn call_list_item(r: CallListRow) -> CallListItem {
         agent_topology: r.agent_topology,
         tool_call_count: r.tool_call_count,
         tool_names,
+        process,
     }
 }
 
@@ -404,6 +423,7 @@ fn call_detail(r: CallDetailRow) -> CallDetail {
     let tokens_estimated =
         derive_tokens_estimated(r.input_tokens, r.output_tokens, r.response_body.as_deref());
     let tool_names = parse_json_string_list(r.tool_names_json.as_deref());
+    let process = row_process(r.process_pid, r.process_comm, r.process_exe);
     CallDetail {
         id: r.id,
         source_id: r.source_id,
@@ -437,5 +457,6 @@ fn call_detail(r: CallDetailRow) -> CallDetail {
         agent_topology: r.agent_topology,
         tool_call_count: r.tool_call_count,
         tool_names,
+        process,
     }
 }

@@ -156,6 +156,7 @@ pub(crate) fn extract_full_text(
         tool_call_count: 0,
         tool_names: vec![],
         body_bytes_dropped: 0,
+        process: None,
     };
     let (req, resp) = parse_bodies(&call);
     let ctx = CallCtx::new(&call, req.as_ref(), resp.as_ref());
@@ -267,6 +268,7 @@ pub(crate) fn extract_full_text_batch(
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            process: None,
         };
         let (req, resp) = parse_bodies(&call);
         let ctx = CallCtx::new(&call, req.as_ref(), resp.as_ref());

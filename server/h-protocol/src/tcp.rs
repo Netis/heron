@@ -4,6 +4,7 @@ use std::net::IpAddr;
 use bytes::{Bytes, BytesMut};
 
 use h_common::internal_metrics::{Metric, MetricsWorker};
+use h_common::process::ProcessInfo;
 
 use crate::flow::WorkerInput;
 use crate::http::{HttpParser, ParseResult};
@@ -112,6 +113,11 @@ pub struct TcpFlow {
     flow_key: FlowKey,
     addr_a: (IpAddr, u16),
     addr_b: (IpAddr, u16),
+
+    /// Owning process for this connection, learned from the first attributed
+    /// packet (eBPF source) and stamped onto every HTTP event the flow emits.
+    /// `None` for passive taps, which never attribute a packet.
+    process: Option<ProcessInfo>,
 }
 
 impl TcpFlow {
@@ -141,13 +147,36 @@ impl TcpFlow {
             flow_key,
             addr_a,
             addr_b,
+            process: None,
         }
     }
 
     /// Process a parsed packet belonging to this flow.
     /// Emits HttpParseEvents to the output vec.
     /// Returns `true` if a resync event occurred.
+    ///
+    /// Thin wrapper around [`push_inner`](Self::push_inner): it learns the
+    /// connection's owning process from the first attributed packet and stamps
+    /// it onto every event emitted by this call, regardless of which internal
+    /// path produced them (normal parse, RST flush, mid-stream resync). Passive
+    /// taps carry no process, so the stamp is a no-op there.
     pub fn push(&mut self, pkt: &ParsedPacket, output: &mut Vec<HttpParseEvent>) -> bool {
+        if self.process.is_none() {
+            if let Some(p) = &pkt.process {
+                self.process = Some(p.clone());
+            }
+        }
+        let stamp_from = output.len();
+        let resync = self.push_inner(pkt, output);
+        if let Some(proc) = &self.process {
+            for ev in &mut output[stamp_from..] {
+                ev.set_process(Some(proc.clone()));
+            }
+        }
+        resync
+    }
+
+    fn push_inner(&mut self, pkt: &ParsedPacket, output: &mut Vec<HttpParseEvent>) -> bool {
         let mut resync = false;
         self.last_pkt_ts = pkt.timestamp_us;
         let events_before = output.len();
@@ -793,6 +822,7 @@ mod tests {
             payload: Bytes::copy_from_slice(payload),
             wire_payload_len: payload.len() as u32,
             timestamp_us: 0,
+            process: None,
         }
     }
 

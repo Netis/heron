@@ -10,7 +10,10 @@
 
 use std::sync::Arc;
 
-use h_capture::{ConnTuple, FlowSynthesizer, RawPacket, StreamDir, SynthConfig};
+use bytes::Bytes;
+use h_capture::{
+    BootClock, ConnTuple, EbpfPump, FlowSynthesizer, RawPacket, SslEvent, StreamDir, SynthConfig,
+};
 use h_common::internal_metrics::{Metric, MetricsSystem, MetricsWorker};
 use h_llm::model::{LlmCall, LlmEvent};
 use h_llm::processor::LlmProcessor;
@@ -41,8 +44,11 @@ fn drive(frames: Vec<RawPacket>) -> Vec<LlmEvent> {
 
     let mut out = Vec::new();
     for p in frames {
-        let parsed = decode(&p.data, p.link_type, p.timestamp_us, p.source_id.clone())
+        let mut parsed = decode(&p.data, p.link_type, p.timestamp_us, p.source_id.clone())
             .unwrap_or_else(|e| panic!("synthesized frame must decode: {e:?}"));
+        // Mirror the production `FlowDispatcher`: carry process attribution from
+        // the raw packet onto the parsed one (`decode` sees only wire bytes).
+        parsed.process = p.process.clone();
         for parse_ev in worker.process(WorkerInput::Packet(parsed)) {
             for join_ev in joiner.process(parse_ev) {
                 out.extend(proc.process(join_ev));
@@ -99,4 +105,77 @@ fn synthesized_anthropic_call_extracts_llmcall() {
     assert_eq!(call.input_tokens, Some(10));
     assert_eq!(call.output_tokens, Some(5));
     assert_eq!(call.source_id, "ebpf", "carries the synthesizer's source_id");
+}
+
+/// The differentiating value of the eBPF path: drive the chain from
+/// [`EbpfPump`] (which stamps pid/comm/exe onto the synthesized frames from the
+/// `SslEvent`s) and assert the attribution survives all the way to the
+/// `LlmCall`. This is the end-to-end proof that process attribution threads
+/// `RawPacket` → `ParsedPacket` → `TcpFlow` → `Http{Request,Response}Data` →
+/// `LlmCall` intact.
+#[test]
+fn synthesized_call_via_pump_carries_process_attribution() {
+    // Offset-0 clock: ktime µs maps straight to epoch µs. No pid allowlist.
+    let mut pump = EbpfPump::new(SynthConfig::default(), BootClock::with_offset_us(0), vec![]);
+    let tuple = ConnTuple {
+        client: "10.4.4.4:51000".parse().unwrap(),
+        server: "160.79.104.10:443".parse().unwrap(),
+    };
+
+    let req_body = r#"{"model":"claude-sonnet-4-6","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}"#;
+    let req = format!(
+        "POST /v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{req_body}",
+        req_body.len()
+    );
+    let resp_body =
+        r#"{"id":"msg_01","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":10,"output_tokens":5}}"#;
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{resp_body}",
+        resp_body.len()
+    );
+
+    let exe = Some("/usr/bin/python3.12".to_string());
+    let mut frames = pump.on_event(SslEvent::Connect {
+        conn_id: 1,
+        pid: 31337,
+        comm: "python3".into(),
+        exe: exe.clone(),
+        tuple: Some(tuple),
+        ktime_ns: 1_000_000,
+    });
+    frames.extend(pump.on_event(SslEvent::Data {
+        conn_id: 1,
+        pid: 31337,
+        comm: "python3".into(),
+        exe: exe.clone(),
+        dir: StreamDir::ClientToServer,
+        data: Bytes::from(req.into_bytes()),
+        ktime_ns: 2_000_000,
+    }));
+    frames.extend(pump.on_event(SslEvent::Data {
+        conn_id: 1,
+        pid: 31337,
+        comm: "python3".into(),
+        exe: exe.clone(),
+        dir: StreamDir::ServerToClient,
+        data: Bytes::from(resp.into_bytes()),
+        ktime_ns: 3_000_000,
+    }));
+    frames.extend(pump.on_event(SslEvent::Close {
+        conn_id: 1,
+        ktime_ns: 4_000_000,
+    }));
+
+    let events = drive(frames);
+    let calls = completed_calls(&events);
+    assert_eq!(calls.len(), 1, "exactly one LlmCall should be extracted");
+
+    let proc = calls[0]
+        .process
+        .as_ref()
+        .expect("process attribution must survive the full chain");
+    assert_eq!(proc.pid, 31337);
+    assert_eq!(proc.comm, "python3");
+    assert_eq!(proc.exe.as_deref(), Some("/usr/bin/python3.12"));
 }

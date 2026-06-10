@@ -378,6 +378,7 @@ mod tests {
             headers: vec![("content-type".into(), "application/json".into())],
             body: Bytes::from_static(br#"{"model":"gpt-4"}"#),
             timestamp_us: 1_700_000_000_000_000,
+            process: None,
         });
         let response = Arc::new(HttpResponseData {
             flow_key: request.flow_key.clone(),
@@ -389,6 +390,7 @@ mod tests {
             body: Bytes::from_static(br#"{"choices":[]}"#),
             first_byte_timestamp_us: 1_700_000_000_500_000,
             complete_timestamp_us: 1_700_000_001_000_000,
+            process: None,
         });
         let exchange = h_protocol::HttpExchange {
             id: "xchg-rt-1".to_string(),
@@ -435,6 +437,7 @@ mod tests {
             headers: vec![],
             body: Bytes::new(),
             timestamp_us: 1,
+            process: None,
         });
         let response = Arc::new(HttpResponseData {
             flow_key: request.flow_key.clone(),
@@ -449,6 +452,7 @@ mod tests {
             body: Bytes::new(),
             first_byte_timestamp_us: 2,
             complete_timestamp_us: 3,
+            process: None,
         });
         let exchange = h_protocol::HttpExchange {
             id: "xchg-sse-1".to_string(),

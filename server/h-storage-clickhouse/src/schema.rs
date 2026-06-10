@@ -63,7 +63,10 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     agent_topology    Nullable(String),
     tool_call_count   UInt32 DEFAULT 0,
     tool_names_json   Nullable(String),
-    body_bytes_dropped UInt64 DEFAULT 0
+    body_bytes_dropped UInt64 DEFAULT 0,
+    process_pid       Nullable(UInt32),
+    process_comm      Nullable(String),
+    process_exe       Nullable(String)
 ) ENGINE = MergeTree ORDER BY (request_time, id)
 ";
 

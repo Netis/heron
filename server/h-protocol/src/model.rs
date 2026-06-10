@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use h_common::process::ProcessInfo;
 
 use crate::net::FlowKey;
 
@@ -31,6 +32,8 @@ pub struct SseEventData {
     /// SSE `data:` field content.
     pub data: String,
     pub timestamp_us: i64,
+    /// Owning process, stamped by the flow when the source attributes it (eBPF).
+    pub process: Option<ProcessInfo>,
 }
 
 /// A fully parsed HTTP request.
@@ -47,6 +50,8 @@ pub struct HttpRequestData {
     pub headers: Vec<(String, String)>,
     pub body: Bytes,
     pub timestamp_us: i64,
+    /// Owning process, stamped by the flow when the source attributes it (eBPF).
+    pub process: Option<ProcessInfo>,
 }
 
 /// A fully parsed HTTP response.
@@ -65,6 +70,8 @@ pub struct HttpResponseData {
     pub first_byte_timestamp_us: i64,
     /// Timestamp when the response was fully received (for E2E latency).
     pub complete_timestamp_us: i64,
+    /// Owning process, stamped by the flow when the source attributes it (eBPF).
+    pub process: Option<ProcessInfo>,
 }
 
 impl HttpRequestData {
@@ -94,6 +101,21 @@ impl HttpResponseData {
     /// Get Content-Type header.
     pub fn content_type(&self) -> Option<&str> {
         self.header("content-type")
+    }
+}
+
+impl HttpParseEvent {
+    /// Stamp process attribution onto a content event (request / response / SSE).
+    /// A no-op for [`HttpParseEvent::Heartbeat`], which carries no process. The
+    /// flow calls this on every event it emits, once it has learned the owning
+    /// process from the connection's first attributed packet.
+    pub fn set_process(&mut self, process: Option<ProcessInfo>) {
+        match self {
+            HttpParseEvent::HttpRequest(r) => r.process = process,
+            HttpParseEvent::HttpResponse(r) => r.process = process,
+            HttpParseEvent::SseEvent(s) => s.process = process,
+            HttpParseEvent::Heartbeat { .. } => {}
+        }
     }
 }
 

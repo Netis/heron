@@ -30,6 +30,7 @@ pub mod synth;
 pub use cloud_probe::CloudProbeSource;
 pub use ebpf::{BootClock, EbpfPump, SslEvent};
 pub use factory::build_source;
+pub use h_common::process::ProcessInfo;
 pub use packet::{RawPacket, HEARTBEAT_ETHER_TYPE, HEARTBEAT_PACKET_LEN};
 pub use pcap_dump::{pcap_dump_dir_for, PacketDumper, PacketDumperConfig};
 pub use pcap_file::PcapFileSource;

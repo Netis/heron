@@ -344,6 +344,13 @@ impl LlmProcessor {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped,
+            // Process attribution rides on the request (the SSL_write side that
+            // the eBPF probe sees first); fall back to the response in case the
+            // flow only learned it on the inbound direction.
+            process: request
+                .process
+                .clone()
+                .or_else(|| response.process.clone()),
         };
 
         let agent = build_agent_call_info_with_parsed(
@@ -532,6 +539,7 @@ mod tests {
             ],
             body: Bytes::from(body_json.to_string()),
             timestamp_us: 1_000_000,
+            process: None,
         }
     }
 
@@ -561,6 +569,7 @@ mod tests {
             body: if is_sse { Bytes::new() } else { resp_body },
             first_byte_timestamp_us: timestamp_us + 100_000,
             complete_timestamp_us: timestamp_us + 200_000,
+            process: None,
         };
         (Arc::new(req), resp)
     }
@@ -574,6 +583,7 @@ mod tests {
             event_type: event_type.to_string(),
             data: data.to_string(),
             timestamp_us: ts,
+            process: None,
         }
     }
 
@@ -608,6 +618,7 @@ mod tests {
             headers: vec![],
             body: Bytes::new(),
             timestamp_us: 0,
+            process: None,
         };
         let events = proc.process(HttpJoinerEvent::Request(Arc::new(req)));
         assert!(events.is_empty());
@@ -1099,6 +1110,7 @@ mod tests {
             ],
             body: Bytes::from(body.to_string()),
             timestamp_us: 1_000_000,
+            process: None,
         };
         let resp_body = serde_json::json!({
             "id": "msg_01",
@@ -1170,6 +1182,7 @@ mod tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            process: None,
         }
     }
 

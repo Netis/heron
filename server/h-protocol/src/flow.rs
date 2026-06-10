@@ -43,7 +43,7 @@ impl FlowDispatcher {
     }
 
     async fn dispatch_packet(&self, raw: &RawPacket) -> bool {
-        let parsed = match de::decode(
+        let mut parsed = match de::decode(
             &raw.data,
             raw.link_type,
             raw.timestamp_us,
@@ -63,6 +63,10 @@ impl FlowDispatcher {
                 return true;
             }
         };
+
+        // Carry process attribution (eBPF) from the raw packet onto the parsed
+        // one — `decode` saw only wire bytes. No-op for passive taps (`None`).
+        parsed.process = raw.process.clone();
 
         self.metrics.counter(Metric::DispatcherPacketsRouted).inc();
 

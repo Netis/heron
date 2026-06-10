@@ -1,3 +1,4 @@
+use h_common::process::ProcessInfo;
 use serde::Serialize;
 
 #[derive(Debug, Clone)]
@@ -309,6 +310,9 @@ pub struct CallListItem {
     pub agent_topology: Option<String>,
     pub tool_call_count: u32,
     pub tool_names: Vec<String>,
+    /// Owning process (eBPF attribution), or `None` for passive-tap sources.
+    #[serde(default)]
+    pub process: Option<ProcessInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -920,6 +924,9 @@ pub struct CallDetail {
     pub agent_topology: Option<String>,
     pub tool_call_count: u32,
     pub tool_names: Vec<String>,
+    /// Owning process (eBPF attribution), or `None` for passive-tap sources.
+    #[serde(default)]
+    pub process: Option<ProcessInfo>,
 }
 
 #[cfg(test)]

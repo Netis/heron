@@ -497,6 +497,7 @@ mod tests {
             headers: vec![],
             body: Bytes::new(),
             timestamp_us: 0,
+            process: None,
         });
         let response = Arc::new(HttpResponseData {
             flow_key: request.flow_key.clone(),
@@ -508,6 +509,7 @@ mod tests {
             body: Bytes::from_static(b"ok"),
             first_byte_timestamp_us: 100,
             complete_timestamp_us: 200,
+            process: None,
         });
         HttpExchange {
             id: format!("x-{i}"),
@@ -557,6 +559,7 @@ mod tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            process: None,
         }
     }
 

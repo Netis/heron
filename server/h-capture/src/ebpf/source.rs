@@ -11,6 +11,7 @@
 //! line (`emit_handshake = false`). Real-tuple recovery via a `tcp_connect`
 //! kprobe is a follow-up refinement.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -125,6 +126,11 @@ impl CaptureSource for EbpfSource {
 
         tracing::info!("ebpf: capture started (source_id={})", self.source_id);
 
+        // pid → resolved `/proc/<pid>/exe`, memoized so we readlink once per
+        // process rather than once per event. Bounded: cleared if it grows past
+        // a generous ceiling (defends against pid churn over a long capture).
+        let mut exe_cache: HashMap<u32, Option<String>> = HashMap::new();
+
         loop {
             tokio::select! {
                 biased;
@@ -150,7 +156,7 @@ impl CaptureSource for EbpfSource {
                     };
                     let ring = guard.get_inner_mut();
                     while let Some(item) = ring.next() {
-                        let Some(ev) = decode_event(&item) else { continue };
+                        let Some(ev) = decode_event(&item, &mut exe_cache) else { continue };
                         for pkt in pump.on_event(ev) {
                             let is_hb = pkt.is_heartbeat();
                             if tx.send(pkt).await.is_err() {
@@ -172,8 +178,12 @@ impl CaptureSource for EbpfSource {
     }
 }
 
+/// Cap on the pid→exe memo so a long capture across heavy pid churn can't grow
+/// it without bound. Cleared wholesale on overflow (cheap; re-warms on demand).
+const EXE_CACHE_CAP: usize = 4096;
+
 /// Decode one ring-buffer record into a cross-platform [`SslEvent`].
-fn decode_event(bytes: &[u8]) -> Option<SslEvent> {
+fn decode_event(bytes: &[u8], exe_cache: &mut HashMap<u32, Option<String>>) -> Option<SslEvent> {
     if bytes.len() < RawSslEvent::SIZE {
         return None;
     }
@@ -196,6 +206,7 @@ fn decode_event(bytes: &[u8]) -> Option<SslEvent> {
                 conn_id: raw.conn_id,
                 pid: raw.pid,
                 comm,
+                exe: resolve_exe(raw.pid, exe_cache),
                 dir,
                 data: Bytes::copy_from_slice(&raw.data[..len]),
                 ktime_ns: raw.ktime_ns,
@@ -203,6 +214,25 @@ fn decode_event(bytes: &[u8]) -> Option<SslEvent> {
         }
         _ => None,
     }
+}
+
+/// Best-effort `/proc/<pid>/exe` resolution, memoized. Returns the absolute
+/// executable path, or `None` when the link can't be read (process exited,
+/// permission denied). Requires the capturing process to out-rank the target —
+/// satisfied when running as root / CAP_SYS_PTRACE, which the eBPF source needs
+/// anyway.
+fn resolve_exe(pid: u32, cache: &mut HashMap<u32, Option<String>>) -> Option<String> {
+    if let Some(v) = cache.get(&pid) {
+        return v.clone();
+    }
+    if cache.len() >= EXE_CACHE_CAP {
+        cache.clear();
+    }
+    let resolved = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned());
+    cache.insert(pid, resolved.clone());
+    resolved
 }
 
 fn comm_to_string(comm: &[u8]) -> String {

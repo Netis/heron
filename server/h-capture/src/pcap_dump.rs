@@ -509,6 +509,7 @@ mod tests {
             link_type: 1,
             data: Bytes::copy_from_slice(data),
             source_id: source_id.to_string(),
+            process: None,
         }
     }
 

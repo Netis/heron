@@ -87,6 +87,9 @@ pub fn decode(
         payload,
         wire_payload_len,
         timestamp_us,
+        // `decode` works on raw bytes only; the dispatcher copies process
+        // attribution from the owning `RawPacket` after decode.
+        process: None,
     })
 }
 

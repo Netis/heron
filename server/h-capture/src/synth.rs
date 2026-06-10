@@ -343,6 +343,10 @@ impl FlowSynthesizer {
             link_type: LINKTYPE_ETHERNET,
             data: Bytes::from(data),
             source_id: self.cfg.source_id.clone(),
+            // Synthesis is process-agnostic: the eBPF pump (which owns the
+            // pid/comm) stamps process attribution onto these frames after
+            // synthesis. Passive callers (tests) leave it `None`.
+            process: None,
         }
     }
 }

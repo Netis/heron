@@ -41,7 +41,10 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     agent_topology    VARCHAR,
     tool_call_count   UINTEGER NOT NULL DEFAULT 0,
     tool_names_json   VARCHAR,
-    body_bytes_dropped UBIGINT NOT NULL DEFAULT 0
+    body_bytes_dropped UBIGINT NOT NULL DEFAULT 0,
+    process_pid       UINTEGER,
+    process_comm      VARCHAR,
+    process_exe       VARCHAR
 );
 ";
 
@@ -355,6 +358,31 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
             ),
             Err(e) => {
                 tracing::info!("phase6 migration: llm_calls.body_bytes_dropped add skipped: {e}")
+            }
+        }
+
+        // Phase 7 migration: add process-attribution columns to llm_calls — the
+        // pid / comm / executable path of the local process that owns the
+        // connection, populated only by attribution-capable sources (eBPF) and
+        // NULL for passive taps. Added nullable for the same reason documented
+        // on the Phase 5 block (DuckDB rejects `ALTER ... ADD COLUMN ... NOT
+        // NULL DEFAULT`); these columns are inherently nullable anyway. They sit
+        // at the tail of the table in both CREATE and ALTER so the appender's
+        // positional writes stay aligned.
+        let process_columns = [
+            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS process_pid UINTEGER;",
+            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS process_comm VARCHAR;",
+            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS process_exe VARCHAR;",
+        ];
+        for stmt in process_columns {
+            match conn.execute_batch(stmt) {
+                Ok(()) => tracing::debug!(
+                    sql = stmt,
+                    "phase7 migration: llm_calls process column added (or already present)"
+                ),
+                Err(e) => tracing::info!(
+                    "phase7 migration: llm_calls process column add skipped: {e} (sql: {stmt})"
+                ),
             }
         }
 

@@ -54,6 +54,9 @@ pub(crate) struct CallRow {
     pub tool_call_count: u32,
     pub tool_names_json: Option<String>,
     pub body_bytes_dropped: u64,
+    pub process_pid: Option<u32>,
+    pub process_comm: Option<String>,
+    pub process_exe: Option<String>,
 }
 
 impl From<LlmCall> for CallRow {
@@ -95,6 +98,9 @@ impl From<LlmCall> for CallRow {
                 serde_json::to_string(&c.tool_names).unwrap_or_else(|_| "[]".to_string()),
             ),
             body_bytes_dropped: c.body_bytes_dropped,
+            process_pid: c.process.as_ref().map(|p| p.pid),
+            process_comm: c.process.as_ref().map(|p| p.comm.clone()),
+            process_exe: c.process.as_ref().and_then(|p| p.exe.clone()),
         }
     }
 }

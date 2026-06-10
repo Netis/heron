@@ -20,6 +20,8 @@
 
 use bytes::Bytes;
 
+use h_common::process::ProcessInfo;
+
 use crate::heartbeat::HeartbeatTracker;
 use crate::packet::RawPacket;
 use crate::synth::{ConnTuple, FlowSynthesizer, StreamDir, SynthConfig};
@@ -54,6 +56,9 @@ pub enum SslEvent {
         conn_id: u64,
         pid: u32,
         comm: String,
+        /// Best-effort absolute executable path, resolved in userspace by the
+        /// loader (`/proc/<pid>/exe`). `None` when unresolved.
+        exe: Option<String>,
         tuple: Option<ConnTuple>,
         ktime_ns: u64,
     },
@@ -64,6 +69,8 @@ pub enum SslEvent {
         conn_id: u64,
         pid: u32,
         comm: String,
+        /// Best-effort absolute executable path (see [`SslEvent::Connect`]).
+        exe: Option<String>,
         dir: StreamDir,
         data: Bytes,
         ktime_ns: u64,
@@ -76,6 +83,26 @@ impl SslEvent {
     fn pid(&self) -> Option<u32> {
         match self {
             SslEvent::Connect { pid, .. } | SslEvent::Data { pid, .. } => Some(*pid),
+            SslEvent::Close { .. } => None,
+        }
+    }
+
+    /// Process attribution carried by this event, if any. `Connect`/`Data`
+    /// events carry the owning process (pid + comm + best-effort exe); `Close`
+    /// events do not (the FIN frames they synthesize carry no HTTP payload, so
+    /// the flow has already learned the process from an earlier data frame).
+    fn process(&self) -> Option<ProcessInfo> {
+        match self {
+            SslEvent::Connect {
+                pid, comm, exe, ..
+            }
+            | SslEvent::Data {
+                pid, comm, exe, ..
+            } => Some(ProcessInfo {
+                pid: *pid,
+                comm: comm.clone(),
+                exe: exe.clone(),
+            }),
             SslEvent::Close { .. } => None,
         }
     }
@@ -180,6 +207,10 @@ impl EbpfPump {
         }
 
         let ts_us = self.clock.ktime_to_epoch_us(ev.ktime_ns());
+        // Snapshot the owning process before the match consumes `ev`. Stamped
+        // onto every synthesized data/handshake frame below so the flow learns
+        // the attribution; `Close` carries no process (its FINs need none).
+        let process = ev.process();
         let frames = match ev {
             SslEvent::Connect {
                 conn_id, tuple, ..
@@ -196,10 +227,12 @@ impl EbpfPump {
         // Interleave heartbeats ahead of the frames they precede, mirroring
         // cloud_probe.rs: the tracker emits at most one HB per interval.
         let mut out = Vec::with_capacity(frames.len());
-        for frame in frames {
+        for mut frame in frames {
             if let Some(hb) = self.heartbeat.on_packet(&frame) {
+                // Heartbeats are sentinels discarded before parse — no process.
                 out.push(hb);
             }
+            frame.process = process.clone();
             out.push(frame);
         }
         out
@@ -241,6 +274,7 @@ mod tests {
             conn_id: 1,
             pid: 100,
             comm: "python3".into(),
+            exe: None,
             tuple: Some(tuple()),
             ktime_ns: 1_000_000,
         });
@@ -255,6 +289,7 @@ mod tests {
             conn_id: 1,
             pid: 100,
             comm: "python3".into(),
+            exe: None,
             tuple: Some(tuple()),
             ktime_ns: 1_000_000,
         });
@@ -262,6 +297,7 @@ mod tests {
             conn_id: 1,
             pid: 100,
             comm: "python3".into(),
+            exe: None,
             dir: StreamDir::ClientToServer,
             data: Bytes::from_static(b"POST /v1/messages HTTP/1.1\r\n\r\n"),
             ktime_ns: 1_100_000,
@@ -276,6 +312,7 @@ mod tests {
             conn_id: 1,
             pid: 100,
             comm: "c".into(),
+            exe: None,
             tuple: Some(tuple()),
             ktime_ns: 1_000_000,
         });
@@ -295,6 +332,7 @@ mod tests {
             conn_id: 1,
             pid: 100,
             comm: "c".into(),
+            exe: None,
             tuple: Some(tuple()),
             ktime_ns: 1_000_000,
         });
@@ -304,6 +342,7 @@ mod tests {
             conn_id: 2,
             pid: 999,
             comm: "other".into(),
+            exe: None,
             tuple: Some(tuple()),
             ktime_ns: 1_050_000,
         });
@@ -320,6 +359,7 @@ mod tests {
             conn_id: 77,
             pid: 100,
             comm: "c".into(),
+            exe: None,
             tuple: None,
             ktime_ns: 1_000_000,
         });
@@ -335,6 +375,7 @@ mod tests {
             conn_id: 1,
             pid: 100,
             comm: "c".into(),
+            exe: None,
             dir: StreamDir::ClientToServer,
             data: Bytes::from_static(b"GET / HTTP/1.1\r\n"),
             ktime_ns: 1_000 * 1_000, // 1_000_000 ns = 1_000 µs
@@ -348,6 +389,7 @@ mod tests {
             conn_id: 1,
             pid: 100,
             comm: "c".into(),
+            exe: None,
             dir: StreamDir::ClientToServer,
             data: Bytes::from_static(b"X"),
             ktime_ns: later_ns,
@@ -357,5 +399,58 @@ mod tests {
             1,
             "one heartbeat precedes the late frame"
         );
+    }
+
+    #[test]
+    fn data_frames_carry_process_attribution() {
+        let mut p = pump(vec![]);
+        p.on_event(SslEvent::Connect {
+            conn_id: 1,
+            pid: 4242,
+            comm: "python3".into(),
+            exe: Some("/usr/bin/python3.12".into()),
+            tuple: Some(tuple()),
+            ktime_ns: 1_000_000,
+        });
+        let frames = p.on_event(SslEvent::Data {
+            conn_id: 1,
+            pid: 4242,
+            comm: "python3".into(),
+            exe: Some("/usr/bin/python3.12".into()),
+            dir: StreamDir::ClientToServer,
+            data: Bytes::from_static(b"POST /v1/messages HTTP/1.1\r\n\r\n"),
+            ktime_ns: 1_100_000,
+        });
+        // The data segment carries the owning process; pid/comm/exe survive
+        // synthesis intact.
+        let data = frames
+            .iter()
+            .find(|f| !f.is_heartbeat())
+            .expect("one data frame");
+        let proc = data.process.as_ref().expect("process stamped");
+        assert_eq!(proc.pid, 4242);
+        assert_eq!(proc.comm, "python3");
+        assert_eq!(proc.exe.as_deref(), Some("/usr/bin/python3.12"));
+    }
+
+    #[test]
+    fn close_frames_carry_no_process() {
+        let mut p = pump(vec![]);
+        p.on_event(SslEvent::Connect {
+            conn_id: 1,
+            pid: 7,
+            comm: "node".into(),
+            exe: None,
+            tuple: Some(tuple()),
+            ktime_ns: 1_000_000,
+        });
+        let fins = p.on_event(SslEvent::Close {
+            conn_id: 1,
+            ktime_ns: 1_200_000,
+        });
+        // FIN frames carry no payload, hence no attribution to stamp.
+        for f in fins.iter().filter(|f| !f.is_heartbeat()) {
+            assert!(f.process.is_none());
+        }
     }
 }

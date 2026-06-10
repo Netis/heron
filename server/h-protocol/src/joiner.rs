@@ -335,6 +335,7 @@ mod tests {
             headers: vec![("content-type".to_string(), "application/json".to_string())],
             body: Bytes::from_static(b"{}"),
             timestamp_us: ts_us,
+            process: None,
         }
     }
 
@@ -359,6 +360,7 @@ mod tests {
             },
             first_byte_timestamp_us: ts_us + 100,
             complete_timestamp_us: ts_us + 200,
+            process: None,
         }
     }
 
@@ -371,6 +373,7 @@ mod tests {
             event_type: event_type.to_string(),
             data: data.to_string(),
             timestamp_us: ts_us,
+            process: None,
         }
     }
 

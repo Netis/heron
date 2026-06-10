@@ -727,6 +727,7 @@ mod tests {
             event_type: event_type.to_string(),
             data: data.to_string(),
             timestamp_us: 0,
+            process: None,
         }
     }
 
@@ -841,6 +842,7 @@ mod tests {
             body: bytes::Bytes::from(body.to_string()),
             first_byte_timestamp_us: 0,
             complete_timestamp_us: 0,
+            process: None,
         };
         let cache = ParsedJson::from_bytes(resp.body.clone());
         let info = extract_response(&resp, &cache);

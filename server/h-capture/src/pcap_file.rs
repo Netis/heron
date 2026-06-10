@@ -161,6 +161,7 @@ impl CaptureSource for PcapFileSource {
                                 link_type,
                                 data: Bytes::copy_from_slice(packet.data),
                                 source_id: pass_source_id.clone(),
+                                process: None,
                             };
 
                             if let Some(d) = dumper.as_mut() {

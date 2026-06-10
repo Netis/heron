@@ -3,6 +3,7 @@
 use duckdb::types::{TimeUnit, Value};
 use duckdb::Connection;
 use h_common::error::{AppError, Result};
+use h_common::process::ProcessInfo;
 use h_llm::model::LlmCall;
 use h_storage::query::*;
 
@@ -49,6 +50,9 @@ struct PreparedCall {
     tool_call_count: u32,
     tool_names_json: String,
     body_bytes_dropped: u64,
+    process_pid: Option<u32>,
+    process_comm: Option<String>,
+    process_exe: Option<String>,
 }
 
 fn prepare_call(call: LlmCall) -> PreparedCall {
@@ -92,7 +96,30 @@ fn prepare_call(call: LlmCall) -> PreparedCall {
         tool_names_json: serde_json::to_string(&call.tool_names)
             .unwrap_or_else(|_| "[]".to_string()),
         body_bytes_dropped: call.body_bytes_dropped,
+        process_pid: call.process.as_ref().map(|p| p.pid),
+        process_comm: call.process.as_ref().map(|p| p.comm.clone()),
+        process_exe: call.process.as_ref().and_then(|p| p.exe.clone()),
     }
+}
+
+/// Reconstruct an `Option<ProcessInfo>` from the three `process_*` columns at
+/// the given indices. `None` exactly when `process_pid` is NULL (passive-tap
+/// rows). Returns `duckdb::Error` so it composes with both the `map_err`-style
+/// list query and the `query_row` closure (which propagates `duckdb::Error`).
+fn read_process(
+    row: &duckdb::Row,
+    pid_idx: usize,
+    comm_idx: usize,
+    exe_idx: usize,
+) -> std::result::Result<Option<ProcessInfo>, duckdb::Error> {
+    let pid: Option<u32> = row.get(pid_idx)?;
+    let comm: Option<String> = row.get(comm_idx)?;
+    let exe: Option<String> = row.get(exe_idx)?;
+    Ok(pid.map(|pid| ProcessInfo {
+        pid,
+        comm: comm.unwrap_or_default(),
+        exe,
+    }))
 }
 
 /// Shared "fetch calls by id list" — used by both `query_turn_calls`
@@ -308,6 +335,9 @@ impl DuckDbBackend {
                         p.tool_call_count,
                         p.tool_names_json,
                         p.body_bytes_dropped,
+                        p.process_pid,
+                        p.process_comm,
+                        p.process_exe,
                     ])
                     .map_err(|e| AppError::Storage(format!("failed to append call: {e}")))?;
             }
@@ -444,7 +474,8 @@ impl DuckDbBackend {
                 "SELECT id, source_id, epoch_ms(request_time), wire_api, model, status_code, is_stream, \
                  finish_reason, ttft_ms, e2e_latency_ms, input_tokens, output_tokens, \
                  client_ip, server_ip, server_port, request_path, response_body, \
-                 is_agent_request, tool_surface, agent_topology, tool_call_count, tool_names_json \
+                 is_agent_request, tool_surface, agent_topology, tool_call_count, tool_names_json, \
+                 process_pid, process_comm, process_exe \
                  FROM llm_calls WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
@@ -481,6 +512,8 @@ impl DuckDbBackend {
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or_default();
+                let process = read_process(row, 22, 23, 24)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
                 items.push(CallListItem {
                     id: row
                         .get(0)
@@ -542,6 +575,7 @@ impl DuckDbBackend {
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?
                         .unwrap_or(0),
                     tool_names,
+                    process,
                 });
             }
 
@@ -571,7 +605,8 @@ impl DuckDbBackend {
                     request_body, response_body,
                     request_headers, response_headers,
                     is_agent_request, tool_surface, agent_topology,
-                    tool_call_count, tool_names_json
+                    tool_call_count, tool_names_json,
+                    process_pid, process_comm, process_exe
                 FROM llm_calls
                 WHERE id = ?
                 LIMIT 1
@@ -625,6 +660,7 @@ impl DuckDbBackend {
                     agent_topology: row.get(28)?,
                     tool_call_count: row.get::<_, Option<u32>>(29)?.unwrap_or(0),
                     tool_names,
+                    process: read_process(row, 31, 32, 33)?,
                 })
             });
 
@@ -753,6 +789,7 @@ mod tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            process: None,
         }
     }
 
