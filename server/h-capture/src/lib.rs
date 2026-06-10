@@ -24,6 +24,7 @@ mod pcap_live;
 mod pcap_retention;
 mod routing;
 mod source;
+pub mod synth;
 
 pub use cloud_probe::CloudProbeSource;
 pub use factory::build_source;
@@ -34,6 +35,7 @@ pub use pcap_live::PcapLiveSource;
 pub use pcap_retention::spawn_pcap_retention_task;
 pub use routing::RoutingSender;
 pub use source::CaptureSource;
+pub use synth::{ConnTuple, FlowSynthesizer, StreamDir, SynthConfig};
 
 use thiserror::Error;
 

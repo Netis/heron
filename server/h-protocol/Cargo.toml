@@ -18,6 +18,9 @@ uuid.workspace = true
 [dev-dependencies]
 pcap.workspace = true
 criterion.workspace = true
+# Already a normal dependency above; restated here so integration tests
+# (tests/synth_pipeline.rs) can name `h_capture` directly.
+h-capture.workspace = true
 
 [[bench]]
 name = "hot_paths"

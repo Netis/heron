@@ -27,3 +27,8 @@ required-features = ["test-support"]
 
 [dev-dependencies]
 toml = "0.8"
+# tests/synth_e2e.rs drives the full capture→protocol→llm chain from
+# synthesized eBPF-style frames. h-protocol is already a normal dependency;
+# h-capture is restated so the integration test can name it directly.
+h-capture.workspace = true
+h-protocol.workspace = true
