@@ -1,9 +1,10 @@
 //! Live eBPF capture smoke test.
 //!
 //! Runs the eBPF `SSL_read`/`SSL_write` capture source and prints the HTTP
-//! request lines it reconstructs from synthesized frames. Proves the
-//! uprobe → ring buffer → frame-synthesis path against real `libssl` traffic
-//! without the rest of the pipeline.
+//! request lines it reconstructs from synthesized frames, each tagged with the
+//! owning process (`comm`/pid/exe) the kernel attributed it to. Proves the
+//! uprobe → ring buffer → frame-synthesis → process-attribution path against
+//! real `libssl` traffic without the rest of the pipeline.
 //!
 //! Usage (Linux, needs CAP_BPF / root):
 //!   sudo -E ~/.cargo/bin/cargo run -p h-capture --features ebpf --example ebpf_smoke
@@ -63,12 +64,27 @@ async fn main() {
                     continue;
                 }
                 pkts += 1;
+                // The differentiating value of the eBPF path: each frame is
+                // attributed to the local process that owns the connection.
+                let who = pkt
+                    .process
+                    .as_ref()
+                    .map(|p| {
+                        let exe = p.exe.as_deref().map(|e| format!(" {e}")).unwrap_or_default();
+                        format!("{}({}){}", p.comm, p.pid, exe)
+                    })
+                    .unwrap_or_else(|| "—".to_string());
                 if let Some(line) = http_first_line(&pkt.data) {
                     req_lines += 1;
-                    println!("  [{pkts:>4}] {line}");
+                    println!("  [{pkts:>4}] {who:<40} {line}");
                     if req_lines >= 8 {
                         break;
                     }
+                } else if pkts <= 12 {
+                    // Even when the payload isn't an HTTP/1.x first line (HTTP/2
+                    // framing, TLS control, mid-body), show the attribution +
+                    // a printable preview so the process tagging is visible live.
+                    println!("  [{pkts:>4}] {who:<40} {}", payload_preview(&pkt.data));
                 }
             }
         }
@@ -81,6 +97,38 @@ async fn main() {
         eprintln!("ebpf-smoke: no HTTP lines captured — check libssl detection / privileges");
         std::process::exit(1);
     }
+}
+
+/// Return the TCP payload of a synthesized IPv4 frame, if any.
+fn tcp_payload(frame: &[u8]) -> Option<&[u8]> {
+    const ETH: usize = 14;
+    if frame.len() < ETH + 20 + 20 || (frame[ETH] >> 4) != 4 {
+        return None;
+    }
+    let ihl = ((frame[ETH] & 0x0f) as usize) * 4;
+    let tcp = ETH + ihl;
+    if frame.len() < tcp + 20 {
+        return None;
+    }
+    let data_off = ((frame[tcp + 12] >> 4) as usize) * 4;
+    frame.get(tcp + data_off..)
+}
+
+/// A short printable preview of a frame's TCP payload (non-printable bytes as
+/// `.`), for frames that aren't an HTTP/1.x first line.
+fn payload_preview(frame: &[u8]) -> String {
+    let Some(p) = tcp_payload(frame) else {
+        return "(no payload)".to_string();
+    };
+    if p.is_empty() {
+        return "(empty / control)".to_string();
+    }
+    let preview: String = p
+        .iter()
+        .take(40)
+        .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+        .collect();
+    format!("{}B: {preview}", p.len())
 }
 
 /// Extract the first line of an HTTP message from a synthesized Ethernet+IPv4
