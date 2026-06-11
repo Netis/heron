@@ -6,6 +6,59 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-06-11
+
+### Added — eBPF on-host TLS capture (experimental, Linux)
+
+- New `ebpf` capture source: a fourth ingress alongside the packet taps
+  (`pcap` / `pcap-file` / `cloud-probe`). It attaches uprobes to the target's
+  `SSL_read` / `SSL_write` and reads plaintext at the in-process TLS boundary —
+  so Heron can observe **TLS-encrypted** LLM calls *on the host that makes them*,
+  with no proxy, TLS terminator, or MITM, and nothing on the request path.
+  Plaintext chunks are dressed as synthetic Ethernet/IP/TCP frames
+  (`FlowSynthesizer`) and fed through the existing dispatcher → reassembler →
+  HTTP/SSE parser → wire-API decoder → turn tracker unchanged.
+- **Process attribution.** Every eBPF-captured call carries its owning process
+  (`pid` · `comm` · resolved executable), threaded end-to-end through
+  `RawPacket` → `ParsedPacket` → `TcpFlow` → `LlmCall` into the
+  `process_pid` / `process_comm` / `process_exe` storage columns (DuckDB Phase-7
+  migration + ClickHouse mirror) and surfaced in the console's LLM-calls list and
+  call detail. Packet-tap sources leave it null.
+- **Target coverage.** Dynamically-linked OpenSSL/BoringSSL by exported symbol
+  (Python SDKs, curl, …), and statically-linked, symbol-stripped BoringSSL —
+  e.g. Claude Code's Bun runtime — located by byte-signature → ELF file offset →
+  offset uprobe. A built-in `flavor = "bun"` ships read-anchored prologue
+  signatures, so stock Bun / Claude Code works with zero manual derivation.
+- Linux-only and **off by default**: built behind the non-default `ebpf` cargo
+  feature on `h-capture` (absent from prebuilt release binaries). Needs
+  `CAP_BPF` + `CAP_PERFMON` (kernel ≥ 5.8) or root, plus kernel BTF; `heron
+  doctor` reports a `capture.ebpf` check. HTTP/1.x only, like every source. See
+  `docs/design/02-capture.md` and `docs/design/03-ebpf-static-targets.md`.
+
+### Added
+
+- **SFT trajectory export** from reconstructed agent turns and sessions:
+  OpenAI-style `messages` JSONL with tool calls, tool results, and assistant
+  reasoning preserved and tool-call arguments rehydrated to objects. Export a
+  single turn/session from its detail view, or batch-export the current Agent
+  Turns filter as one-line-per-turn JSONL (Anthropic + OpenAI-chat wire formats;
+  unsupported formats reported and skipped).
+- **Three-theme console**, switchable from the sidebar and persisted per browser:
+  **Kami** (warm washi-paper, the new default), **Dark**, and **Light** —
+  charts, topology graph, and timeline gantt all re-theme.
+
+### Fixed
+
+- **ClickHouse SQL literal escaping** (dialect-aware): a backslash in a
+  dimension-filter value could break out of the quoted literal in the ClickHouse
+  backend. Escaping is now dialect-aware across both backends.
+
+### Security / CI
+
+- Self-hosted CI runners are gated to same-repo PRs, closing fork-PR code
+  execution; a release may only be cut from a commit that passed `staging-soak`,
+  and prod deploys are gated on the load soak.
+
 ## [0.5.0] — 2026-06-04
 
 ### Added — ClickHouse storage backend
