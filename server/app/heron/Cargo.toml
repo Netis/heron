@@ -35,6 +35,11 @@ mime_guess = { workspace = true, optional = true }
 
 [features]
 console = ["dep:rust-embed", "dep:mime_guess"]
+# Forwards to h-capture's `ebpf` feature so a release binary can be built with
+# on-host SSL-uprobe capture: `cargo build --bin heron --features "console ebpf"`.
+# Linux-only at runtime (needs CAP_BPF + CAP_PERFMON + BTF); the build itself
+# also needs the bpf-linker toolchain (see ci.yml). Off by default.
+ebpf = ["h-capture/ebpf"]
 
 [dev-dependencies]
 tempfile = "3"

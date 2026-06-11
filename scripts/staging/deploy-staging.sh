@@ -26,6 +26,15 @@ set -euo pipefail
 BIN="${1:?usage: deploy-staging.sh <heron-binary>}"
 [ -f "$BIN" ] || { echo "::error::binary not found: $BIN" >&2; exit 1; }
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The service unit + config.toml are baked into the VM by provision-vm.sh at
+# creation time, so a config/unit change (e.g. adding the eBPF source or the
+# CAP_BPF/CAP_PERFMON caps) would otherwise need a full re-provision to land.
+# Sync them on every deploy instead — the repo is the source of truth — so the
+# staging VM always runs exactly the unit + config in this commit.
+UNIT_SRC="$HERE/heron.service"
+CONF_SRC="$HERE/config.toml"
+
 # VM name + ssh login describe internal topology → never hardcode them in
 # source; CI supplies them from repo Variables (see deploy-staging.yml).
 VM="${HERON_STAGE_VM:?set HERON_STAGE_VM (libvirt domain; CI passes vars.HERON_STAGE_VM)}"
@@ -48,16 +57,26 @@ IP="$(sudo virsh net-dhcp-leases "$NET" 2>/dev/null | awk -v n="$VM" '$0 ~ n {pr
 [ -n "$IP" ] || { echo "::error::no DHCP lease for domain '$VM' on net '$NET' — is the VM running?" >&2; exit 1; }
 echo "    $VM -> $IP"
 
-echo "==> uploading new binary + smoke-running it on the VM"
+echo "==> uploading new binary + unit + config, smoke-running the binary"
 scp "${SSH_OPTS[@]}" "$BIN" "$SSH_USER@$IP:/tmp/heron-new"
+scp "${SSH_OPTS[@]}" "$UNIT_SRC" "$SSH_USER@$IP:/tmp/heron.service-new"
+scp "${SSH_OPTS[@]}" "$CONF_SRC" "$SSH_USER@$IP:/tmp/heron-config.toml-new"
 remote 'chmod +x /tmp/heron-new && /tmp/heron-new --version' \
   || { echo "::error::uploaded binary does not run on the VM (glibc/lib mismatch?)" >&2; exit 1; }
 
-echo "==> installing + restarting heron.service (current binary backed up)"
+echo "==> installing binary + unit + config, restarting (all three backed up)"
+# Back up binary, unit, and config symmetrically so the health-gate rollback
+# can restore the exact prior state (a new ebpf config/caps that wedges startup
+# must roll back config+unit too, not just the binary).
 remote 'set -e
   sudo install -d -m 0755 /opt/heron
   if [ -f /opt/heron/heron ]; then sudo cp -f /opt/heron/heron /opt/heron/heron.bak; fi
+  if [ -f /opt/heron/config.toml ]; then sudo cp -f /opt/heron/config.toml /opt/heron/config.toml.bak; fi
+  if [ -f /etc/systemd/system/heron.service ]; then sudo cp -f /etc/systemd/system/heron.service /opt/heron/heron.service.bak; fi
   sudo install -m 0755 /tmp/heron-new /opt/heron/heron
+  sudo install -m 0644 /tmp/heron-config.toml-new /opt/heron/config.toml
+  sudo install -m 0644 /tmp/heron.service-new /etc/systemd/system/heron.service
+  sudo systemctl daemon-reload
   sudo systemctl restart heron.service'
 
 echo "==> health gate (<= ${HEALTH_TIMEOUT_SECS}s): status=ready AND pipeline running"
@@ -72,7 +91,8 @@ done
 
 if [ "$ok" = 1 ]; then
   echo "==> OK heron-stage healthy on ${IP}:${PORT} (status=ready, capturing)"
-  remote 'rm -f /tmp/heron-new; sudo rm -f /opt/heron/heron.bak' || true
+  remote 'rm -f /tmp/heron-new /tmp/heron.service-new /tmp/heron-config.toml-new
+    sudo rm -f /opt/heron/heron.bak /opt/heron/config.toml.bak /opt/heron/heron.service.bak' || true
   exit 0
 fi
 
@@ -80,8 +100,11 @@ echo "::error::health gate FAILED after ${HEALTH_TIMEOUT_SECS}s — rolling back
 remote 'set -e
   if [ -f /opt/heron/heron.bak ]; then
     sudo install -m 0755 /opt/heron/heron.bak /opt/heron/heron
+    [ -f /opt/heron/config.toml.bak ] && sudo install -m 0644 /opt/heron/config.toml.bak /opt/heron/config.toml
+    [ -f /opt/heron/heron.service.bak ] && sudo install -m 0644 /opt/heron/heron.service.bak /etc/systemd/system/heron.service
+    sudo systemctl daemon-reload
     sudo systemctl restart heron.service
-    echo "rolled back to the previous /opt/heron/heron"
+    echo "rolled back binary + config + unit to the previous state"
   else
     echo "no /opt/heron/heron.bak to roll back to (first deploy?)"
   fi'

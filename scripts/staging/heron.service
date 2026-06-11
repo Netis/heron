@@ -12,8 +12,12 @@ WorkingDirectory=/opt/heron
 # Grant raw-capture privileges at runtime. The binary needs NO file caps,
 # so a `cargo` rebuild (which replaces the inode and drops file caps) can't
 # silently degrade capture to API-only — the unit re-grants them every start.
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+#
+# CAP_BPF + CAP_PERFMON are for the `ebpf` source: loading BPF programs and
+# attaching SSL_read/SSL_write uprobes (kernel >= 5.8). Harmless to grant on a
+# build without the `ebpf` feature — the caps simply go unused.
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON
 NoNewPrivileges=true
 Restart=on-failure
 RestartSec=5

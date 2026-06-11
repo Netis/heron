@@ -185,10 +185,27 @@ jobs:
         working-directory: console
         run: bun run build
 
-      - name: build heron release binary with console (staging artifact)
+      # The staging build ships the `ebpf` feature so the staging VM can validate
+      # on-host SSL-uprobe capture before prod is allowed to deploy (see the
+      # ebpf-soak gate). That out-of-band BPF program build (h-capture/build.rs →
+      # h-ebpf-prog) needs a nightly toolchain with rust-src (for `-Z build-std`)
+      # and bpf-linker. Idempotent on the self-hosted runner: nightly install is
+      # a fast no-op when present; bpf-linker is guarded so it compiles only once.
+      - name: provision eBPF build toolchain (staging artifact)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          rustup toolchain install nightly --component rust-src --profile minimal
+          if ! command -v bpf-linker >/dev/null 2>&1; then
+            echo "bpf-linker not found; installing…"
+            cargo install bpf-linker --locked
+          else
+            echo "bpf-linker already present: $(command -v bpf-linker)"
+          fi
+
+      - name: build heron release binary with console + ebpf (staging artifact)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         working-directory: server
-        run: cargo build --release --bin heron --features console
+        run: cargo build --release --bin heron --features "console ebpf"
 
       - name: upload heron staging artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
