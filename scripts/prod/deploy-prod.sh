@@ -105,7 +105,11 @@ IMG="heron-ebpf-builder:22.04"
 OUTDIR="$REPO/server/target/ebpf-out"
 mkdir -p "$OUTDIR"
 docker build -t "$IMG" -f "$SCRIPT_DIR/Dockerfile.ebpf-build" "$SCRIPT_DIR"
+# Raise the container fd limit: parallel rustc across this host's many cores
+# exhausts the default soft nofile (1024) → `cargo build` dies with "Too many
+# open files (os error 24)". Cap at the host hard limit.
 docker run --rm \
+  --ulimit nofile=1048576:1048576 \
   -v "$REPO":/src:ro \
   -v "$OUTDIR":/out \
   "$IMG" bash -euo pipefail -c '
