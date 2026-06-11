@@ -15,6 +15,9 @@ struct RuntimeConfigResponse {
     loaded_at_ms: i64,
     config_path: String,
     version: &'static str,
+    /// Whether this binary can run an `ebpf` capture source (compiled with the
+    /// `ebpf` feature on Linux). Gates the Settings "enable eBPF capture" toggle.
+    ebpf_available: bool,
     config: AppConfig,
 }
 
@@ -23,6 +26,7 @@ pub async fn runtime_config(State(ctx): State<ApiRuntimeConfigContext>) -> impl 
         loaded_at_ms: ctx.loaded_at_ms,
         config_path: ctx.config_path,
         version: ctx.version,
+        ebpf_available: h_capture::ebpf_available(),
         config: (*ctx.config).clone(),
     })
 }

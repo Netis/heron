@@ -67,6 +67,7 @@ export function SourceEditorRow({
       {source.type === "pcap-file" && (
         <PcapFileForm source={source} onChange={onChange} />
       )}
+      {source.type === "ebpf" && <EbpfForm source={source} onChange={onChange} />}
     </li>
   )
 }
@@ -79,6 +80,8 @@ function rowHeading(type: CaptureSource["type"]): string {
       return "ZMQ receiver for remote probe stream"
     case "pcap-file":
       return "PCAP file replay"
+    case "ebpf":
+      return "eBPF SSL-uprobe capture (on-host TLS, Linux)"
   }
 }
 
@@ -97,6 +100,16 @@ export function defaultFor(type: CaptureSource["type"]): CaptureSource {
       type: "cloud-probe",
       endpoint: DEFAULT_CLOUD_PROBE_ENDPOINT,
       recv_hwm: DEFAULT_CLOUD_PROBE_HWM,
+    }
+  }
+  if (type === "ebpf") {
+    return {
+      type: "ebpf",
+      source_id: null,
+      ssl_libs: [],
+      targets: [],
+      pid_allowlist: [],
+      segment_size: 16384,
     }
   }
   return {
@@ -385,6 +398,99 @@ function CloudProbeForm({
             className="w-32 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
           />
         </Field>
+      </Disclosure>
+    </div>
+  )
+}
+
+// ============================================================================
+// EbpfForm — on-host eBPF SSL-uprobe capture (Linux)
+// ============================================================================
+
+function EbpfForm({
+  source,
+  onChange,
+}: {
+  source: Extract<CaptureSource, { type: "ebpf" }>
+  onChange: (next: CaptureSource) => void
+}) {
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-md border border-border/60 bg-muted/40 px-2.5 py-2 text-[11px] text-muted-foreground">
+        Reads TLS plaintext at the in-process <span className="font-mono">SSL_read</span> /{" "}
+        <span className="font-mono">SSL_write</span> boundary and attributes each call to its
+        owning process. Linux only; needs <span className="font-mono">CAP_BPF</span> + kernel BTF.
+      </div>
+      <Field
+        label="TLS libraries"
+        hint="Leave empty to auto-discover libssl via ldconfig (covers Python SDKs, curl). Or pin explicit paths, comma-separated."
+      >
+        <input
+          value={source.ssl_libs.join(", ")}
+          onChange={(e) =>
+            onChange({
+              ...source,
+              ssl_libs: e.target.value
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean),
+            })
+          }
+          placeholder="auto-discover (leave empty)"
+          className="w-full rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
+        />
+      </Field>
+      <Disclosure
+        open={advancedOpen}
+        onToggle={() => setAdvancedOpen((v) => !v)}
+        label="Advanced"
+      >
+        <Field
+          label="PID allowlist"
+          hint="Restrict capture to these process IDs (comma-separated). Empty = all processes."
+        >
+          <input
+            value={source.pid_allowlist.join(", ")}
+            onChange={(e) =>
+              onChange({
+                ...source,
+                pid_allowlist: e.target.value
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+                  .map(Number)
+                  .filter((n) => Number.isFinite(n) && n > 0),
+              })
+            }
+            placeholder="all processes (leave empty)"
+            className="w-full rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
+          />
+        </Field>
+        <Field
+          label="Segment size"
+          hint="Max plaintext bytes per synthetic TCP segment. Large SSL writes are split to stay under the IPv4 length limit."
+        >
+          <input
+            type="number"
+            min={1024}
+            value={source.segment_size}
+            onChange={(e) =>
+              onChange({ ...source, segment_size: Number(e.target.value) || 16384 })
+            }
+            className="w-32 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
+          />
+        </Field>
+        {source.targets.length > 0 && (
+          <Field
+            label="Static targets"
+            hint="Symbol-stripped binaries (e.g. Bun) — edit in the config file."
+          >
+            <div className="font-mono text-xs text-muted-foreground">
+              {source.targets.length} configured
+            </div>
+          </Field>
+        )}
       </Disclosure>
     </div>
   )
