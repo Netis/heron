@@ -446,6 +446,14 @@ async fn run_pipeline(cli: Cli) {
                                 Metric::CaptureReadErrors,
                                 Metric::CaptureDumpErrors,
                                 Metric::CaptureDumpLateMinutePackets,
+                                // eBPF source metrics (stay 0 for packet taps).
+                                Metric::EbpfEventsReceived,
+                                Metric::EbpfEventsDropped,
+                                Metric::EbpfBytesCaptured,
+                                Metric::EbpfFramesSynthesized,
+                                Metric::EbpfUprobesAttached,
+                                Metric::EbpfConnectionsActive,
+                                Metric::EbpfProcessCacheSize,
                             ],
                         )
                     })

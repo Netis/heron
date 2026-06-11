@@ -553,6 +553,7 @@ export interface SessionTurnsPage {
 
 export type MetricGroup =
   | "capture"
+  | "ebpf"
   | "protocol"
   | "llm"
   | "turn"
