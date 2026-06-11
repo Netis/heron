@@ -14,7 +14,8 @@ use std::path::Path;
 use clap::Args;
 use serde::Serialize;
 use h_common::config::{
-    config_search_paths, discover_config_path, AppConfig, ConfigIssue, IssueSeverity,
+    config_search_paths, discover_config_path, AppConfig, CaptureSourceConfig, ConfigIssue,
+    IssueSeverity,
 };
 
 #[derive(Debug, Args)]
@@ -75,6 +76,7 @@ pub async fn run(config_arg: Option<&Path>, args: &DoctorArgs) -> i32 {
     let cfg = collect_config_checks(config_arg, &mut checks);
 
     checks.push(check_capture_capabilities());
+    checks.push(check_ebpf_capabilities(cfg.as_ref()));
 
     if let Some(cfg) = &cfg {
         checks.push(check_storage_path(cfg));
@@ -277,6 +279,93 @@ fn check_capture_capabilities() -> DoctorCheck {
         "capture.capabilities",
         "platform-specific capture-privilege check not implemented",
     )
+}
+
+/// True if any configured pipeline uses an `ebpf` capture source. The eBPF
+/// capability check only `fail`s when one is actually configured, so the check
+/// is a no-op nuisance on the (common) hosts that capture from pcap/NIC/ZMQ.
+fn ebpf_source_configured(cfg: Option<&AppConfig>) -> bool {
+    cfg.map(|c| {
+        c.pipelines
+            .iter()
+            .flat_map(|p| &p.sources)
+            .any(|s| matches!(s, CaptureSourceConfig::Ebpf { .. }))
+    })
+    .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn check_ebpf_capabilities(cfg: Option<&AppConfig>) -> DoctorCheck {
+    // eBPF uprobe + ring-buffer loading needs CAP_BPF + CAP_PERFMON (kernel
+    // ≥5.8) or root, plus BTF for CO-RE relocations in the connect kprobe.
+    // Capability bits per capabilities(7); root's CapEff has them all set.
+    const CAP_PERFMON_BIT: u64 = 38;
+    const CAP_BPF_BIT: u64 = 39;
+
+    let configured = ebpf_source_configured(cfg);
+
+    let btf = Path::new("/sys/kernel/btf/vmlinux").exists();
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let (has_bpf, has_perfmon) = match std::fs::read_to_string("/proc/self/status") {
+        Ok(content) => content
+            .lines()
+            .find(|l| l.starts_with("CapEff:"))
+            .and_then(|l| u64::from_str_radix(l.trim_start_matches("CapEff:").trim(), 16).ok())
+            .map(|bits| {
+                (
+                    (bits >> CAP_BPF_BIT) & 1 == 1,
+                    (bits >> CAP_PERFMON_BIT) & 1 == 1,
+                )
+            })
+            .unwrap_or((false, false)),
+        Err(_) => (false, false),
+    };
+
+    let yesno = |b: bool| if b { "yes" } else { "no" };
+    let detail = format!(
+        "kernel {kernel}, BTF {}, CAP_BPF {}, CAP_PERFMON {}",
+        if btf { "present" } else { "missing" },
+        yesno(has_bpf),
+        yesno(has_perfmon),
+    );
+
+    if !configured {
+        return DoctorCheck::pass(
+            "capture.ebpf",
+            format!("no ebpf source configured; {detail}"),
+        );
+    }
+    match (btf, has_bpf && has_perfmon) {
+        (true, true) => DoctorCheck::pass("capture.ebpf", detail),
+        (false, _) => DoctorCheck::fail(
+            "capture.ebpf",
+            format!(
+                "BTF missing (/sys/kernel/btf/vmlinux) — kernel too old or built without \
+                 CONFIG_DEBUG_INFO_BTF; {detail}"
+            ),
+        ),
+        (true, false) => DoctorCheck::fail(
+            "capture.ebpf",
+            format!(
+                "insufficient privileges — run as root or grant \
+                 `setcap cap_bpf,cap_perfmon=eip <bin>`; {detail}"
+            ),
+        ),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn check_ebpf_capabilities(cfg: Option<&AppConfig>) -> DoctorCheck {
+    if ebpf_source_configured(cfg) {
+        DoctorCheck::fail(
+            "capture.ebpf",
+            "an ebpf capture source is configured but eBPF capture is only supported on Linux",
+        )
+    } else {
+        DoctorCheck::pass("capture.ebpf", "n/a (eBPF capture is Linux-only)")
+    }
 }
 
 fn check_storage_path(cfg: &AppConfig) -> DoctorCheck {

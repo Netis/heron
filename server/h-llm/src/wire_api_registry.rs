@@ -174,6 +174,7 @@ mod tests {
                 .collect(),
             body,
             timestamp_us: 0,
+            process: None,
         }
     }
 

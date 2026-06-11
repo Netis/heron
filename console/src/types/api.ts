@@ -25,6 +25,19 @@ export interface LlmCallsPage {
   items: LlmCallListItem[]
 }
 
+/**
+ * Owning process of a captured connection. Only present on calls from an
+ * attribution-capable source (eBPF); `null` for passive-tap sources (pcap /
+ * cloud-probe), which see only the wire.
+ */
+export interface ProcessInfo {
+  pid: number
+  /** Kernel `comm` (≤15 chars), e.g. `python3`, `node`, `claude`. */
+  comm: string
+  /** Absolute executable path (`/proc/<pid>/exe`), or null when unresolved. */
+  exe: string | null
+}
+
 export interface LlmCallListItem {
   id: string
   request_time: number
@@ -54,6 +67,8 @@ export interface LlmCallListItem {
   agent_topology: AgentTopology | null
   tool_call_count: number
   tool_names: string[]
+  /** Owning process (eBPF attribution); null for passive-tap sources. */
+  process: ProcessInfo | null
 }
 
 // Metrics types
@@ -406,6 +421,8 @@ export interface LlmCallDetail {
   agent_topology: AgentTopology | null
   tool_call_count: number
   tool_names: string[]
+  /** Owning process (eBPF attribution); null for passive-tap sources. */
+  process: ProcessInfo | null
 }
 
 // HTTP exchange types — /api/http-exchanges

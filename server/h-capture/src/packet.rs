@@ -1,5 +1,7 @@
 use bytes::Bytes;
 
+use h_common::process::ProcessInfo;
+
 /// Sentinel EtherType used by cloud-probe (and mimicked by pcap-live) to mark
 /// a [`RawPacket`] as a heartbeat signal rather than real traffic. Matches
 /// cloud-probe's `ZMQ_HEARTBEAT_ETHER_TYPE` compile-time constant.
@@ -30,6 +32,9 @@ pub struct RawPacket {
     /// this is the interface name (or user-configured override); for cloud-probe
     /// it is the UUID extracted from the batch header.
     pub source_id: String,
+    /// Owning process, when the source can attribute it (eBPF). `None` for
+    /// passive taps (pcap live / file, cloud-probe), which see only the wire.
+    pub process: Option<ProcessInfo>,
 }
 
 impl RawPacket {
@@ -66,6 +71,7 @@ impl RawPacket {
             link_type: 1,
             data: Bytes::copy_from_slice(&buf),
             source_id,
+            process: None,
         }
     }
 }
@@ -96,6 +102,7 @@ mod tests {
             link_type: 1,
             data: Bytes::copy_from_slice(&buf),
             source_id: String::new(),
+            process: None,
         };
         assert!(!pkt.is_heartbeat());
     }
@@ -112,6 +119,7 @@ mod tests {
             link_type: 1,
             data: Bytes::copy_from_slice(&buf),
             source_id: String::new(),
+            process: None,
         };
         assert!(!pkt.is_heartbeat());
     }
@@ -128,6 +136,7 @@ mod tests {
             link_type: 101, // Raw IP
             data: Bytes::copy_from_slice(&buf),
             source_id: String::new(),
+            process: None,
         };
         assert!(!pkt.is_heartbeat());
     }

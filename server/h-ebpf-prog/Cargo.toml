@@ -1,0 +1,32 @@
+# Standalone workspace: detaches this crate from the server workspace so
+# `cargo build --package h-ebpf-prog` (invoked by aya-build) resolves it as its
+# own root rather than an excluded member of the parent.
+[workspace]
+
+[package]
+name = "h-ebpf-prog"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The BPF program. Compiled for `bpfel-unknown-none` (see rust-toolchain.toml +
+# .cargo/config.toml), linked by bpf-linker, and embedded into h-capture by its
+# build.rs (aya-build). EXCLUDED from the server workspace — it uses a different
+# target and toolchain, so it must never be pulled into a host `cargo build`.
+
+[dependencies]
+aya-ebpf = "0.1"
+h-ebpf-common = { path = "../h-ebpf-common" }
+
+[[bin]]
+name = "h-ebpf-prog"
+path = "src/main.rs"
+
+# BPF must be optimized; the verifier rejects most debug-profile output.
+[profile.dev]
+opt-level = 3
+debug = false
+[profile.release]
+opt-level = 3
+debug = false
+lto = true

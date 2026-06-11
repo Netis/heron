@@ -75,6 +75,12 @@ pub struct LlmCall {
     /// Extraction (usage/model) always runs on the full body upstream, so a
     /// non-zero value never implies lost metrics — only a truncated stored body.
     pub body_bytes_dropped: u64,
+    /// Owning process (pid / comm / exe), when the capture source attributes it
+    /// (eBPF). `None` for passive taps (pcap / cloud-probe). Copied from the
+    /// request's process attribution (falling back to the response's) in the
+    /// LLM stage, persisted to storage, and surfaced in the console so a call
+    /// can be traced back to the agent process that made it.
+    pub process: Option<h_common::process::ProcessInfo>,
 }
 
 /// Per-call agent-side info produced once an `AgentProfile` has matched —
@@ -393,6 +399,7 @@ mod extension_tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            process: None,
         };
         let arc = Arc::new(call);
         let id = AgentCallInfo {
@@ -457,6 +464,7 @@ mod extension_tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            process: None,
         };
         assert!(call.finish_reason.is_none());
     }

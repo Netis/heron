@@ -715,6 +715,7 @@ mod tests {
             event_type: event_type.to_string(),
             data: data.to_string(),
             timestamp_us: 0,
+            process: None,
         }
     }
 
@@ -935,6 +936,7 @@ mod tests {
             headers: vec![("authorization".to_string(), "Bearer sk-test".to_string())],
             body: bytes::Bytes::from(body.to_string()),
             timestamp_us: 0,
+            process: None,
         };
         let cache = ParsedJson::from_bytes(req.body.clone());
         let info = extract_request(&req, &cache);
@@ -1019,6 +1021,7 @@ mod tests {
             body: bytes::Bytes::from(body.to_string()),
             first_byte_timestamp_us: 0,
             complete_timestamp_us: 0,
+            process: None,
         };
         let cache = ParsedJson::from_bytes(resp.body.clone());
         let info = extract_response(&resp, &cache);
@@ -1058,6 +1061,7 @@ mod tests {
             body: bytes::Bytes::from(body.to_string()),
             first_byte_timestamp_us: 0,
             complete_timestamp_us: 0,
+            process: None,
         };
         let cache = ParsedJson::from_bytes(resp.body.clone());
         let info = extract_response(&resp, &cache);
@@ -1095,6 +1099,7 @@ mod tests {
             body: bytes::Bytes::from(body.to_string()),
             first_byte_timestamp_us: 0,
             complete_timestamp_us: 0,
+            process: None,
         };
         let cache = ParsedJson::from_bytes(resp.body.clone());
         let info = extract_response(&resp, &cache);

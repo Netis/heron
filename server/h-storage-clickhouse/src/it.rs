@@ -146,6 +146,7 @@ pub(crate) mod fixtures {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            process: None,
         }
     }
 
@@ -298,6 +299,7 @@ pub(crate) mod fixtures {
             headers: vec![("content-type".into(), "application/json".into())],
             body: Bytes::from_static(br#"{"model":"gpt-4"}"#),
             timestamp_us: request_time_us,
+            process: None,
         });
         let response = Arc::new(HttpResponseData {
             flow_key: request.flow_key.clone(),
@@ -309,6 +311,7 @@ pub(crate) mod fixtures {
             body: Bytes::from_static(br#"{"choices":[]}"#),
             first_byte_timestamp_us: request_time_us + 500_000,
             complete_timestamp_us: request_time_us + 1_000_000,
+            process: None,
         });
         HttpExchange {
             id: id.to_string(),

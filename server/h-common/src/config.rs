@@ -301,6 +301,75 @@ pub enum CaptureSourceConfig {
         #[serde(default = "default_cloud_probe_hwm")]
         recv_hwm: i32,
     },
+    /// eBPF SSL-uprobe capture (Linux only). Attaches uprobes to `SSL_read` /
+    /// `SSL_write` to observe the plaintext of TLS-encrypted LLM API calls
+    /// without a proxy, then reconstructs synthetic TCP frames that feed the
+    /// existing pipeline. Construction is Linux-gated in the capture factory;
+    /// the config itself parses on every platform so a shared config file is
+    /// portable.
+    Ebpf {
+        #[serde(default)]
+        source_id: Option<String>,
+        /// Explicit `libssl` paths to attach to. Empty = autodetect by scanning
+        /// running processes' mapped libraries (`/proc/*/maps`).
+        #[serde(default)]
+        ssl_libs: Vec<String>,
+        /// Static-binary targets (Phase 3): binaries with no dynamic `libssl`
+        /// whose TLS functions are located by symbol or byte-pattern offset.
+        #[serde(default)]
+        targets: Vec<EbpfTarget>,
+        /// Restrict capture to these PIDs. Empty = all processes.
+        #[serde(default)]
+        pid_allowlist: Vec<u32>,
+        /// Target payload size (bytes) per synthesized TCP segment.
+        #[serde(default = "default_ebpf_segment_size")]
+        segment_size: u32,
+    },
+}
+
+/// A static-binary uprobe target for eBPF capture (Phase 3). Used for runtimes
+/// that statically link their TLS library (e.g. Claude Code's Bun binary), so
+/// there is no `libssl.so` to attach to by name.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct EbpfTarget {
+    /// Absolute path to the executable to attach uprobes to.
+    pub binary: String,
+    /// TLS library flavor baked into the binary, selecting the symbol /
+    /// byte-pattern strategy used to locate `SSL_read` / `SSL_write`.
+    /// e.g. `"openssl"`, `"boringssl"`.
+    #[serde(default = "default_ebpf_target_flavor")]
+    pub flavor: String,
+    /// Optional byte-signature override for `SSL_write`'s prologue, as a pattern
+    /// of space-separated hex bytes with `??` wildcards
+    /// (e.g. `"55 41 57 ?? 48 8b"`). Signatures are version-specific to one
+    /// statically-linked TLS build, so they live in config (data) rather than
+    /// code: an operator can pin their exact Bun / Claude Code release without a
+    /// rebuild. When unset, the loader falls back to the built-in signature for
+    /// `flavor` (if any).
+    #[serde(default)]
+    pub write_sig: Option<String>,
+    /// Optional byte-signature override for `SSL_read`'s prologue. See
+    /// [`Self::write_sig`].
+    #[serde(default)]
+    pub read_sig: Option<String>,
+    /// Explicit `SSL_write` file offset, bypassing signature scanning entirely.
+    /// For when the offset is already known (e.g. from `sigscan_probe` or RE) —
+    /// also the validation path used while deriving a signature for a new build.
+    #[serde(default)]
+    pub write_offset: Option<u64>,
+    /// Explicit `SSL_read` file offset. See [`Self::write_offset`].
+    #[serde(default)]
+    pub read_offset: Option<u64>,
+}
+
+fn default_ebpf_target_flavor() -> String {
+    "boringssl".to_string()
+}
+
+fn default_ebpf_segment_size() -> u32 {
+    // 16 KiB — matches h-capture's synth DEFAULT_SEGMENT_SIZE. Kept in sync by
+    // value (h-common must not depend on h-capture).
+    16 * 1024
 }
 
 impl CaptureSourceConfig {
@@ -325,6 +394,9 @@ impl CaptureSourceConfig {
                 Some(source_id.clone().unwrap_or(base))
             }
             Self::CloudProbe { .. } => None,
+            Self::Ebpf { source_id, .. } => {
+                Some(source_id.clone().unwrap_or_else(|| "ebpf".to_string()))
+            }
         }
     }
 }

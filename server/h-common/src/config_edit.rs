@@ -134,6 +134,61 @@ fn source_to_table(s: &CaptureSourceConfig) -> Table {
             t["endpoint"] = value(endpoint.as_str());
             t["recv_hwm"] = value(i64::from(*recv_hwm));
         }
+        CaptureSourceConfig::Ebpf {
+            source_id,
+            ssl_libs,
+            targets,
+            pid_allowlist,
+            segment_size,
+        } => {
+            t["type"] = value("ebpf");
+            if let Some(id) = source_id {
+                t["source_id"] = value(id.as_str());
+            }
+            // Emit list/scalar knobs only when non-default so an autodetecting
+            // ebpf source's TOML stays minimal.
+            if !ssl_libs.is_empty() {
+                let mut arr = toml_edit::Array::new();
+                for lib in ssl_libs {
+                    arr.push(lib.as_str());
+                }
+                t["ssl_libs"] = value(arr);
+            }
+            if !pid_allowlist.is_empty() {
+                let mut arr = toml_edit::Array::new();
+                for pid in pid_allowlist {
+                    arr.push(i64::from(*pid));
+                }
+                t["pid_allowlist"] = value(arr);
+            }
+            if *segment_size != 16 * 1024 {
+                t["segment_size"] = value(i64::from(*segment_size));
+            }
+            // `targets` (static-binary Phase 3) is an array-of-tables; emit it
+            // as such when present.
+            if !targets.is_empty() {
+                let mut arr = toml_edit::ArrayOfTables::new();
+                for target in targets {
+                    let mut tt = Table::new();
+                    tt["binary"] = value(target.binary.as_str());
+                    tt["flavor"] = value(target.flavor.as_str());
+                    if let Some(sig) = &target.write_sig {
+                        tt["write_sig"] = value(sig.as_str());
+                    }
+                    if let Some(sig) = &target.read_sig {
+                        tt["read_sig"] = value(sig.as_str());
+                    }
+                    if let Some(off) = target.write_offset {
+                        tt["write_offset"] = value(off as i64);
+                    }
+                    if let Some(off) = target.read_offset {
+                        tt["read_offset"] = value(off as i64);
+                    }
+                    arr.push(tt);
+                }
+                t["targets"] = toml_edit::Item::ArrayOfTables(arr);
+            }
+        }
     }
     t
 }

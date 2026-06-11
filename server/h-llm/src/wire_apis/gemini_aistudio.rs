@@ -791,6 +791,7 @@ mod tests {
             headers: vec![],
             body: Bytes::copy_from_slice(body.as_bytes()),
             timestamp_us: 0,
+            process: None,
         }
     }
 
@@ -806,6 +807,7 @@ mod tests {
             body: Bytes::copy_from_slice(body.as_bytes()),
             first_byte_timestamp_us: 0,
             complete_timestamp_us: 0,
+            process: None,
         }
     }
 
@@ -819,6 +821,7 @@ mod tests {
             event_type: String::new(),
             data: data.to_string(),
             timestamp_us: 0,
+            process: None,
         }
     }
 

@@ -21,6 +21,7 @@ const columns = [
   { key: "wire_api", label: "Wire API", width: "w-[110px]", sortable: false },
   { key: "model", label: "Model", width: "w-[140px]", sortable: false },
   { key: "client_ip", label: "Client", width: "w-[130px]", sortable: false },
+  { key: "process", label: "Process", width: "w-[130px]", sortable: false },
   { key: "server", label: "Server", width: "w-[180px]", sortable: false },
   { key: "request_path", label: "Path", width: "", sortable: false },
   { key: "status_code", label: "Status", width: "w-[52px]", sortable: true },
@@ -57,6 +58,21 @@ function CellValue({ item, column }: { item: LlmCallListItem; column: SortKey })
       )
     case "client_ip":
       return <span className="truncate font-mono text-xs">{item.client_ip}</span>
+    case "process": {
+      // Process attribution is only present on eBPF-sourced calls; passive
+      // taps leave it null. Show comm + pid, with the executable path on hover.
+      const p = item.process
+      if (!p) return <span className="text-muted-foreground">—</span>
+      return (
+        <span
+          className="truncate font-mono text-xs"
+          title={`pid ${p.pid}${p.exe ? ` · ${p.exe}` : ""}`}
+        >
+          {p.comm}
+          <span className="text-muted-foreground"> ({p.pid})</span>
+        </span>
+      )
+    }
     case "server":
       return (
         <span className="truncate font-mono text-xs">

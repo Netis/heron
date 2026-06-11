@@ -105,6 +105,7 @@ pub(crate) fn parse_batch(bytes: &[u8]) -> Result<(String, Vec<RawPacket>), Batc
             link_type: LINKTYPE_ETHERNET,
             data,
             source_id: String::new(),
+            process: None,
         });
     }
 
@@ -480,6 +481,7 @@ mod tests {
             link_type: LINKTYPE_ETHERNET,
             data: Bytes::from_static(&[0xAA, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x00]),
             source_id: "u1".to_string(),
+            process: None,
         };
         assert!(t.on_packet(&p).is_none());
         p.timestamp_us += HEARTBEAT_INTERVAL_US;

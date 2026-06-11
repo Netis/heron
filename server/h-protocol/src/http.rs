@@ -330,6 +330,8 @@ impl SseParser {
             event_type,
             data: data_parts.join("\n"),
             timestamp_us: timestamp,
+            // The flow stamps process attribution onto emitted events.
+            process: None,
         }))
     }
 }
@@ -441,6 +443,7 @@ impl HttpParser {
                                 headers: std::mem::take(&mut self.pending_req_headers),
                                 body,
                                 timestamp_us: self.pending_req_timestamp,
+                                process: None,
                             }));
                             self.state = ParserState::WaitingForResponse;
                             break;
@@ -479,6 +482,7 @@ impl HttpParser {
                             body: Bytes::new(),
                             first_byte_timestamp_us: self.pending_resp_timestamp,
                             complete_timestamp_us: server_ts,
+                            process: None,
                         }));
                         self.state = ParserState::WaitingForRequest;
                         continue;
@@ -543,6 +547,7 @@ impl HttpParser {
                                 body: emitted_body,
                                 first_byte_timestamp_us: self.pending_resp_timestamp,
                                 complete_timestamp_us: server_last_ts,
+                                process: None,
                             }));
                             self.state = ParserState::WaitingForRequest;
                             break;
@@ -601,6 +606,7 @@ impl HttpParser {
             body: emitted_body,
             first_byte_timestamp_us: self.pending_resp_timestamp,
             complete_timestamp_us: server_last_ts,
+            process: None,
         }));
         self.state = ParserState::WaitingForRequest;
     }

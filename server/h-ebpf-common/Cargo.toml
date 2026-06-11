@@ -1,0 +1,14 @@
+[package]
+name = "h-ebpf-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared, no_std-compatible event layout used by BOTH the BPF program
+# (h-ebpf-prog) and the userspace loader (h-capture's `ebpf` feature). It has no
+# dependencies so it builds for the `bpfel-unknown-none` target and for the host
+# alike.
+[dependencies]
+
+[lib]
+path = "src/lib.rs"

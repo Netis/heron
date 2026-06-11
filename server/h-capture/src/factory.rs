@@ -56,7 +56,33 @@ pub fn build_source(
         CaptureSourceConfig::CloudProbe { endpoint, recv_hwm } => Ok(Box::new(
             CloudProbeSource::new(endpoint.clone(), *recv_hwm, pcap_dump),
         )),
+        CaptureSourceConfig::Ebpf { .. } => build_ebpf_source(config, pcap_dump),
     }
+}
+
+/// Construct the eBPF capture source. Only available on Linux builds compiled
+/// with the `ebpf` feature; every other build returns a clear error so a config
+/// referencing an `ebpf` source fails loudly instead of silently doing nothing.
+#[cfg(all(target_os = "linux", feature = "ebpf"))]
+fn build_ebpf_source(
+    config: &CaptureSourceConfig,
+    pcap_dump: Option<PacketDumperConfig>,
+) -> crate::Result<Box<dyn CaptureSource>> {
+    Ok(Box::new(crate::ebpf::EbpfSource::from_config(
+        config, pcap_dump,
+    )?))
+}
+
+#[cfg(not(all(target_os = "linux", feature = "ebpf")))]
+fn build_ebpf_source(
+    _config: &CaptureSourceConfig,
+    _pcap_dump: Option<PacketDumperConfig>,
+) -> crate::Result<Box<dyn CaptureSource>> {
+    Err(crate::CaptureError::Other(
+        "ebpf capture is only available on Linux builds compiled with \
+         `--features ebpf` (requires CAP_BPF + BTF on the host)"
+            .to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -94,5 +120,28 @@ mod tests {
             recv_hwm: 1000,
         };
         assert!(build_source(&config, None).is_ok());
+    }
+
+    /// On default builds (no `ebpf` feature) the factory must reject an `ebpf`
+    /// source with a clear error rather than silently producing nothing.
+    #[cfg(not(all(target_os = "linux", feature = "ebpf")))]
+    #[test]
+    fn test_build_ebpf_source_unavailable_without_feature() {
+        let config = CaptureSourceConfig::Ebpf {
+            source_id: None,
+            ssl_libs: vec![],
+            targets: vec![],
+            pid_allowlist: vec![],
+            segment_size: 16 * 1024,
+        };
+        // `Box<dyn CaptureSource>` is not Debug, so avoid `unwrap_err`.
+        let err = match build_source(&config, None) {
+            Ok(_) => panic!("ebpf source should be unavailable without the feature"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("ebpf"),
+            "error should mention ebpf, got: {err}"
+        );
     }
 }

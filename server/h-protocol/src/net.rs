@@ -2,6 +2,7 @@ use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 
 use bytes::Bytes;
+use h_common::process::ProcessInfo;
 
 /// Identifies a TCP connection. Normalized so the smaller (IP, port) pair is
 /// always `addr_a`, ensuring both directions hash to the same key.
@@ -95,6 +96,10 @@ pub struct ParsedPacket {
     /// desynchronize the per-direction byte stream.
     pub wire_payload_len: u32,
     pub timestamp_us: i64,
+    /// Owning process, propagated from [`RawPacket`](h_capture::RawPacket) when
+    /// the source attributes it (eBPF). `None` for passive taps. The flow stores
+    /// the first non-`None` value and stamps it onto emitted HTTP events.
+    pub process: Option<ProcessInfo>,
 }
 
 // TCP flag constants.

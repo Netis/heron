@@ -198,6 +198,7 @@ impl CaptureSource for PcapLiveSource {
                             link_type,
                             data: Bytes::copy_from_slice(packet.data),
                             source_id: source_id.clone(),
+                            process: None,
                         };
 
                         // Packet-driven heartbeat: if event-time has advanced a

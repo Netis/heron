@@ -272,6 +272,7 @@ mod tests {
             ],
             body: Bytes::from(body.to_string()),
             timestamp_us: ts_us,
+            process: None,
         }
     }
 
@@ -295,6 +296,7 @@ mod tests {
             body: Bytes::from(body.to_string()),
             first_byte_timestamp_us: ts_us + 100_000,
             complete_timestamp_us: ts_us + 200_000,
+            process: None,
         }
     }
 
@@ -320,6 +322,7 @@ mod tests {
             ],
             body: Bytes::from(body.to_string()),
             timestamp_us: ts_us,
+            process: None,
         }
     }
 
@@ -342,6 +345,7 @@ mod tests {
             body: Bytes::from(body.to_string()),
             first_byte_timestamp_us: ts_us + 100_000,
             complete_timestamp_us: ts_us + 200_000,
+            process: None,
         }
     }
 
