@@ -21,7 +21,7 @@ pub(crate) use h_storage::convert::{
     derive_tokens_estimated, headers_to_json, parse_json_string_list,
 };
 pub(crate) use h_storage::dialect::{
-    build_dimension_where, build_dimension_where_for_group, sql_in_list,
+    build_dimension_where, build_dimension_where_for_group, escape_standard, sql_in_list,
 };
 
 /// Convert microseconds since epoch to a string DuckDB can parse as TIMESTAMP.

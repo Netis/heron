@@ -23,11 +23,10 @@ use serde::Deserialize;
 
 use h_common::error::Result;
 use h_storage::convert::parse_json_string_list;
-use h_storage::dialect::sql_in_list;
 use h_storage::query::*;
 
 use crate::client::ch_err;
-use crate::sql::{escape_str, time_where};
+use crate::sql::{escape_str, sql_in_list, time_where};
 use crate::ClickHouseBackend;
 
 /// Step-1 row: one `(source_id, session_id)` key with its windowed

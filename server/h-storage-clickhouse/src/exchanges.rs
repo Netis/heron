@@ -5,12 +5,11 @@ use serde::Deserialize;
 
 use h_common::error::Result;
 use h_protocol::HttpExchange;
-use h_storage::dialect::sql_in_list;
 use h_storage::query::*;
 
 use crate::client::insert_all;
 use crate::rows::ExchangeRow;
-use crate::sql::{escape_str, time_where};
+use crate::sql::{escape_str, sql_in_list, time_where};
 use crate::ClickHouseBackend;
 
 /// Valid `sort_by` fields for `query_http_exchanges`, mirroring the DuckDB

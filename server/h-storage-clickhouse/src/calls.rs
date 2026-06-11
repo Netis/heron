@@ -7,12 +7,11 @@ use h_common::error::Result;
 use h_common::process::ProcessInfo;
 use h_llm::model::LlmCall;
 use h_storage::convert::{derive_tokens_estimated, parse_json_string_list};
-use h_storage::dialect::sql_in_list;
 use h_storage::query::*;
 
 use crate::client::{ch_err, insert_all};
 use crate::rows::CallRow;
-use crate::sql::{escape_str, time_where};
+use crate::sql::{escape_str, sql_in_list, time_where};
 use crate::ClickHouseBackend;
 
 const VALID_SORT_FIELDS: &[&str] = &[
