@@ -354,14 +354,70 @@ fn attach_offset(
     Ok(())
 }
 
-/// Built-in `(write_sig, read_sig)` prologue patterns for a flavor. None ship
-/// for `boringssl` today: a BoringSSL prologue is specific to one statically-
-/// linked build (one Bun / Claude Code release), so it must be supplied per
-/// deployment via `write_sig` / `read_sig` in config rather than guessed in
-/// code. The mechanism (scan → offset → attach) is flavor-agnostic; only the
-/// data is version-bound.
-fn flavor_signatures(_flavor: &str) -> (Option<String>, Option<String>) {
-    (None, None)
+/// Built-in BoringSSL prologue signatures for a flavor, using the anchor + window
+/// technique. `SSL_read`'s prologue is distinctive enough to match uniquely; the
+/// `SSL_write` prologue is generic (a common register-save sequence appears many
+/// times), so it is located as the nearest match in a window *after* the
+/// `SSL_read` anchor — robust to the small per-build drift in the inter-function
+/// distance that a hardcoded delta would miss.
+struct FlavorSig {
+    /// Distinctive `SSL_read` prologue — must match uniquely (the anchor).
+    read_sig: &'static str,
+    /// `SSL_write` prologue — generic; resolved as the first match within
+    /// `write_window` bytes after the `SSL_read` anchor.
+    write_sig: &'static str,
+    write_window: u64,
+}
+
+/// Built-in signatures per flavor. Returns `None` for `boringssl` (generic): a
+/// prologue is specific to one statically-linked build, so a bare `boringssl`
+/// target must supply `write_sig`/`read_sig`/`*_offset` in config.
+///
+/// The `bun` signatures are the BoringSSL `SSL_read`/`SSL_write` x86-64
+/// prologues from Bun v1.3.x profile builds (the runtime Claude Code ships),
+/// matching the read-anchored, windowed-write approach from the eunomia-bpf
+/// AgentSight project (MIT). They are still version-bound data — a future Bun
+/// line may shift the prologue; override via config when that happens.
+fn flavor_signatures(flavor: &str) -> Option<FlavorSig> {
+    match flavor {
+        "bun" | "boringssl-bun" | "claude-code" => Some(FlavorSig {
+            read_sig: "55 48 89 e5 41 57 41 56 53 50 48 83 bf 98 00 00 00 00 74",
+            write_sig:
+                "55 48 89 e5 41 57 41 56 41 55 41 54 53 48 83 ec 18 41 89 d7 49 89 f6 48 89 fb",
+            write_window: 0x10000,
+        }),
+        _ => None,
+    }
+}
+
+/// Locate a function as the first signature match within `window` bytes after an
+/// `anchor` offset. Used for the generic `SSL_write` prologue once the unique
+/// `SSL_read` anchor is known — handles a prologue that occurs many times across
+/// the binary by scoping to the SSL function's neighborhood.
+fn resolve_windowed(
+    data: &[u8],
+    pattern: &str,
+    anchor: u64,
+    window: u64,
+    what: &str,
+    binary: &str,
+) -> Option<u64> {
+    let sig = Signature::parse(pattern)?;
+    let hit = scan_elf_executable(data, &sig)
+        .into_iter()
+        .find(|&o| o >= anchor && o < anchor.saturating_add(window));
+    match hit {
+        Some(off) => {
+            tracing::info!("ebpf: {binary}: {what} resolved at offset {off:#x} (anchored)");
+            Some(off)
+        }
+        None => {
+            tracing::warn!(
+                "ebpf: {binary}: {what} not found within {window:#x} of anchor {anchor:#x}"
+            );
+            None
+        }
+    }
 }
 
 /// Resolve a unique uprobe file offset for `pattern` in `data`. Requires
@@ -403,40 +459,70 @@ fn attach_target(ebpf: &mut Ebpf, target: &EbpfTarget) -> crate::Result<bool> {
         tracing::warn!("ebpf: target binary {} not found", target.binary);
         return Ok(false);
     }
-    let (builtin_w, builtin_r) = flavor_signatures(&target.flavor);
-    let write_pat = target.write_sig.clone().or(builtin_w);
-    let read_pat = target.read_sig.clone().or(builtin_r);
-    if target.write_offset.is_none()
-        && target.read_offset.is_none()
-        && write_pat.is_none()
-        && read_pat.is_none()
-    {
+
+    let flavor_sig = flavor_signatures(&target.flavor);
+    let has_source = target.write_offset.is_some()
+        || target.read_offset.is_some()
+        || target.write_sig.is_some()
+        || target.read_sig.is_some()
+        || flavor_sig.is_some();
+    if !has_source {
         tracing::warn!(
             "ebpf: target {} (flavor={}) has no offset or signature — set \
-             write_offset/read_offset or write_sig/read_sig in config",
+             write_offset/read_offset or write_sig/read_sig in config (or use a \
+             flavor with built-in signatures, e.g. \"bun\")",
             target.binary,
             target.flavor
         );
         return Ok(false);
     }
 
-    // Read the binary only if a signature scan is actually needed.
-    let data = if (target.write_offset.is_none() && write_pat.is_some())
-        || (target.read_offset.is_none() && read_pat.is_some())
-    {
-        std::fs::read(&path)
-            .map_err(|e| crate::CaptureError::Other(format!("read target {}: {e}", target.binary)))?
-    } else {
-        Vec::new()
-    };
+    let mut write_off = target.write_offset;
+    let mut read_off = target.read_offset;
 
-    // Explicit offset wins over signature scanning for each function.
-    let write_off = target
-        .write_offset
-        .or_else(|| write_pat.and_then(|p| resolve_single_offset(&data, &p, "SSL_write", &target.binary)));
-    let read_off = target
-        .read_offset
-        .or_else(|| read_pat.and_then(|p| resolve_single_offset(&data, &p, "SSL_read", &target.binary)));
+    // Scan the binary only if at least one offset still needs resolving.
+    if write_off.is_none() || read_off.is_none() {
+        let data = std::fs::read(&path)
+            .map_err(|e| crate::CaptureError::Other(format!("read target {}: {e}", target.binary)))?;
+
+        // Config-supplied signatures take precedence and must match uniquely.
+        if read_off.is_none() {
+            if let Some(p) = &target.read_sig {
+                read_off = resolve_single_offset(&data, p, "SSL_read", &target.binary);
+            }
+        }
+        if write_off.is_none() {
+            if let Some(p) = &target.write_sig {
+                write_off = resolve_single_offset(&data, p, "SSL_write", &target.binary);
+            }
+        }
+
+        // Fall back to built-in flavor signatures: anchor on the unique
+        // SSL_read prologue, then locate SSL_write (generic prologue) as the
+        // nearest match in the window after it.
+        if let Some(fs) = &flavor_sig {
+            if read_off.is_none() {
+                read_off = resolve_single_offset(&data, fs.read_sig, "SSL_read", &target.binary);
+            }
+            if write_off.is_none() {
+                if let Some(anchor) = read_off {
+                    write_off = resolve_windowed(
+                        &data,
+                        fs.write_sig,
+                        anchor,
+                        fs.write_window,
+                        "SSL_write",
+                        &target.binary,
+                    );
+                } else {
+                    tracing::warn!(
+                        "ebpf: {}: no SSL_read anchor — cannot locate SSL_write by window",
+                        target.binary
+                    );
+                }
+            }
+        }
+    }
 
     let mut any = false;
     if let Some(off) = write_off {

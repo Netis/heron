@@ -80,7 +80,12 @@ libssl (which has symbols, giving ground truth):
 
 ## Deriving a signature for a Bun / Claude Code release
 
-Because the signature is build-specific, deriving it is a per-release step. Two
+**Bun / Claude Code works out of the box** — set `flavor = "bun"` (aliases:
+`boringssl-bun`, `claude-code`) and the loader uses built-in BoringSSL
+signatures; no offset or signature config is needed for Bun v1.3.x. The sections
+below are only needed to (re)derive signatures for a different/newer build.
+
+Because a signature is build-specific, deriving one is a per-release step. Two
 config paths exist:
 
 - `write_offset` / `read_offset` — explicit file offsets, bypass scanning. The
@@ -130,35 +135,45 @@ guessed-wrong signature is worse than none (it could attach to the wrong
 function), so the unique-match requirement plus operator-supplied, validated
 patterns/offsets is the safe default.
 
-## What we measured on Bun 1.3.13 (the hard part: entry identification)
+## Why the signature is read-anchored (Bun 1.3.x findings)
 
-The mechanism is proven; the open work is **reliably finding the function
-entry** in this specific binary shape. Recorded so a follow-up doesn't re-walk it:
+Two properties of Bun's BoringSSL shaped the built-in signatures:
 
-- Bun's BoringSSL is compiled **without CET** — functions do **not** start with
-  `endbr64`, so the easy entry marker the system libssl has is absent here.
-  Prologues are plain (`55 48 89 e5 …` push-rbp, or frame-pointer-omitted).
-- `bpftrace` located the exact write call chain: an inner cluster (`~0x3c2xxxx`,
-  the record/encrypt layer that calls `write@plt`) and outer frames
-  (`~0x42xxxxx`) on the plaintext side.
-- Offset-attach **registers correctly** against the EXEC binary
-  (`bpftool link list` shows `uprobe /…/bun+0x…` at the computed file offset;
-  the r-xp mapping `…r-xp 02808000 …/bun` confirms the delta), so aya + the
-  loader are sound on a non-PIE target.
-- The remaining blocker: int3-padding / prologue heuristics yield **basic-block
-  boundaries**, not guaranteed function entries on the executed path, in this
-  jump-dense optimized code. Pinning the true entry needs proper
-  disassembly-based function-boundary analysis (or a symbol-matched BoringSSL
-  build — out of reach without the matching toolchain). `bpftrace`'s numeric
-  uprobe (`uprobe:bin:0xADDR`) can't help validate here: it resolves addresses
-  via the symbol table, which is empty for BoringSSL, so use the
-  `HERON_EBPF_WRITE_OFFSET` path above instead.
+- It is compiled **without CET** — functions do **not** start with `endbr64`, so
+  the entry marker the system libssl has is absent. Prologues are plain push-rbp
+  (`55 48 89 e5 …`). int3-padding / prologue heuristics alone yield basic-block
+  boundaries, not reliable entries, in this jump-dense optimized code — which is
+  why a *known-good prologue signature* is the right tool, not a generic scan.
+- `SSL_read`'s prologue is distinctive and matches **uniquely**; `SSL_write`'s
+  prologue is a common register-save sequence that matches **many** times. So
+  the loader anchors on the unique `SSL_read` and locates `SSL_write` as the
+  nearest match in a window after it (`resolve_windowed`) — robust to the small
+  per-build drift in the inter-function distance (observed 0xC90 on Bun 1.3.13
+  vs ~0xCA0 elsewhere) that a hardcoded delta would miss.
+
+The prologue bytes and this read-anchored approach come from the eunomia-bpf
+**AgentSight** project (MIT), whose patterns are from "Bun v1.3.x profile
+builds". They remain version-bound data — a future Bun line may shift the
+prologue; override via config when that happens.
+
+Validating a candidate offset without a signature (e.g. while deriving one for a
+new build) uses the loader's own attach path — `bpftrace`'s numeric uprobe
+(`uprobe:bin:0xADDR`) can't help, as it resolves addresses via the symbol table
+which is empty for BoringSSL (`Could not resolve address`):
+
+```
+HERON_EBPF_TARGET_BIN=/path/to/bun HERON_EBPF_WRITE_OFFSET=0x… \
+  ./target/debug/examples/ebpf_smoke   # prints captured HTTP/1.1 if RSI is plaintext
+```
 
 ## Status
 
-- Mechanism (sigscan + offset/sig attach + config + `sigscan_probe`): **done,
-  verified end-to-end** on a real SSL function (system libssl).
+- Mechanism (sigscan + offset/sig attach + read-anchored flavor + config +
+  `sigscan_probe`): **done**.
 - De-risking: **done** — Bun fetch is HTTP/1.1; Bun is stripped static BoringSSL,
   non-CET.
-- A validated Bun/Claude Code offset or signature: **open** — needs
-  disassembly-based entry identification (above), then it is per-release data.
+- **Bun / Claude Code live capture: done.** `flavor = "bun"` resolves
+  `SSL_read`/`SSL_write` from built-in signatures and captures real Bun HTTPS
+  plaintext (`GET / HTTP/1.1` / `HTTP/1.1 200 OK`), attributed to the owning
+  process (`HTTP Client(<pid>) …/bun`), verified end-to-end on a Linux 6.8 host
+  against Bun 1.3.13. A different Bun line needs re-derived signatures (above).
