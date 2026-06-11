@@ -12,11 +12,10 @@ use clickhouse::Row;
 use serde::Deserialize;
 
 use h_common::error::Result;
-use h_storage::dialect::sql_in_list;
 use h_storage::query::{DistinctAgentKindsQuery, DistinctFinishReason};
 
 use crate::client::ch_err;
-use crate::sql::time_where;
+use crate::sql::{sql_in_list, time_where};
 use crate::ClickHouseBackend;
 
 /// Single-column `SELECT DISTINCT x AS v` row. `v` must match the SELECT alias;
