@@ -19,22 +19,30 @@ ci.yml  (runner: self-hosted, heron)
    │
    ▼  workflow_run: ci completed, conclusion == success, branch == main
 deploy-staging.yml  (runner: self-hosted, staging-deploy)
-   ├─ download-artifact heron-staging  (from the triggering CI run)
+   ├─ download-artifact heron-staging  (built with --features "console ebpf")
    └─ deploy-staging.sh artifact/heron
           ├─ resolve heron-stage VM IP from libvirt DHCP leases
-          ├─ scp binary → VM, smoke-run --version
-          ├─ back up current binary, install, restart heron.service
+          ├─ scp binary + heron.service + config.toml → VM, smoke-run --version
+          ├─ back up current binary+unit+config, install, daemon-reload, restart
           ├─ health gate: status=ready AND pipeline running (≤90s)
-          └─ rollback to the backup if the gate fails
+          └─ rollback (binary+unit+config) to the backup if the gate fails
    │
    ▼  workflow_run: deploy-staging completed, conclusion == success
-staging-soak.yml  (runner: self-hosted, staging-deploy)
-   └─ soak-staging.sh
-          ├─ resolve heron-stage VM IP, scp tara + corpus into the VM
-          └─ tara.sh: replay a known pcap through the deployed binary
-                      (pcap-file source) and assert parse/pairing/turn/
-                      persistence invariants — fail the job on regression
+   ├──────────────────────────────┐
+staging-soak.yml                ebpf-soak.yml   (both: self-hosted, staging-deploy)
+   └─ soak-staging.sh              └─ ebpf-soak.sh
+       ├─ scp tara + corpus            ├─ assert deployed binary is an eBPF build
+       └─ tara.sh: replay a known      ├─ generate LLM-shaped TLS traffic on the VM
+          pcap through the deployed     │  (ebpf_soak_gen.py via openssl s_client)
+          binary, assert parse/         └─ assert ebpf_* metrics moved AND a
+          pairing/turn/persistence         process-attributed LlmCall was
+          invariants → stamp               synthesized+parsed+persisted → stamp
+          `staging-soaked`                 `ebpf-soaked`
 ```
+
+Prod promotion requires **both** the `staging-soaked` **and** `ebpf-soaked`
+commit statuses to be green (enforced in `deploy-prod.yml` post-approval and in
+`release.yml`'s pre-tag gate).
 
 ### Why a separate `staging-deploy` runner
 
@@ -50,11 +58,16 @@ the deploy host.
 - Ubuntu cloud image, libvirt `default` NAT network, provisioned by
   [`provision-vm.sh`](provision-vm.sh).
 - `heron` runs as a systemd unit ([`heron.service`](heron.service)) under a
-  dedicated `heron` user, with **`AmbientCapabilities=CAP_NET_RAW
-  CAP_NET_ADMIN`** — capture works with no `setcap`, so a rebuilt binary
-  can't silently degrade to API-only. (Recommended for production too.)
-- Binary at `/opt/heron/heron`, config [`config.toml`](config.toml) at
-  `/opt/heron/config.toml`, state under `/var/lib/heron`.
+  dedicated `heron` user, with **`AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+  CAP_BPF CAP_PERFMON`** — pcap capture works with no `setcap`, and the
+  CAP_BPF/CAP_PERFMON pair lets the eBPF source load its BPF program + attach
+  SSL uprobes. (Recommended for production too.)
+- The [`config.toml`](config.toml) runs both a `pcap` source and an `ebpf`
+  source (autodetects `libssl`), so a deploy exercises the on-host SSL-uprobe
+  path that `ebpf-soak` then validates.
+- Binary at `/opt/heron/heron`, config at `/opt/heron/config.toml`, state under
+  `/var/lib/heron`. **The unit + config are synced from this repo on every
+  deploy** (`deploy-staging.sh`), so a change here lands without a re-provision.
 
 ### Re-provisioning
 
@@ -161,3 +174,43 @@ The corpus is the committed `keepalive_2sse_pipelined.pcap` fixture — small,
 deterministic, ships with the repo. A richer/larger corpus (real scrubbed
 dumps, or LLM-synthesized fixtures) is a later enrichment; the dual-binary
 self-test makes swapping the corpus safe.
+
+## eBPF soak (`ebpf-soak.sh`) — L7b
+
+Where the tara soak proves the **pcap** path, the eBPF soak proves the
+**on-host SSL-uprobe** path end to end on the staging VM, so the encrypted-API
+capture feature is never promoted to prod un-validated. It runs in parallel
+with the tara soak after each `deploy-staging` and stamps an `ebpf-soaked`
+commit status (same go/no-go mechanism as `staging-soaked`).
+
+```
+ebpf-soak.sh
+   ├─ assert the deployed binary is an eBPF build (runtime-config.ebpf_available)
+   ├─ snapshot baseline ebpf_* counters
+   ├─ ebpf_soak_gen.py on the VM: an HTTPS stub serving /v1/chat/completions +
+   │     N requests driven through `openssl s_client` (the canonical libssl
+   │     client — curl/Python ssl may call SSL_*_ex or link GnuTLS and never
+   │     trip the SSL_read/SSL_write uprobes)
+   └─ poll the API until ALL hold, else fail (do not promote):
+         ebpf_uprobes_attached  ≥ 1        (attached to libssl)
+         ebpf_events_received   delta > 0  (uprobe fired)
+         ebpf_frames_synthesized delta > 0 (fed the pipeline)
+         ebpf_process_cache_size ≥ 1       (pid/comm attribution ran)
+         LlmCall(/v1/chat/completions) ≥ 1 (synth → parse → persist worked)
+```
+
+Process attribution is asserted via the `ebpf_process_cache_size` gauge because
+the `/api/llm-calls` list view doesn't surface the process columns yet (storage
+persists `process_pid/comm/exe`; surfacing them is a later phase).
+
+### Manual eBPF soak (debugging)
+
+```bash
+# From the deploy host, against the deployed VM binary:
+scripts/staging/ebpf-soak.sh
+#   env: HERON_STAGE_VM/USER/SSH_KEY, HERON_STAGE_API_PORT,
+#        HERON_EBPF_REQUESTS (default 8), HERON_EBPF_POLL_SECS (default 60)
+```
+
+Needs a VM whose `heron` was built with `--features "console ebpf"` (CI's
+staging artifact is) and whose `heron.service` grants `CAP_BPF`+`CAP_PERFMON`.

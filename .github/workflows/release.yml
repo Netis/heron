@@ -26,30 +26,38 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # Pre-release GATE: a release may only be cut from a commit that PASSED
-  # staging-soak (the correctness + sustained-load gate). staging-soak.yml
-  # stamps a `staging-soaked` commit status on each soaked main commit; this
-  # asserts the tagged commit carries a passing one, so the multi-arch binaries
-  # are never published from un-soaked code. Enforced on `v*` tag pushes only;
-  # workflow_dispatch (artifacts-only, for verifying the build matrix) skips it.
+  # Pre-release GATE: a release may only be cut from a commit that PASSED BOTH
+  # staging gates — staging-soak (correctness + sustained-load) AND ebpf-soak
+  # (on-host SSL-uprobe capture works end-to-end). Each stamps its own commit
+  # status (`staging-soaked` / `ebpf-soaked`) on a soaked main commit; this
+  # asserts the tagged commit carries a passing one for BOTH, so the multi-arch
+  # binaries are never published from un-soaked code. Enforced on `v*` tag pushes
+  # only; workflow_dispatch (artifacts-only, for verifying the build matrix) skips
+  # it.
   gate:
-    name: Require staging-soaked
+    name: Require staging-soaked + ebpf-soaked
     runs-on: ubuntu-latest
     steps:
-      - name: assert the tagged commit passed staging-soak
+      - name: assert the tagged commit passed both staging gates
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           sha="${{ github.sha }}"
-          state="$(gh api "repos/${{ github.repository }}/commits/$sha/status" \
-            --jq '[.statuses[] | select(.context=="staging-soaked")] | sort_by(.updated_at) | last | .state // "none"')"
-          if [ "$state" != "success" ]; then
-            echo "::error::commit $sha has no passing 'staging-soaked' status (got '$state'). A release must be cut from a commit that passed staging-soak — merge to main, let ci → deploy-staging → staging-soak run, then tag that commit."
-            exit 1
-          fi
-          echo "✓ staging-soaked=success on $sha — clear to release"
+          fail=0
+          for ctx in staging-soaked ebpf-soaked; do
+            state="$(gh api "repos/${{ github.repository }}/commits/$sha/status" \
+              --jq "[.statuses[] | select(.context==\"$ctx\")] | sort_by(.updated_at) | last | .state // \"none\"")"
+            if [ "$state" != "success" ]; then
+              echo "::error::commit $sha has no passing '$ctx' status (got '$state'). A release must be cut from a commit that passed both staging gates — merge to main, let ci → deploy-staging → {staging-soak, ebpf-soak} run, then tag that commit."
+              fail=1
+            else
+              echo "✓ $ctx=success on $sha"
+            fi
+          done
+          [ "$fail" = 0 ] || exit 1
+          echo "✓ both staging gates green on $sha — clear to release"
 
   console:
     name: Build console

@@ -5,8 +5,11 @@ name: deploy-prod
 #      reviewers must approve before the job runs;
 #   2. a post-deploy health gate with automatic rollback (deploy-prod.sh).
 #
-# Chains after the staging pipeline:
-#   ci(main) → deploy-staging → staging-soak → [approval] → deploy-prod
+# Chains after the staging pipeline (two soaks run in parallel after deploy):
+#   ci(main) → deploy-staging → { staging-soak, ebpf-soak } → [approval] → deploy-prod
+# This run is triggered by staging-soak; a post-approval gate step then asserts
+# the deployed commit ALSO carries a passing `ebpf-soaked` status, so prod is
+# only ever promoted once BOTH staging gates are green.
 #
 # Security: runs ONLY on the `prod-deploy` self-hosted runner ON the prod host
 # and ONLY after a successful staging-soak (or manual dispatch). The label is
@@ -45,6 +48,11 @@ jobs:
     # with required reviewers. GitHub pauses here until a reviewer approves.
     environment: production
     timeout-minutes: 30
+    # statuses:read lets the gate step below verify the deployed commit passed
+    # BOTH staging gates before prod is touched.
+    permissions:
+      contents: read
+      statuses: read
     steps:
       - uses: actions/checkout@v4
 
@@ -60,6 +68,54 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "deploying commit: $sha"
+
+      # Machine-enforced promotion gate (runs POST-approval, so by the time a
+      # reviewer approves both parallel soaks have stamped their status). The
+      # automatic pipeline path (workflow_run) MUST carry passing `staging-soaked`
+      # AND `ebpf-soaked` statuses on the deployed commit. Polls briefly in case
+      # ebpf-soak is still finishing when staging-soak triggered this run.
+      # A manual workflow_dispatch is the deliberate operator-override escape
+      # hatch and is not hard-gated (warn only).
+      - name: require staging-soaked + ebpf-soaked
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          # Latest state for one status context, parsed from the combined-status
+          # JSON on stdin. One-line python so it stays inside this YAML block
+          # scalar (a 0-indented heredoc would terminate the scalar early).
+          ctx_state() {
+            printf '%s' "$1" | python3 -c "import sys,json; d=json.load(sys.stdin); ss=sorted([s for s in d.get('statuses',[]) if s.get('context')==sys.argv[1]], key=lambda s: s.get('updated_at','')); print(ss[-1]['state'] if ss else 'none')" "$2"
+          }
+          for attempt in $(seq 1 30); do
+            statuses="$(curl -fsS \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$SHA/status")"
+            s_staging="$(ctx_state "$statuses" staging-soaked)"
+            s_ebpf="$(ctx_state "$statuses" ebpf-soaked)"
+            echo "attempt $attempt: staging-soaked=$s_staging ebpf-soaked=$s_ebpf"
+            if [ "$s_staging" = success ] && [ "$s_ebpf" = success ]; then
+              echo "✓ both staging gates green on $SHA — clear to deploy to prod"
+              exit 0
+            fi
+            # Hard-fail immediately on an explicit failure; only poll while a
+            # gate is still pending/absent (parallel soak not done yet).
+            if [ "$s_staging" = failure ] || [ "$s_ebpf" = failure ]; then
+              echo "::error::a staging gate FAILED on $SHA (staging-soaked=$s_staging ebpf-soaked=$s_ebpf) — refusing to promote to prod"
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "::error::staging gates not green on $SHA within timeout (staging-soaked=$s_staging ebpf-soaked=$s_ebpf) — refusing to promote to prod"
+          exit 1
+
+      - name: note manual-dispatch gate bypass
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "::warning::manual deploy-prod dispatch — staging-soaked/ebpf-soaked gate is NOT auto-enforced (deliberate operator override). Verify both statuses on the target commit yourself."
 
       - name: deploy to prod + health gate (rollback on failure)
         env:
