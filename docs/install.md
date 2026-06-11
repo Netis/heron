@@ -91,6 +91,29 @@ console gets embedded in the binary.
 > Prefer `just build all`, which does both for you. The same applies when
 > you rebuild to deploy an upgrade — re-run with `--features console`.
 
+### eBPF on-host TLS capture (experimental, Linux)
+
+The [eBPF source](configure.md#ebpf--on-host-tls-capture-linux-experimental)
+reads plaintext at the in-process TLS boundary — so it can observe
+TLS-encrypted calls on the host and attribute each to its owning process. It is
+**off by default and absent from the prebuilt binaries**; enable it with the
+non-default `ebpf` cargo feature (Linux only), from the `server/` workspace:
+
+```bash
+(cd console && bun run build)            # embed the console as usual
+cargo build --release -p heron --features "console h-capture/ebpf"
+```
+
+The feature pulls in the [aya](https://aya-rs.dev) loader and compiles the
+out-of-tree BPF program, so the build host also needs the `bpf-linker` tool
+(`cargo install bpf-linker`) and a Rust nightly toolchain with `rust-src`.
+
+At runtime the host needs `CAP_BPF` + `CAP_PERFMON` (kernel ≥ 5.8) or root, plus
+kernel BTF at `/sys/kernel/btf/vmlinux`. Grant the caps the same way as
+`CAP_NET_RAW` below (file capabilities or systemd `AmbientCapabilities`), then
+run `heron doctor` and confirm the `capture.ebpf` check passes before adding an
+`ebpf` source to your config.
+
 ## Verify the download
 
 Each release ships a `SHA256SUMS` file. Verify before running:
