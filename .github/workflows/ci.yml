@@ -19,6 +19,16 @@ concurrency:
 
 jobs:
   test:
+    # Fork-PR safety gate. This job runs on a self-hosted runner, so it must
+    # never execute code from a forked pull request: a fork author could run
+    # arbitrary commands on the runner (and pivot from it) via build.rs,
+    # proc-macros, #[test] bodies, package lifecycle scripts, or the checked-out
+    # lint scripts. Restrict the pull_request trigger to same-repo branches;
+    # push/main runs are unaffected. Fork PRs intentionally get no CI here —
+    # review them from a trusted branch or on an ephemeral hosted runner.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, ci-pool]
     # 25 was fine for test+lint, but the on-main artifact build adds a full
     # release compile (cargo build --release --features console) + the console
