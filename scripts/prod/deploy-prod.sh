@@ -33,6 +33,12 @@
 # Exit: 0 = deployed + healthy; non-zero = failed (rolled back if possible).
 set -euo pipefail
 
+# Resolve the script's own dir BEFORE any cd. The Dockerfile must come from HERE
+# (the runner workspace, checked out at the workflow ref = latest main, which
+# carries it) — NOT from $REPO, which gets `git checkout $SHA`'d to the deploy
+# target and may predate this file.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 SHA="${1:-origin/main}"
 REPO="${HERON_PROD_REPO_DIR:?set HERON_PROD_REPO_DIR (persistent heron checkout on the prod host)}"
 SERVICE="${HERON_PROD_SERVICE:-heron.service}"
@@ -98,7 +104,7 @@ echo "==> build (release + console + eBPF) in an Ubuntu-22.04 container"
 IMG="heron-ebpf-builder:22.04"
 OUTDIR="$REPO/server/target/ebpf-out"
 mkdir -p "$OUTDIR"
-docker build -t "$IMG" -f "$REPO/scripts/prod/Dockerfile.ebpf-build" "$REPO/scripts/prod"
+docker build -t "$IMG" -f "$SCRIPT_DIR/Dockerfile.ebpf-build" "$SCRIPT_DIR"
 docker run --rm \
   -v "$REPO":/src:ro \
   -v "$OUTDIR":/out \
