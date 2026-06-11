@@ -6,6 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-06-11
+
+### Added
+
+- **eBPF capture is now a managed Settings source.** The console's pipeline
+  Settings lists, adds, edits, and removes the on-host eBPF SSL-uprobe source
+  like any other ingress, with an availability guard: a binary built without the
+  `ebpf` feature reports `ebpf_available = false` on `/api/runtime-config`, and
+  the API rejects an eBPF source on such a build so a stray config can't wedge
+  the next boot. (The capture engine itself shipped in 0.5.1; this makes it
+  operable from the UI.)
+- **eBPF metrics in pipeline-health.** A new `ebpf` metric group surfaces the
+  capture path's health — uprobes attached, events received / dropped, bytes
+  captured, frames synthesized, active connections, and process-cache size — in
+  the debug pipeline-health view and on `/api/internal-metrics`.
+
+### Changed
+
+- **Console theme aligned to the Kami parchment design system.** Replaced the
+  too-dark palette with the canonical parchment surfaces (paper canvas, lifted
+  ivory, ink-blue accent), matching the heron-ai.pages.dev landing site.
+
+### Docs
+
+- Refreshed the README screenshots in the corrected Kami theme.
+
 ## [0.5.1] — 2026-06-11
 
 ### Added — eBPF on-host TLS capture (experimental, Linux)
