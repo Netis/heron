@@ -8,8 +8,8 @@ use h_metrics::model::{LlmFinishMetric, LlmMetric};
 use h_storage::query::*;
 
 use crate::util::{
-    build_dimension_where, build_dimension_where_for_group, parse_json_string_list, sql_in_list,
-    us_to_timestamp,
+    build_dimension_where, build_dimension_where_for_group, escape_standard,
+    parse_json_string_list, sql_in_list, us_to_timestamp,
 };
 use crate::DuckDbBackend;
 
@@ -383,7 +383,7 @@ impl DuckDbBackend {
             let fields_sql = field_exprs.join(", ");
             let rows = if let Some(ref group_by) = query.group_by {
                 // Grouped query: aggregate across the group dimension plus source_id.
-                let dim_where = build_dimension_where_for_group(&query.filter, group_by);
+                let dim_where = build_dimension_where_for_group(&query.filter, group_by, escape_standard);
                 let sql = format!(
                     "SELECT epoch(timestamp) AS ts, {group_by}, {fields_sql} \
                      FROM llm_metrics \
@@ -431,7 +431,7 @@ impl DuckDbBackend {
                 // per-source aggregators emit one row per source per (ts,
                 // dim). Without the GROUP BY we'd return N overlapping rows
                 // at each timestamp (N = number of capture sources).
-                let dim_where = build_dimension_where(&query.filter);
+                let dim_where = build_dimension_where(&query.filter, escape_standard);
                 let sql = format!(
                     "SELECT epoch(timestamp) AS ts, {fields_sql} \
                      FROM llm_metrics \
@@ -490,7 +490,7 @@ impl DuckDbBackend {
             let start_ts = us_to_timestamp(query.time_range.start_us);
             let end_ts = us_to_timestamp(query.time_range.end_us);
 
-            let dim_where = build_dimension_where(&query.filter);
+            let dim_where = build_dimension_where(&query.filter, escape_standard);
             let sql = format!(
                 "
                 SELECT
@@ -581,7 +581,7 @@ impl DuckDbBackend {
             let limit = query.limit;
             // Per-(wire_api, model) breakdown shares the grouped-tier logic:
             // both dimensions are always specific, server_ip follows filter.
-            let dim_where = build_dimension_where_for_group(&query.filter, "wire_api");
+            let dim_where = build_dimension_where_for_group(&query.filter, "wire_api", escape_standard);
 
             let sql = format!(
                 "

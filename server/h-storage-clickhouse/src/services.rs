@@ -518,7 +518,7 @@ impl ClickHouseBackend {
         let mut endpoint_by_id: HashMap<String, (String, u16, String)> = HashMap::new();
         if !wanted_ids.is_empty() {
             let id_list: Vec<String> = wanted_ids.into_iter().collect();
-            let in_list = h_storage::dialect::sql_in_list(&id_list);
+            let in_list = crate::sql::sql_in_list(&id_list);
             let calls_sql = format!(
                 "SELECT id, server_ip, server_port, client_ip \
                  FROM llm_calls WHERE id IN ({in_list})"

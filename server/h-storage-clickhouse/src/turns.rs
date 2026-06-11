@@ -14,13 +14,12 @@ use serde::Deserialize;
 
 use h_common::error::{AppError, Result};
 use h_storage::convert::parse_json_string_list;
-use h_storage::dialect::sql_in_list;
 use h_storage::query::*;
 use h_turn::{AgentTurn, PairCandidate};
 
 use crate::client::{ch_err, insert_all};
 use crate::rows::TurnRow;
-use crate::sql::{escape_str, time_where};
+use crate::sql::{escape_str, sql_in_list, time_where};
 use crate::ClickHouseBackend;
 
 /// Full `agent_turns` column list in `TurnRow` field order, with the two

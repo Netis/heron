@@ -12,11 +12,12 @@ use serde::Deserialize;
 
 use h_common::error::{AppError, Result};
 use h_metrics::model::{LlmFinishMetric, LlmMetric};
-use h_storage::dialect::{build_dimension_where, build_dimension_where_for_group, sql_in_list};
+use h_storage::dialect::{build_dimension_where, build_dimension_where_for_group, escape_clickhouse};
 use h_storage::query::*;
 
 use crate::client::{ch_err, insert_all};
 use crate::rows::{FinishMetricRow, MetricRow};
+use crate::sql::sql_in_list;
 use crate::ClickHouseBackend;
 
 /// All valid numeric metric field names accepted by `query_metrics_timeseries`.
@@ -269,7 +270,7 @@ impl ClickHouseBackend {
             if !matches!(group_by, "wire_api" | "model" | "server_ip") {
                 return Err(AppError::Storage(format!("invalid group_by: {group_by}")));
             }
-            let dim_where = build_dimension_where_for_group(&query.filter, group_by);
+            let dim_where = build_dimension_where_for_group(&query.filter, group_by, escape_clickhouse);
             let sql = format!(
                 "SELECT toInt64(toUnixTimestamp(timestamp)) AS ts, {group_by} AS grp, {vals} \
                  FROM llm_metrics \
@@ -292,7 +293,7 @@ impl ClickHouseBackend {
                 })
                 .collect())
         } else {
-            let dim_where = build_dimension_where(&query.filter);
+            let dim_where = build_dimension_where(&query.filter, escape_clickhouse);
             let sql = format!(
                 "SELECT toInt64(toUnixTimestamp(timestamp)) AS ts, {vals} \
                  FROM llm_metrics \
@@ -321,7 +322,7 @@ impl ClickHouseBackend {
         &self,
         query: &MetricsSummaryQuery,
     ) -> Result<MetricsSummaryRow> {
-        let dim_where = build_dimension_where(&query.filter);
+        let dim_where = build_dimension_where(&query.filter, escape_clickhouse);
         let ts_pred = ts_where(query.time_range.start_us, query.time_range.end_us);
         let sql = format!(
             "SELECT \
@@ -384,7 +385,7 @@ impl ClickHouseBackend {
         } else {
             "DESC"
         };
-        let dim_where = build_dimension_where_for_group(&query.filter, "wire_api");
+        let dim_where = build_dimension_where_for_group(&query.filter, "wire_api", escape_clickhouse);
         let ts_pred = ts_where(query.time_range.start_us, query.time_range.end_us);
         let sql = format!(
             "SELECT * FROM ( \
