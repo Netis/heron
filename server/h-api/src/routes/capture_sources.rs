@@ -74,6 +74,15 @@ pub async fn update(
             h_capture::interfaces::validate_pcap_source(interface, bpf_filter.as_deref())
                 .map_err(|e| ApiError::InvalidParam(format!("invalid pcap source: {e}")))?;
         }
+        // Reject an eBPF source on a build that can't run it — fail fast at the
+        // API instead of writing a config the next process boot would error on.
+        if matches!(s, CaptureSourceConfig::Ebpf { .. }) && !h_capture::ebpf_available() {
+            return Err(ApiError::InvalidParam(
+                "eBPF capture is unavailable: this binary was not built with the \
+                 `ebpf` feature (Linux only). Deploy an eBPF-enabled build to enable it."
+                    .to_string(),
+            ));
+        }
     }
 
     // Write TOML

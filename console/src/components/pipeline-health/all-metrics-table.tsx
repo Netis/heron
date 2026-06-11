@@ -20,6 +20,7 @@ type Props = {
 const GROUPS: Array<MetricGroup | "all"> = [
   "all",
   "capture",
+  "ebpf",
   "protocol",
   "llm",
   "turn",

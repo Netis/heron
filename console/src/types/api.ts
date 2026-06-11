@@ -553,6 +553,7 @@ export interface SessionTurnsPage {
 
 export type MetricGroup =
   | "capture"
+  | "ebpf"
   | "protocol"
   | "llm"
   | "turn"
@@ -614,6 +615,9 @@ export interface RuntimeConfigResponse {
   config_path: string
   /** Binary version (env!("CARGO_PKG_VERSION") at compile time). */
   version: string
+  /** Whether this binary can run an `ebpf` capture source (built with the
+   * `ebpf` feature on Linux). Gates the Settings eBPF toggle. */
+  ebpf_available: boolean
   /**
    * The live in-memory `AppConfig`. The narrow `AppConfigShape` typing is
    * used by Settings; the debug page still renders the whole thing as JSON
@@ -651,6 +655,26 @@ export type CaptureSource =
       endpoint: string
       recv_hwm: number
     }
+  | {
+      // On-host eBPF SSL-uprobe capture (Linux, experimental). Mirror of the
+      // Rust CaptureSourceConfig::Ebpf fields. Empty ssl_libs = auto-discover
+      // libssl; targets are static, symbol-stripped binaries (e.g. Bun).
+      type: "ebpf"
+      source_id: string | null
+      ssl_libs: string[]
+      targets: EbpfTarget[]
+      pid_allowlist: number[]
+      segment_size: number
+    }
+
+export interface EbpfTarget {
+  binary: string
+  flavor: string
+  write_sig: string | null
+  read_sig: string | null
+  write_offset: number | null
+  read_offset: number | null
+}
 
 export interface PcapDumpRetention {
   enabled: boolean

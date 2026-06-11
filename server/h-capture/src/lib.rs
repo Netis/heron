@@ -40,6 +40,14 @@ pub use routing::RoutingSender;
 pub use source::CaptureSource;
 pub use synth::{ConnTuple, FlowSynthesizer, StreamDir, SynthConfig};
 
+/// Whether this binary was compiled with the on-host eBPF capture loader
+/// (`--features ebpf`, Linux only). The Settings UI gates its "enable eBPF
+/// capture" toggle on this, and the capture-sources API rejects an `ebpf`
+/// source on a build that can't run it (clearer than a deferred factory error).
+pub fn ebpf_available() -> bool {
+    cfg!(all(target_os = "linux", feature = "ebpf"))
+}
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]

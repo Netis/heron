@@ -29,6 +29,7 @@ pub enum MetricKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MetricGroup {
     Capture,
+    Ebpf,
     Protocol,
     Llm,
     Turn,
@@ -40,6 +41,7 @@ impl MetricGroup {
     /// Canonical output order for [`MonitorPoll::format_grouped`].
     pub const ORDER: &[MetricGroup] = &[
         MetricGroup::Capture,
+        MetricGroup::Ebpf,
         MetricGroup::Protocol,
         MetricGroup::Llm,
         MetricGroup::Turn,
@@ -50,6 +52,7 @@ impl MetricGroup {
     pub const fn as_str(self) -> &'static str {
         match self {
             MetricGroup::Capture => "capture",
+            MetricGroup::Ebpf => "ebpf",
             MetricGroup::Protocol => "protocol",
             MetricGroup::Llm => "llm",
             MetricGroup::Turn => "turn",
@@ -142,6 +145,18 @@ define_metrics! {
     CaptureDumpRetentionFilesDeleted => { kind: Counter, group: Capture, short: "dump_retention_files_deleted" },
     CaptureDumpRetentionBytesDeleted => { kind: Counter, group: Capture, short: "dump_retention_bytes_deleted" },
     CaptureDumpRetentionErrors       => { kind: Counter, group: Capture, short: "dump_retention_errors" },
+
+    // -- eBPF SSL-uprobe capture (Linux, `ebpf` feature) --
+    // Emitted only by the eBPF source; stay 0 for packet-tap sources. Together
+    // they tell the on-host TLS story: kernel events in → bytes → synthetic
+    // frames out, with attach health + live connection / process-cache gauges.
+    EbpfEventsReceived       => { kind: Counter, group: Ebpf, short: "ebpf_events_received"    },
+    EbpfEventsDropped        => { kind: Counter, group: Ebpf, short: "ebpf_events_dropped"     },
+    EbpfBytesCaptured        => { kind: Counter, group: Ebpf, short: "ebpf_bytes_captured"     },
+    EbpfFramesSynthesized    => { kind: Counter, group: Ebpf, short: "ebpf_frames_synthesized" },
+    EbpfUprobesAttached      => { kind: Gauge,   group: Ebpf, short: "ebpf_uprobes_attached"   },
+    EbpfConnectionsActive    => { kind: Gauge,   group: Ebpf, short: "ebpf_connections_active" },
+    EbpfProcessCacheSize     => { kind: Gauge,   group: Ebpf, short: "ebpf_process_cache_size" },
 
     // -- Protocol (dispatcher + flow workers) --
     // Heartbeat received/dropped are both attributed to the destination
