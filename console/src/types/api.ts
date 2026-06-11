@@ -68,7 +68,7 @@ export interface LlmCallListItem {
   tool_call_count: number
   tool_names: string[]
   /** Owning process (eBPF attribution); null for passive-tap sources. */
-  process?: ProcessInfo | null
+  process: ProcessInfo | null
 }
 
 // Metrics types
@@ -422,7 +422,7 @@ export interface LlmCallDetail {
   tool_call_count: number
   tool_names: string[]
   /** Owning process (eBPF attribution); null for passive-tap sources. */
-  process?: ProcessInfo | null
+  process: ProcessInfo | null
 }
 
 // HTTP exchange types — /api/http-exchanges

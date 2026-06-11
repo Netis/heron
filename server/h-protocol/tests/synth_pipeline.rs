@@ -20,8 +20,8 @@ use h_protocol::WorkerInput;
 
 fn tuple() -> ConnTuple {
     ConnTuple {
-        client: "10.4.4.4:51000".parse().unwrap(),
-        server: "160.79.104.10:443".parse().unwrap(),
+        client: "203.0.113.4:51000".parse().unwrap(),
+        server: "192.0.2.10:443".parse().unwrap(),
     }
 }
 

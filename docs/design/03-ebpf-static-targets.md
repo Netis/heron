@@ -95,6 +95,11 @@ config paths exist:
   offset at attach time. The resilient path: a signature survives ASLR and
   matches any process mapping the binary.
 
+> **Stock Bun / Claude Code needs none of this.** Set `flavor = "bun"` and the
+> built-in signatures resolve both functions automatically (see [Status](#status)).
+> The recipe below is for deriving signatures for a *new* Bun line — or another
+> stripped static BoringSSL build — that the built-ins don't yet cover.
+
 To derive either, you must first **locate `SSL_write` / `SSL_read` in the
 stripped binary**. What we learned probing Bun 1.3.13 (see below) makes the
 recipe concrete:
@@ -130,10 +135,13 @@ recipe concrete:
    read_sig  = "…"   # or read_offset  = 0x…
    ```
 
-No built-in BoringSSL signature ships (`flavor_signatures` returns none): a
-guessed-wrong signature is worse than none (it could attach to the wrong
-function), so the unique-match requirement plus operator-supplied, validated
-patterns/offsets is the safe default.
+Built-in signatures ship **only** for the `bun` flavor (`flavor = "bun"` /
+`"boringssl-bun"` / `"claude-code"`); the generic `boringssl` flavor ships
+**none** (`flavor_signatures` returns `None`). A prologue is specific to one
+statically-linked build, and a guessed-wrong signature is worse than none (it
+could attach to the wrong function) — so a non-Bun static target (or a generic
+`boringssl` flavor) must supply validated `write_sig`/`read_sig`/`*_offset` in
+config, with the unique-match requirement guarding the rest.
 
 ## Why the signature is read-anchored (Bun 1.3.x findings)
 

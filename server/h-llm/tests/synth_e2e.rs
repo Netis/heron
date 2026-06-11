@@ -72,8 +72,8 @@ fn completed_calls(events: &[LlmEvent]) -> Vec<Arc<LlmCall>> {
 fn synthesized_anthropic_call_extracts_llmcall() {
     let mut s = FlowSynthesizer::new(SynthConfig::default());
     let tuple = ConnTuple {
-        client: "10.4.4.4:51000".parse().unwrap(),
-        server: "160.79.104.10:443".parse().unwrap(),
+        client: "203.0.113.4:51000".parse().unwrap(),
+        server: "192.0.2.10:443".parse().unwrap(),
     };
 
     let req_body = r#"{"model":"claude-sonnet-4-6","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}"#;
@@ -118,8 +118,8 @@ fn synthesized_call_via_pump_carries_process_attribution() {
     // Offset-0 clock: ktime µs maps straight to epoch µs. No pid allowlist.
     let mut pump = EbpfPump::new(SynthConfig::default(), BootClock::with_offset_us(0), vec![]);
     let tuple = ConnTuple {
-        client: "10.4.4.4:51000".parse().unwrap(),
-        server: "160.79.104.10:443".parse().unwrap(),
+        client: "203.0.113.4:51000".parse().unwrap(),
+        server: "192.0.2.10:443".parse().unwrap(),
     };
 
     let req_body = r#"{"model":"claude-sonnet-4-6","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}"#;
