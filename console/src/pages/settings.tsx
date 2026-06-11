@@ -122,6 +122,7 @@ export function SettingsPage() {
             onSave={(sources) => onSave(p.name, sources)}
             saveError={mutate.error}
             disabled={restartState !== "idle"}
+            ebpfAvailable={config.data.ebpf_available ?? false}
           />
         ))
       )}
@@ -207,6 +208,7 @@ function PipelineCard({
   onSave,
   saveError,
   disabled,
+  ebpfAvailable,
 }: {
   pipeline: PipelineShape
   metrics: Record<string, number>
@@ -216,6 +218,7 @@ function PipelineCard({
   onSave: (sources: CaptureSource[]) => Promise<void>
   saveError: unknown
   disabled: boolean
+  ebpfAvailable: boolean
 }) {
   return (
     <div className="rounded-lg border border-border/50 bg-card card-elevated">
@@ -265,6 +268,20 @@ function PipelineCard({
         )}
       </div>
 
+      {/* eBPF capture quick toggle */}
+      <EbpfCaptureToggle
+        enabled={pipeline.sources.some((s) => s.type === "ebpf")}
+        available={ebpfAvailable}
+        busy={disabled}
+        onToggle={(on) =>
+          onSave(
+            on
+              ? [...pipeline.sources, defaultFor("ebpf")]
+              : pipeline.sources.filter((s) => s.type !== "ebpf"),
+          )
+        }
+      />
+
       {/* Live counters */}
       <div className="border-b border-border px-4 py-3">
         <div className="mb-2 text-xs font-medium text-muted-foreground">
@@ -282,6 +299,60 @@ function PipelineCard({
           dumpErrors={metrics["dump_errors"]}
         />
       )}
+    </div>
+  )
+}
+
+// ============================================================================
+// EbpfCaptureToggle — one-click enable/disable for the on-host eBPF source
+// ============================================================================
+
+function EbpfCaptureToggle({
+  enabled,
+  available,
+  busy,
+  onToggle,
+}: {
+  enabled: boolean
+  available: boolean
+  busy: boolean
+  onToggle: (on: boolean) => Promise<void>
+}) {
+  return (
+    <div className="flex items-center gap-3 border-b border-border px-4 py-3">
+      <div className="flex-1">
+        <div className="flex items-center gap-2 text-xs font-medium">
+          <span aria-hidden>🛰️</span>
+          <span>eBPF capture (on-host TLS)</span>
+          {!available && (
+            <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+              unavailable in this build
+            </span>
+          )}
+        </div>
+        <div className="mt-0.5 text-[11px] text-muted-foreground">
+          {available
+            ? "Read TLS plaintext at the SSL_read / SSL_write boundary with per-process attribution. Toggling rewrites the config and restarts capture (~2–3s)."
+            : "Requires a Linux build compiled with the `ebpf` feature (CAP_BPF + kernel BTF)."}
+        </div>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        disabled={!available || busy}
+        onClick={() => onToggle(!enabled)}
+        title={enabled ? "Disable eBPF capture" : "Enable eBPF capture"}
+        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+          enabled ? "bg-primary" : "bg-muted"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 size-4 rounded-full bg-background shadow-sm transition-transform ${
+            enabled ? "translate-x-4" : "translate-x-0.5"
+          }`}
+        />
+      </button>
     </div>
   )
 }
@@ -316,6 +387,13 @@ const TYPE_META: Record<
     addLabel: "Add file replay",
     emptyHint: "(none — replay packets from a saved .pcap file, for dev / forensic)",
   },
+  ebpf: {
+    icon: "🛰️",
+    title: "eBPF capture",
+    addLabel: "Add eBPF capture",
+    emptyHint:
+      "(none — read TLS plaintext on-host via SSL uprobes, with process attribution; Linux only)",
+  },
 }
 
 // ============================================================================
@@ -343,9 +421,10 @@ function SourcesByType({
     pcap: [],
     "cloud-probe": [],
     "pcap-file": [],
+    ebpf: [],
   }
   sources.forEach((s, i) => groups[s.type].push(i))
-  const order: SourceType[] = ["pcap", "cloud-probe", "pcap-file"]
+  const order: SourceType[] = ["pcap", "cloud-probe", "pcap-file", "ebpf"]
   return (
     <div className="flex flex-col gap-3">
       {order.map((type) => (
@@ -457,11 +536,26 @@ function SourceSummary({ source }: { source: CaptureSource }) {
       </li>
     )
   }
+  if (source.type === "pcap-file") {
+    return (
+      <li className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs">
+        <div className="break-all font-mono text-sm">{source.path}</div>
+        <div className="mt-1 text-muted-foreground">
+          {source.realtime ? "replay at original speed" : "replay as fast as possible"}
+        </div>
+      </li>
+    )
+  }
+  // eBPF SSL-uprobe source.
   return (
     <li className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs">
-      <div className="break-all font-mono text-sm">{source.path}</div>
+      <div className="font-mono text-sm">
+        {source.ssl_libs.length > 0 ? source.ssl_libs.join(", ") : "auto-discover libssl"}
+      </div>
       <div className="mt-1 text-muted-foreground">
-        {source.realtime ? "replay at original speed" : "replay as fast as possible"}
+        on-host TLS uprobes · process attribution
+        {source.targets.length > 0 ? ` · ${source.targets.length} static target(s)` : ""}
+        {source.pid_allowlist.length > 0 ? ` · ${source.pid_allowlist.length} pid(s)` : ""}
       </div>
     </li>
   )

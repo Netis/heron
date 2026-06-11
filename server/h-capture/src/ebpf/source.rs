@@ -145,6 +145,12 @@ impl CaptureSource for EbpfSource {
                     .to_string(),
             ));
         }
+        // Attach-health gauge: count of binaries carrying SSL uprobes (dynamic
+        // libssl + resolved static targets). 0 would have errored above, so a
+        // healthy source reports ≥1.
+        metrics
+            .counter(Metric::EbpfUprobesAttached)
+            .set((libs.len() + attached_targets) as u64);
 
         let ring = RingBuf::try_from(
             ebpf.take_map("EVENTS")
@@ -197,7 +203,14 @@ impl CaptureSource for EbpfSource {
                     };
                     let ring = guard.get_inner_mut();
                     while let Some(item) = ring.next() {
-                        let Some(ev) = decode_event(&item, &mut exe_cache) else { continue };
+                        let Some(ev) = decode_event(&item, &mut exe_cache) else {
+                            metrics.counter(Metric::EbpfEventsDropped).inc();
+                            continue;
+                        };
+                        metrics.counter(Metric::EbpfEventsReceived).inc();
+                        if let SslEvent::Data { ref data, .. } = ev {
+                            metrics.counter(Metric::EbpfBytesCaptured).add(data.len() as u64);
+                        }
                         for pkt in pump.on_event(ev) {
                             let is_hb = pkt.is_heartbeat();
                             if tx.send(pkt).await.is_err() {
@@ -208,10 +221,18 @@ impl CaptureSource for EbpfSource {
                                 metrics.counter(Metric::CaptureHeartbeatsEmitted).inc();
                             } else {
                                 metrics.counter(Metric::CapturePacketsReceived).inc();
+                                metrics.counter(Metric::EbpfFramesSynthesized).inc();
                             }
                         }
                     }
                     guard.clear_ready();
+                    // Refresh live gauges after draining the ring batch.
+                    metrics
+                        .counter(Metric::EbpfConnectionsActive)
+                        .set(pump.conn_count() as u64);
+                    metrics
+                        .counter(Metric::EbpfProcessCacheSize)
+                        .set(exe_cache.len() as u64);
                 }
             }
         }
