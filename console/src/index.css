@@ -131,38 +131,45 @@
  * Washi paper warmth, mineral pigment colors, zen contemplation
  * ========================================================================= */
 .kami {
-    --background: oklch(0.97 0.012 80);
-    --foreground: oklch(0.22 0.02 60);
-    --card: oklch(0.96 0.015 75);
-    --card-foreground: oklch(0.22 0.02 60);
-    --popover: oklch(0.96 0.015 75);
-    --popover-foreground: oklch(0.22 0.02 60);
-    --primary: oklch(0.45 0.08 155);
-    --primary-foreground: oklch(0.97 0.012 80);
-    --secondary: oklch(0.93 0.018 75);
-    --secondary-foreground: oklch(0.22 0.02 60);
-    --muted: oklch(0.93 0.018 75);
-    --muted-foreground: oklch(0.58 0.025 60);
-    --accent: oklch(0.93 0.018 75);
-    --accent-foreground: oklch(0.22 0.02 60);
+    /* Palette aligned to the Kami design system / heron-ai landing page:
+       a warm parchment CANVAS with surfaces LIFTED *above* it (ivory, lighter
+       than the canvas — not darker), and ink blue (#1B365D) as the sole
+       chromatic accent. The previous values inverted the elevation (cards
+       darker than the canvas) and used a green pigment accent, which read as
+       "too dark" and off-system. Neutrals are the site's paper/ivory/sand/ink
+       tokens verbatim; the multi-hue chart ramp is kept for data legibility. */
+    --background: #f5f4ed;          /* paper — warm parchment canvas */
+    --foreground: #141413;          /* ink — primary text */
+    --card: #faf9f5;                /* ivory — lifted surface, LIGHTER than canvas */
+    --card-foreground: #141413;
+    --popover: #faf9f5;             /* ivory */
+    --popover-foreground: #141413;
+    --primary: #1b365d;             /* ink blue — the sole accent */
+    --primary-foreground: #faf9f5;  /* on-accent ivory */
+    --secondary: #efece2;           /* sand-2 — gentle inset fill */
+    --secondary-foreground: #141413;
+    --muted: #efece2;               /* sand-2 */
+    --muted-foreground: #57534a;    /* ink-soft — secondary text */
+    --accent: #e8e6dc;              /* sand — tag / hover fill */
+    --accent-foreground: #141413;
     --destructive: oklch(0.52 0.16 25);
-    --border: oklch(0.87 0.025 70);
-    --input: oklch(0.90 0.02 70);
-    --ring: oklch(0.45 0.08 155);
-    --chart-1: oklch(0.45 0.08 155);
+    --border: #ddd9cc;              /* line — hairline rule */
+    --input: #cfcab8;               /* line-2 — stronger hairline */
+    --ring: #1b365d;                /* ink blue */
+    --chart-1: #1b365d;             /* primary series = ink blue (the accent) */
     --chart-2: oklch(0.42 0.10 265);
     --chart-3: oklch(0.50 0.10 55);
     --chart-4: oklch(0.52 0.16 25);
     --chart-5: oklch(0.60 0.12 85);
     --radius: 0.5rem;
-    --sidebar: oklch(0.94 0.02 75);
-    --sidebar-foreground: oklch(0.22 0.02 60);
-    --sidebar-primary: oklch(0.45 0.08 155);
-    --sidebar-primary-foreground: oklch(0.97 0.012 80);
-    --sidebar-accent: oklch(0.91 0.025 75);
-    --sidebar-accent-foreground: oklch(0.22 0.02 60);
-    --sidebar-border: oklch(0.87 0.025 70);
-    --sidebar-ring: oklch(0.45 0.08 155);
+    --sidebar: #efece2;             /* sand-2 — subtly inset from the canvas */
+    --sidebar-foreground: #141413;
+    --sidebar-primary: #1b365d;     /* ink blue */
+    --sidebar-primary-foreground: #faf9f5;
+    --sidebar-accent: #e8e6dc;      /* sand */
+    --sidebar-accent-foreground: #141413;
+    --sidebar-border: #ddd9cc;      /* line */
+    --sidebar-ring: #1b365d;
 }
 
 @layer base {
