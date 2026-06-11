@@ -18,10 +18,10 @@
 
 Most agent code looks fine on paper and falls apart in production: a tool call stalls, the planner loops between two states, a downstream service silently substitutes a different model. Heron reconstructs that behavior from the bytes on the wire — packet capture → HTTP / SSE parse → wire-API decode → semantic extraction → **agent-turn assembly** — and serves the result through a console that's organized around *turns and sessions*, not raw HTTP calls.
 
-It reads post-TLS traffic — on the inference host, behind a TLS terminator, or fed in from a SPAN/TAP point via [cloud-probe](https://github.com/Netis/cloud-probe). Multi-call agent interactions (planner → tool → planner → tool …) stitch into a single addressable turn. Multi-leg proxy hops (litellm in front of vLLM/SGLang/haproxy) fold automatically. The pipeline never sits in the request path, so the observer can fail without breaking the calls being observed.
+It reads post-TLS traffic — on the inference host, behind a TLS terminator, or fed in from a SPAN/TAP point via [cloud-probe](https://github.com/Netis/cloud-probe). On Linux it can also read straight from the in-process TLS boundary via an experimental [eBPF](docs/design/02-capture.md#ebpf-ssl-uprobe-capture-linux-experimental) source — hooking `SSL_read` / `SSL_write` to observe TLS-encrypted calls *on the host that makes them*, each attributed to its owning process, with no terminator or proxy. Multi-call agent interactions (planner → tool → planner → tool …) stitch into a single addressable turn. Multi-leg proxy hops (litellm in front of vLLM/SGLang/haproxy) fold automatically. The pipeline never sits in the request path, so the observer can fail without breaking the calls being observed.
 
 ```
-NIC / .pcap file / cloud-probe (ZMQ)
+NIC / .pcap file / cloud-probe (ZMQ) / eBPF SSL uprobes
         │
         ▼
    capture → flow dispatcher (hash by 5-tuple)
@@ -47,7 +47,7 @@ Same connection's packets always land on the same worker, so parsing state is lo
 | OpenTelemetry from server  |       yes       |     server must emit     |     partial      |  if the server tags it   |
 | **Heron**             |     **no**      |          **no**          |   **yes**¹       |        **yes**           |
 
-¹ TLS-terminated traffic only — Heron sees plaintext HTTP. Install it where the traffic is already decrypted: on the inference host, behind the TLS terminator, or fed by [cloud-probe](https://github.com/Netis/cloud-probe) from a SPAN/TAP point.
+¹ TLS-terminated traffic only — Heron sees plaintext HTTP. Install it where the traffic is already decrypted: on the inference host, behind the TLS terminator, or fed by [cloud-probe](https://github.com/Netis/cloud-probe) from a SPAN/TAP point. The experimental Linux **eBPF** source lifts this for on-host capture — it reads plaintext at the in-process TLS boundary (`SSL_read` / `SSL_write`), so it observes TLS-encrypted calls on the agent/inference host itself with no terminator, and additionally attributes each call to the owning process.
 
 The trade-off is honest: you give up cross-cluster client tracing, you get a single passive evidence chain that can't break the call when the observer fails, that requires zero cooperation from the workloads being observed, and that **assembles the agent narrative for you** instead of leaving you to join calls into turns in your data warehouse.
 
@@ -57,6 +57,7 @@ The trade-off is honest: you give up cross-cluster client tracing, you get a sin
 - libpcap on a live interface
 - Replay from `.pcap` files (any speed)
 - ZMQ from [cloud-probe](https://github.com/Netis/cloud-probe) for hosts you can't install on directly
+- **eBPF SSL uprobes** (Linux · experimental · opt-in) — hook `SSL_read` / `SSL_write` in-process to read **TLS-encrypted** traffic as plaintext on the host that makes the calls, with no proxy or TLS terminator, and stamp every call with its **owning process** (pid · command · executable). Covers dynamically-linked OpenSSL/BoringSSL (Python SDKs, curl, …) and statically-linked, symbol-stripped BoringSSL (Claude Code's Bun runtime, located by byte-signature offset). Off by default — built behind the `ebpf` cargo feature, needs `CAP_BPF` + kernel BTF. See [eBPF capture](docs/design/02-capture.md#ebpf-ssl-uprobe-capture-linux-experimental).
 
 **Agent-turn reconstruction** with named profiles for **Claude CLI** (Claude Code) and **OpenAI Codex CLI**, a generic profile for everything else, plus an experimental OpenClaw profile. Turns stitch multi-call agent interactions (tool call → tool result → planner → next tool, repeat) into a single addressable unit. The hero screenshot above is one such turn — 247 calls, ordered on the Timeline, drillable into the request/response of any single call.
 
@@ -170,6 +171,7 @@ out of anything you push back.
 
 - [Install](docs/install.md) — one-line installer, systemd, capabilities
 - [Configure](docs/configure.md) — pipelines, sources, storage, retention
+- [eBPF capture](docs/design/02-capture.md#ebpf-ssl-uprobe-capture-linux-experimental) — on-host TLS capture + process attribution (experimental, Linux)
 - [Glossary](docs/glossary.md) — what every metric means
 - [Architecture](docs/design/01-architecture.md) — pipeline design and trade-offs
 - [Filing issues](docs/filing-issues.md) — how issues are triaged + how to file one an agent can pick up

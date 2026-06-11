@@ -2,7 +2,7 @@
 
 ## Overview
 
-The capture module acquires raw network packets from three source types and outputs `RawPacket` streams. Each source feeds its own independent processing pipeline; pipelines converge at the storage layer.
+The capture module acquires raw network packets from four source types and outputs `RawPacket` streams. Each source feeds its own independent processing pipeline; pipelines converge at the storage layer. Three sources are packet taps (live NIC, pcap file, cloud-probe ZMQ); the fourth — [eBPF SSL uprobes](#ebpf-ssl-uprobe-capture-linux-experimental) — is Linux-only and experimental, and reads plaintext at the in-process TLS boundary rather than off the wire.
 
 ## Data Sources
 
@@ -60,6 +60,80 @@ Repeated pkts_num times:
 
 **MPLS Header (4 bytes):** Injected by cloud-probe into the Ethernet frame with ether_type `0x8847`. Stripping happens in `ts-protocol`'s L2 decoder, which unwinds the label stack until it finds the bottom-of-stack bit and then peeks the next nibble to detect IPv4 vs IPv6.
 
+## eBPF SSL-uprobe capture (Linux, experimental)
+
+The three sources above are packet taps: they see whatever is on the wire, which
+for TLS traffic is ciphertext — so Heron must be placed where the bytes are
+already decrypted (post-terminator, or on a host doing plaintext HTTP). The eBPF
+source removes that constraint **on the host itself**: it attaches uprobes to the
+TLS library's `SSL_read` / `SSL_write` and reads the plaintext buffers the
+application hands to (or gets back from) the library — i.e. *before* encryption
+on write and *after* decryption on read. No proxy, no terminator, no MITM, and
+nothing on the request path.
+
+It also yields something the packet taps cannot: **process attribution**. The
+uprobe fires in the context of the calling thread, so each captured exchange
+carries the owning process's `pid`, `comm`, and resolved executable path
+(`/proc/<pid>/exe`) — answering *which agent process made this call*, not just
+*which 5-tuple*.
+
+### Feeding the existing pipeline by frame synthesis
+
+The eBPF source does **not** open a new entry point into the protocol/LLM
+stack. Plaintext chunks from `SSL_read` / `SSL_write` are dressed as synthetic
+Ethernet + IPv4 + TCP frames (`FlowSynthesizer`) and emitted as ordinary
+`RawPacket`s, so the unchanged dispatcher → TCP reassembler → HTTP/SSE parser →
+wire-API decoder → turn tracker runs exactly as it does for a real tap. Key
+invariants the synthesizer maintains:
+
+- One synthetic bidirectional flow per `(pid, SSL*)` connection; `SSL_write` ⇒
+  client→server, `SSL_read` ⇒ server→client, with monotonically advancing
+  per-direction sequence numbers.
+- IP `total_length` covers exactly the carried payload; no checksums are
+  computed (the L3/L4 decoders don't validate them). A large `SSL_write` is
+  split across multiple segments to stay under the IPv4 length limit.
+- The connection's first event synthesizes a SYN/SYN-ACK and teardown
+  (`SSL_shutdown` / close / process exit) synthesizes a FIN, so turns finalize
+  promptly instead of waiting for the flow-timeout sweep. A mid-stream attach
+  with no handshake re-syncs on the first observed payload.
+- The kernel boot-clock timestamp (`bpf_ktime_get_ns`) is mapped to Unix epoch
+  via a one-time `CLOCK_REALTIME − CLOCK_MONOTONIC` offset.
+
+`RawPacket` carries an optional `process: Option<ProcessInfo>` that the
+synthesizer stamps from the uprobe event; it threads through `ParsedPacket` →
+`TcpFlow` → the HTTP request/response data → `LlmCall`, and lands in the
+`process_pid` / `process_comm` / `process_exe` storage columns. All non-eBPF
+sources leave it `None`.
+
+### Target coverage
+
+- **Dynamically-linked OpenSSL / BoringSSL** — attached by exported symbol
+  (`SSL_read` / `SSL_write` / `SSL_shutdown`) on the discovered `libssl.so`.
+  Covers Python SDKs (httpx), curl, and most CLIs.
+- **Statically-linked, symbol-stripped BoringSSL** — e.g. Claude Code's Bun
+  runtime, which embeds BoringSSL and strips every `SSL_*` symbol. Located by
+  **byte-signature → ELF file offset → offset uprobe**; a built-in `flavor =
+  "bun"` ships read-anchored prologue signatures so it works with zero manual
+  derivation. See [eBPF capture for static-binary TLS](03-ebpf-static-targets.md).
+
+### Limitations & requirements
+
+- **Linux only**, and built behind the non-default `ebpf` cargo feature on
+  `h-capture` (prebuilt release binaries do not include it — build from source).
+  Requires `CAP_BPF` + `CAP_PERFMON` (kernel ≥ 5.8) or root, plus kernel BTF
+  (`/sys/kernel/btf/vmlinux`). `heron doctor` reports the `capture.ebpf` check.
+- **HTTP/1.x only** — like every Heron source, the parser does not reconstruct
+  HTTP/2; a client that negotiates h2 over ALPN decrypts to HPACK/binary frames
+  that are dropped. (Bun's `fetch` offers only HTTP/1.1, so Claude Code is
+  covered; a generic `curl` may negotiate h2.)
+- **Synthetic 5-tuple today** — the real socket 5-tuple recovery (connect
+  kprobe) is a follow-up; the current source uses a deterministic synthetic
+  tuple plus mid-stream sync, which the wire-API identification (method / URI /
+  Host, not IP) is unaffected by.
+
+Config lives under a `type = "ebpf"` source — see
+[Configure → eBPF source](../configure.md#ebpf--on-host-tls-capture-linux-experimental).
+
 ## Output
 
 The capture module outputs raw packet bytes without any link-layer processing:
@@ -70,6 +144,7 @@ pub struct RawPacket {
     pub caplen: u32,            // Captured length
     pub wirelen: u32,           // Original wire length
     pub data: Bytes,            // Raw packet bytes as captured
+    pub process: Option<ProcessInfo>, // Owning process — eBPF source only; None for packet taps
 }
 ```
 

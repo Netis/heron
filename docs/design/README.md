@@ -7,7 +7,8 @@ For cross-cutting terminology (TTFT/E2E/TPOT, wire_api, agent_kind, HttpExchange
 | # | Document | Crate | Description |
 |---|----------|-------|-------------|
 | 01 | [Architecture](01-architecture.md) | — | Monorepo layout, pipeline topology, crate dependency graph |
-| 02 | [Capture](02-capture.md) | `ts-capture` | libpcap + cloud-probe ZMQ packet acquisition |
+| 02 | [Capture](02-capture.md) | `h-capture` | libpcap + cloud-probe ZMQ packet acquisition, + eBPF SSL-uprobe on-host TLS capture (Linux) |
+| 02b | [eBPF static targets](03-ebpf-static-targets.md) | `h-capture` | Byte-signature offset uprobes for static, symbol-stripped TLS (Bun / Claude Code) |
 | 03 | [LLM](03-llm.md) | `ts-llm` | Wire-API detection, registry + extractor pattern |
 | 04 | [Turn](04-turn.md) | `ts-turn` | Agent interaction (turn) grouping state machine |
 | 05 | [Metrics](05-metrics.md) | `ts-metrics` | Sliding-window aggregation, t-digest percentiles |

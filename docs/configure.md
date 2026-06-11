@@ -69,8 +69,10 @@ shard_count = 1              # parallel metrics aggregators
 
 ### Source types
 
-A pipeline must have at least one `[[pipeline.sources]]` block. Three
-source types are supported:
+A pipeline must have at least one `[[pipeline.sources]]` block. Four
+source types are supported — three packet taps (`pcap`, `pcap-file`,
+`cloud-probe`) and one in-process TLS reader (`ebpf`, Linux-only and
+experimental):
 
 #### `pcap` — live interface capture
 
@@ -104,6 +106,44 @@ recv_hwm = 1000                # ZMQ receive high-water mark
 Use this when the LLM provider workload runs on hosts you cannot install
 Heron on directly. Cloud-probe runs there, captures locally, and
 forwards packets over ZMQ.
+
+#### `ebpf` — on-host TLS capture (Linux, experimental)
+
+Reads plaintext at the in-process TLS boundary by attaching uprobes to the
+target's `SSL_read` / `SSL_write`, instead of tapping ciphertext off the wire.
+This lets Heron observe **TLS-encrypted** calls on the host that makes them — no
+proxy, no TLS terminator — and stamp each call with its **owning process**
+(pid · comm · executable). See [eBPF capture](design/02-capture.md#ebpf-ssl-uprobe-capture-linux-experimental)
+for the design.
+
+```toml
+[[pipeline.sources]]
+type = "ebpf"
+# source_id = "ebpf"           # optional; defaults to "ebpf"
+ssl_libs = []                  # empty = auto-discover libssl.so via ldconfig.
+                               # Or pin explicit paths, e.g.
+                               #   ["/usr/lib/x86_64-linux-gnu/libssl.so.3"]
+pid_allowlist = []             # empty = all processes; or restrict, e.g. [4123, 4124]
+segment_size = 16384           # max plaintext bytes per synthetic TCP segment
+
+# Static, symbol-stripped TLS binaries (no dynamic libssl) — e.g. Claude
+# Code's Bun runtime. The built-in "bun" flavor ships signatures, so no
+# manual offset derivation is needed for stock Bun / Claude Code:
+[[pipeline.sources.targets]]
+binary = "/home/user/.bun/bin/bun"
+flavor = "bun"                 # built-ins: "bun" | "boringssl-bun" | "claude-code"
+# For a generic stripped BoringSSL build, supply your own (see the eBPF
+# static-targets doc for how to derive these):
+#   write_sig = "55 48 89 e5 ..."   # or write_offset = 0x4a64a40
+#   read_sig  = "55 48 89 e5 ..."   # or read_offset  = 0x4a63db0
+```
+
+**Requirements.** Linux only, and the binary must be **built from source** with
+the non-default `ebpf` cargo feature on `h-capture` (prebuilt release binaries
+omit it). The host needs `CAP_BPF` + `CAP_PERFMON` (kernel ≥ 5.8) or root, plus
+kernel BTF at `/sys/kernel/btf/vmlinux`. Run `heron doctor` to check the
+`capture.ebpf` prerequisites. Like every source it reconstructs **HTTP/1.x
+only** (an h2-over-ALPN client is not reconstructed).
 
 ### Optional: persist captured packets
 
