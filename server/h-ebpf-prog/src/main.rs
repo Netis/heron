@@ -83,9 +83,13 @@ pub fn ssl_shutdown(ctx: ProbeContext) -> u32 {
 }
 
 /// Reserve a ring-buffer record, fill the header, and copy up to [`DATA_CAP`]
-/// plaintext bytes from the userspace buffer. A larger call is truncated to
-/// `DATA_CAP` here; the userspace synthesizer treats each event as a contiguous
-/// segment, so consecutive events on the same connection reassemble in order.
+/// plaintext bytes from the userspace buffer.
+///
+/// A single call larger than `DATA_CAP` is **truncated** to `DATA_CAP` and its
+/// tail is dropped — we do NOT yet split a big write into several consecutive
+/// events for the userspace synthesizer to reassemble. `DATA_CAP` is sized
+/// (32 KiB) to hold a whole Claude Code `/v1/messages` request in one event;
+/// chunking arbitrarily large writes is a TODO.
 fn emit_data(ev_kind: u32, ssl: u64, buf: u64, len: u32) {
     let n = if len as usize > DATA_CAP {
         DATA_CAP as u32
