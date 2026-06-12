@@ -15,12 +15,24 @@
 /// Length of a process `comm` (kernel `TASK_COMM_LEN`).
 pub const COMM_LEN: usize = 16;
 
-/// Maximum plaintext bytes carried in a single event. A larger `SSL_read` /
-/// `SSL_write` is emitted as several consecutive same-direction events, which
-/// the userspace synthesizer concatenates by sequence number — so this cap
-/// never loses bytes, it only bounds per-event size (BPF stack/verifier
-/// limits make one giant copy impossible).
-pub const DATA_CAP: usize = 4096;
+/// Maximum plaintext bytes carried in a single event. A single `SSL_read` /
+/// `SSL_write` larger than this is currently **truncated** to `DATA_CAP` by the
+/// BPF program (`h-ebpf-prog::emit_data`) and its tail is lost — chunking a big
+/// write into several consecutive same-direction events that the userspace
+/// synthesizer reassembles is a TODO, not yet implemented.
+///
+/// Sized at 32 KiB so a real-world Claude Code `/v1/messages` request — sent by
+/// Node as ONE ~23 KiB `SSL_write` (request line + headers + JSON body) —
+/// arrives whole in a single event. At the previous 4 KiB the request was cut
+/// after its first 4 KiB, so `anthropic-version` / the JSON body were lost and
+/// the wire-API registry could not recognize the call (it went to
+/// `wires_ignored`), leaving every Claude Code call out of storage. The record
+/// is reserved from the 16 MiB ring buffer (not the 512-byte BPF stack), so a
+/// 32 KiB payload is fine, and the `bpf_probe_read_user` length stays clamped
+/// to `DATA_CAP`, so the verifier can still prove the copy in-bounds. Writes
+/// beyond 32 KiB (long conversations) still lose their tail until the chunking
+/// TODO lands.
+pub const DATA_CAP: usize = 32768;
 
 /// Event kind discriminants (`SslEvent::kind`).
 pub mod kind {
