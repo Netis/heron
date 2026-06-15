@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-06-15
+
+### Fixed
+
+- **eBPF capture follows binary auto-updates and reaches already-running
+  sessions.** uprobes are installed per *inode*, but npm-style auto-updates
+  (Claude Code, opencode) stage a new build in a `.<pkg>-<hash>/` dir and
+  atomically rename it over the install path. The loader attached once at
+  startup to whichever inode was on disk then, so it silently missed both
+  already-running sessions (which keep an unlinked "(deleted)" inode) and every
+  session started after an update (which execs the new on-disk inode) — a
+  long-lived Claude Code session was captured by neither. Attach is now per
+  distinct inode and re-scanned every 15s: the loader enumerates the on-disk
+  install path *and* every running target process via `/proc/<pid>/exe` (which
+  the kernel resolves to the real inode even when deleted), so probes track
+  inode rotation and reach live sessions without a service restart. Steady-state
+  cost is a `stat` per candidate; the binary read + signature scan runs only for
+  inodes never seen before.
+
 ## [0.5.3] — 2026-06-15
 
 ### Fixed
