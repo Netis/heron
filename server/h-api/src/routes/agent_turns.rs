@@ -173,8 +173,13 @@ fn agent_turn_to_list_item(t: &AgentTurn) -> TurnListItem {
         turn_id: t.turn_id.clone(),
         source_id: t.source_id.clone(),
         session_id: t.session_id.clone(),
-        start_time: t.start_time_us,
-        end_time: t.end_time_us,
+        // `TurnListItem.start_time`/`end_time` are MILLISECONDS — the DB query
+        // path returns `epoch_ms(start_time)`, and the console renders the field
+        // with `new Date(ms)`. The in-memory turn carries MICROSECONDS, so divide
+        // by 1000 here; emitting the raw µs made in-progress turns render as the
+        // year ~58423 (a µs value read as ms is 1000× too far in the future).
+        start_time: t.start_time_us / 1_000,
+        end_time: t.end_time_us / 1_000,
         duration_ms: t.duration_ms,
         wire_api: t.wire_api.clone(),
         agent_kind: t.agent_kind.clone(),
@@ -261,8 +266,10 @@ fn agent_turn_to_detail(t: AgentTurn) -> h_storage::query::TurnDetail {
         agent_kind: t.agent_kind,
         client_ip: t.client_ip.to_string(),
         server_ip: t.server_ip.to_string(),
-        start_time: t.start_time_us,
-        end_time: t.end_time_us,
+        // MILLISECONDS, to match the DB detail query's `epoch_ms(start_time)`
+        // (the in-memory turn is µs). See `agent_turn_to_list_item`.
+        start_time: t.start_time_us / 1_000,
+        end_time: t.end_time_us / 1_000,
         duration_ms: t.duration_ms,
         call_count: t.call_count,
         models_used: t.models_used,
@@ -820,5 +827,59 @@ mod proxy_view_tests {
         );
         assert!(parse_headers_json(None).is_empty());
         assert!(parse_headers_json(Some("garbage")).is_empty());
+    }
+
+    fn turn_with_start_us(start_us: i64) -> h_turn::AgentTurn {
+        h_turn::AgentTurn {
+            source_id: String::new(),
+            turn_id: "t".into(),
+            session_id: "s".into(),
+            wire_api: "anthropic".into(),
+            agent_kind: "claude-cli".into(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            server_ip: "127.0.0.1".parse().unwrap(),
+            start_time_us: start_us,
+            end_time_us: start_us + 5_000_000,
+            duration_ms: 5_000,
+            call_count: 1,
+            models_used: vec![],
+            subagents_used: vec![],
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cache_read_input_tokens: 0,
+            total_cache_creation_input_tokens: 0,
+            total_cost_usd: None,
+            status: h_turn::TurnStatus::InProgress,
+            final_finish_reason: None,
+            user_input_preview: None,
+            user_call_id: None,
+            final_answer_preview: None,
+            final_call_id: None,
+            call_ids: vec![],
+            metadata: serde_json::json!({}),
+            tool_surfaces: vec![],
+            tool_call_total: 0,
+            agent_topology: None,
+            suspicious_skills: vec![],
+        }
+    }
+
+    #[test]
+    fn in_progress_turn_times_are_milliseconds_not_micros() {
+        // Regression: the in-memory turn carries MICROSECONDS, but
+        // `TurnListItem`/`TurnDetail.start_time` are MILLISECONDS (the DB path
+        // returns `epoch_ms`, the console renders with `new Date(ms)`). Emitting
+        // raw µs made active (in-progress) turns render as the year ~58423.
+        let start_us = 1_781_000_000_000_000; // 2026-06-x in µs (16 digits)
+        let expected_ms = 1_781_000_000_000; // same instant in ms (13 digits)
+        let t = turn_with_start_us(start_us);
+
+        let item = agent_turn_to_list_item(&t);
+        assert_eq!(item.start_time, expected_ms, "list start_time must be ms");
+        assert_eq!(item.end_time, expected_ms + 5_000, "list end_time must be ms");
+
+        let detail = agent_turn_to_detail(t);
+        assert_eq!(detail.start_time, expected_ms, "detail start_time must be ms");
+        assert_eq!(detail.end_time, expected_ms + 5_000, "detail end_time must be ms");
     }
 }
