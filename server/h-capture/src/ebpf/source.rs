@@ -11,8 +11,9 @@
 //! line (`emit_handshake = false`). Real-tuple recovery via a `tcp_connect`
 //! kprobe is a follow-up refinement.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -143,15 +144,43 @@ impl CaptureSource for EbpfSource {
         // binary): locate SSL_read/SSL_write by byte signature and attach by
         // file offset. A target that yields no usable signature is logged and
         // skipped — it must not take down capture for the dynamic libs.
-        let mut attached_targets = 0;
+        //
+        // Attach is **per inode**, not per on-disk path: npm-style auto-updates
+        // (Claude Code, opencode) install a new build into a `.<pkg>-<hash>/`
+        // staging dir and atomically rename it over the install path, so the
+        // running session keeps an unlinked ("(deleted)") inode while a *new*
+        // inode sits on disk. A path-only attach binds to whichever inode was on
+        // disk at startup and silently misses both the already-running sessions
+        // (deleted inode) and every post-update session (new inode). We instead
+        // enumerate the on-disk path *and* every running target process via
+        // `/proc/<pid>/exe` (which the kernel resolves to the real inode even
+        // when deleted — verified accepting uprobes on this kernel), attach once
+        // per distinct inode, and re-scan periodically to catch new inodes from
+        // updates and freshly-spawned sessions.
         for target in &self.targets {
-            match attach_target(&mut ebpf, target) {
-                Ok(true) => attached_targets += 1,
-                Ok(false) => {}
-                Err(e) => tracing::warn!("ebpf: target {} attach failed: {e}", target.binary),
+            if !target_has_source(target) {
+                tracing::warn!(
+                    "ebpf: target {} (flavor={}) has no offset or signature — set \
+                     write_offset/read_offset or write_sig/read_sig in config (or use a \
+                     flavor with built-in signatures, e.g. \"bun\")",
+                    target.binary,
+                    target.flavor
+                );
             }
         }
-        if libs.is_empty() && attached_targets == 0 {
+        let libs_count = libs.len();
+        // `seen` = every inode we've attempted (success or deterministic sig
+        // failure) so we neither re-attach nor re-warn on each rescan; `attached`
+        // = inodes actually carrying probes (drives the health gauge).
+        let mut seen_inodes: HashSet<(u64, u64)> = HashSet::new();
+        let mut attached_inodes: HashSet<(u64, u64)> = HashSet::new();
+        rescan_targets(
+            &mut ebpf,
+            &self.targets,
+            &mut seen_inodes,
+            &mut attached_inodes,
+        );
+        if libs.is_empty() && attached_inodes.is_empty() {
             return Err(crate::CaptureError::Other(
                 "no uprobes attached: every configured static target failed signature \
                  resolution (check `flavor` / `write_sig` / `read_sig`)"
@@ -159,11 +188,11 @@ impl CaptureSource for EbpfSource {
             ));
         }
         // Attach-health gauge: count of binaries carrying SSL uprobes (dynamic
-        // libssl + resolved static targets). 0 would have errored above, so a
-        // healthy source reports ≥1.
+        // libssl + resolved static-target inodes). 0 would have errored above, so
+        // a healthy source reports ≥1.
         metrics
             .counter(Metric::EbpfUprobesAttached)
-            .set((libs.len() + attached_targets) as u64);
+            .set((libs_count + attached_inodes.len()) as u64);
 
         let ring = RingBuf::try_from(
             ebpf.take_map("EVENTS")
@@ -183,6 +212,14 @@ impl CaptureSource for EbpfSource {
 
         let mut idle_hb = tokio::time::interval(Duration::from_secs(1));
         idle_hb.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // Periodically re-scan target processes so probes follow npm-style
+        // inode rotation (auto-update) and reach newly-spawned sessions without
+        // a service restart. The first tick fires immediately but is a no-op:
+        // every inode is already in `seen` from the startup rescan above. Only
+        // meaningful when `targets` is non-empty; harmless otherwise.
+        let mut rescan = tokio::time::interval(Duration::from_secs(RESCAN_INTERVAL_SECS));
+        rescan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         tracing::info!("ebpf: capture started (source_id={})", self.source_id);
 
@@ -205,6 +242,24 @@ impl CaptureSource for EbpfSource {
                         break;
                     }
                     metrics.counter(Metric::CaptureHeartbeatsEmitted).inc();
+                }
+                _ = rescan.tick() => {
+                    let newly = rescan_targets(
+                        &mut ebpf,
+                        &self.targets,
+                        &mut seen_inodes,
+                        &mut attached_inodes,
+                    );
+                    if newly > 0 {
+                        tracing::info!(
+                            "ebpf: rescan attached {newly} new target inode(s) \
+                             (total target inodes={})",
+                            attached_inodes.len()
+                        );
+                        metrics
+                            .counter(Metric::EbpfUprobesAttached)
+                            .set((libs_count + attached_inodes.len()) as u64);
+                    }
                 }
                 guard = async_fd.readable_mut() => {
                     let mut guard = match guard {
@@ -484,94 +539,224 @@ fn resolve_single_offset(data: &[u8], pattern: &str, what: &str, binary: &str) -
     }
 }
 
-/// Locate SSL_read/SSL_write in a symbol-stripped static target by byte
-/// signature and attach the (already-loaded) uprobes by file offset. Returns
-/// `Ok(true)` if at least one probe attached, `Ok(false)` if the target had no
-/// usable signature (logged, skipped — never fatal).
-fn attach_target(ebpf: &mut Ebpf, target: &EbpfTarget) -> crate::Result<bool> {
-    let path = PathBuf::from(&target.binary);
-    if !path.exists() {
-        tracing::warn!("ebpf: target binary {} not found", target.binary);
-        return Ok(false);
-    }
+/// How often to re-scan target processes for new inodes (auto-update rotation)
+/// and freshly-spawned sessions. Short enough that a new Claude Code / opencode
+/// session is captured within seconds of starting; cheap (a `/proc` walk plus a
+/// signature scan only for inodes not seen before).
+const RESCAN_INTERVAL_SECS: u64 = 15;
 
-    let flavor_sig = flavor_signatures(&target.flavor);
-    let has_source = target.write_offset.is_some()
+/// Does this target carry enough config to resolve uprobe offsets at all?
+/// (an explicit offset, a config signature, or a flavor with built-in sigs.)
+fn target_has_source(target: &EbpfTarget) -> bool {
+    target.write_offset.is_some()
         || target.read_offset.is_some()
         || target.write_sig.is_some()
         || target.read_sig.is_some()
-        || flavor_sig.is_some();
-    if !has_source {
-        tracing::warn!(
-            "ebpf: target {} (flavor={}) has no offset or signature — set \
-             write_offset/read_offset or write_sig/read_sig in config (or use a \
-             flavor with built-in signatures, e.g. \"bun\")",
-            target.binary,
-            target.flavor
-        );
-        return Ok(false);
+        || flavor_signatures(&target.flavor).is_some()
+}
+
+/// True if a `/proc/<pid>/exe` readlink target has the given basename. The
+/// kernel suffixes the link with `" (deleted)"` once the binary is unlinked by
+/// an auto-update, so strip that first. Matching by **basename** (not full path)
+/// is what lets us re-attach across npm's atomic-rename upgrade, which stages the
+/// new build in a `.<pkg>-<hash>/` dir before renaming it over the install path —
+/// the running process's exe then points into that now-deleted staging dir.
+fn exe_link_has_basename(link: &str, basename: &str) -> bool {
+    let path = link.strip_suffix(" (deleted)").unwrap_or(link);
+    Path::new(path).file_name().and_then(|f| f.to_str()) == Some(basename)
+}
+
+/// (dev, inode) identity of `path`, following symlinks — so `/proc/<pid>/exe`
+/// resolves to the real (possibly deleted) inode. Returns `None` if it can't be
+/// stat'd (e.g. the process exited between enumeration and here).
+fn inode_of(path: &Path) -> Option<(u64, u64)> {
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// PIDs whose `/proc/<pid>/exe` resolves to a binary named `basename`.
+fn target_pids(basename: &str) -> Vec<u32> {
+    let mut pids = Vec::new();
+    let Ok(rd) = std::fs::read_dir("/proc") else {
+        return pids;
+    };
+    for entry in rd.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if let Ok(link) = std::fs::read_link(format!("/proc/{pid}/exe")) {
+            if exe_link_has_basename(&link.to_string_lossy(), basename) {
+                pids.push(pid);
+            }
+        }
+    }
+    pids
+}
+
+/// Resolve SSL_read/SSL_write **file offsets** for a target from the given
+/// binary `data` (config offsets first, then config signatures, then built-in
+/// flavor signatures). Pure over `data` — same bytes always yield the same
+/// offsets, so a per-inode result can be cached as "seen".
+fn resolve_target_offsets(
+    data: &[u8],
+    target: &EbpfTarget,
+    label: &str,
+) -> (Option<u64>, Option<u64>) {
+    let mut read_off = target.read_offset;
+    let mut write_off = target.write_offset;
+    if read_off.is_some() && write_off.is_some() {
+        return (read_off, write_off);
     }
 
-    let mut write_off = target.write_offset;
-    let mut read_off = target.read_offset;
+    // Config-supplied signatures take precedence and must match uniquely.
+    if read_off.is_none() {
+        if let Some(p) = &target.read_sig {
+            read_off = resolve_single_offset(data, p, "SSL_read", label);
+        }
+    }
+    if write_off.is_none() {
+        if let Some(p) = &target.write_sig {
+            write_off = resolve_single_offset(data, p, "SSL_write", label);
+        }
+    }
 
-    // Scan the binary only if at least one offset still needs resolving.
-    if write_off.is_none() || read_off.is_none() {
-        let data = std::fs::read(&path)
-            .map_err(|e| crate::CaptureError::Other(format!("read target {}: {e}", target.binary)))?;
-
-        // Config-supplied signatures take precedence and must match uniquely.
+    // Fall back to built-in flavor signatures: anchor on the unique SSL_read
+    // prologue, then locate SSL_write (generic prologue) as the nearest match in
+    // the window after it.
+    if let Some(fs) = flavor_signatures(&target.flavor) {
         if read_off.is_none() {
-            if let Some(p) = &target.read_sig {
-                read_off = resolve_single_offset(&data, p, "SSL_read", &target.binary);
-            }
+            read_off = resolve_single_offset(data, fs.read_sig, "SSL_read", label);
         }
         if write_off.is_none() {
-            if let Some(p) = &target.write_sig {
-                write_off = resolve_single_offset(&data, p, "SSL_write", &target.binary);
-            }
-        }
-
-        // Fall back to built-in flavor signatures: anchor on the unique
-        // SSL_read prologue, then locate SSL_write (generic prologue) as the
-        // nearest match in the window after it.
-        if let Some(fs) = &flavor_sig {
-            if read_off.is_none() {
-                read_off = resolve_single_offset(&data, fs.read_sig, "SSL_read", &target.binary);
-            }
-            if write_off.is_none() {
-                if let Some(anchor) = read_off {
+            match read_off {
+                Some(anchor) => {
                     write_off = resolve_windowed(
-                        &data,
+                        data,
                         fs.write_sig,
                         anchor,
                         fs.write_window,
                         "SSL_write",
-                        &target.binary,
-                    );
-                } else {
-                    tracing::warn!(
-                        "ebpf: {}: no SSL_read anchor — cannot locate SSL_write by window",
-                        target.binary
+                        label,
                     );
                 }
+                None => tracing::warn!(
+                    "ebpf: {label}: no SSL_read anchor — cannot locate SSL_write by window"
+                ),
             }
         }
     }
+    (read_off, write_off)
+}
 
+/// Attach the (already-loaded) SSL uprobes to `attach_path` at the resolved
+/// offsets. `attach_path` may be the on-disk binary or a `/proc/<pid>/exe`
+/// handle to a deleted inode — the kernel resolves both to the same inode and
+/// installs the probe on it. Returns `Ok(true)` if at least one probe attached.
+fn attach_at(
+    ebpf: &mut Ebpf,
+    attach_path: &Path,
+    read_off: Option<u64>,
+    write_off: Option<u64>,
+) -> crate::Result<bool> {
     let mut any = false;
     if let Some(off) = write_off {
-        attach_offset(ebpf, "ssl_write", off, &path, false)?;
+        attach_offset(ebpf, "ssl_write", off, attach_path, false)?;
         any = true;
     }
     if let Some(off) = read_off {
         // Entry probe captures the buffer pointer; the return probe reads the
         // bytes SSL_read filled in. Both attach at the function entry.
-        attach_offset(ebpf, "ssl_read_enter", off, &path, false)?;
-        attach_offset(ebpf, "ssl_read_exit", off, &path, true)?;
+        attach_offset(ebpf, "ssl_read_enter", off, attach_path, false)?;
+        attach_offset(ebpf, "ssl_read_exit", off, attach_path, true)?;
         any = true;
     }
     Ok(any)
+}
+
+/// Attach SSL uprobes to every distinct inode backing the configured static
+/// targets, covering both the on-disk install path (future fresh execs of the
+/// current build) and every running session via `/proc/<pid>/exe` (already-
+/// running sessions on a deleted inode after an auto-update). Idempotent across
+/// calls: `seen` skips any inode already attempted, `attached` records inodes
+/// actually carrying probes. Returns the count of inodes newly attached this
+/// pass. Never propagates errors — a bad target must not take down capture.
+fn rescan_targets(
+    ebpf: &mut Ebpf,
+    targets: &[EbpfTarget],
+    seen: &mut HashSet<(u64, u64)>,
+    attached: &mut HashSet<(u64, u64)>,
+) -> usize {
+    let mut newly = 0;
+    for target in targets {
+        if !target_has_source(target) {
+            continue; // warned once at startup
+        }
+        let basename = Path::new(&target.binary)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(target.binary.as_str());
+
+        // On-disk path first (a stable handle, preferred when it backs the same
+        // inode a running session uses), then each running session's exe.
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        let on_disk = PathBuf::from(&target.binary);
+        if on_disk.exists() {
+            candidates.push(on_disk);
+        }
+        candidates.extend(
+            target_pids(basename)
+                .into_iter()
+                .map(|pid| PathBuf::from(format!("/proc/{pid}/exe"))),
+        );
+
+        for path in candidates {
+            let Some(ino) = inode_of(&path) else {
+                continue; // process exited mid-scan; retry next pass
+            };
+            if seen.contains(&ino) {
+                continue;
+            }
+            let data = match std::fs::read(&path) {
+                Ok(d) => d,
+                // Transient (process exited) — don't mark seen, retry next pass.
+                Err(e) => {
+                    tracing::debug!("ebpf: rescan: read {} failed: {e}", path.display());
+                    continue;
+                }
+            };
+            // Deterministic over these bytes: record seen now so a sig miss
+            // doesn't re-warn every interval.
+            seen.insert(ino);
+            let (read_off, write_off) = resolve_target_offsets(&data, target, &target.binary);
+            match attach_at(ebpf, &path, read_off, write_off) {
+                Ok(true) => {
+                    attached.insert(ino);
+                    newly += 1;
+                    tracing::info!(
+                        "ebpf: attached {} via {} (inode {}:{})",
+                        target.binary,
+                        path.display(),
+                        ino.0,
+                        ino.1
+                    );
+                }
+                Ok(false) => tracing::warn!(
+                    "ebpf: {} via {}: no usable SSL offset (wrong signature/flavor?)",
+                    target.binary,
+                    path.display()
+                ),
+                Err(e) => tracing::warn!(
+                    "ebpf: attach {} via {} failed: {e}",
+                    target.binary,
+                    path.display()
+                ),
+            }
+        }
+    }
+    newly
 }
 
 /// Discover `libssl` shared objects on the host. Tries `ldconfig -p` first, then
@@ -626,4 +811,75 @@ fn bump_memlock_rlimit() -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(binary: &str, flavor: &str) -> EbpfTarget {
+        EbpfTarget {
+            binary: binary.to_string(),
+            flavor: flavor.to_string(),
+            write_sig: None,
+            read_sig: None,
+            write_offset: None,
+            read_offset: None,
+        }
+    }
+
+    #[test]
+    fn exe_link_basename_matches_plain_path() {
+        assert!(exe_link_has_basename(
+            "/home/v/.nvm/.../claude-code/bin/claude.exe",
+            "claude.exe"
+        ));
+    }
+
+    #[test]
+    fn exe_link_basename_matches_through_deleted_suffix() {
+        // After an npm atomic-rename auto-update the running process's exe points
+        // into the now-unlinked staging dir; the kernel appends " (deleted)".
+        // Basename matching must see through both the staging dir and the suffix.
+        assert!(exe_link_has_basename(
+            "/home/v/.nvm/.../@anthropic-ai/.claude-code-BLnYIOGh/bin/claude.exe (deleted)",
+            "claude.exe"
+        ));
+        assert!(exe_link_has_basename(
+            "/home/v/.nvm/.../opencode-ai/bin/opencode.exe (deleted)",
+            "opencode.exe"
+        ));
+    }
+
+    #[test]
+    fn exe_link_basename_rejects_other_binaries() {
+        assert!(!exe_link_has_basename("/usr/bin/node", "claude.exe"));
+        assert!(!exe_link_has_basename(
+            "/some/where/claude.exe.bak (deleted)",
+            "claude.exe"
+        ));
+    }
+
+    #[test]
+    fn target_has_source_requires_offset_sig_or_flavor() {
+        // Bare boringssl flavor with no offsets/sigs → not enough to attach.
+        assert!(!target_has_source(&target("/x/claude.exe", "boringssl")));
+        // A known flavor with built-in signatures is enough.
+        assert!(target_has_source(&target("/x/claude.exe", "bun")));
+        // An explicit offset is enough regardless of flavor.
+        let mut t = target("/x/claude.exe", "boringssl");
+        t.read_offset = Some(0x1000);
+        assert!(target_has_source(&t));
+    }
+
+    #[test]
+    fn resolve_offsets_passes_config_offsets_through_without_scanning() {
+        let mut t = target("/x/claude.exe", "boringssl");
+        t.read_offset = Some(0x4165_5e0);
+        t.write_offset = Some(0x4165_970);
+        // Empty data would make any scan fail; config offsets must short-circuit.
+        let (r, w) = resolve_target_offsets(&[], &t, "test");
+        assert_eq!(r, Some(0x4165_5e0));
+        assert_eq!(w, Some(0x4165_970));
+    }
 }
