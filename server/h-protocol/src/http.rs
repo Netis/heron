@@ -1,6 +1,8 @@
+use std::io::Write;
 use std::net::IpAddr;
 
 use bytes::{Bytes, BytesMut};
+use flate2::write::{GzDecoder, ZlibDecoder};
 
 use crate::model::{HttpParseEvent, HttpRequestData, HttpResponseData, SseEventData};
 use crate::net::FlowKey;
@@ -45,6 +47,66 @@ enum ReadResult {
     Error,
 }
 
+/// Streaming `Content-Encoding` decompressor for an HTTP body.
+///
+/// Compressed bytes are pushed in as they arrive (one de-chunked chunk at a
+/// time for SSE, or the whole body for Content-Length) and decompressed bytes
+/// come out incrementally, so the SSE parser keeps seeing plaintext. The real
+/// motivator: api.anthropic.com gzip-compresses its `text/event-stream`
+/// responses, and without this every Anthropic call lands with an empty
+/// response body (no tokens / tool_use / model). gzip + deflate are handled via
+/// flate2 (pure-Rust miniz_oxide); other encodings (`br`, …) are treated as
+/// unsupported and left to the caller as passthrough.
+///
+/// Best-effort: a malformed stream yields whatever decompressed so far rather
+/// than failing the parse — this is observability data, not a correctness gate.
+enum BodyDecompressor {
+    Gzip(GzDecoder<Vec<u8>>),
+    /// `Content-Encoding: deflate` per RFC 7230 is the zlib format (RFC 1950).
+    Zlib(ZlibDecoder<Vec<u8>>),
+}
+
+impl BodyDecompressor {
+    /// Build from a `Content-Encoding` value, or `None` for identity / an
+    /// encoding we don't decode (caller then treats the body as plaintext).
+    fn from_encoding(enc: &str) -> Option<Self> {
+        match enc.trim().to_ascii_lowercase().as_str() {
+            "gzip" | "x-gzip" => Some(Self::Gzip(GzDecoder::new(Vec::new()))),
+            "deflate" => Some(Self::Zlib(ZlibDecoder::new(Vec::new()))),
+            _ => None,
+        }
+    }
+
+    fn writer(&mut self) -> &mut dyn Write {
+        match self {
+            Self::Gzip(d) => d,
+            Self::Zlib(d) => d,
+        }
+    }
+
+    fn drain(&mut self) -> Vec<u8> {
+        match self {
+            Self::Gzip(d) => std::mem::take(d.get_mut()),
+            Self::Zlib(d) => std::mem::take(d.get_mut()),
+        }
+    }
+
+    /// Push compressed bytes; return whatever decompressed output is ready.
+    fn push(&mut self, data: &[u8]) -> Vec<u8> {
+        let _ = self.writer().write_all(data);
+        let _ = self.writer().flush();
+        self.drain()
+    }
+
+    /// Finish the stream, returning any trailing decompressed bytes.
+    fn finish(self) -> Vec<u8> {
+        match self {
+            Self::Gzip(d) => d.finish().unwrap_or_default(),
+            Self::Zlib(d) => d.finish().unwrap_or_default(),
+        }
+    }
+}
+
 /// Reads an HTTP message body according to its framing.
 struct BodyReader {
     framing: BodyFraming,
@@ -56,6 +118,9 @@ struct BodyReader {
     /// `finish`. Used for SSE responses whose raw body is never read by any
     /// downstream stage (LlmProcessor rebuilds response_body from SSE events).
     skip_accumulation: bool,
+    /// `Content-Encoding` decompressor. `None` for the common uncompressed case,
+    /// where the body passes through byte-for-byte unchanged.
+    decompressor: Option<BodyDecompressor>,
 }
 
 impl BodyReader {
@@ -64,6 +129,7 @@ impl BodyReader {
             framing: BodyFraming::NoBody,
             decoded_body: BytesMut::new(),
             skip_accumulation: false,
+            decompressor: None,
         }
     }
 
@@ -79,6 +145,9 @@ impl BodyReader {
             framing,
             decoded_body: BytesMut::new(),
             skip_accumulation: false,
+            // Request bodies are not decompressed (agent clients send plaintext
+            // JSON); only responses carry Content-Encoding in practice.
+            decompressor: None,
         }
     }
 
@@ -98,6 +167,28 @@ impl BodyReader {
             framing,
             decoded_body: BytesMut::new(),
             skip_accumulation: false,
+            decompressor: extract_content_encoding(headers)
+                .as_deref()
+                .and_then(BodyDecompressor::from_encoding),
+        }
+    }
+
+    /// Pass de-chunked body bytes through the `Content-Encoding` decompressor,
+    /// if any. With no decompressor (the common case) this is an identity copy,
+    /// so uncompressed traffic is byte-for-byte unchanged.
+    fn decode_payload(&mut self, data: &[u8]) -> Bytes {
+        match self.decompressor.as_mut() {
+            Some(d) => Bytes::from(d.push(data)),
+            None => Bytes::copy_from_slice(data),
+        }
+    }
+
+    /// Flush trailing decompressed bytes at end-of-body (terminal chunk / close).
+    /// Empty when there is no decompressor or nothing is buffered.
+    fn flush_decompressor(&mut self) -> Bytes {
+        match self.decompressor.take() {
+            Some(d) => Bytes::from(d.finish()),
+            None => Bytes::new(),
         }
     }
 
@@ -110,8 +201,16 @@ impl BodyReader {
             BodyFraming::NoBody => ReadResult::Complete(Bytes::new()),
             BodyFraming::ContentLength(len) => {
                 if buf.len() >= len {
-                    let body = Bytes::copy_from_slice(&buf[..len]);
-                    let _ = buf.split_to(len);
+                    let raw = buf.split_to(len);
+                    let body = self.decode_payload(&raw);
+                    let tail = self.flush_decompressor();
+                    let body = if tail.is_empty() {
+                        body
+                    } else {
+                        let mut v = body.to_vec();
+                        v.extend_from_slice(&tail);
+                        Bytes::from(v)
+                    };
                     ReadResult::Complete(body)
                 } else {
                     ReadResult::NeedMore
@@ -122,11 +221,12 @@ impl BodyReader {
                 if buf.is_empty() {
                     ReadResult::NeedMore
                 } else {
-                    let data = buf.split();
+                    let raw = buf.split();
+                    let data = self.decode_payload(&raw);
                     if !self.skip_accumulation {
                         self.decoded_body.extend_from_slice(&data);
                     }
-                    ReadResult::ChunkDecoded(data.freeze())
+                    ReadResult::ChunkDecoded(data)
                 }
             }
         }
@@ -162,6 +262,11 @@ impl BodyReader {
                             // Empty line — end of trailers.
                             let total = line_end + 2 + pos + 2;
                             let _ = buf.split_to(total);
+                            // Flush any decompressor remainder into the body.
+                            let tail = self.flush_decompressor();
+                            if !self.skip_accumulation && !tail.is_empty() {
+                                self.decoded_body.extend_from_slice(&tail);
+                            }
                             let body = if self.skip_accumulation {
                                 Bytes::new()
                             } else {
@@ -183,12 +288,13 @@ impl BodyReader {
         }
 
         let _ = buf.split_to(line_end + 2);
-        let chunk_data = buf.split_to(chunk_size);
+        let raw = buf.split_to(chunk_size);
         let _ = buf.split_to(2);
+        let chunk_data = self.decode_payload(&raw);
         if !self.skip_accumulation {
             self.decoded_body.extend_from_slice(&chunk_data);
         }
-        ReadResult::ChunkDecoded(chunk_data.freeze())
+        ReadResult::ChunkDecoded(chunk_data)
     }
 
     /// Flush remaining data as body on connection close.
@@ -196,11 +302,13 @@ impl BodyReader {
         match self.framing {
             BodyFraming::NoBody => Bytes::new(),
             BodyFraming::ContentLength(_) => {
-                let body = buf.split().freeze();
+                let raw = buf.split();
                 if self.skip_accumulation {
                     Bytes::new()
                 } else {
-                    body
+                    let mut body = self.decode_payload(&raw).to_vec();
+                    body.extend_from_slice(&self.flush_decompressor());
+                    Bytes::from(body)
                 }
             }
             BodyFraming::Chunked | BodyFraming::CloseDelimited => {
@@ -209,7 +317,13 @@ impl BodyReader {
                     Bytes::new()
                 } else {
                     if !buf.is_empty() {
-                        self.decoded_body.extend_from_slice(&buf.split());
+                        let raw = buf.split();
+                        let data = self.decode_payload(&raw);
+                        self.decoded_body.extend_from_slice(&data);
+                    }
+                    let tail = self.flush_decompressor();
+                    if !tail.is_empty() {
+                        self.decoded_body.extend_from_slice(&tail);
                     }
                     self.decoded_body.split().freeze()
                 }
@@ -705,6 +819,17 @@ fn extract_content_length(headers: &[(String, String)]) -> Option<usize> {
         .and_then(|(_, v)| v.trim().parse().ok())
 }
 
+/// Extract a decodable `Content-Encoding` from parsed headers, skipping
+/// `identity` / empty. Returns the raw token (e.g. `"gzip"`) for
+/// [`BodyDecompressor::from_encoding`].
+fn extract_content_encoding(headers: &[(String, String)]) -> Option<String> {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
+        .map(|(_, v)| v.trim().to_string())
+        .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("identity"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,6 +846,62 @@ mod tests {
         let ca = ("127.0.0.1".parse().unwrap(), 1000);
         let sa = ("127.0.0.1".parse().unwrap(), 8080);
         (fk, ca, sa)
+    }
+
+    #[test]
+    fn body_reader_gunzips_content_length_gzip() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        let plain = b"{\"model\":\"claude-opus-4-6\",\"usage\":{\"output_tokens\":7}}";
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(plain).unwrap();
+        let gz = enc.finish().unwrap();
+        let headers = vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("Content-Encoding".to_string(), "gzip".to_string()),
+            ("Content-Length".to_string(), gz.len().to_string()),
+        ];
+        let mut br = BodyReader::new_for_response(200, "POST", &headers);
+        let mut buf = BytesMut::from(&gz[..]);
+        match br.read(&mut buf) {
+            ReadResult::Complete(body) => assert_eq!(&body[..], &plain[..]),
+            _ => panic!("expected Complete with decompressed body"),
+        }
+    }
+
+    #[test]
+    fn body_reader_gunzips_chunked_gzip_sse() {
+        // The real api.anthropic.com shape: text/event-stream + chunked +
+        // Content-Encoding: gzip. Before the fix the SSE parser saw gzip bytes
+        // and produced an empty body.
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        let plain = b"event: message_start\r\ndata: {\"type\":\"message_start\"}\r\n\r\n";
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(plain).unwrap();
+        let gz = enc.finish().unwrap();
+        // Wrap the gzip stream as one HTTP chunk + terminal chunk.
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(format!("{:x}\r\n", gz.len()).as_bytes());
+        buf.extend_from_slice(&gz);
+        buf.extend_from_slice(b"\r\n0\r\n\r\n");
+        let headers = vec![
+            ("Content-Type".to_string(), "text/event-stream".to_string()),
+            ("Transfer-Encoding".to_string(), "chunked".to_string()),
+            ("Content-Encoding".to_string(), "gzip".to_string()),
+        ];
+        let mut br = BodyReader::new_for_response(200, "POST", &headers);
+        br.set_skip_accumulation(true); // SSE path: collect ChunkDecoded output
+        let mut out = Vec::new();
+        loop {
+            match br.read(&mut buf) {
+                ReadResult::ChunkDecoded(c) => out.extend_from_slice(&c),
+                ReadResult::Complete(_) => break,
+                ReadResult::NeedMore => panic!("unexpected NeedMore"),
+                ReadResult::Error => panic!("decode error"),
+            }
+        }
+        assert_eq!(out, plain);
     }
 
     #[test]

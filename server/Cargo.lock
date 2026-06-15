@@ -1452,6 +1452,7 @@ dependencies = [
  "bytemuck",
  "bytes",
  "criterion",
+ "flate2",
  "h-capture",
  "h-common",
  "httparse",
