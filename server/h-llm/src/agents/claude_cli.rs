@@ -201,7 +201,17 @@ impl AgentProfile for ClaudeCliProfile {
         // extractor for text only; this one is the structural turn-start
         // predicate. Sub-agent filtering happens at the h-llm stage.
         let req = ctx.req?;
-        let last = req.get("messages")?.as_array()?.last()?;
+        // Skip trailing `role=system` messages: Claude Code's
+        // `mid-conversation-system` beta appends system notices (e.g. the
+        // ToolSearch "deferred tools are now available" block) AFTER the user's
+        // message, so the literal last element is often `system` even on a fresh
+        // user turn. The operative message is the last NON-system one.
+        let last = req
+            .get("messages")?
+            .as_array()?
+            .iter()
+            .rev()
+            .find(|m| m.get("role").and_then(|r| r.as_str()) != Some("system"))?;
         if last.get("role").and_then(|r| r.as_str()) != Some("user") {
             return Some(false);
         }
@@ -461,6 +471,43 @@ mod tests {
         let body = r#"{"messages":[{"role":"user","content":"hello"}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(true));
+    }
+
+    #[test]
+    fn is_user_turn_start_skips_trailing_system_message() {
+        // Claude Code (mid-conversation-system beta) appends a trailing
+        // role=system notice (e.g. ToolSearch "deferred tools available") AFTER
+        // the user's prompt. The fresh user turn must still be recognized — the
+        // operative message is the last NON-system one. This is the exact shape
+        // that made eBPF-captured Claude Code conversations discard as
+        // `no_user_start` until the skip was added.
+        let body = r#"{
+            "messages":[
+                {"role":"user","content":[{"type":"text","text":"use the Bash tool"}]},
+                {"role":"system","content":"The following deferred tools are now available via ToolSearch."}
+            ],
+            "tools":[{"name":"Agent"},{"name":"Bash"}]
+        }"#;
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(true));
+    }
+
+    #[test]
+    fn is_user_turn_start_false_for_tool_result_then_trailing_system() {
+        // A tool-roundtrip continuation whose last user message is a tool_result,
+        // even with a trailing system notice mixed in earlier, stays a
+        // continuation (the operative last non-system message is the tool_result).
+        let body = r#"{
+            "messages":[
+                {"role":"user","content":[{"type":"text","text":"start"}]},
+                {"role":"system","content":"deferred tools available"},
+                {"role":"assistant","content":[{"type":"tool_use","id":"t","name":"Bash","input":{}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}
+            ],
+            "tools":[{"name":"Agent"},{"name":"Bash"}]
+        }"#;
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(false));
     }
 
     #[test]
