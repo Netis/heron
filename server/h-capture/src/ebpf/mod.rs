@@ -311,6 +311,37 @@ mod tests {
     }
 
     #[test]
+    fn chunked_write_events_emit_sequential_segments() {
+        // The BPF program splits a large SSL_write into several consecutive
+        // DATA events on the same conn+dir. The pump must turn each into its own
+        // TCP segment (one frame per event) so the TCP layer reassembles the
+        // full body — never merging or dropping a chunk.
+        let mut p = pump(vec![]);
+        p.on_event(SslEvent::Connect {
+            conn_id: 1,
+            pid: 100,
+            comm: "node".into(),
+            exe: None,
+            tuple: Some(tuple()),
+            ktime_ns: 1_000_000,
+        });
+        let mut segments = 0;
+        for (k, part) in [b"AAAA".as_slice(), b"BBBB", b"CCCC"].iter().enumerate() {
+            let frames = p.on_event(SslEvent::Data {
+                conn_id: 1,
+                pid: 100,
+                comm: "node".into(),
+                exe: None,
+                dir: StreamDir::ClientToServer,
+                data: Bytes::copy_from_slice(part),
+                ktime_ns: 1_100_000 + k as u64 * 1000,
+            });
+            segments += data_frame_count(&frames);
+        }
+        assert_eq!(segments, 3, "each chunk event yields one TCP segment");
+    }
+
+    #[test]
     fn close_event_emits_fins_and_forgets_conn() {
         let mut p = pump(vec![]);
         p.on_event(SslEvent::Connect {
