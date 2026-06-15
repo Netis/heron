@@ -1,13 +1,37 @@
 use crate::agent_primitives::{AgentPrimitives, SystemPromptMarkers};
 use crate::model::LlmCall;
 use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
-use crate::wire_apis as wa;
+use crate::wire_apis::{self as wa, AssistantSig};
 use serde_json::Value;
+
+use super::session_id::compose_session_id_tracked;
 
 pub struct ClaudeCliProfile;
 
 const SESSION_HEADER: &str = "x-claude-code-session-id";
 const UA_PREFIX: &str = "claude-cli/";
+
+/// Tool-call anchor for session synthesis when the legacy
+/// `x-claude-code-session-id` header is absent (Claude Code stopped sending it
+/// around v2.1). Mirrors `GenericProfile`'s anthropic branch: the first user
+/// text plus the first `tool_use` id (from the request history, else the
+/// response) form a stable per-session anchor. Returns `None` for text-only
+/// traffic with no tool anchor — such calls fall through to a later profile
+/// rather than being claimed-and-dropped.
+fn anthropic_tool_anchor(ctx: &CallCtx<'_>) -> Option<(String, AssistantSig)> {
+    let req = ctx.req?;
+    let user_text = wa::anthropic::first_user_text(req)?;
+    let sig = match wa::anthropic::first_assistant_sig_from_request(req) {
+        Some(s) => Some(s),
+        None => ctx
+            .resp
+            .and_then(wa::anthropic::first_assistant_sig_from_response_value),
+    }?;
+    if !matches!(sig, AssistantSig::ToolId(_)) {
+        return None;
+    }
+    Some((user_text, sig))
+}
 
 fn header<'a>(call: &'a LlmCall, key: &str) -> Option<&'a str> {
     call.request_headers
@@ -64,13 +88,14 @@ impl AgentProfile for ClaudeCliProfile {
     }
 
     fn matches(&self, ctx: &CallCtx<'_>) -> bool {
-        // Both UA prefix AND SESSION_HEADER must be present. UA alone isn't
-        // enough: the registry is first-match-wins (`profile.rs:181`), so
-        // claiming a call here when the session header is missing leaves the
-        // call with `extract_session_id() = None` and no fallback. By
-        // requiring the header up front, UA-spoofed / header-stripped /
-        // pre-session-header-version traffic falls through to GenericProfile,
-        // which can synthesize a session anchor from the body.
+        // Identify Claude Code by `User-Agent: claude-cli/*` on Anthropic wire,
+        // then require a usable session anchor so we never claim-and-drop a call
+        // (the registry is first-match-wins, profile.rs:181). The anchor is the
+        // legacy `x-claude-code-session-id` header when present, OR — for Claude
+        // Code v2.1+ which no longer sends that header — a synthesizable
+        // tool-call anchor in the body (same mechanism GenericProfile uses).
+        // UA-spoofed / header-stripped / anchorless text-only traffic still
+        // falls through to a later profile.
         if ctx.call.wire_api != wa::ANTHROPIC {
             return false;
         }
@@ -80,14 +105,25 @@ impl AgentProfile for ClaudeCliProfile {
         if !ua_ok {
             return false;
         }
-        header(ctx.call, SESSION_HEADER).is_some()
+        header(ctx.call, SESSION_HEADER).is_some() || anthropic_tool_anchor(ctx).is_some()
     }
 
     fn extract_session_id(&self, ctx: &CallCtx<'_>) -> Option<SessionIdExtraction> {
-        let session_id = header(ctx.call, SESSION_HEADER)?.to_string();
+        // Prefer the explicit session header when present (older Claude Code).
+        if let Some(h) = header(ctx.call, SESSION_HEADER) {
+            return Some(SessionIdExtraction {
+                session_id: h.to_string(),
+                tool_id_canonicalized: false,
+            });
+        }
+        // Fallback for header-less Claude Code: synthesize from the tool-call
+        // anchor exactly as GenericProfile does, so the same conversation maps
+        // to one stable session_id across its calls.
+        let (user_text, sig) = anthropic_tool_anchor(ctx)?;
+        let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
         Some(SessionIdExtraction {
             session_id,
-            tool_id_canonicalized: false,
+            tool_id_canonicalized,
         })
     }
 
@@ -346,16 +382,37 @@ mod tests {
     }
 
     #[test]
-    fn does_not_match_when_session_header_missing() {
-        // UA alone is not enough — without `x-claude-code-session-id` we
-        // cannot extract a session_id, so the registry must let the call
-        // fall through to GenericProfile rather than claiming and dropping it.
+    fn does_not_match_when_session_header_missing_and_no_anchor() {
+        // UA + no session header + no body → no session anchor at all, so the
+        // call must fall through to a later profile rather than being
+        // claimed-and-dropped (registry is first-match-wins).
         let c = call_with(
             wa::ANTHROPIC,
             vec![("User-Agent", "claude-cli/2.1.98 (external, cli)")],
             None,
         );
         assert!(!ClaudeCliProfile.matches(&c.ctx()));
+    }
+
+    #[test]
+    fn matches_via_tool_anchor_when_session_header_absent() {
+        // Claude Code v2.1+ no longer sends x-claude-code-session-id. A
+        // tool-roundtrip request still carries a tool_use id in history, so the
+        // profile claims it (UA + synthesizable anchor) and labels it
+        // claude-cli instead of letting it fall through to generic.
+        let body = r#"{"messages":[
+            {"role":"user","content":[{"type":"text","text":"do the thing"}]},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_abc","name":"Bash","input":{}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"ok"}]}
+        ]}"#;
+        let c = call_with(
+            wa::ANTHROPIC,
+            vec![("User-Agent", "claude-cli/2.1.75 (external, sdk-cli)")],
+            Some(body),
+        );
+        assert!(ClaudeCliProfile.matches(&c.ctx()));
+        let ids = ClaudeCliProfile.extract_session_id(&c.ctx()).unwrap();
+        assert!(!ids.session_id.is_empty());
     }
 
     #[test]
