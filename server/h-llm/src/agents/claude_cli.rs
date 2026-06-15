@@ -130,7 +130,13 @@ impl AgentProfile for ClaudeCliProfile {
     fn extract_user_input(&self, ctx: &CallCtx<'_>) -> Option<String> {
         let req = ctx.req?;
         let msgs = req.get("messages")?.as_array()?;
-        let last = msgs.last()?;
+        // Skip trailing role=system notices (mid-conversation-system beta) so the
+        // user prompt preview comes from the operative last user message, not an
+        // appended ToolSearch/system block. Mirrors `is_user_turn_start`.
+        let last = msgs
+            .iter()
+            .rev()
+            .find(|m| m.get("role").and_then(|r| r.as_str()) != Some("system"))?;
         if last.get("role")?.as_str()? != "user" {
             return None;
         }
@@ -684,6 +690,22 @@ mod tests {
         ]}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.extract_user_input(&c.ctx()), None);
+    }
+
+    #[test]
+    fn extract_user_input_skips_trailing_system_message() {
+        // The user prompt preview must come from the operative user message even
+        // when Claude Code appends a trailing role=system notice after it (the
+        // shape that left agent-turn `user_input_preview` empty until fixed).
+        let body = r#"{"messages":[
+            {"role":"user","content":[{"type":"text","text":"the real prompt"}]},
+            {"role":"system","content":"deferred tools available via ToolSearch"}
+        ]}"#;
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
+        assert_eq!(
+            ClaudeCliProfile.extract_user_input(&c.ctx()).as_deref(),
+            Some("the real prompt")
+        );
     }
 
     #[test]
