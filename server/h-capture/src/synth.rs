@@ -118,34 +118,53 @@ impl SynthConfig {
     }
 }
 
-/// Per-connection synthesis state: the endpoints and the next sequence number
-/// to use in each direction.
+/// The TCP ISN both directions baseline on. With a synthesized handshake the SYN
+/// carries ISN 0 and consumes one sequence number, so data starts at 1; without
+/// a handshake the absolute base is irrelevant (the reassembler re-baselines
+/// mid-stream), and 1 keeps the two paths identical.
+const SYNTH_ISN: u32 = 1;
+
+/// Per-connection synthesis state: the endpoints and the high-water byte offset
+/// reached in each direction (used only to place the closing FIN past all data).
+///
+/// Segment sequence numbers are NOT derived from a running counter here — each
+/// [`data`](FlowSynthesizer::data) call carries the absolute stream offset
+/// (`seq_off`, from the BPF program's per-connection byte counter), so a chunk
+/// is always placed at `SYNTH_ISN + seq_off` regardless of whether an earlier
+/// chunk was dropped or arrived out of order.
 #[derive(Debug)]
 struct ConnState {
     tuple: ConnTuple,
-    /// Next sequence number for client→server segments.
-    seq_c2s: u32,
-    /// Next sequence number for server→client segments.
-    seq_s2c: u32,
+    /// Highest `seq_off + len` seen client→server (the next FIN's seq offset).
+    hi_off_c2s: u64,
+    /// Highest `seq_off + len` seen server→client.
+    hi_off_s2c: u64,
 }
 
 impl ConnState {
-    /// Initial sequence numbers. With a synthesized handshake the SYN carries
-    /// ISN 0 and consumes one sequence number, so data starts at 1; without a
-    /// handshake the absolute base is irrelevant (the reassembler re-baselines
-    /// mid-stream), and 1 keeps the two paths identical.
     fn new(tuple: ConnTuple) -> Self {
         Self {
             tuple,
-            seq_c2s: 1,
-            seq_s2c: 1,
+            hi_off_c2s: 0,
+            hi_off_s2c: 0,
         }
     }
 
-    fn seq_mut(&mut self, dir: StreamDir) -> &mut u32 {
+    fn hi_off(&self, dir: StreamDir) -> u64 {
         match dir {
-            StreamDir::ClientToServer => &mut self.seq_c2s,
-            StreamDir::ServerToClient => &mut self.seq_s2c,
+            StreamDir::ClientToServer => self.hi_off_c2s,
+            StreamDir::ServerToClient => self.hi_off_s2c,
+        }
+    }
+
+    /// Bump the direction's high-water offset to at least `end`.
+    fn observe(&mut self, dir: StreamDir, end: u64) {
+        let slot = match dir {
+            StreamDir::ClientToServer => &mut self.hi_off_c2s,
+            StreamDir::ServerToClient => &mut self.hi_off_s2c,
+        };
+        if end > *slot {
+            *slot = end;
         }
     }
 
@@ -172,6 +191,11 @@ impl ConnState {
 pub struct FlowSynthesizer {
     cfg: SynthConfig,
     conns: HashMap<u64, ConnState>,
+    /// Per-`conn_id` generation, bumped on [`close`](Self::close). Folded into
+    /// the synthetic tuple so a reused `SSL*` pointer (same `conn_id`) after a
+    /// close gets a DISTINCT [`FlowKey`] instead of overlapping the prior
+    /// connection's sequence space. Absent ⇒ generation 0.
+    generations: HashMap<u64, u32>,
 }
 
 impl FlowSynthesizer {
@@ -179,7 +203,13 @@ impl FlowSynthesizer {
         Self {
             cfg,
             conns: HashMap::new(),
+            generations: HashMap::new(),
         }
+    }
+
+    /// Current generation for `conn_id` (0 until its first close).
+    fn generation(&self, conn_id: u64) -> u32 {
+        self.generations.get(&conn_id).copied().unwrap_or(0)
     }
 
     /// True if `conn_id` has been opened and not yet closed.
@@ -210,90 +240,117 @@ impl FlowSynthesizer {
         out
     }
 
-    /// Emit TCP segments carrying `bytes` in direction `dir`. A chunk larger
-    /// than the configured segment size is split across multiple in-order
-    /// segments. An empty chunk emits nothing. Unknown connections are opened
-    /// lazily (synthetic tuple, no handshake).
+    /// Emit TCP segments carrying `bytes` in direction `dir`, with `seq_off` the
+    /// absolute byte offset of `bytes[0]` within this connection-direction
+    /// stream (from the BPF per-connection counter). The segment sequence is
+    /// `SYNTH_ISN + seq_off`, so a chunk lands at its true position even if an
+    /// earlier chunk was dropped or reordered. A chunk larger than the
+    /// configured segment size is split across multiple in-order segments. An
+    /// empty chunk emits nothing. Unknown connections are opened lazily
+    /// (generation-stamped synthetic tuple, no handshake).
     pub fn data(
         &mut self,
         conn_id: u64,
         dir: StreamDir,
         bytes: &[u8],
+        seq_off: u64,
         ts_us: i64,
     ) -> Vec<RawPacket> {
         if bytes.is_empty() {
             return Vec::new();
         }
         // Mid-stream attach (unknown conn): open lazily with a synthetic tuple
-        // and no handshake. The reassembler re-baselines on the first request
-        // line. Known connections keep their registered state untouched.
+        // for the current generation and no handshake. The reassembler
+        // re-baselines on the first request line. Known connections keep their
+        // registered state untouched.
+        let gen = self.generation(conn_id);
         self.conns
             .entry(conn_id)
-            .or_insert_with(|| ConnState::new(Self::synthetic_tuple(conn_id)));
+            .or_insert_with(|| ConnState::new(Self::synthetic_tuple_gen(conn_id, gen)));
 
         let seg = self.cfg.effective_segment();
         // Snapshot the routing inputs while we hold the connection borrow, then
         // drop it so `self.frame` can borrow `self` immutably per segment.
-        let (src, dst, mut seq) = {
+        let (src, dst) = {
             let state = self.conns.get(&conn_id).expect("just inserted");
-            let (src, dst) = state.endpoints(dir);
-            (src, dst, *self.peek_seq(conn_id, dir))
+            state.endpoints(dir)
         };
+        // Absolute sequence for the first byte of this chunk.
+        let seq0 = SYNTH_ISN.wrapping_add(seq_off as u32);
 
         let mut out = Vec::with_capacity(bytes.len().div_ceil(seg));
         let mut offset = 0;
         while offset < bytes.len() {
             let end = (offset + seg).min(bytes.len());
             let chunk = &bytes[offset..end];
+            let seq = seq0.wrapping_add(offset as u32);
             out.push(self.frame(src, dst, seq, 1, TCP_PSH | TCP_ACK, chunk, ts_us));
-            seq = seq.wrapping_add(chunk.len() as u32);
             offset = end;
         }
 
-        *self.conns.get_mut(&conn_id).expect("present").seq_mut(dir) = seq;
+        self.conns
+            .get_mut(&conn_id)
+            .expect("present")
+            .observe(dir, seq_off + bytes.len() as u64);
         out
     }
 
-    /// Emit FIN segments in both directions and forget the connection. The
-    /// reassembler finalizes any pending response on FIN, so a turn does not
-    /// have to wait out the 120 s idle sweep. A no-op for unknown connections.
+    /// Emit FIN segments in both directions and forget the connection, then bump
+    /// the connection's generation so a future `SSL*`-pointer reuse with the
+    /// same `conn_id` synthesizes a fresh, non-overlapping [`FlowKey`]. The
+    /// reassembler finalizes any pending response on FIN, so a turn does not have
+    /// to wait out the idle sweep. For an unknown connection the FIN frames are
+    /// skipped but the generation is still advanced (a close with no prior data
+    /// can still precede a reuse).
     pub fn close(&mut self, conn_id: u64, ts_us: i64) -> Vec<RawPacket> {
+        // Advance generation regardless: the next stream on this conn_id is a
+        // new connection and must not reuse this one's FlowKey.
+        *self.generations.entry(conn_id).or_insert(0) += 1;
+
         let Some(state) = self.conns.remove(&conn_id) else {
             return Vec::new();
         };
+        let c_seq = SYNTH_ISN.wrapping_add(state.hi_off(StreamDir::ClientToServer) as u32);
+        let s_seq = SYNTH_ISN.wrapping_add(state.hi_off(StreamDir::ServerToClient) as u32);
         let (csrc, cdst) = state.endpoints(StreamDir::ClientToServer);
         let (ssrc, sdst) = state.endpoints(StreamDir::ServerToClient);
         vec![
-            self.frame(csrc, cdst, state.seq_c2s, 1, TCP_FIN | TCP_ACK, &[], ts_us),
-            self.frame(ssrc, sdst, state.seq_s2c, 1, TCP_FIN | TCP_ACK, &[], ts_us),
+            self.frame(csrc, cdst, c_seq, 1, TCP_FIN | TCP_ACK, &[], ts_us),
+            self.frame(ssrc, sdst, s_seq, 1, TCP_FIN | TCP_ACK, &[], ts_us),
         ]
     }
 
     /// Deterministic placeholder 5-tuple for a connection whose real socket
-    /// addresses are unknown (uprobe gave `SSL*`/pid but no socket). Stable and
-    /// collision-resistant per `conn_id`, so both directions of one connection
-    /// share a `FlowKey`. The client side maps into `127.64.0.0/10` and the
-    /// server into a documentation address; wire-API detection keys on the HTTP
-    /// `Host`/path, not on these IPs, so they affect only the displayed tuple.
+    /// addresses are unknown (uprobe gave `SSL*`/pid but no socket). Generation 0
+    /// — the entry point for callers that don't track reuse (e.g. a Connect
+    /// event with a real tuple falling back). See [`synthetic_tuple_gen`].
     pub fn synthetic_tuple(conn_id: u64) -> ConnTuple {
+        Self::synthetic_tuple_gen(conn_id, 0)
+    }
+
+    /// Generation-aware [`synthetic_tuple`]. Stable and collision-resistant per
+    /// `(conn_id, generation)`, so both directions of one connection share a
+    /// `FlowKey` while a reused pointer (incremented generation) gets a distinct
+    /// one. The client side maps into `127.64.0.0/10` and the server into a
+    /// documentation address; wire-API detection keys on the HTTP `Host`/path,
+    /// not on these IPs, so they affect only the displayed tuple. The generation
+    /// perturbs the client port so successive connections on the same `conn_id`
+    /// never share a 4-tuple.
+    pub fn synthetic_tuple_gen(conn_id: u64, generation: u32) -> ConnTuple {
         let lo = conn_id as u32;
         let hi = (conn_id >> 32) as u32;
         // Client: 127.64.x.y to stay inside loopback's /8 but clear of 127.0.0.1.
         let client_ip = IpAddr::from([127, 64, (lo >> 8) as u8, lo as u8]);
-        let client_port = 1024u16.wrapping_add((lo >> 16) as u16);
+        // Fold the generation in (×40503, an odd spreader) so each reuse lands on
+        // a clearly different port rather than an adjacent one.
+        let client_port = 1024u16
+            .wrapping_add((lo >> 16) as u16)
+            .wrapping_add((generation as u16).wrapping_mul(40503));
         // Server: 192.0.2.0/24 (TEST-NET-1, RFC 5737) — never a real host.
         let server_ip = IpAddr::from([192, 0, 2, (hi & 0xFF) as u8]);
         ConnTuple {
             client: SocketAddr::new(client_ip, client_port.max(1024)),
             server: SocketAddr::new(server_ip, 443),
-        }
-    }
-
-    fn peek_seq(&self, conn_id: u64, dir: StreamDir) -> &u32 {
-        let state = self.conns.get(&conn_id).expect("present");
-        match dir {
-            StreamDir::ClientToServer => &state.seq_c2s,
-            StreamDir::ServerToClient => &state.seq_s2c,
         }
     }
 
@@ -420,6 +477,12 @@ mod tests {
         u16::from_be_bytes([pkt.data[12], pkt.data[13]])
     }
 
+    /// TCP source port (bytes 0..2 of the TCP header) of an IPv4 frame.
+    fn ipv4_src_port(pkt: &RawPacket) -> u16 {
+        let tcp = ETH_HDR_LEN + IPV4_HDR_LEN;
+        u16::from_be_bytes([pkt.data[tcp], pkt.data[tcp + 1]])
+    }
+
     /// Extract `(seq, flags, payload)` from an IPv4 frame for assertions.
     fn ipv4_tcp(pkt: &RawPacket) -> (u32, u8, &[u8]) {
         let ip = ETH_HDR_LEN;
@@ -465,7 +528,7 @@ mod tests {
         let mut s = FlowSynthesizer::new(SynthConfig::default());
         s.open(1, v4_tuple(), 0);
         let body = b"GET / HTTP/1.1\r\n\r\n";
-        let frames = s.data(1, StreamDir::ClientToServer, body, 10);
+        let frames = s.data(1, StreamDir::ClientToServer, body, 0, 10);
         assert_eq!(frames.len(), 1);
         let (seq, flags, payload) = ipv4_tcp(&frames[0]);
         assert_eq!(seq, 1, "first data seq follows SYN's ISN+1");
@@ -473,8 +536,8 @@ mod tests {
         assert_eq!(payload, body);
         assert_eq!(ethertype(&frames[0]), ETHERTYPE_IPV4);
 
-        // Next chunk continues from the advanced seq.
-        let more = s.data(1, StreamDir::ClientToServer, b"XYZ", 20);
+        // Next chunk carries its absolute stream offset.
+        let more = s.data(1, StreamDir::ClientToServer, b"XYZ", body.len() as u64, 20);
         let (seq2, _, _) = ipv4_tcp(&more[0]);
         assert_eq!(seq2, 1 + body.len() as u32);
     }
@@ -488,7 +551,7 @@ mod tests {
         let mut s = FlowSynthesizer::new(cfg);
         s.open(1, v4_tuple(), 0);
         let body = vec![b'A'; 2500];
-        let frames = s.data(1, StreamDir::ServerToClient, &body, 5);
+        let frames = s.data(1, StreamDir::ServerToClient, &body, 0, 5);
         assert_eq!(frames.len(), 3, "2500 / 1000 = 3 segments");
 
         let mut expected_seq = 1u32;
@@ -504,19 +567,71 @@ mod tests {
     }
 
     #[test]
+    fn chunk_placed_by_absolute_offset_not_running_counter() {
+        // Two chunks of one logical write where the MIDDLE chunk was dropped
+        // upstream (never delivered). The third chunk must still land at its
+        // true sequence (SYNTH_ISN + its seq_off), leaving a gap where the
+        // dropped chunk was — NOT shifted earlier to abut the first chunk (the
+        // old running-counter bug that spliced later bytes over earlier ones).
+        let mut s = FlowSynthesizer::new(SynthConfig::default());
+        let a = s.data(9, StreamDir::ClientToServer, b"AAAA", 0, 0);
+        // (chunk at offset 4 dropped)
+        let c = s.data(9, StreamDir::ClientToServer, b"CCCC", 8, 0);
+        let (seq_a, _, _) = ipv4_tcp(&a[0]);
+        let (seq_c, _, _) = ipv4_tcp(&c[0]);
+        assert_eq!(seq_a, 1, "first chunk at ISN+0");
+        assert_eq!(seq_c, 1 + 8, "third chunk at ISN+8 (gap preserved), not ISN+4");
+    }
+
+    #[test]
     fn empty_chunk_emits_nothing() {
         let mut s = FlowSynthesizer::new(SynthConfig::default());
         s.open(1, v4_tuple(), 0);
-        assert!(s.data(1, StreamDir::ClientToServer, &[], 0).is_empty());
+        assert!(s.data(1, StreamDir::ClientToServer, &[], 0, 0).is_empty());
     }
 
     #[test]
     fn unknown_conn_opens_lazily_without_handshake() {
         let mut s = FlowSynthesizer::new(SynthConfig::default());
         // No open() first — data() must lazily register the connection.
-        let frames = s.data(7, StreamDir::ClientToServer, b"POST / HTTP/1.1\r\n", 0);
+        let frames = s.data(7, StreamDir::ClientToServer, b"POST / HTTP/1.1\r\n", 0, 0);
         assert_eq!(frames.len(), 1, "exactly the data segment, no handshake");
         assert!(s.is_open(7));
+    }
+
+    #[test]
+    fn close_bumps_generation_so_reused_conn_id_gets_distinct_tuple() {
+        // A reused SSL* pointer (same conn_id) after a close must synthesize a
+        // DISTINCT FlowKey, so the new connection's bytes never overlap the
+        // closed one's sequence space.
+        let mut s = FlowSynthesizer::new(SynthConfig::default());
+        let first = s.data(5, StreamDir::ClientToServer, b"POST /a HTTP/1.1\r\n", 0, 1);
+        let src1 = ipv4_src_port(&first[0]);
+        s.close(5, 2);
+        // After close, conn forgotten; reuse lazily re-opens at generation 1.
+        let second = s.data(5, StreamDir::ClientToServer, b"POST /b HTTP/1.1\r\n", 0, 3);
+        let src2 = ipv4_src_port(&second[0]);
+        assert_ne!(
+            src1, src2,
+            "reused conn_id after close must get a different synthetic client port"
+        );
+    }
+
+    #[test]
+    fn synthetic_tuple_generation_changes_flowkey() {
+        let g0 = FlowSynthesizer::synthetic_tuple_gen(123, 0);
+        let g1 = FlowSynthesizer::synthetic_tuple_gen(123, 1);
+        assert_eq!(g0.client.ip(), g1.client.ip(), "same conn_id → same client IP");
+        assert_ne!(
+            g0.client.port(),
+            g1.client.port(),
+            "generation must perturb the client port"
+        );
+        assert_eq!(
+            FlowSynthesizer::synthetic_tuple(123),
+            g0,
+            "synthetic_tuple == generation 0"
+        );
     }
 
     #[test]
@@ -543,7 +658,7 @@ mod tests {
             server: "[2606:4700::1]:443".parse().unwrap(),
         };
         s.open(1, tuple, 0);
-        let frames = s.data(1, StreamDir::ClientToServer, b"GET / HTTP/1.1\r\n", 0);
+        let frames = s.data(1, StreamDir::ClientToServer, b"GET / HTTP/1.1\r\n", 0, 0);
         assert_eq!(ethertype(&frames[0]), ETHERTYPE_IPV6);
         // Ethernet(14) + IPv6(40) + TCP(20) + payload.
         assert_eq!(frames[0].data.len(), ETH_HDR_LEN + IPV6_HDR_LEN + TCP_HDR_LEN + 16);
@@ -567,7 +682,7 @@ mod tests {
         let mut s = FlowSynthesizer::new(cfg);
         s.open(1, v4_tuple(), 0);
         let body = vec![b'Z'; DEFAULT_SEGMENT_SIZE + 1];
-        let frames = s.data(1, StreamDir::ClientToServer, &body, 0);
+        let frames = s.data(1, StreamDir::ClientToServer, &body, 0, 0);
         assert_eq!(frames.len(), 2, "default segment size still chunks");
     }
 }

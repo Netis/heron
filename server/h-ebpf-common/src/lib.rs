@@ -16,10 +16,12 @@
 pub const COMM_LEN: usize = 16;
 
 /// Maximum plaintext bytes carried in a single event. A single `SSL_read` /
-/// `SSL_write` larger than this is currently **truncated** to `DATA_CAP` by the
-/// BPF program (`h-ebpf-prog::emit_data`) and its tail is lost — chunking a big
-/// write into several consecutive same-direction events that the userspace
-/// synthesizer reassembles is a TODO, not yet implemented.
+/// `SSL_write` larger than this is split by the BPF program
+/// (`h-ebpf-prog::emit_data`) into several consecutive same-direction events,
+/// each carrying its absolute position in the connection-direction stream via
+/// [`SslEvent::seq_off`], which the userspace synthesizer uses to place every
+/// chunk at the correct sequence number (so a dropped/reordered chunk leaves a
+/// detectable gap instead of shifting every later byte).
 ///
 /// Sized at 32 KiB so a real-world Claude Code `/v1/messages` request — sent by
 /// Node as ONE ~23 KiB `SSL_write` (request line + headers + JSON body) —
@@ -29,9 +31,7 @@ pub const COMM_LEN: usize = 16;
 /// `wires_ignored`), leaving every Claude Code call out of storage. The record
 /// is reserved from the 16 MiB ring buffer (not the 512-byte BPF stack), so a
 /// 32 KiB payload is fine, and the `bpf_probe_read_user` length stays clamped
-/// to `DATA_CAP`, so the verifier can still prove the copy in-bounds. Writes
-/// beyond 32 KiB (long conversations) still lose their tail until the chunking
-/// TODO lands.
+/// to `DATA_CAP`, so the verifier can still prove the copy in-bounds.
 pub const DATA_CAP: usize = 32768;
 
 /// Event kind discriminants (`SslEvent::kind`).
@@ -58,6 +58,16 @@ pub struct SslEvent {
     pub conn_id: u64,
     /// Kernel monotonic timestamp (`bpf_ktime_get_ns`).
     pub ktime_ns: u64,
+    /// Absolute byte offset of `data[0]` within this connection-direction
+    /// stream. The BPF program keeps a running per-`(conn_id, direction)`
+    /// counter so that a single large `SSL_*` call split across several events —
+    /// and successive calls on the same keep-alive connection — carry a
+    /// monotonic position. The userspace synthesizer maps this to a TCP sequence
+    /// number, so a silently dropped or reordered chunk leaves a gap at its true
+    /// position instead of shifting every later byte earlier (which previously
+    /// spliced the next request's bytes into the prior body). Always 0 for
+    /// `CLOSE`.
+    pub seq_off: u64,
     /// Valid bytes in `data` (0 for `CLOSE`).
     pub data_len: u32,
     /// Process name (`bpf_get_current_comm`), NUL-padded.
