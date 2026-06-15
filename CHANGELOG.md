@@ -6,6 +6,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-06-15
+
+### Fixed
+
+- **eBPF capture of large and multi-connection TLS traffic.** A big `SSL_*`
+  buffer is split into several ring-buffer events; the synthesizer used to append
+  each at a running sequence counter, so a silently-dropped or reordered chunk
+  shifted every later byte and spliced the next request's bytes into the previous
+  body (invalid JSON → no captured call). The BPF program now stamps each event
+  with its absolute per-`(connection, direction)` stream offset and the
+  synthesizer places every chunk at that offset, so a dropped chunk leaves a gap
+  at its true position instead. Connections also finalize properly now — an
+  `SSL_free` uprobe (dynamic libssl) and an `SSL_read`-returns-0 EOF (static
+  targets) emit a close, and a per-connection generation folded into the
+  synthetic tuple gives a reused `SSL*` pointer a fresh, non-overlapping flow
+  key.
+- **Claude Code conversations form agent-turns.** The Anthropic
+  `mid-conversation-system` feature appends a trailing `role=system` notice after
+  the user's prompt, so the messages array often ends with `system` on a fresh
+  turn. `is_user_turn_start` / `extract_user_input` now skip trailing system
+  messages and evaluate the last non-system one, so fresh turns are recognized
+  (and their prompt preview populated) instead of being discarded as
+  "no user start".
+- **In-progress turn timestamps rendered as the year ~58423.** Active-turn
+  registry rows emitted `start_time`/`end_time` in microseconds, but the field is
+  milliseconds (the DB path returns `epoch_ms`, the console renders with
+  `new Date(ms)`). A µs value read as ms is 1000× too far in the future. Both
+  active-registry conversions now divide to milliseconds, matching finalized
+  turns. Added a timestamp-unit test suite across the eBPF clock and the API
+  boundary.
+
 ## [0.5.2] — 2026-06-11
 
 ### Added
