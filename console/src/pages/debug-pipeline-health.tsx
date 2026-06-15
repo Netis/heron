@@ -8,6 +8,7 @@ import { BackpressureSection } from "@/components/pipeline-health/backpressure-s
 import { FunnelSection } from "@/components/pipeline-health/funnel-section"
 import { StateGaugesSection } from "@/components/pipeline-health/state-gauges-section"
 import { ErrorListSection } from "@/components/pipeline-health/error-list-section"
+import { EbpfStatusSection } from "@/components/pipeline-health/ebpf-status-section"
 import { AllMetricsTable } from "@/components/pipeline-health/all-metrics-table"
 
 /**
@@ -116,6 +117,12 @@ export function PipelineHealthPage() {
           ))}
         </div>
       </div>
+
+      {/* ===== eBPF capture status (prominent — answers "is eBPF live?") ===== */}
+      <EbpfStatusSection
+        pipelineMetrics={active?.metrics ?? []}
+        prevByName={prevByName}
+      />
 
       {/* ===== Sections ===== */}
       {hasPipelines ? (

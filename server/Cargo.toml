@@ -8,7 +8,7 @@ exclude = ["h-ebpf-prog"]
 resolver = "2"
 
 [workspace.package]
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -59,6 +59,10 @@ zeromq = { version = "0.4", default-features = false, features = ["tokio-runtime
 httparse = "1"
 uuid = { version = "1", features = ["v7"] }
 bytemuck = { version = "1", features = ["derive"] }
+
+# Response-body decompression (Content-Encoding: gzip/deflate). Pure-Rust
+# backend (miniz_oxide) so the single static binary keeps building offline.
+flate2 = "1"
 
 # Benchmarking (dev-only; hot-path micro-benches — see h-protocol/benches/)
 criterion = { version = "0.5", features = ["html_reports"] }

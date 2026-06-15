@@ -1,0 +1,48 @@
+# Reproducible builder for an eBPF-enabled `heron` that runs on Ubuntu 22.04 /
+# glibc 2.35 (wuneng prod). The BPF toolchain (nightly + rust-src + bpf-linker)
+# lives ONLY in this image — never on the prod host. Output is a glibc-2.35
+# dynamically-linked `heron` built with the eBPF capture engine compiled in.
+#
+# Base MUST match the prod host's userland (Ubuntu 22.04) so the binary links
+# glibc 2.35 and runs there; building on a newer glibc (e.g. a 24.04 host)
+# yields `GLIBC_2.39 not found` at runtime.
+#
+# Rust artifacts come from the rsproxy.cn mirror — direct static.rust-lang.org
+# from this network crawls at ~45 KB/s (40 min for the stable toolchain alone),
+# rsproxy.cn runs at ~15 MB/s.
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential pkg-config libpcap-dev \
+      git curl ca-certificates \
+      llvm clang \
+ && rm -rf /var/lib/apt/lists/*
+
+# rsproxy.cn mirror for rustup downloads (toolchains + components).
+ENV RUSTUP_DIST_SERVER=https://rsproxy.cn \
+    RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+
+# Rust stable (host userspace build) + nightly with rust-src (the BPF program is
+# compiled with `-Z build-std=core` for the bpfel-unknown-none target).
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH=/root/.cargo/bin:$PATH
+RUN rustup toolchain install nightly --component rust-src --profile minimal
+
+# rsproxy.cn mirror for crates.io (cargo install + the heron build both use it).
+RUN printf '%s\n' \
+  '[source.crates-io]' \
+  "replace-with = 'rsproxy-sparse'" \
+  '[source.rsproxy-sparse]' \
+  'registry = "sparse+https://rsproxy.cn/index/"' \
+  '[registries.rsproxy]' \
+  'index = "sparse+https://rsproxy.cn/index/"' \
+  '[net]' \
+  'git-fetch-with-cli = true' \
+  > /root/.cargo/config.toml
+
+# bpf-linker performs the final link of the embedded BPF program.
+RUN cargo install bpf-linker --locked
+
+WORKDIR /build

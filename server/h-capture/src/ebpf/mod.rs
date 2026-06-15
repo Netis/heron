@@ -78,6 +78,10 @@ pub enum SslEvent {
         exe: Option<String>,
         dir: StreamDir,
         data: Bytes,
+        /// Absolute byte offset of `data[0]` within this connection-direction
+        /// stream (BPF per-connection counter). Lets the synthesizer place a
+        /// chunk at its true sequence even after a dropped/reordered sibling.
+        seq_off: u64,
         ktime_ns: u64,
     },
     /// The connection was torn down (`SSL_shutdown` / `close`).
@@ -224,8 +228,12 @@ impl EbpfPump {
                 self.synth.open(conn_id, tuple, ts_us)
             }
             SslEvent::Data {
-                conn_id, dir, data, ..
-            } => self.synth.data(conn_id, dir, &data, ts_us),
+                conn_id,
+                dir,
+                data,
+                seq_off,
+                ..
+            } => self.synth.data(conn_id, dir, &data, seq_off, ts_us),
             SslEvent::Close { conn_id, .. } => self.synth.close(conn_id, ts_us),
         };
 
@@ -305,9 +313,43 @@ mod tests {
             exe: None,
             dir: StreamDir::ClientToServer,
             data: Bytes::from_static(b"POST /v1/messages HTTP/1.1\r\n\r\n"),
+            seq_off: 0,
             ktime_ns: 1_100_000,
         });
         assert_eq!(data_frame_count(&frames), 1);
+    }
+
+    #[test]
+    fn chunked_write_events_emit_sequential_segments() {
+        // The BPF program splits a large SSL_write into several consecutive
+        // DATA events on the same conn+dir. The pump must turn each into its own
+        // TCP segment (one frame per event) so the TCP layer reassembles the
+        // full body — never merging or dropping a chunk.
+        let mut p = pump(vec![]);
+        p.on_event(SslEvent::Connect {
+            conn_id: 1,
+            pid: 100,
+            comm: "node".into(),
+            exe: None,
+            tuple: Some(tuple()),
+            ktime_ns: 1_000_000,
+        });
+        let mut segments = 0;
+        for (k, part) in [b"AAAA".as_slice(), b"BBBB", b"CCCC"].iter().enumerate() {
+            let frames = p.on_event(SslEvent::Data {
+                conn_id: 1,
+                pid: 100,
+                comm: "node".into(),
+                exe: None,
+                dir: StreamDir::ClientToServer,
+                data: Bytes::copy_from_slice(part),
+                // Each chunk carries its absolute stream offset (4 bytes each).
+                seq_off: (k * 4) as u64,
+                ktime_ns: 1_100_000 + k as u64 * 1000,
+            });
+            segments += data_frame_count(&frames);
+        }
+        assert_eq!(segments, 3, "each chunk event yields one TCP segment");
     }
 
     #[test]
@@ -383,6 +425,7 @@ mod tests {
             exe: None,
             dir: StreamDir::ClientToServer,
             data: Bytes::from_static(b"GET / HTTP/1.1\r\n"),
+            seq_off: 0,
             ktime_ns: 1_000 * 1_000, // 1_000_000 ns = 1_000 µs
         });
         assert_eq!(f0.iter().filter(|p| p.is_heartbeat()).count(), 0);
@@ -397,6 +440,7 @@ mod tests {
             exe: None,
             dir: StreamDir::ClientToServer,
             data: Bytes::from_static(b"X"),
+            seq_off: 16,
             ktime_ns: later_ns,
         });
         assert_eq!(
@@ -424,6 +468,7 @@ mod tests {
             exe: Some("/usr/bin/python3.12".into()),
             dir: StreamDir::ClientToServer,
             data: Bytes::from_static(b"POST /v1/messages HTTP/1.1\r\n\r\n"),
+            seq_off: 0,
             ktime_ns: 1_100_000,
         });
         // The data segment carries the owning process; pid/comm/exe survive

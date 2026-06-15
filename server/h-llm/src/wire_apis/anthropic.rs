@@ -635,7 +635,15 @@ pub fn extract_user_input(req: &Value) -> Option<String> {
 /// turn rather than a tool roundtrip continuation). Equivalent to
 /// `AgentProfile::is_user_turn_start` for Anthropic-shape bodies.
 pub fn is_user_turn_start(req: &Value) -> Option<bool> {
-    let last = req.get("messages")?.as_array()?.last()?;
+    // Skip trailing `role=system` messages (Claude Code's mid-conversation-system
+    // beta appends them after the user's turn), so a fresh user turn isn't masked
+    // by a trailing system notice. The operative message is the last non-system.
+    let last = req
+        .get("messages")?
+        .as_array()?
+        .iter()
+        .rev()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) != Some("system"))?;
     if last.get("role").and_then(|r| r.as_str()) != Some("user") {
         return Some(false);
     }

@@ -113,7 +113,13 @@ impl CaptureSource for EbpfSource {
         // Load every BPF program once; a program is attached to many sites
         // (each libssl, each static target) but the kernel only accepts a
         // single `load()` per program.
-        for name in ["ssl_write", "ssl_read_enter", "ssl_read_exit", "ssl_shutdown"] {
+        for name in [
+            "ssl_write",
+            "ssl_read_enter",
+            "ssl_read_exit",
+            "ssl_shutdown",
+            "ssl_free",
+        ] {
             load_program(&mut ebpf, name)?;
         }
 
@@ -124,6 +130,13 @@ impl CaptureSource for EbpfSource {
             attach_sym(&mut ebpf, "ssl_read_enter", "SSL_read", &libs, false)?;
             attach_sym(&mut ebpf, "ssl_read_exit", "SSL_read", &libs, true)?;
             attach_sym(&mut ebpf, "ssl_shutdown", "SSL_shutdown", &libs, false)?;
+            // SSL_free is the reliable teardown for dynamic libssl (many clients
+            // never call SSL_shutdown). Best-effort: a libssl missing the symbol
+            // shouldn't fail the whole attach, so log-and-continue, unlike the
+            // load-bearing read/write probes above.
+            if let Err(e) = attach_sym(&mut ebpf, "ssl_free", "SSL_free", &libs, false) {
+                tracing::warn!("ebpf: SSL_free attach skipped: {e}");
+            }
         }
 
         // Static, symbol-stripped targets (Phase 3, e.g. Claude Code's Bun
@@ -271,6 +284,7 @@ fn decode_event(bytes: &[u8], exe_cache: &mut HashMap<u32, Option<String>>) -> O
                 exe: resolve_exe(raw.pid, exe_cache),
                 dir,
                 data: Bytes::copy_from_slice(&raw.data[..len]),
+                seq_off: raw.seq_off,
                 ktime_ns: raw.ktime_ns,
             })
         }

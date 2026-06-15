@@ -10,6 +10,7 @@ h-common.workspace = true
 h-capture.workspace = true
 bytes.workspace = true
 httparse.workspace = true
+flate2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 thiserror.workspace = true

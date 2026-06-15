@@ -197,18 +197,19 @@ mod priority_tests {
     }
 
     #[test]
-    fn generic_catches_claude_cli_ua_without_session_header() {
-        // UA-spoofing or header-stripping: looks like claude-cli but the
-        // session header is absent. ClaudeCliProfile must NOT claim it
-        // (otherwise extract_session_id would return None with no fallback) —
-        // GenericProfile picks it up when the body has a tool-call anchor.
+    fn claude_cli_claims_ua_with_tool_anchor_without_session_header() {
+        // Claude Code v2.1+ stopped sending x-claude-code-session-id. A
+        // claude-cli UA on Anthropic wire with a tool-anchored body is now
+        // claimed by ClaudeCliProfile (it synthesizes the session from the
+        // anchor, same as GenericProfile) so the turn is labeled claude-cli
+        // rather than generic.
         let reg = build_default_registry();
         let c = call_with_body(
             wa::ANTHROPIC,
             vec![("User-Agent", "claude-cli/2.1.98 (cli)")],
             Some(GENERIC_ANT_TOOL_HISTORY),
         );
-        assert_eq!(find_kind(&reg, &c), Some("generic"));
+        assert_eq!(find_kind(&reg, &c), Some("claude-cli"));
     }
 
     const CODEX_STUB_META: &str = r#"{"session_id":"deadbeef-0000-0000-0000-000000000000"}"#;
