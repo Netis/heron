@@ -281,6 +281,42 @@ mod tests {
     }
 
     #[test]
+    fn boot_clock_ns_to_us_divides_by_1000() {
+        // With a zero offset the result is purely the ns→µs reduction. This is
+        // the eBPF timestamp origin: a `bpf_ktime_get_ns` value (nanoseconds)
+        // must become MICROSECONDS, never pass through as raw ns (which would be
+        // 1000× too large and, read downstream as µs, land centuries ahead).
+        let c = BootClock::with_offset_us(0);
+        assert_eq!(c.ktime_to_epoch_us(1_000_000_000), 1_000_000); // 1 s
+        assert_eq!(c.ktime_to_epoch_us(1_500), 1); // sub-µs truncates down
+        assert_eq!(c.ktime_to_epoch_us(0), 0);
+    }
+
+    #[test]
+    fn boot_clock_realistic_instant_is_microseconds_then_milliseconds() {
+        // A realistic boot offset + monotonic ktime must yield an epoch value in
+        // MICROSECONDS (~16 digits for 2026), and the µs→ms reduction the API
+        // applies must then land within this century — the same invariant the
+        // agent-turns API relies on. Ties the eBPF clock to the ms boundary.
+        let offset_us = 1_781_000_000_000_000_i64; // boot≈2026 in µs
+        let c = BootClock::with_offset_us(offset_us);
+        let epoch_us = c.ktime_to_epoch_us(6_787_026_422); // ~6.8 s since boot
+        // µs: 16-digit, recent.
+        assert!((1_700_000_000_000_000..1_900_000_000_000_000).contains(&epoch_us));
+        // µs→ms (what the API emits) stays below the year-2100 ceiling.
+        assert!(epoch_us / 1_000 < 4_102_444_800_000);
+    }
+
+    #[test]
+    fn boot_clock_large_ktime_does_not_overflow() {
+        // ~292 years of uptime in ns still converts without i64 overflow.
+        let c = BootClock::with_offset_us(0);
+        let huge_ns = u64::MAX / 2;
+        let us = c.ktime_to_epoch_us(huge_ns);
+        assert_eq!(us, (huge_ns / 1_000) as i64);
+    }
+
+    #[test]
     fn connect_with_handshake_emits_syn_synack() {
         let mut p = pump(vec![]);
         let frames = p.on_event(SslEvent::Connect {

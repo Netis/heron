@@ -173,8 +173,13 @@ fn agent_turn_to_list_item(t: &AgentTurn) -> TurnListItem {
         turn_id: t.turn_id.clone(),
         source_id: t.source_id.clone(),
         session_id: t.session_id.clone(),
-        start_time: t.start_time_us,
-        end_time: t.end_time_us,
+        // `TurnListItem.start_time`/`end_time` are MILLISECONDS — the DB query
+        // path returns `epoch_ms(start_time)`, and the console renders the field
+        // with `new Date(ms)`. The in-memory turn carries MICROSECONDS, so divide
+        // by 1000 here; emitting the raw µs made in-progress turns render as the
+        // year ~58423 (a µs value read as ms is 1000× too far in the future).
+        start_time: t.start_time_us / 1_000,
+        end_time: t.end_time_us / 1_000,
         duration_ms: t.duration_ms,
         wire_api: t.wire_api.clone(),
         agent_kind: t.agent_kind.clone(),
@@ -261,8 +266,10 @@ fn agent_turn_to_detail(t: AgentTurn) -> h_storage::query::TurnDetail {
         agent_kind: t.agent_kind,
         client_ip: t.client_ip.to_string(),
         server_ip: t.server_ip.to_string(),
-        start_time: t.start_time_us,
-        end_time: t.end_time_us,
+        // MILLISECONDS, to match the DB detail query's `epoch_ms(start_time)`
+        // (the in-memory turn is µs). See `agent_turn_to_list_item`.
+        start_time: t.start_time_us / 1_000,
+        end_time: t.end_time_us / 1_000,
         duration_ms: t.duration_ms,
         call_count: t.call_count,
         models_used: t.models_used,
@@ -820,5 +827,119 @@ mod proxy_view_tests {
         );
         assert!(parse_headers_json(None).is_empty());
         assert!(parse_headers_json(Some("garbage")).is_empty());
+    }
+
+    fn turn_with_start_us(start_us: i64) -> h_turn::AgentTurn {
+        h_turn::AgentTurn {
+            source_id: String::new(),
+            turn_id: "t".into(),
+            session_id: "s".into(),
+            wire_api: "anthropic".into(),
+            agent_kind: "claude-cli".into(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            server_ip: "127.0.0.1".parse().unwrap(),
+            start_time_us: start_us,
+            end_time_us: start_us + 5_000_000,
+            duration_ms: 5_000,
+            call_count: 1,
+            models_used: vec![],
+            subagents_used: vec![],
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cache_read_input_tokens: 0,
+            total_cache_creation_input_tokens: 0,
+            total_cost_usd: None,
+            status: h_turn::TurnStatus::InProgress,
+            final_finish_reason: None,
+            user_input_preview: None,
+            user_call_id: None,
+            final_answer_preview: None,
+            final_call_id: None,
+            call_ids: vec![],
+            metadata: serde_json::json!({}),
+            tool_surfaces: vec![],
+            tool_call_total: 0,
+            agent_topology: None,
+            suspicious_skills: vec![],
+        }
+    }
+
+    // ───────────────────── timestamp-unit suite ─────────────────────
+    //
+    // The active-turn registry holds `AgentTurn`s in MICROSECONDS, but the
+    // console-facing `TurnListItem`/`TurnDetail.start_time`/`end_time` are
+    // MILLISECONDS — the DB query path returns `epoch_ms(start_time)` and the
+    // UI renders with `new Date(ms)`. These tests pin that boundary so an
+    // in-progress (active-registry) turn never again diverges from a finalized
+    // (DB) turn — the divergence that rendered live turns as the year ~58423.
+
+    /// Year 2100 in ms-since-epoch — the same ceiling the query API enforces
+    /// (4_102_444_800 s). A correctly-converted 2026 instant is well below it; a
+    /// µs value mistakenly emitted as ms (the bug) is ~1.78e15, far above it.
+    const YEAR_2100_MS: i64 = 4_102_444_800_000;
+    /// Year 2001 in ms — a correctly-converted recent instant must be above it
+    /// (guards the opposite error: dividing one time too many → ~1970).
+    const YEAR_2001_MS: i64 = 1_000_000_000_000;
+
+    #[test]
+    fn in_progress_turn_times_are_milliseconds_not_micros() {
+        let start_us = 1_781_000_000_000_000; // 2026-06-x in µs (16 digits)
+        let expected_ms = 1_781_000_000_000; // same instant in ms (13 digits)
+        let t = turn_with_start_us(start_us);
+
+        let item = agent_turn_to_list_item(&t);
+        assert_eq!(item.start_time, expected_ms, "list start_time must be ms");
+        assert_eq!(item.end_time, expected_ms + 5_000, "list end_time must be ms");
+
+        let detail = agent_turn_to_detail(t);
+        assert_eq!(detail.start_time, expected_ms, "detail start_time must be ms");
+        assert_eq!(detail.end_time, expected_ms + 5_000, "detail end_time must be ms");
+    }
+
+    #[test]
+    fn list_and_detail_agree_on_timestamps() {
+        // The two active-registry conversions must emit identical instants, so a
+        // turn doesn't jump in time when the user opens its detail view.
+        let t = turn_with_start_us(1_781_506_787_026_422);
+        let item = agent_turn_to_list_item(&t);
+        let detail = agent_turn_to_detail(t);
+        assert_eq!(item.start_time, detail.start_time);
+        assert_eq!(item.end_time, detail.end_time);
+    }
+
+    #[test]
+    fn sane_micros_render_within_this_century_not_year_58423() {
+        // The exact reported symptom: a real 2026 µs timestamp must land in a
+        // plausible window once converted, never centuries in the future.
+        for start_us in [
+            1_700_000_000_000_000, // 2023
+            1_781_506_787_026_422, // 2026
+            1_900_000_000_000_000, // 2030
+        ] {
+            let ms = agent_turn_to_list_item(&turn_with_start_us(start_us)).start_time;
+            assert!(
+                (YEAR_2001_MS..YEAR_2100_MS).contains(&ms),
+                "µs={start_us} converted to ms={ms} outside [2001,2100) — unit bug"
+            );
+        }
+    }
+
+    #[test]
+    fn duration_ms_is_not_rescaled() {
+        // `duration_ms` is already milliseconds on the in-memory turn; it must
+        // pass through untouched (only the absolute *_us instants are /1000).
+        let mut t = turn_with_start_us(1_781_000_000_000_000);
+        t.duration_ms = 12_345;
+        assert_eq!(agent_turn_to_list_item(&t).duration_ms, 12_345);
+        assert_eq!(agent_turn_to_detail(t).duration_ms, 12_345);
+    }
+
+    #[test]
+    fn zero_and_small_timestamps_convert_without_panic() {
+        // Edge values must not panic or overflow (i64 /1000 is total).
+        for start_us in [0_i64, 999, 1_000, 1_500] {
+            let item = agent_turn_to_list_item(&turn_with_start_us(start_us));
+            assert_eq!(item.start_time, start_us / 1_000);
+        }
     }
 }
