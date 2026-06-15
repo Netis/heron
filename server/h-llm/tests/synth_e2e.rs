@@ -90,8 +90,8 @@ fn synthesized_anthropic_call_extracts_llmcall() {
     );
 
     let mut frames = s.open(1, tuple, 1_000);
-    frames.extend(s.data(1, StreamDir::ClientToServer, req.as_bytes(), 2_000));
-    frames.extend(s.data(1, StreamDir::ServerToClient, resp.as_bytes(), 3_000));
+    frames.extend(s.data(1, StreamDir::ClientToServer, req.as_bytes(), 0, 2_000));
+    frames.extend(s.data(1, StreamDir::ServerToClient, resp.as_bytes(), 0, 3_000));
     frames.extend(s.close(1, 4_000));
 
     let events = drive(frames);
@@ -151,6 +151,7 @@ fn synthesized_call_via_pump_carries_process_attribution() {
         exe: exe.clone(),
         dir: StreamDir::ClientToServer,
         data: Bytes::from(req.into_bytes()),
+        seq_off: 0,
         ktime_ns: 2_000_000,
     }));
     frames.extend(pump.on_event(SslEvent::Data {
@@ -160,6 +161,7 @@ fn synthesized_call_via_pump_carries_process_attribution() {
         exe: exe.clone(),
         dir: StreamDir::ServerToClient,
         data: Bytes::from(resp.into_bytes()),
+        seq_off: 0,
         ktime_ns: 3_000_000,
     }));
     frames.extend(pump.on_event(SslEvent::Close {

@@ -1,13 +1,37 @@
 use crate::agent_primitives::{AgentPrimitives, SystemPromptMarkers};
 use crate::model::LlmCall;
 use crate::profile::{AgentProfile, CallCtx, SessionIdExtraction};
-use crate::wire_apis as wa;
+use crate::wire_apis::{self as wa, AssistantSig};
 use serde_json::Value;
+
+use super::session_id::compose_session_id_tracked;
 
 pub struct ClaudeCliProfile;
 
 const SESSION_HEADER: &str = "x-claude-code-session-id";
 const UA_PREFIX: &str = "claude-cli/";
+
+/// Tool-call anchor for session synthesis when the legacy
+/// `x-claude-code-session-id` header is absent (Claude Code stopped sending it
+/// around v2.1). Mirrors `GenericProfile`'s anthropic branch: the first user
+/// text plus the first `tool_use` id (from the request history, else the
+/// response) form a stable per-session anchor. Returns `None` for text-only
+/// traffic with no tool anchor — such calls fall through to a later profile
+/// rather than being claimed-and-dropped.
+fn anthropic_tool_anchor(ctx: &CallCtx<'_>) -> Option<(String, AssistantSig)> {
+    let req = ctx.req?;
+    let user_text = wa::anthropic::first_user_text(req)?;
+    let sig = match wa::anthropic::first_assistant_sig_from_request(req) {
+        Some(s) => Some(s),
+        None => ctx
+            .resp
+            .and_then(wa::anthropic::first_assistant_sig_from_response_value),
+    }?;
+    if !matches!(sig, AssistantSig::ToolId(_)) {
+        return None;
+    }
+    Some((user_text, sig))
+}
 
 fn header<'a>(call: &'a LlmCall, key: &str) -> Option<&'a str> {
     call.request_headers
@@ -64,13 +88,14 @@ impl AgentProfile for ClaudeCliProfile {
     }
 
     fn matches(&self, ctx: &CallCtx<'_>) -> bool {
-        // Both UA prefix AND SESSION_HEADER must be present. UA alone isn't
-        // enough: the registry is first-match-wins (`profile.rs:181`), so
-        // claiming a call here when the session header is missing leaves the
-        // call with `extract_session_id() = None` and no fallback. By
-        // requiring the header up front, UA-spoofed / header-stripped /
-        // pre-session-header-version traffic falls through to GenericProfile,
-        // which can synthesize a session anchor from the body.
+        // Identify Claude Code by `User-Agent: claude-cli/*` on Anthropic wire,
+        // then require a usable session anchor so we never claim-and-drop a call
+        // (the registry is first-match-wins, profile.rs:181). The anchor is the
+        // legacy `x-claude-code-session-id` header when present, OR — for Claude
+        // Code v2.1+ which no longer sends that header — a synthesizable
+        // tool-call anchor in the body (same mechanism GenericProfile uses).
+        // UA-spoofed / header-stripped / anchorless text-only traffic still
+        // falls through to a later profile.
         if ctx.call.wire_api != wa::ANTHROPIC {
             return false;
         }
@@ -80,21 +105,38 @@ impl AgentProfile for ClaudeCliProfile {
         if !ua_ok {
             return false;
         }
-        header(ctx.call, SESSION_HEADER).is_some()
+        header(ctx.call, SESSION_HEADER).is_some() || anthropic_tool_anchor(ctx).is_some()
     }
 
     fn extract_session_id(&self, ctx: &CallCtx<'_>) -> Option<SessionIdExtraction> {
-        let session_id = header(ctx.call, SESSION_HEADER)?.to_string();
+        // Prefer the explicit session header when present (older Claude Code).
+        if let Some(h) = header(ctx.call, SESSION_HEADER) {
+            return Some(SessionIdExtraction {
+                session_id: h.to_string(),
+                tool_id_canonicalized: false,
+            });
+        }
+        // Fallback for header-less Claude Code: synthesize from the tool-call
+        // anchor exactly as GenericProfile does, so the same conversation maps
+        // to one stable session_id across its calls.
+        let (user_text, sig) = anthropic_tool_anchor(ctx)?;
+        let (session_id, tool_id_canonicalized) = compose_session_id_tracked(&user_text, sig);
         Some(SessionIdExtraction {
             session_id,
-            tool_id_canonicalized: false,
+            tool_id_canonicalized,
         })
     }
 
     fn extract_user_input(&self, ctx: &CallCtx<'_>) -> Option<String> {
         let req = ctx.req?;
         let msgs = req.get("messages")?.as_array()?;
-        let last = msgs.last()?;
+        // Skip trailing role=system notices (mid-conversation-system beta) so the
+        // user prompt preview comes from the operative last user message, not an
+        // appended ToolSearch/system block. Mirrors `is_user_turn_start`.
+        let last = msgs
+            .iter()
+            .rev()
+            .find(|m| m.get("role").and_then(|r| r.as_str()) != Some("system"))?;
         if last.get("role")?.as_str()? != "user" {
             return None;
         }
@@ -165,7 +207,17 @@ impl AgentProfile for ClaudeCliProfile {
         // extractor for text only; this one is the structural turn-start
         // predicate. Sub-agent filtering happens at the h-llm stage.
         let req = ctx.req?;
-        let last = req.get("messages")?.as_array()?.last()?;
+        // Skip trailing `role=system` messages: Claude Code's
+        // `mid-conversation-system` beta appends system notices (e.g. the
+        // ToolSearch "deferred tools are now available" block) AFTER the user's
+        // message, so the literal last element is often `system` even on a fresh
+        // user turn. The operative message is the last NON-system one.
+        let last = req
+            .get("messages")?
+            .as_array()?
+            .iter()
+            .rev()
+            .find(|m| m.get("role").and_then(|r| r.as_str()) != Some("system"))?;
         if last.get("role").and_then(|r| r.as_str()) != Some("user") {
             return Some(false);
         }
@@ -346,16 +398,37 @@ mod tests {
     }
 
     #[test]
-    fn does_not_match_when_session_header_missing() {
-        // UA alone is not enough — without `x-claude-code-session-id` we
-        // cannot extract a session_id, so the registry must let the call
-        // fall through to GenericProfile rather than claiming and dropping it.
+    fn does_not_match_when_session_header_missing_and_no_anchor() {
+        // UA + no session header + no body → no session anchor at all, so the
+        // call must fall through to a later profile rather than being
+        // claimed-and-dropped (registry is first-match-wins).
         let c = call_with(
             wa::ANTHROPIC,
             vec![("User-Agent", "claude-cli/2.1.98 (external, cli)")],
             None,
         );
         assert!(!ClaudeCliProfile.matches(&c.ctx()));
+    }
+
+    #[test]
+    fn matches_via_tool_anchor_when_session_header_absent() {
+        // Claude Code v2.1+ no longer sends x-claude-code-session-id. A
+        // tool-roundtrip request still carries a tool_use id in history, so the
+        // profile claims it (UA + synthesizable anchor) and labels it
+        // claude-cli instead of letting it fall through to generic.
+        let body = r#"{"messages":[
+            {"role":"user","content":[{"type":"text","text":"do the thing"}]},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_abc","name":"Bash","input":{}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"ok"}]}
+        ]}"#;
+        let c = call_with(
+            wa::ANTHROPIC,
+            vec![("User-Agent", "claude-cli/2.1.75 (external, sdk-cli)")],
+            Some(body),
+        );
+        assert!(ClaudeCliProfile.matches(&c.ctx()));
+        let ids = ClaudeCliProfile.extract_session_id(&c.ctx()).unwrap();
+        assert!(!ids.session_id.is_empty());
     }
 
     #[test]
@@ -404,6 +477,43 @@ mod tests {
         let body = r#"{"messages":[{"role":"user","content":"hello"}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(true));
+    }
+
+    #[test]
+    fn is_user_turn_start_skips_trailing_system_message() {
+        // Claude Code (mid-conversation-system beta) appends a trailing
+        // role=system notice (e.g. ToolSearch "deferred tools available") AFTER
+        // the user's prompt. The fresh user turn must still be recognized — the
+        // operative message is the last NON-system one. This is the exact shape
+        // that made eBPF-captured Claude Code conversations discard as
+        // `no_user_start` until the skip was added.
+        let body = r#"{
+            "messages":[
+                {"role":"user","content":[{"type":"text","text":"use the Bash tool"}]},
+                {"role":"system","content":"The following deferred tools are now available via ToolSearch."}
+            ],
+            "tools":[{"name":"Agent"},{"name":"Bash"}]
+        }"#;
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(true));
+    }
+
+    #[test]
+    fn is_user_turn_start_false_for_tool_result_then_trailing_system() {
+        // A tool-roundtrip continuation whose last user message is a tool_result,
+        // even with a trailing system notice mixed in earlier, stays a
+        // continuation (the operative last non-system message is the tool_result).
+        let body = r#"{
+            "messages":[
+                {"role":"user","content":[{"type":"text","text":"start"}]},
+                {"role":"system","content":"deferred tools available"},
+                {"role":"assistant","content":[{"type":"tool_use","id":"t","name":"Bash","input":{}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}
+            ],
+            "tools":[{"name":"Agent"},{"name":"Bash"}]
+        }"#;
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
+        assert_eq!(ClaudeCliProfile.is_user_turn_start(&c.ctx()), Some(false));
     }
 
     #[test]
@@ -580,6 +690,22 @@ mod tests {
         ]}]}"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert_eq!(ClaudeCliProfile.extract_user_input(&c.ctx()), None);
+    }
+
+    #[test]
+    fn extract_user_input_skips_trailing_system_message() {
+        // The user prompt preview must come from the operative user message even
+        // when Claude Code appends a trailing role=system notice after it (the
+        // shape that left agent-turn `user_input_preview` empty until fixed).
+        let body = r#"{"messages":[
+            {"role":"user","content":[{"type":"text","text":"the real prompt"}]},
+            {"role":"system","content":"deferred tools available via ToolSearch"}
+        ]}"#;
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
+        assert_eq!(
+            ClaudeCliProfile.extract_user_input(&c.ctx()).as_deref(),
+            Some("the real prompt")
+        );
     }
 
     #[test]

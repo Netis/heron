@@ -107,12 +107,14 @@ fn synth_request_response_round_trips_through_reassembler() {
         1,
         StreamDir::ClientToServer,
         &http_request("/v1/messages", "api.anthropic.com", r#"{"model":"claude"}"#),
+        0,
         2_000,
     ));
     frames.extend(s.data(
         1,
         StreamDir::ServerToClient,
         &http_response(r#"{"id":"msg_1","role":"assistant"}"#),
+        0,
         3_000,
     ));
     frames.extend(s.close(1, 4_000));
@@ -151,18 +153,23 @@ fn synth_large_body_split_across_segments_reassembles() {
     let req = http_request("/v1/messages", "api.anthropic.com", &body);
 
     let mut frames = s.open(1, tuple(), 1_000);
-    frames.extend(s.data(1, StreamDir::ClientToServer, &req, 2_000));
+    frames.extend(s.data(1, StreamDir::ClientToServer, &req, 0, 2_000));
     frames.extend(s.data(
         1,
         StreamDir::ServerToClient,
         &http_response(r#"{"ok":true}"#),
+        0,
         3_000,
     ));
 
     // The request alone should span multiple segments (sanity on the harness).
-    let req_segments = s
-        .data(1, StreamDir::ClientToServer, &req, 9_000)
-        .len();
+    // Use a throwaway synthesizer so this probe doesn't perturb the live flow.
+    let req_segments = FlowSynthesizer::new(SynthConfig {
+        segment_size: 512,
+        ..Default::default()
+    })
+    .data(1, StreamDir::ClientToServer, &req, 0, 9_000)
+    .len();
     assert!(req_segments > 1, "request should be multi-segment");
 
     let events = run(&mut w, frames);
@@ -192,6 +199,7 @@ fn synth_sse_streaming_response_emits_sse_events() {
         1,
         StreamDir::ClientToServer,
         &http_request("/v1/messages", "api.anthropic.com", r#"{"stream":true}"#),
+        0,
         2_000,
     ));
     // Each SSE event arrives as its own server→client chunk, mimicking a real
@@ -201,7 +209,7 @@ fn synth_sse_streaming_response_emits_sse_events() {
         "event: content_block_delta\ndata: {\"delta\":\"Hello\"}\n\n",
         "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
     ]);
-    frames.extend(s.data(1, StreamDir::ServerToClient, &sse, 3_000));
+    frames.extend(s.data(1, StreamDir::ServerToClient, &sse, 0, 3_000));
     frames.extend(s.close(1, 4_000));
 
     let events = run(&mut w, frames);
@@ -233,12 +241,14 @@ fn synth_midstream_without_handshake_syncs_on_request() {
         1,
         StreamDir::ClientToServer,
         &http_request("/v1/chat/completions", "api.openai.com", r#"{"n":1}"#),
+        0,
         2_000,
     ));
     frames.extend(s.data(
         1,
         StreamDir::ServerToClient,
         &http_response(r#"{"choices":[]}"#),
+        0,
         3_000,
     ));
 
@@ -256,29 +266,28 @@ fn synth_two_keepalive_exchanges_pair_in_joiner() {
     let mut w = flow_worker();
     let mut j = joiner();
 
+    // Keep-alive: each direction's second message starts at the cumulative byte
+    // offset of the first (the BPF per-conn counter the synthesizer now honors).
+    let req1 = http_request("/v1/messages", "api.anthropic.com", r#"{"q":1}"#);
+    let req2 = http_request("/v1/messages", "api.anthropic.com", r#"{"q":2}"#);
+    let resp1 = http_response(r#"{"a":1}"#);
+    let resp2 = http_response(r#"{"a":2}"#);
+
     let mut frames = s.open(1, tuple(), 1_000);
+    frames.extend(s.data(1, StreamDir::ClientToServer, &req1, 0, 2_000));
+    frames.extend(s.data(1, StreamDir::ServerToClient, &resp1, 0, 3_000));
     frames.extend(s.data(
         1,
         StreamDir::ClientToServer,
-        &http_request("/v1/messages", "api.anthropic.com", r#"{"q":1}"#),
-        2_000,
-    ));
-    frames.extend(s.data(
-        1,
-        StreamDir::ServerToClient,
-        &http_response(r#"{"a":1}"#),
-        3_000,
-    ));
-    frames.extend(s.data(
-        1,
-        StreamDir::ClientToServer,
-        &http_request("/v1/messages", "api.anthropic.com", r#"{"q":2}"#),
+        &req2,
+        req1.len() as u64,
         4_000,
     ));
     frames.extend(s.data(
         1,
         StreamDir::ServerToClient,
-        &http_response(r#"{"a":2}"#),
+        &resp2,
+        resp1.len() as u64,
         5_000,
     ));
     frames.extend(s.close(1, 6_000));
