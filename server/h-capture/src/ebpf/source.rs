@@ -29,6 +29,7 @@ use h_common::config::{CaptureSourceConfig, EbpfTarget};
 use h_common::internal_metrics::{Metric, MetricsWorker};
 use h_ebpf_common::{kind, SslEvent as RawSslEvent, DATA_CAP};
 
+use crate::ebpf::redact::Redactor;
 use crate::ebpf::sigscan::{scan_elf_executable, Signature};
 use crate::ebpf::{BootClock, EbpfPump, SslEvent};
 use crate::packet::RawPacket;
@@ -44,6 +45,9 @@ pub struct EbpfSource {
     targets: Vec<EbpfTarget>,
     pid_allowlist: Vec<u32>,
     segment_size: u32,
+    /// Edge redactor built from config; `None` unless `redaction.enabled`.
+    /// Applied to each plaintext buffer in the pump before frame synthesis.
+    redactor: Option<Redactor>,
 }
 
 impl EbpfSource {
@@ -57,11 +61,20 @@ impl EbpfSource {
             targets,
             pid_allowlist,
             segment_size,
+            redaction,
         } = config
         else {
             return Err(crate::CaptureError::Other(
                 "build_ebpf_source called with a non-ebpf config".to_string(),
             ));
+        };
+        let redactor = if redaction.enabled {
+            Some(Redactor::new(
+                redaction.headers.clone(),
+                redaction.token_prefixes.clone(),
+            ))
+        } else {
+            None
         };
         Ok(Self {
             source_id: source_id.clone().unwrap_or_else(|| "ebpf".to_string()),
@@ -69,6 +82,7 @@ impl EbpfSource {
             targets: targets.clone(),
             pid_allowlist: pid_allowlist.clone(),
             segment_size: *segment_size,
+            redactor,
         })
     }
 }
@@ -208,7 +222,11 @@ impl CaptureSource for EbpfSource {
             // No connect event / real tuple yet → rely on mid-stream sync.
             emit_handshake: false,
         };
-        let mut pump = EbpfPump::new(cfg, BootClock::from_system(), self.pid_allowlist.clone());
+        let mut pump = EbpfPump::new(cfg, BootClock::from_system(), self.pid_allowlist.clone())
+            .with_redactor(self.redactor.clone());
+        if self.redactor.is_some() {
+            tracing::info!("ebpf: edge redaction enabled");
+        }
 
         let mut idle_hb = tokio::time::interval(Duration::from_secs(1));
         idle_hb.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

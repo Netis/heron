@@ -22,6 +22,7 @@ use bytes::Bytes;
 
 use h_common::process::ProcessInfo;
 
+use crate::ebpf::redact::Redactor;
 use crate::heartbeat::HeartbeatTracker;
 use crate::packet::RawPacket;
 use crate::synth::{ConnTuple, FlowSynthesizer, StreamDir, SynthConfig};
@@ -42,6 +43,10 @@ pub use source::EbpfSource;
 // static TLS stacks (Bun/BoringSSL, Phase 3). Pure + cross-platform so the
 // matcher is built and unit-tested on every host, like `synth`.
 pub mod sigscan;
+
+// Edge redaction: equal-length scrubbing of secrets from the plaintext buffer
+// before frame synthesis (probe-side, opt-in). Pure + cross-platform.
+pub mod redact;
 
 /// Maximum length of a process `comm` (matches the kernel `TASK_COMM_LEN`).
 pub const COMM_LEN: usize = 16;
@@ -183,6 +188,10 @@ pub struct EbpfPump {
     clock: BootClock,
     /// When non-empty, only these PIDs are captured.
     pid_allowlist: Vec<u32>,
+    /// Edge redaction applied to each data buffer before synthesis. `None` (the
+    /// default, e.g. single-host local capture) ships plaintext unchanged; the
+    /// distributed probe sets this so secrets don't cross the network.
+    redactor: Option<Redactor>,
 }
 
 impl EbpfPump {
@@ -192,7 +201,16 @@ impl EbpfPump {
             heartbeat: HeartbeatTracker::new(),
             clock,
             pid_allowlist,
+            redactor: None,
         }
+    }
+
+    /// Attach an edge redactor that scrubs secrets from each plaintext buffer
+    /// before synthesis. A no-op redactor (no rules) is dropped so the hot path
+    /// skips the per-event buffer copy entirely.
+    pub fn with_redactor(mut self, redactor: Option<Redactor>) -> Self {
+        self.redactor = redactor.filter(|r| !r.is_noop());
+        self
     }
 
     /// Number of live connections currently tracked (for metrics/observability).
@@ -233,7 +251,16 @@ impl EbpfPump {
                 data,
                 seq_off,
                 ..
-            } => self.synth.data(conn_id, dir, &data, seq_off, ts_us),
+            } => match &self.redactor {
+                // Scrub the contiguous plaintext buffer before it is sliced into
+                // segments. Equal-length, so `seq_off` and Content-Length hold.
+                Some(r) => {
+                    let mut buf = data.to_vec();
+                    r.redact(&mut buf);
+                    self.synth.data(conn_id, dir, &buf, seq_off, ts_us)
+                }
+                None => self.synth.data(conn_id, dir, &data, seq_off, ts_us),
+            },
             SslEvent::Close { conn_id, .. } => self.synth.close(conn_id, ts_us),
         };
 
@@ -517,6 +544,114 @@ mod tests {
         assert_eq!(proc.pid, 4242);
         assert_eq!(proc.comm, "python3");
         assert_eq!(proc.exe.as_deref(), Some("/usr/bin/python3.12"));
+    }
+
+    /// Concatenate the payloads of every synthesized (non-heartbeat) frame, so a
+    /// test can assert what plaintext actually leaves the pump.
+    fn frame_bytes(pkts: &[RawPacket]) -> Vec<u8> {
+        let mut v = Vec::new();
+        for p in pkts.iter().filter(|p| !p.is_heartbeat()) {
+            v.extend_from_slice(&p.data);
+        }
+        v
+    }
+
+    /// With an edge redactor attached, a secret in the SSL plaintext is scrubbed
+    /// before synthesis, so the bytes the pump emits (and a probe would ship)
+    /// never contain it. A control pump without a redactor still carries it.
+    #[test]
+    fn redactor_scrubs_secret_before_synthesis() {
+        let payload =
+            b"POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer sk-ant-SHHH-TOPSECRET\r\n\r\n";
+
+        let mut control = pump(vec![]);
+        control.on_event(SslEvent::Connect {
+            conn_id: 1,
+            pid: 1,
+            comm: "node".into(),
+            exe: None,
+            tuple: Some(tuple()),
+            ktime_ns: 1_000_000,
+        });
+        let control_frames = control.on_event(SslEvent::Data {
+            conn_id: 1,
+            pid: 1,
+            comm: "node".into(),
+            exe: None,
+            dir: StreamDir::ClientToServer,
+            data: Bytes::copy_from_slice(payload),
+            seq_off: 0,
+            ktime_ns: 1_100_000,
+        });
+        let control_bytes = frame_bytes(&control_frames);
+        assert!(
+            control_bytes.windows(b"TOPSECRET".len()).any(|w| w == b"TOPSECRET"),
+            "control pump (no redactor) must carry the secret"
+        );
+
+        let mut redacting = pump(vec![]).with_redactor(Some(redact::Redactor::with_defaults()));
+        redacting.on_event(SslEvent::Connect {
+            conn_id: 1,
+            pid: 1,
+            comm: "node".into(),
+            exe: None,
+            tuple: Some(tuple()),
+            ktime_ns: 1_000_000,
+        });
+        let red_frames = redacting.on_event(SslEvent::Data {
+            conn_id: 1,
+            pid: 1,
+            comm: "node".into(),
+            exe: None,
+            dir: StreamDir::ClientToServer,
+            data: Bytes::copy_from_slice(payload),
+            seq_off: 0,
+            ktime_ns: 1_100_000,
+        });
+        let red_bytes = frame_bytes(&red_frames);
+        assert!(
+            !red_bytes.windows(b"TOPSECRET".len()).any(|w| w == b"TOPSECRET"),
+            "redactor must scrub the secret before it is synthesized into frames"
+        );
+        // Equal-length: the redacted segment is the same size as the original.
+        assert_eq!(
+            control_bytes.len(),
+            red_bytes.len(),
+            "redaction is equal-length, so synthesized segment sizes match"
+        );
+    }
+
+    /// A no-op redactor (no rules configured) is dropped, so the data path is
+    /// byte-identical to having no redactor.
+    #[test]
+    fn noop_redactor_is_dropped() {
+        let mut p = pump(vec![]).with_redactor(Some(redact::Redactor::new(
+            Vec::<String>::new(),
+            Vec::<String>::new(),
+        )));
+        p.on_event(SslEvent::Connect {
+            conn_id: 1,
+            pid: 1,
+            comm: "c".into(),
+            exe: None,
+            tuple: Some(tuple()),
+            ktime_ns: 1_000_000,
+        });
+        let frames = p.on_event(SslEvent::Data {
+            conn_id: 1,
+            pid: 1,
+            comm: "c".into(),
+            exe: None,
+            dir: StreamDir::ClientToServer,
+            data: Bytes::from_static(b"Authorization: Bearer sk-keep-me\r\n\r\n"),
+            seq_off: 0,
+            ktime_ns: 1_100_000,
+        });
+        let bytes = frame_bytes(&frames);
+        assert!(
+            bytes.windows(b"sk-keep-me".len()).any(|w| w == b"sk-keep-me"),
+            "a no-op redactor must not scrub anything"
+        );
     }
 
     #[test]

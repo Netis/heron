@@ -140,6 +140,7 @@ fn source_to_table(s: &CaptureSourceConfig) -> Table {
             targets,
             pid_allowlist,
             segment_size,
+            redaction,
         } => {
             t["type"] = value("ebpf");
             if let Some(id) = source_id {
@@ -187,6 +188,23 @@ fn source_to_table(s: &CaptureSourceConfig) -> Table {
                     arr.push(tt);
                 }
                 t["targets"] = toml_edit::Item::ArrayOfTables(arr);
+            }
+            // Edge redaction is off by default; emit the table only when enabled
+            // so a normal ebpf source's TOML stays minimal.
+            if redaction.enabled {
+                let mut rt = Table::new();
+                rt["enabled"] = value(true);
+                let mut headers = toml_edit::Array::new();
+                for h in &redaction.headers {
+                    headers.push(h.as_str());
+                }
+                rt["headers"] = value(headers);
+                let mut prefixes = toml_edit::Array::new();
+                for p in &redaction.token_prefixes {
+                    prefixes.push(p.as_str());
+                }
+                rt["token_prefixes"] = value(prefixes);
+                t["redaction"] = toml_edit::Item::Table(rt);
             }
         }
         CaptureSourceConfig::ThinProbe { listen, tls } => {

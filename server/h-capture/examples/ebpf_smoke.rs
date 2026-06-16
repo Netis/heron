@@ -57,6 +57,7 @@ async fn main() {
         targets,
         pid_allowlist: vec![], // all processes
         segment_size: 16 * 1024,
+        redaction: Default::default(),
     };
 
     let source = build_source(&config, None).expect("build ebpf source");

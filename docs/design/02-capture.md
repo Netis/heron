@@ -177,6 +177,19 @@ CN (a per-probe identity needing no manual config). The probe reconnects with
 capped exponential backoff; a bounded capture→uplink queue plus TCP backpressure
 is the OOM guard.
 
+**Edge redaction** (`h-capture/src/ebpf/redact.rs`, opt-in via the probe's
+`[source.redaction] enabled = true`). Because the split is at `RawPacket`, the
+probe ships post-TLS plaintext over the network. As defence-in-depth on top of
+mTLS, the probe scrubs the SSL plaintext buffer **before** frame synthesis —
+masking the values of configured headers (`Authorization` / `x-api-key` /
+`api-key` / `Cookie`) and `sk-…` / `Bearer …` tokens in bodies. The overwrite is
+**equal-length**, so `Content-Length` and the synthesizer's absolute stream
+offsets are unchanged; it runs on the contiguous uprobe buffer (one `SSL_write`,
+≤~32 KiB) where a request's headers almost always sit, before the buffer is
+sliced into segments. Limitation (by design): a secret split across two uprobe
+chunks can be missed — redaction is best-effort and **does not replace** mTLS /
+network isolation, which remain the security boundary.
+
 **Reuse.** `h-protocol`, `h-llm`, `h-turn`, `h-metrics`, `h-storage`, `h-api`,
 and the console are unchanged. The central needs no code change to accept
 probes — a `type = "thin-probe"` source flows through the existing factory,

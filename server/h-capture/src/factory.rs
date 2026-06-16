@@ -137,6 +137,7 @@ mod tests {
             targets: vec![],
             pid_allowlist: vec![],
             segment_size: 16 * 1024,
+            redaction: Default::default(),
         };
         // `Box<dyn CaptureSource>` is not Debug, so avoid `unwrap_err`.
         let err = match build_source(&config, None) {

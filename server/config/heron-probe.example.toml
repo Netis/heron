@@ -31,6 +31,17 @@ ssl_libs = []
 pid_allowlist = []
 segment_size = 16384
 
+# Edge redaction (Phase 2): equal-length scrubbing of secrets from the SSL
+# plaintext before frames are synthesized and shipped, so API keys don't cross
+# the network in the clear. Strongly recommended for the distributed topology
+# (defence-in-depth on top of mTLS — NOT a replacement for it). Off unless
+# enabled. Omit headers/token_prefixes to use the built-in defaults
+# (authorization / x-api-key / api-key / cookie ; sk- / "Bearer ").
+[source.redaction]
+enabled = true
+# headers = ["authorization", "x-api-key", "api-key", "cookie"]
+# token_prefixes = ["sk-", "Bearer "]
+
 # For a dev smoke-test on a host without the BPF toolchain (e.g. macOS), swap the
 # [source] above for a pcap-file replay — it exercises the full uplink path:
 #   [source]

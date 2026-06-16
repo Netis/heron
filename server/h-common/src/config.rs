@@ -324,6 +324,12 @@ pub enum CaptureSourceConfig {
         /// Target payload size (bytes) per synthesized TCP segment.
         #[serde(default = "default_ebpf_segment_size")]
         segment_size: u32,
+        /// Edge redaction applied to the SSL plaintext buffer before frames are
+        /// synthesized. Off by default (single-host local capture ships
+        /// plaintext to its own DB); the distributed probe enables it so API
+        /// keys never cross the network. See `h-capture/src/ebpf/redact.rs`.
+        #[serde(default)]
+        redaction: RedactionConfig,
     },
     /// Central collector for the distributed eBPF topology: an mTLS listener
     /// that accepts `RawPacket` batches pushed by remote `heron-probe`
@@ -414,6 +420,44 @@ fn default_ebpf_segment_size() -> u32 {
     // 16 KiB — matches h-capture's synth DEFAULT_SEGMENT_SIZE. Kept in sync by
     // value (h-common must not depend on h-capture).
     16 * 1024
+}
+
+/// Edge-redaction rules for the eBPF source (used by the distributed probe).
+/// The runtime SSOT for the default rule values: `h-capture/src/ebpf/redact.rs`
+/// mirrors these in its `with_defaults()` (kept in sync by value, since h-common
+/// must not depend on h-capture).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RedactionConfig {
+    /// Master switch. Off → plaintext ships unchanged (single-host default).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Header names whose values are masked (case-insensitive).
+    #[serde(default = "default_redact_headers")]
+    pub headers: Vec<String>,
+    /// Secret-token prefixes masked anywhere (e.g. a key in a JSON body).
+    #[serde(default = "default_redact_token_prefixes")]
+    pub token_prefixes: Vec<String>,
+}
+
+impl Default for RedactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            headers: default_redact_headers(),
+            token_prefixes: default_redact_token_prefixes(),
+        }
+    }
+}
+
+fn default_redact_headers() -> Vec<String> {
+    ["authorization", "x-api-key", "api-key", "cookie"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn default_redact_token_prefixes() -> Vec<String> {
+    ["sk-", "Bearer "].iter().map(|s| s.to_string()).collect()
 }
 
 impl CaptureSourceConfig {
