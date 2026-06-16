@@ -38,6 +38,32 @@ NIC / .pcap file / cloud-probe (ZMQ) / eBPF SSL uprobes
 
 Same connection's packets always land on the same worker, so parsing state is local and lock-free. Multiple independent pipelines can run side-by-side — e.g., low-latency local capture isolated from bursty cloud-probe ingress.
 
+> ### 🛰️ On-host eBPF capture (Linux) — see TLS-encrypted agent traffic with no proxy
+>
+> Packet capture only sees plaintext. Heron's **eBPF SSL-uprobe source** lifts
+> that on Linux: it hooks `SSL_read` / `SSL_write` in-process and reads
+> **TLS-encrypted** LLM calls as plaintext *on the host that makes them* — no
+> proxy, no TLS terminator, no SDK, never in the request path — and stamps every
+> call with its **owning process** (pid · command · executable), so you see *which
+> agent process* made each call. It covers:
+>
+> - **dynamically-linked OpenSSL/BoringSSL** — Python `openai`/`anthropic` SDKs,
+>   curl, Node, and most CLIs (attached by exported symbol); and
+> - **statically-linked, symbol-stripped BoringSSL SEAs** — Claude Code's and
+>   opencode's ~250 MB Bun single-executable runtimes, located by BoringSSL
+>   byte-signature offset.
+>
+> It is built to survive the messy reality of agent CLIs: it **follows their
+> frequent npm self-updates** by re-attaching across the rotated binary inode,
+> and **reaches sessions that were already running** when capture started
+> (via `/proc/<pid>/exe`) — without a restart. The result is a complete on-host
+> view of Claude Code / opencode / Python-agent traffic, reconstructed into
+> agent turns and attributed per process.
+>
+> Opt-in — built behind the `ebpf` cargo feature; Linux-only, needs `CAP_BPF` +
+> kernel BTF (and `CAP_SYS_ADMIN` on hardened ≤5.15 kernels). See
+> [eBPF capture](docs/design/02-capture.md#ebpf-ssl-uprobe-capture-linux-experimental).
+
 ## Why not an SDK / proxy / OpenTelemetry?
 
 | Approach                   | In request path | Needs client cooperation | Sees full bodies | Reconstructs agent turns |
@@ -57,7 +83,7 @@ The trade-off is honest: you give up cross-cluster client tracing, you get a sin
 - libpcap on a live interface
 - Replay from `.pcap` files (any speed)
 - ZMQ from [cloud-probe](https://github.com/Netis/cloud-probe) for hosts you can't install on directly
-- **eBPF SSL uprobes** (Linux · experimental · opt-in) — hook `SSL_read` / `SSL_write` in-process to read **TLS-encrypted** traffic as plaintext on the host that makes the calls, with no proxy or TLS terminator, and stamp every call with its **owning process** (pid · command · executable). Covers dynamically-linked OpenSSL/BoringSSL (Python SDKs, curl, …) and statically-linked, symbol-stripped BoringSSL (Claude Code's Bun runtime, located by byte-signature offset). Off by default — built behind the `ebpf` cargo feature, needs `CAP_BPF` + kernel BTF. See [eBPF capture](docs/design/02-capture.md#ebpf-ssl-uprobe-capture-linux-experimental).
+- **eBPF SSL uprobes** (Linux · opt-in) — hook `SSL_read` / `SSL_write` in-process to read **TLS-encrypted** traffic as plaintext on the host that makes the calls, with no proxy or TLS terminator, and stamp every call with its **owning process** (pid · command · executable). Covers dynamically-linked OpenSSL/BoringSSL (Python SDKs, curl, Node, …) **and** statically-linked, symbol-stripped BoringSSL SEAs — Claude Code's and opencode's Bun runtimes, located by byte-signature offset. **Follows the agent CLIs' frequent npm self-updates** (re-attaches across the rotated binary inode) and **reaches already-running sessions** (via `/proc/<pid>/exe`), so capture keeps working without restarts. Off by default — built behind the `ebpf` cargo feature, needs `CAP_BPF` + kernel BTF. See the **On-host eBPF capture** spotlight above and [eBPF capture](docs/design/02-capture.md#ebpf-ssl-uprobe-capture-linux-experimental).
 
 **Agent-turn reconstruction** with named profiles for **Claude CLI** (Claude Code) and **OpenAI Codex CLI**, a generic profile for everything else, plus an experimental OpenClaw profile. Turns stitch multi-call agent interactions (tool call → tool result → planner → next tool, repeat) into a single addressable unit. The hero screenshot above is one such turn — 247 calls, ordered on the Timeline, drillable into the request/response of any single call.
 
@@ -171,7 +197,7 @@ out of anything you push back.
 
 - [Install](docs/install.md) — one-line installer, systemd, capabilities
 - [Configure](docs/configure.md) — pipelines, sources, storage, retention
-- [eBPF capture](docs/design/02-capture.md#ebpf-ssl-uprobe-capture-linux-experimental) — on-host TLS capture + process attribution (experimental, Linux)
+- [eBPF capture](docs/design/02-capture.md#ebpf-ssl-uprobe-capture-linux-experimental) — on-host TLS capture + process attribution (Linux, opt-in): symbol & byte-signature attach, self-update tracking, running-session re-attach
 - [Glossary](docs/glossary.md) — what every metric means
 - [Architecture](docs/design/01-architecture.md) — pipeline design and trade-offs
 - [Filing issues](docs/filing-issues.md) — how issues are triaged + how to file one an agent can pick up
