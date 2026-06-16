@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 
 use h_common::process::ProcessInfo;
 
@@ -16,7 +17,13 @@ pub const HEARTBEAT_PACKET_LEN: usize = 14;
 /// with all-zero source/dest MACs and `ether_type = 0xFFFF`. Detection is
 /// via [`RawPacket::is_heartbeat`]; downstream stages (flow dispatcher)
 /// branch on it to broadcast virtual-time advance instead of flow-hashing.
-#[derive(Debug, Clone)]
+///
+/// `Serialize`/`Deserialize` let a thin eBPF probe ship a `RawPacket` (process
+/// attribution included) to a central collector over the wire protocol in
+/// [`crate::wire`]. `data` rides as a byte sequence via `bytes`'s `serde`
+/// feature — no parallel struct needed; the central path is byte-for-byte the
+/// local eBPF source's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawPacket {
     /// Capture timestamp in microseconds since Unix epoch.
     pub timestamp_us: i64,

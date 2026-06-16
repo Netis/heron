@@ -24,6 +24,12 @@ thiserror.workspace = true
 tokio-util.workspace = true
 serde.workspace = true
 snap = "1"
+# Probe↔central distributed-capture transport: compact frame codec (wire.rs)
+# + mTLS listener (thin_probe.rs). The codec is cross-platform and unit-tested
+# on every build; ThinProbeSource is a plain CaptureSource (no eBPF needed).
+postcard.workspace = true
+tokio-rustls.workspace = true
+rustls-pemfile.workspace = true
 
 # eBPF deps are Linux-only and optional (pulled in only by the `ebpf` feature),
 # so neither macOS nor a default Linux build compiles them.
