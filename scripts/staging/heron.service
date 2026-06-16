@@ -13,11 +13,18 @@ WorkingDirectory=/opt/heron
 # so a `cargo` rebuild (which replaces the inode and drops file caps) can't
 # silently degrade capture to API-only — the unit re-grants them every start.
 #
-# CAP_BPF + CAP_PERFMON are for the `ebpf` source: loading BPF programs and
-# attaching SSL_read/SSL_write uprobes (kernel >= 5.8). Harmless to grant on a
-# build without the `ebpf` feature — the caps simply go unused.
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON
+# The `ebpf` source needs CAP_BPF + CAP_PERFMON to load BPF programs, AND
+# CAP_SYS_ADMIN to attach the SSL_read/SSL_write uprobes: the kernel gates
+# uprobe `perf_event_open` (perf_uprobe_init) on CAP_SYS_ADMIN specifically —
+# CAP_BPF / CAP_PERFMON do NOT cover it and `perf_event_paranoid` does not relax
+# it. Verified on staging (6.8) and the prod host (5.15). Without CAP_SYS_ADMIN
+# the attach fails with `perf_event_open failed`, the ebpf source's run() errors
+# out, and the co-located pcap source keeps the process healthy — so the symptom
+# is a silent ebpf_uprobes_attached=0, not a crash. (deploy-prod.sh injects the
+# same three caps; keeping them in the committed unit makes that a no-op.)
+# Harmless to grant on a build without the `ebpf` feature — the caps go unused.
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
 NoNewPrivileges=true
 Restart=on-failure
 RestartSec=5

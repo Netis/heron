@@ -35,7 +35,8 @@ snaplen = 262144
 
 # eBPF SSL-uprobe source: captures the plaintext of TLS-encrypted LLM calls by
 # attaching SSL_read/SSL_write uprobes (Linux only, needs CAP_BPF + CAP_PERFMON
-# — see heron.service). Empty ssl_libs = autodetect libssl from /proc/*/maps.
+# + CAP_SYS_ADMIN — the uprobe perf_event_open is gated on CAP_SYS_ADMIN; see
+# heron.service). Empty ssl_libs = autodetect libssl from /proc/*/maps.
 # Requires a build with the `ebpf` feature; on a non-eBPF binary this source is
 # rejected at startup, so this config is paired with the ebpf-enabled staging
 # build (ci.yml). The ebpf-soak gate generates TLS traffic and asserts the
