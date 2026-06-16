@@ -5,6 +5,7 @@ use crate::pcap_dump::PacketDumperConfig;
 use crate::pcap_file::PcapFileSource;
 use crate::pcap_live::PcapLiveSource;
 use crate::source::CaptureSource;
+use crate::thin_probe::ThinProbeSource;
 
 /// Build a [`CaptureSource`] from configuration.
 ///
@@ -57,6 +58,9 @@ pub fn build_source(
             CloudProbeSource::new(endpoint.clone(), *recv_hwm, pcap_dump),
         )),
         CaptureSourceConfig::Ebpf { .. } => build_ebpf_source(config, pcap_dump),
+        CaptureSourceConfig::ThinProbe { listen, tls } => Ok(Box::new(
+            ThinProbeSource::from_config(listen.clone(), tls, pcap_dump)?,
+        )),
     }
 }
 

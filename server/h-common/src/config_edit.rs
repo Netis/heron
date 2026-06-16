@@ -189,6 +189,15 @@ fn source_to_table(s: &CaptureSourceConfig) -> Table {
                 t["targets"] = toml_edit::Item::ArrayOfTables(arr);
             }
         }
+        CaptureSourceConfig::ThinProbe { listen, tls } => {
+            t["type"] = value("thin-probe");
+            t["listen"] = value(listen.as_str());
+            let mut tt = Table::new();
+            tt["cert"] = value(tls.cert.as_str());
+            tt["key"] = value(tls.key.as_str());
+            tt["client_ca"] = value(tls.client_ca.as_str());
+            t["tls"] = toml_edit::Item::Table(tt);
+        }
     }
     t
 }

@@ -325,6 +325,37 @@ pub enum CaptureSourceConfig {
         #[serde(default = "default_ebpf_segment_size")]
         segment_size: u32,
     },
+    /// Central collector for the distributed eBPF topology: an mTLS listener
+    /// that accepts `RawPacket` batches pushed by remote `heron-probe`
+    /// instances (see `h-capture/src/wire.rs`). Each probe's packets — process
+    /// attribution included — enter the same downstream pipeline as a local
+    /// eBPF source, routed by `source_id` (the probe's client-cert CN, or the
+    /// `source_id` it sends in its batch). The cross-platform counterpart of
+    /// the Linux-only `Ebpf` source: a `thin-probe` listener parses on every
+    /// platform so a shared config file stays portable.
+    ThinProbe {
+        /// `host:port` to listen on for probe uplinks (mTLS).
+        #[serde(default = "default_thin_probe_listen")]
+        listen: String,
+        /// Mutual-TLS material: the listener's server cert/key plus the CA that
+        /// authorized probe client certs. Required — mTLS is the admission
+        /// boundary; plaintext (incl. API keys) must never cross the network
+        /// unauthenticated.
+        tls: TlsServerConfig,
+    },
+}
+
+/// Mutual-TLS material for the central `ThinProbe` listener. The CA in
+/// `client_ca` defines the set of probes allowed to connect; a probe presenting
+/// a cert that does not chain to it is rejected at the handshake.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TlsServerConfig {
+    /// PEM file: the central's server certificate chain.
+    pub cert: String,
+    /// PEM file: the central's server private key.
+    pub key: String,
+    /// PEM file: CA that signed authorized probe client certificates.
+    pub client_ca: String,
 }
 
 /// A static-binary uprobe target for eBPF capture (Phase 3). Used for runtimes
@@ -397,6 +428,9 @@ impl CaptureSourceConfig {
             Self::Ebpf { source_id, .. } => {
                 Some(source_id.clone().unwrap_or_else(|| "ebpf".to_string()))
             }
+            // Like cloud-probe: source_id is per-connection (client-cert CN /
+            // batch envelope), resolved at runtime, not from static config.
+            Self::ThinProbe { .. } => None,
         }
     }
 }
@@ -419,6 +453,11 @@ fn default_snaplen() -> u32 {
 
 fn default_cloud_probe_endpoint() -> String {
     "tcp://0.0.0.0:5555".to_string()
+}
+
+fn default_thin_probe_listen() -> String {
+    // Distinct from cloud-probe's 5555 so a single central can run both.
+    "0.0.0.0:5556".to_string()
 }
 
 fn default_cloud_probe_hwm() -> i32 {

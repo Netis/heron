@@ -26,6 +26,8 @@ mod pcap_retention;
 mod routing;
 mod source;
 pub mod synth;
+mod thin_probe;
+pub mod tls;
 pub mod wire;
 
 pub use cloud_probe::CloudProbeSource;
@@ -40,6 +42,7 @@ pub use pcap_retention::spawn_pcap_retention_task;
 pub use routing::RoutingSender;
 pub use source::CaptureSource;
 pub use synth::{ConnTuple, FlowSynthesizer, StreamDir, SynthConfig};
+pub use thin_probe::ThinProbeSource;
 pub use wire::{decode_frame, encode_frame, ProbeBatch, WireError, PROTOCOL_VERSION};
 
 /// Whether this binary was compiled with the on-host eBPF capture loader
@@ -62,6 +65,9 @@ pub enum CaptureError {
 
     #[error("zmq error: {0}")]
     Zmq(#[from] zeromq::ZmqError),
+
+    #[error("tls error: {0}")]
+    Tls(String),
 
     #[error("{0}")]
     Other(String),

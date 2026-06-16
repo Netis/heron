@@ -18,7 +18,8 @@ libc.workspace = true
 bytes.workspace = true
 async-trait.workspace = true
 zeromq.workspace = true
-tokio.workspace = true
+# `net` for the ThinProbeSource TCP/mTLS listener (always built, not eBPF-gated).
+tokio = { workspace = true, features = ["net"] }
 tracing.workspace = true
 thiserror.workspace = true
 tokio-util.workspace = true
@@ -30,6 +31,9 @@ snap = "1"
 postcard.workspace = true
 tokio-rustls.workspace = true
 rustls-pemfile.workspace = true
+x509-parser.workspace = true
+# Stream/Sink extensions for the length-delimited Framed transport.
+futures-util.workspace = true
 
 # eBPF deps are Linux-only and optional (pulled in only by the `ebpf` feature),
 # so neither macOS nor a default Linux build compiles them.
@@ -40,6 +44,8 @@ h-ebpf-common = { path = "../h-ebpf-common", optional = true }
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# In-memory throwaway PKI for the loopback mTLS integration test (no committed keys).
+rcgen.workspace = true
 
 # Smoke test for live eBPF capture: runs EbpfSource and prints captured HTTP
 # request lines. Linux + `--features ebpf` + CAP_BPF only.

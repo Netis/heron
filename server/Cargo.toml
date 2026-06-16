@@ -68,6 +68,14 @@ postcard = { version = "1", features = ["use-std"] }
 # `ring` crypto provider keeps the static binary self-contained (no aws-lc-rs/CMake).
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
 rustls-pemfile = "2"
+# Parse the mTLS client certificate's subject CN → the probe's source_id when a
+# batch arrives without one. Pure-Rust X.509 parser.
+x509-parser = "0.16"
+# Stream/Sink extensions for the length-delimited Framed probe↔central transport.
+futures-util = "0.3"
+# Dev-only: synthesize a throwaway CA + server/client certs in-memory for the
+# loopback mTLS integration test, so no key material is ever committed.
+rcgen = "0.13"
 
 # Protocol parsing
 httparse = "1"
