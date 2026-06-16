@@ -6,6 +6,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-06-16
+
+### Changed
+
+- **eBPF on-host SSL-uprobe capture is now a first-class, soak-gated
+  capability** (experimental since 0.5.1). It lifts the plaintext of
+  TLS-encrypted LLM calls directly at the in-process `SSL_read` / `SSL_write`
+  boundary — covering dynamically-linked OpenSSL/BoringSSL (Python `openai` /
+  `anthropic` SDKs, curl, Node, most CLIs) and statically-linked, symbol-stripped
+  BoringSSL single-executable runtimes (Claude Code's / opencode's Bun binaries,
+  located by byte-signature offset) — and stamps every call with its owning
+  process (pid · command · executable). A new staging `ebpf-soak` gate replays
+  real TLS traffic through the freshly deployed binary and asserts the uprobe
+  attaches, traffic is captured, and a process-attributed `LlmCall` is parsed and
+  persisted end-to-end; both prod promotion and release now require a passing
+  `ebpf-soaked` status alongside `staging-soaked`, so on-host capture can no
+  longer silently regress into prod or a cut release.
+
+### Fixed
+
+- **eBPF SSL uprobes attach under the non-root staging service.** The staging
+  unit granted only `CAP_BPF` + `CAP_PERFMON`, but the kernel gates uprobe
+  `perf_event_open` (`perf_uprobe_init`) on `CAP_SYS_ADMIN` specifically — which
+  those caps don't cover and `perf_event_paranoid` doesn't relax. The `SSL_write`
+  uprobe attach therefore failed with `perf_event_open failed`, and because a
+  failed capture source is non-fatal (the co-located packet tap keeps the
+  pipeline healthy) the symptom was a silent `ebpf_uprobes_attached = 0` rather
+  than a crash — which is why the `ebpf-soak` gate had never passed. The
+  committed staging unit now carries `CAP_SYS_ADMIN` (matching what the prod
+  deploy already injects), so the gate goes green and on-host capture works under
+  a non-root service.
+
+### Docs
+
+- **README repositioned from "network wire" to passive capture.** The headline
+  "Agent observability from the network wire" became inaccurate once on-host eBPF
+  landed — those bytes never touch the wire (on a client they're the
+  pre-encryption plaintext). It now leads with the durable differentiator
+  (passive; no SDK, sidecar, or proxy; never in the request path) and names both
+  capture surfaces: off the network wire, or lifted from the host's TLS boundary
+  by eBPF.
+
 ## [0.5.6] — 2026-06-16
 
 ### Fixed
