@@ -55,3 +55,6 @@ __pycache__/
 .worktrees/
 
 /logs/
+
+# WeChat (公众号) draft articles + their assets — not part of the repo
+/wechat/
