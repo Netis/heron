@@ -40,7 +40,9 @@ pub(crate) fn gen_pki(client_cn: &str) -> TestPki {
         .distinguished_name
         .push(DnType::CommonName, "central");
     server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    let server_cert = server_params.signed_by(&server_key, &ca_cert, &ca_key).unwrap();
+    let server_cert = server_params
+        .signed_by(&server_key, &ca_cert, &ca_key)
+        .unwrap();
 
     let client_key = KeyPair::generate().unwrap();
     let mut client_params = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -48,7 +50,9 @@ pub(crate) fn gen_pki(client_cn: &str) -> TestPki {
         .distinguished_name
         .push(DnType::CommonName, client_cn);
     client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-    let client_cert = client_params.signed_by(&client_key, &ca_cert, &ca_key).unwrap();
+    let client_cert = client_params
+        .signed_by(&client_key, &ca_cert, &ca_key)
+        .unwrap();
 
     TestPki {
         ca_pem: ca_cert.pem(),

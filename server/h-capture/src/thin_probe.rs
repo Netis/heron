@@ -336,7 +336,8 @@ mod tests {
             key: server_key,
             client_ca: ca.clone(),
         };
-        let source = Box::new(ThinProbeSource::from_config(listen.clone(), &tls_cfg, None).unwrap());
+        let source =
+            Box::new(ThinProbeSource::from_config(listen.clone(), &tls_cfg, None).unwrap());
 
         let (tx, mut rx) = mpsc::channel(32);
         let cancel = CancellationToken::new();
@@ -357,7 +358,10 @@ mod tests {
         let connector = TlsConnector::from(Arc::new(client_cfg));
         let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let domain = ServerName::try_from("localhost").unwrap();
-        let tls = connector.connect(domain, tcp).await.expect("mTLS handshake");
+        let tls = connector
+            .connect(domain, tcp)
+            .await
+            .expect("mTLS handshake");
         let mut framed = Framed::new(tls, wire::length_delimited_codec());
 
         // Frame 1: explicit batch source_id + a packet carrying ProcessInfo.
@@ -369,16 +373,24 @@ mod tests {
                 sample_packet(1_000_100, &[0x01, 0x02], None),
             ],
         );
-        framed.send(wire::encode_frame(&batch1).unwrap()).await.unwrap();
+        framed
+            .send(wire::encode_frame(&batch1).unwrap())
+            .await
+            .unwrap();
 
         // Frame 2: empty batch source_id → central falls back to client-cert CN.
         let batch2 = ProbeBatch::new("", vec![sample_packet(1_000_200, &[0x09], None)]);
-        framed.send(wire::encode_frame(&batch2).unwrap()).await.unwrap();
+        framed
+            .send(wire::encode_frame(&batch2).unwrap())
+            .await
+            .unwrap();
 
         let p1 = recv_one(&mut rx).await;
         assert_eq!(p1.source_id, "explicit-id");
         assert_eq!(&p1.data[..], &[0xde, 0xad, 0xbe, 0xef]);
-        let pi = p1.process.expect("process attribution preserved over the wire");
+        let pi = p1
+            .process
+            .expect("process attribution preserved over the wire");
         assert_eq!(pi.pid, 4242);
         assert_eq!(pi.comm, "claude");
         assert_eq!(pi.exe.as_deref(), Some("/usr/bin/claude"));
@@ -393,8 +405,14 @@ mod tests {
             "empty batch source_id must fall back to the client-cert CN"
         );
 
-        assert_eq!(metrics_assert.counter(Metric::CaptureBatchesReceived).get(), 2);
-        assert_eq!(metrics_assert.counter(Metric::CapturePacketsReceived).get(), 3);
+        assert_eq!(
+            metrics_assert.counter(Metric::CaptureBatchesReceived).get(),
+            2
+        );
+        assert_eq!(
+            metrics_assert.counter(Metric::CapturePacketsReceived).get(),
+            3
+        );
 
         cancel.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
@@ -448,7 +466,7 @@ mod tests {
 
         let got = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
         assert!(
-            matches!(got, Err(_)) || matches!(got, Ok(None)),
+            got.is_err() || matches!(got, Ok(None)),
             "an untrusted client cert must not deliver any packet"
         );
 

@@ -335,9 +335,13 @@ mod tests {
 
         // Feed three packets; one carries process attribution.
         let proc = ProcessInfo::new(99, "node").with_exe(Some("/usr/bin/node".into()));
-        ptx.send(raw(1_000_000, &[0xaa, 0xbb], Some(proc))).await.unwrap();
+        ptx.send(raw(1_000_000, &[0xaa, 0xbb], Some(proc)))
+            .await
+            .unwrap();
         ptx.send(raw(1_000_010, &[0xcc], None)).await.unwrap();
-        ptx.send(raw(1_000_020, &[0xdd, 0xee, 0xff], None)).await.unwrap();
+        ptx.send(raw(1_000_020, &[0xdd, 0xee, 0xff], None))
+            .await
+            .unwrap();
 
         let p1 = recv_one(&mut crx).await;
         assert_eq!(p1.source_id, "probe-x");
@@ -402,8 +406,9 @@ mod tests {
             key: server_key,
             client_ca: ca,
         };
-        let central =
-            Box::new(ThinProbeSource::from_config(format!("127.0.0.1:{port}"), &server_tls, None).unwrap());
+        let central = Box::new(
+            ThinProbeSource::from_config(format!("127.0.0.1:{port}"), &server_tls, None).unwrap(),
+        );
         let (ctx, mut crx) = mpsc::channel(64);
         let cancel_c = cancel.clone();
         let central_handle = tokio::spawn(async move {

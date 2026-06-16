@@ -16,8 +16,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
-use h_common::internal_metrics::{Metric, MetricsSystem};
 use h_capture::{build_source, ProbeUplink, RawPacket, RoutingSender};
+use h_common::internal_metrics::{Metric, MetricsSystem};
 
 use crate::config::ProbeConfig;
 
@@ -44,7 +44,10 @@ const CAPTURE_METRICS: &[Metric] = &[
 ];
 
 #[derive(Parser, Debug)]
-#[command(name = "heron-probe", about = "Heron edge capture probe (eBPF → mTLS uplink)")]
+#[command(
+    name = "heron-probe",
+    about = "Heron edge capture probe (eBPF → mTLS uplink)"
+)]
 struct Cli {
     /// Path to the probe TOML config.
     #[arg(short, long, default_value = "heron-probe.toml")]
