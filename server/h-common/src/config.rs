@@ -358,6 +358,19 @@ pub struct TlsServerConfig {
     pub client_ca: String,
 }
 
+/// Mutual-TLS material for a `heron-probe` (the client side). The probe presents
+/// `cert`/`key` to authenticate itself to the central and verifies the central's
+/// server certificate chains to `server_ca`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TlsClientConfig {
+    /// PEM file: the probe's client certificate chain (its identity).
+    pub cert: String,
+    /// PEM file: the probe's client private key.
+    pub key: String,
+    /// PEM file: CA that signed the central's server certificate.
+    pub server_ca: String,
+}
+
 /// A static-binary uprobe target for eBPF capture (Phase 3). Used for runtimes
 /// that statically link their TLS library (e.g. Claude Code's Bun binary), so
 /// there is no `libssl.so` to attach to by name.

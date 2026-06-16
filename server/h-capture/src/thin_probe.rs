@@ -265,15 +265,8 @@ async fn handle_conn(
 mod tests {
     use super::*;
 
-    use std::io::Write;
-    use std::net::TcpListener as StdTcpListener;
-
     use bytes::Bytes;
     use futures_util::SinkExt;
-    use rcgen::{
-        BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
-        KeyUsagePurpose,
-    };
     use tokio::net::TcpStream;
     use tokio::sync::mpsc;
     use tokio_rustls::rustls::pki_types::ServerName;
@@ -283,6 +276,7 @@ mod tests {
     use h_common::process::ProcessInfo;
 
     use crate::packet::RawPacket;
+    use crate::testpki::{gen_pki, pick_free_port, write_pem};
     use crate::wire::{self, ProbeBatch};
 
     fn test_metrics() -> MetricsWorker {
@@ -298,69 +292,6 @@ mod tests {
                 Metric::CaptureReadErrors,
             ],
         )
-    }
-
-    fn pick_free_port() -> u16 {
-        StdTcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
-    }
-
-    /// A throwaway PKI generated in-memory for one test: a CA that signs a
-    /// server cert (SAN `localhost`) and a client cert (CN `gateway-1`).
-    struct TestPki {
-        ca_pem: String,
-        server_cert_pem: String,
-        server_key_pem: String,
-        client_cert_pem: String,
-        client_key_pem: String,
-        client_cn: String,
-    }
-
-    fn gen_pki() -> TestPki {
-        let ca_key = KeyPair::generate().unwrap();
-        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
-        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-        ca_params
-            .distinguished_name
-            .push(DnType::CommonName, "Heron Test CA");
-        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
-
-        let server_key = KeyPair::generate().unwrap();
-        let mut server_params = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
-        server_params
-            .distinguished_name
-            .push(DnType::CommonName, "central");
-        server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-        let server_cert = server_params.signed_by(&server_key, &ca_cert, &ca_key).unwrap();
-
-        let client_cn = "gateway-1";
-        let client_key = KeyPair::generate().unwrap();
-        let mut client_params = CertificateParams::new(Vec::<String>::new()).unwrap();
-        client_params
-            .distinguished_name
-            .push(DnType::CommonName, client_cn);
-        client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-        let client_cert = client_params.signed_by(&client_key, &ca_cert, &ca_key).unwrap();
-
-        TestPki {
-            ca_pem: ca_cert.pem(),
-            server_cert_pem: server_cert.pem(),
-            server_key_pem: server_key.serialize_pem(),
-            client_cert_pem: client_cert.pem(),
-            client_key_pem: client_key.serialize_pem(),
-            client_cn: client_cn.to_string(),
-        }
-    }
-
-    fn write_pem(dir: &std::path::Path, name: &str, contents: &str) -> String {
-        let path = dir.join(name);
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(contents.as_bytes()).unwrap();
-        path.to_str().unwrap().to_string()
     }
 
     async fn recv_one(rx: &mut mpsc::Receiver<RawPacket>) -> RawPacket {
@@ -389,7 +320,7 @@ mod tests {
     /// the client-cert CN as fallback.
     #[tokio::test]
     async fn integration_mtls_probe_delivers_packets_with_process() {
-        let pki = gen_pki();
+        let pki = gen_pki("gateway-1");
         let dir = tempfile::tempdir().unwrap();
         let ca = write_pem(dir.path(), "ca.pem", &pki.ca_pem);
         let server_crt = write_pem(dir.path(), "server.crt", &pki.server_cert_pem);
@@ -474,9 +405,9 @@ mod tests {
     /// from an unauthorized probe ever reaches the pipeline.
     #[tokio::test]
     async fn integration_untrusted_client_cert_is_rejected() {
-        let server_pki = gen_pki();
+        let server_pki = gen_pki("gateway-1");
         // A second, unrelated PKI: its client cert chains to a different CA.
-        let rogue_pki = gen_pki();
+        let rogue_pki = gen_pki("rogue");
         let dir = tempfile::tempdir().unwrap();
         let ca = write_pem(dir.path(), "ca.pem", &server_pki.ca_pem);
         let server_crt = write_pem(dir.path(), "server.crt", &server_pki.server_cert_pem);
