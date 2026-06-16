@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.6] — 2026-06-16
+
+### Fixed
+
+- **Claude Code's security-monitor sidecar no longer masks/floods agent-turns.**
+  Claude Code fires a background `/v1/messages` "security monitor" call that
+  feeds the running transcript to a supervisor prompt and returns a tiny
+  `<block>yes/no` verdict (system prompt "You are a security monitor for
+  autonomous AI coding agents", `stop_sequences=["</block>"]`, no `tools`
+  field). Because it embeds the transcript, it synthesized the *same* session
+  anchor as the real conversation, so the turn tracker merged it into the real
+  turn and overwrote that turn's answer with "<block>no" (and standalone ones
+  flooded the view) — on prod ~73% of claude-opus turns were this housekeeping
+  noise, masking real working sessions. The `claude-cli` profile's
+  `is_auxiliary` (which already drops one-shot sidecars from turn tracking while
+  keeping the call in `llm_calls`) only caught `tools:[]`; the monitor call has
+  no `tools` field, so it slipped through. It is now flagged by its
+  system-prompt signature, so real conversation turns form cleanly from real
+  calls only.
+
 ## [0.5.5] — 2026-06-16
 
 ### Fixed
