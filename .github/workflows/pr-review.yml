@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   review:
-    uses: Netis/agent-ops/.github/workflows/review.yml@v0.3.1
+    uses: Netis/olympus/.github/workflows/review.yml@v0.3.1
     with:
       agent_ops_ref: v0.3.1
       runner_labels: '["self-hosted","heron"]'

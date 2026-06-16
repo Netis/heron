@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   revise:
-    uses: Netis/agent-ops/.github/workflows/revise.yml@v0.2.0
+    uses: Netis/olympus/.github/workflows/revise.yml@v0.2.0
     with:
       pr_number: ${{ inputs.pr_number }}
       agent_ops_ref: v0.2.0
