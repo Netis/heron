@@ -831,7 +831,7 @@ mod tests {
     #[test]
     fn exe_link_basename_matches_plain_path() {
         assert!(exe_link_has_basename(
-            "/home/v/.nvm/.../claude-code/bin/claude.exe",
+            "/home/user/.nvm/.../claude-code/bin/claude.exe",
             "claude.exe"
         ));
     }
@@ -842,11 +842,11 @@ mod tests {
         // into the now-unlinked staging dir; the kernel appends " (deleted)".
         // Basename matching must see through both the staging dir and the suffix.
         assert!(exe_link_has_basename(
-            "/home/v/.nvm/.../@anthropic-ai/.claude-code-BLnYIOGh/bin/claude.exe (deleted)",
+            "/home/user/.nvm/.../@anthropic-ai/.claude-code-BLnYIOGh/bin/claude.exe (deleted)",
             "claude.exe"
         ));
         assert!(exe_link_has_basename(
-            "/home/v/.nvm/.../opencode-ai/bin/opencode.exe (deleted)",
+            "/home/user/.nvm/.../opencode-ai/bin/opencode.exe (deleted)",
             "opencode.exe"
         ));
     }
