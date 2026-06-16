@@ -2,7 +2,7 @@
 
 ## Overview
 
-The capture module acquires raw network packets from four source types and outputs `RawPacket` streams. Each source feeds its own independent processing pipeline; pipelines converge at the storage layer. Three sources are packet taps (live NIC, pcap file, cloud-probe ZMQ); the fourth — [eBPF SSL uprobes](#ebpf-ssl-uprobe-capture-linux-experimental) — is Linux-only and experimental, and reads plaintext at the in-process TLS boundary rather than off the wire.
+The capture module acquires raw network packets from several source types and outputs `RawPacket` streams. Each source feeds its own independent processing pipeline; pipelines converge at the storage layer. Three sources are packet taps (live NIC, pcap file, cloud-probe ZMQ); a fourth — [eBPF SSL uprobes](#ebpf-ssl-uprobe-capture-linux-experimental) — is Linux-only and experimental, and reads plaintext at the in-process TLS boundary rather than off the wire. A fifth — [thin-probe](#distributed-ebpf-capture-thin-probe--central-collector) — is the central end of a distributed deployment: it accepts `RawPacket` batches from remote `heron-probe` agents over mTLS, so eBPF's host-local capture can scale to a fleet without running the whole pipeline on every edge host.
 
 ## Data Sources
 
@@ -34,7 +34,7 @@ Receives batched packets from [cloud-probe](https://github.com/Netis/cloud-probe
 - `recv_hwm` is a configurable knob (default 1000). zmq.rs 0.4 does not currently expose an RCVHWM option, so the value is accepted and logged but not applied at the socket level. Backpressure flows through the downstream mpsc channel; cloud-probe's own drop statistics cover sender-side loss.
 - Runs as a Tokio task (native async, no spawn_blocking needed)
 - Extracts individual packets from the ZMQ batch format, outputs raw `pkt_data` bytes as-is (including Ethernet + VLAN + MPLS headers)
-- The `version` field in the batch header is **not** validated; any parseable batch is accepted. A malformed batch (length arithmetic inconsistent) is dropped whole and counted in the `CaptureBatchesDropped` internal metric.
+- The `version` field in the batch header is **not** validated; any parseable batch is accepted. A malformed batch (length arithmetic inconsistent) is dropped whole and counted in the `CaptureBatchesDropped` internal metric. (The newer probe↔central protocol — see [thin-probe](#distributed-ebpf-capture-thin-probe--central-collector) — deliberately does *not* repeat this: it validates a leading version byte from frame one.)
 - Batch-level metadata (`uuid`, `service_tag`, `keybit`) is currently discarded. If per-probe attribution becomes a requirement, add fields to `RawPacket` and plumb downstream.
 
 #### Cloud-Probe ZMQ Wire Format
@@ -134,6 +134,56 @@ sources leave it `None`.
 Config lives under a `type = "ebpf"` source — see
 [Configure → eBPF source](../configure.md#ebpf--on-host-tls-capture-linux-experimental).
 
+## Distributed eBPF capture (thin probe + central collector)
+
+eBPF SSL-uprobe capture is inherently **host-local**: a uprobe attaches to a
+process on a specific kernel, so observing a *fleet* of agents means one capture
+agent per observed host. Rather than run the whole heavy pipeline (TCP
+reassembly, HTTP/LLM decode, turn tracking, storage, API, console) on every edge
+host, Heron splits at the `RawPacket` boundary:
+
+```
+┌─ edge host (one per host) ─────────────┐          ┌─ central heron ──────────────────────┐
+│ heron-probe (thin binary)              │          │ ThinProbeSource (CaptureSource impl) │
+│  ├ EbpfSource (reused as-is)           │   mTLS    │  └ mTLS listener, verifies client    │
+│  │   → RawPacket(+ProcessInfo)         │ ───────▶  │     cert, decodes wire frames        │
+│  └ ProbeUplink: batch → wire frame     │  length-  │        │ stamp source_id → RoutingSender│
+│     → length-delimited mTLS stream     │  delimited│        ▼ unchanged downstream pipeline │
+└────────────────────────────────────────┘          └──────────────────────────────────────┘
+        (single-host deployments still use EbpfSource locally — this does not replace it)
+```
+
+The data contract is `RawPacket` itself: the central runs the exact same code
+path as a local eBPF source, process attribution and all. Only the frequently
+changing wire-API decoding lives centrally, so a probe fleet rarely needs
+upgrading when a new provider/schema is added.
+
+**Wire protocol** (`h-capture/src/wire.rs`). Each length-delimited frame carries
+`[version: u8] ++ postcard(ProbeBatch { source_id, packets })`. The version byte
+sits *outside* the postcard blob so a skew is rejected (`UnsupportedVersion`)
+before the body is decoded against a possibly-incompatible schema — the explicit
+fix for the cloud-probe version-unvalidated gap above. `RawPacket` is
+`serde`-serializable (its `Bytes` payload rides via `bytes/serde`); no parallel
+struct is needed.
+
+**Transport & identity** (`h-capture/src/{tls,thin_probe,probe_uplink}.rs`).
+mTLS over a single ordered TLS-over-TCP stream. The probe is the **client** (it
+dials out — NAT/firewall friendly); the central is the **server** and requires a
+client certificate, so only a probe whose cert chains to the configured CA can
+connect. That mutual-auth handshake — not the (future, best-effort) edge
+redaction — is the real security boundary for shipping post-TLS plaintext. The
+`source_id` is the probe's declared batch id when present, else its client-cert
+CN (a per-probe identity needing no manual config). The probe reconnects with
+capped exponential backoff; a bounded capture→uplink queue plus TCP backpressure
+is the OOM guard.
+
+**Reuse.** `h-protocol`, `h-llm`, `h-turn`, `h-metrics`, `h-storage`, `h-api`,
+and the console are unchanged. The central needs no code change to accept
+probes — a `type = "thin-probe"` source flows through the existing factory,
+metrics, and pipeline. At fleet scale, point the central at ClickHouse; multiple
+central instances behind an L4 LB with `source_id` affinity is the documented
+scale-out path (not yet implemented).
+
 ## Output
 
 The capture module outputs raw packet bytes without any link-layer processing:
@@ -183,6 +233,18 @@ realtime = false          # false = read as fast as possible; true = preserve or
 type = "cloud-probe"
 endpoint = "tcp://0.0.0.0:5555"
 recv_hwm = 1000
+
+# Central end of a distributed eBPF deployment: accept RawPacket batches from
+# remote heron-probe agents over mTLS. The tls block is required — mTLS is the
+# admission boundary. See config/heron-probe.example.toml for the probe side.
+[[capture.sources]]
+type = "thin-probe"
+listen = "0.0.0.0:5556"
+
+[capture.sources.tls]
+cert = "/etc/heron/server.crt"
+key = "/etc/heron/server.key"
+client_ca = "/etc/heron/probe-ca.crt"   # CA that signed authorized probe certs
 ```
 
 ## File Structure
