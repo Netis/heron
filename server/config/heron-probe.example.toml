@@ -1,0 +1,44 @@
+# heron-probe — edge capture probe config (example).
+#
+# Runs one capture source on this host and ships the captured packets — process
+# attribution included — to a central `heron` over mTLS. Copy, fill in the cert
+# paths and central endpoint, and run: `heron-probe --config heron-probe.toml`.
+
+# host:port of the central thin-probe listener (the `type = "thin-probe"` source
+# on the central). The probe dials out, so only the central needs to be reachable.
+central_endpoint = "central.internal:5556"
+
+# Certificate name to validate the central's server cert against (a SAN in it).
+server_name = "central.internal"
+
+# This probe's identity. Leave unset to use the client-cert CN (a per-probe
+# identity with no manual config). Set it to override (e.g. a K8s node name).
+# source_id = "gateway-1"
+
+# Mutual TLS (client side). The CA in server_ca must have signed the central's
+# server cert; the central's client_ca must have signed this probe's cert.
+[tls]
+cert = "/etc/heron-probe/client.crt"
+key = "/etc/heron-probe/client.key"
+server_ca = "/etc/heron-probe/ca.crt"
+
+# The capture source. In production this is an `ebpf` SSL-uprobe source (Linux,
+# requires CAP_BPF + BTF; build the probe with `--features ebpf`). Empty
+# `ssl_libs` autodetects libssl by scanning running processes.
+[source]
+type = "ebpf"
+ssl_libs = []
+pid_allowlist = []
+segment_size = 16384
+
+# For a dev smoke-test on a host without the BPF toolchain (e.g. macOS), swap the
+# [source] above for a pcap-file replay — it exercises the full uplink path:
+#   [source]
+#   type = "pcap-file"
+#   path = "/path/to/corpus.pcap"
+#   source_id = "smoke"
+
+# Uplink batching: flush a frame at max_packets or after flush_ms, whichever first.
+[batching]
+max_packets = 256
+flush_ms = 100

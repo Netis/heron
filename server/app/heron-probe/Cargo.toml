@@ -1,0 +1,28 @@
+[package]
+name = "heron-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "heron-probe"
+path = "src/main.rs"
+
+[dependencies]
+h-common.workspace = true
+h-capture.workspace = true
+clap.workspace = true
+serde.workspace = true
+config.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[features]
+# Forwards to h-capture's `ebpf` feature so a probe release can do on-host SSL
+# uprobe capture: `cargo build --bin heron-probe --features ebpf`. Linux-only at
+# runtime (CAP_BPF + CAP_PERFMON + BTF) and needs the bpf-linker toolchain to
+# build. Off by default — dev builds / macOS smoke-test the uplink with a
+# `pcap-file` capture source instead, no BPF toolchain required.
+ebpf = ["h-capture/ebpf"]
