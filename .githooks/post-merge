@@ -1,0 +1,6 @@
+#!/bin/sh
+# Git LFS passthrough. Lives here (not .git/hooks) because the repo sets
+# core.hooksPath=.githooks so its pre-commit/pre-push gates are version-
+# controlled; git then uses ONLY this dir, so the LFS hooks must live here too.
+command -v git-lfs >/dev/null 2>&1 || { printf >&2 "\n%s\n\n" "This repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the 'post-merge' file in .githooks."; exit 2; }
+git lfs post-merge "$@"

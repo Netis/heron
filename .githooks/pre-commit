@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Heron pre-commit lint gate.
+#
+# Runs the fast, offline lint checks so the two classes most likely to slip past
+# review — internal-infra leakage and unscoped validated constructors — are
+# caught at commit time, locally, before they ever reach CI. The full gate set
+# (referenced-secret provisioning, secret-value sanity, pcap-corpus, and the
+# leakage gate again) still runs in CI (ci.yml + guard.yml); this is the early
+# tripwire, not a replacement.
+#
+# Bypass for a work-in-progress commit with: git commit --no-verify
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+fail=0
+run() {
+    local name="$1"
+    shift
+    if ! "$@"; then
+        echo "pre-commit: ✗ ${name}" >&2
+        fail=1
+    fi
+}
+
+# Internal-infra leakage: no private IPs / key material / machine-specific paths
+# in any tracked file (CLAUDE.md's hard rule). Scans the whole tree — fast.
+run "internal-infra leakage gate" bash scripts/lint/check-leakage.sh
+
+# Validated-constructor scoping (the make-illegal-states-unrepresentable gate).
+if command -v python3 >/dev/null 2>&1; then
+    run "validated-constructor scoping" python3 scripts/lint/check-validated-constructors.py
+else
+    echo "pre-commit: ⚠ python3 not found; skipping validated-constructor gate" >&2
+fi
+
+if [ "$fail" -ne 0 ]; then
+    echo "" >&2
+    echo "pre-commit: lint gate failed — fix the above, or bypass with 'git commit --no-verify'." >&2
+    exit 1
+fi

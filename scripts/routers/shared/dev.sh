@@ -18,8 +18,19 @@ show_help() {
     echo "🚀 Development"
     echo "   just dev server       Run backend with config/default.toml"
     echo "   just dev console      Run Vite dev server (proxies API)"
-    echo "   just dev setup        Install all dependencies (cargo + bun)"
+    echo "   just dev setup        Install all dependencies (cargo + bun) + git hooks"
+    echo "   just dev hooks        Enable versioned git hooks (.githooks)"
     echo "   just dev clean        Clean build artifacts (target/, dist/)"
+}
+
+run_hooks() {
+    # Point git at the versioned hook dir so the pre-commit lint gate and the
+    # pre-push regression gate are active. .githooks also carries the Git LFS
+    # passthrough hooks, so this does not disable LFS.
+    echo -e "${BLUE}Enabling versioned git hooks (.githooks)...${NC}"
+    git config core.hooksPath .githooks
+    chmod +x .githooks/* 2>/dev/null || true
+    echo -e "${GREEN}Git hooks enabled (pre-commit lint, pre-push regression).${NC}"
 }
 
 run_server() {
@@ -37,6 +48,7 @@ run_setup() {
     (cd server && cargo fetch)
     echo -e "${BLUE}Installing console dependencies...${NC}"
     (cd console && bun install)
+    run_hooks
     echo -e "${GREEN}Setup complete${NC}"
 }
 
@@ -55,6 +67,7 @@ case "$ACTION" in
     server|backend|rs) run_server ;;
     console|frontend|ui|ts) run_console ;;
     setup|install) run_setup ;;
+    hooks) run_hooks ;;
     clean) run_clean ;;
     help|--help|-h) show_help ;;
     *) echo "Unknown: $ACTION. Run 'just dev' for help."; exit 1 ;;

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Heron pre-push: comprehensive regression + Git LFS upload.
+#
+# Runs the full workspace test suite before a push leaves the machine, so a
+# regression is caught locally rather than only by CI on the eventual PR. CI
+# (ci.yml) remains the enforcing gate on pull_request/push to main and also runs
+# the feature-gated suites (fault-injection, schema-migration); this hook is the
+# fast local backstop for the headline `cargo test --workspace`.
+#
+# Skip the tests (still does the LFS upload) with:
+#   HERON_SKIP_TESTS=1 git push
+# Skip everything (tests + this hook's LFS step) with:
+#   git push --no-verify
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+if [ "${HERON_SKIP_TESTS:-0}" = "1" ]; then
+    echo "pre-push: HERON_SKIP_TESTS=1 — skipping regression tests" >&2
+else
+    echo "pre-push: running cargo test --workspace (set HERON_SKIP_TESTS=1 to skip)…" >&2
+    if ! (cd "$ROOT/server" && cargo test --workspace --quiet); then
+        echo "" >&2
+        echo "pre-push: ✗ workspace tests failed — push aborted." >&2
+        echo "pre-push: bypass with 'HERON_SKIP_TESTS=1 git push' or 'git push --no-verify'." >&2
+        exit 1
+    fi
+fi
+
+# Preserve Git LFS upload (this repo stores the pcap corpus in LFS).
+if command -v git-lfs >/dev/null 2>&1; then
+    git lfs pre-push "$@"
+else
+    printf >&2 "\n%s\n\n" "This repository is configured for Git LFS but 'git-lfs' was not found on your path. Install it, or remove the LFS step from .githooks/pre-push."
+    exit 2
+fi
