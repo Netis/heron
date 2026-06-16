@@ -53,21 +53,31 @@ impl WireApi for AnthropicWireApi {
             return RouteVerdict::Accept;
         }
 
-        // Non-standard path (gateway prefix, tenant routing, ...) but the
-        // request is unambiguously Anthropic by header.
-        if has_anthropic_version {
-            return RouteVerdict::Accept;
-        }
-
+        // Non-canonical path (gateway prefix, tenant routing, control-plane).
+        // The `anthropic-version` header / `sk-ant-` key proves the VENDOR but
+        // NOT that this is an inference call: Claude Code stamps that header on
+        // its control-plane POSTs too (e.g. `/v1/code/.../worker/events`
+        // telemetry), which carry no `{model, messages}` body. A header-only
+        // Accept here would short-circuit the registry and turn that telemetry
+        // into a `model=unknown` LLM call — which floods the calls view once
+        // eBPF captures a full interactive session. Defer everything that isn't
+        // the canonical inference path to the shape pass: `matches_shape`
+        // accepts only an inference-shaped body, so telemetry is dropped while
+        // real gateway-rewritten inference (model+messages, header present)
+        // still classifies. (Kept distinct from a hard Reject so a future
+        // non-canonical inference path is still reachable via shape.)
         RouteVerdict::Unknown
     }
 
-    fn matches_shape(&self, _req: &HttpRequestData, req_body: &ParsedJson) -> bool {
+    fn matches_shape(&self, req: &HttpRequestData, req_body: &ParsedJson) -> bool {
         let Some(body) = req_body.get() else {
             return false;
         };
-        // Required spec fields: {model, messages, max_tokens}. Presence of
-        // `messages` array and `model` string is table stakes.
+        // Inference body is mandatory: {model: str, messages: [...]}. Telemetry
+        // / control-plane POSTs (e.g. `/v1/code/.../worker/events`) carry the
+        // anthropic header but no such body, so they fall out right here — this
+        // is what keeps them from surfacing as `model=unknown` LLM calls now
+        // that classify_route defers the header-only path to the shape pass.
         if body.get("model").and_then(|v| v.as_str()).is_none() {
             return false;
         }
@@ -92,11 +102,17 @@ impl WireApi for AnthropicWireApi {
             return false;
         }
 
-        // Beyond the roles constraint, require at least one Anthropic-exclusive
-        // signal. `max_tokens` alone is too weak (OpenAI accepts it too); we
-        // use it only in combination with other signals via the top-level
-        // `system` field or `stop_sequences` array which OpenAI Chat doesn't
-        // have (OpenAI uses `stop` + inline `{"role":"system"}` messages).
+        // The `anthropic-version` header / `sk-ant-` key is a definitive vendor
+        // signal: with it present, {model, messages, strict-roles} alone is
+        // enough — this is the non-canonical-path inference that classify_route
+        // deferred here (a gateway-rewritten /v1/messages may omit `system` and
+        // `stop_sequences`). Without any header signal, fall back to an
+        // Anthropic-exclusive body field to disambiguate from an OpenAI Chat
+        // request that also carries model+messages (OpenAI uses `stop` + inline
+        // `{"role":"system"}` messages, not a top-level `system`/`stop_sequences`).
+        if req.header("anthropic-version").is_some() || has_anthropic_api_key(req) {
+            return true;
+        }
         body.get("system").is_some() || body.get("stop_sequences").is_some()
     }
 
@@ -1352,5 +1368,100 @@ mod estimator_tests {
             ]
         });
         assert!(first_assistant_sig_from_request(&req).is_none());
+    }
+}
+
+#[cfg(test)]
+mod route_classification_tests {
+    use super::*;
+
+    fn make_request(method: &str, uri: &str, headers: &[(&str, &str)], body: &str) -> HttpRequestData {
+        let ip: std::net::IpAddr = std::net::IpAddr::from([127, 0, 0, 1]);
+        HttpRequestData {
+            flow_key: h_protocol::net::FlowKey::new(String::new(), ip, 1234, ip, 8080),
+            client_addr: (ip, 1234),
+            server_addr: (ip, 8080),
+            method: method.to_string(),
+            uri: uri.to_string(),
+            version: 1,
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body: bytes::Bytes::copy_from_slice(body.as_bytes()),
+            timestamp_us: 0,
+            process: None,
+        }
+    }
+
+    const AV: &[(&str, &str)] = &[("anthropic-version", "2023-06-01")];
+
+    #[test]
+    fn classify_route_accepts_canonical_messages_with_header() {
+        let api = AnthropicWireApi;
+        let r = make_request("POST", "https://api.anthropic.com/v1/messages", AV, "{}");
+        assert!(matches!(api.classify_route(&r), RouteVerdict::Accept));
+    }
+
+    #[test]
+    fn classify_route_rejects_count_tokens_and_batches() {
+        let api = AnthropicWireApi;
+        for p in [
+            "https://api.anthropic.com/v1/messages/count_tokens",
+            "https://api.anthropic.com/v1/messages/batches",
+        ] {
+            let r = make_request("POST", p, AV, "{}");
+            assert!(matches!(api.classify_route(&r), RouteVerdict::Reject), "{p}");
+        }
+    }
+
+    /// Regression: Claude Code stamps `anthropic-version` on its control-plane
+    /// telemetry POSTs (`/v1/code/.../worker/events`). Pre-fix the header-only
+    /// branch Accept'd them, so they surfaced as `model=unknown` anthropic LLM
+    /// calls (and flooded the calls view once eBPF captured a full interactive
+    /// session). They must NOT classify: route defers (Unknown, not Accept) and
+    /// the shape pass rejects the non-inference body.
+    #[test]
+    fn telemetry_worker_events_is_not_an_anthropic_call() {
+        let api = AnthropicWireApi;
+        let body =
+            r#"{"worker_epoch":4,"events":[{"payload":{"type":"system","subtype":"thinking_tokens"}}]}"#;
+        let r = make_request(
+            "POST",
+            "https://api.anthropic.com/v1/code/sessions/cse_01/worker/events",
+            AV,
+            body,
+        );
+        assert!(matches!(api.classify_route(&r), RouteVerdict::Unknown));
+        let parsed = ParsedJson::from_bytes(bytes::Bytes::copy_from_slice(body.as_bytes()));
+        assert!(!api.matches_shape(&r, &parsed));
+    }
+
+    /// No regression for gateway-rewritten inference: a non-canonical path that
+    /// IS real inference (model+messages, header present) still classifies via
+    /// the shape pass — even without `system`/`stop_sequences`.
+    #[test]
+    fn gateway_rewritten_inference_still_matches_via_shape() {
+        let api = AnthropicWireApi;
+        let body =
+            r#"{"model":"claude-opus-4-8","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#;
+        let r = make_request("POST", "https://gw.example.com/anthropic/route/abc", AV, body);
+        assert!(matches!(api.classify_route(&r), RouteVerdict::Unknown));
+        let parsed = ParsedJson::from_bytes(bytes::Bytes::copy_from_slice(body.as_bytes()));
+        assert!(api.matches_shape(&r, &parsed));
+    }
+
+    /// Without any Anthropic header/key signal, model+messages alone is
+    /// ambiguous with OpenAI Chat — require a top-level `system`/`stop_sequences`.
+    #[test]
+    fn headerless_requires_anthropic_exclusive_field() {
+        let api = AnthropicWireApi;
+        let r = make_request("POST", "https://api.anthropic.com/v1/messages", &[], "");
+        let no_excl = r#"{"model":"x","messages":[{"role":"user","content":"hi"}]}"#;
+        let p1 = ParsedJson::from_bytes(bytes::Bytes::copy_from_slice(no_excl.as_bytes()));
+        assert!(!api.matches_shape(&r, &p1));
+        let with_sys = r#"{"model":"x","system":"s","messages":[{"role":"user","content":"hi"}]}"#;
+        let p2 = ParsedJson::from_bytes(bytes::Bytes::copy_from_slice(with_sys.as_bytes()));
+        assert!(api.matches_shape(&r, &p2));
     }
 }

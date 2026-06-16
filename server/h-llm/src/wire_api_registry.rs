@@ -294,18 +294,37 @@ mod tests {
     }
 
     #[test]
-    fn detect_anthropic_header_overrides_path() {
-        // Header alone is enough — even an unusual path.
+    fn detect_anthropic_header_plus_inference_body_overrides_path() {
+        // The anthropic-version header / sk-ant- key is the vendor
+        // disambiguator: on an unusual (gateway/tenant) path, an inference-
+        // shaped body classifies as Anthropic even WITHOUT a top-level
+        // `system`/`stop_sequences`. (Header ALONE is no longer enough — see
+        // detect_none_for_anthropic_header_on_telemetry_body.)
         let reg = build_default_wire_api_registry();
-        let req = make_request(
-            "POST",
+        let req = json_post(
             "/api/agents/run",
             vec![
                 ("anthropic-version", "2023-06-01"),
                 ("x-api-key", "sk-ant-abc"),
             ],
+            r#"{"model":"claude-3","messages":[{"role":"user","content":"hi"}],"max_tokens":100}"#,
         );
         assert_eq!(detect_name(&reg, &req), Some(wa::ANTHROPIC));
+    }
+
+    #[test]
+    fn detect_none_for_anthropic_header_on_telemetry_body() {
+        // Regression: Claude Code stamps anthropic-version on its control-plane
+        // telemetry POSTs (`/v1/code/.../worker/events`), whose body has no
+        // {model, messages}. Pre-fix the header-only accept turned these into
+        // model=unknown Anthropic LLM calls; they must now go undetected.
+        let reg = build_default_wire_api_registry();
+        let req = json_post(
+            "/v1/code/sessions/cse_01/worker/events",
+            vec![("anthropic-version", "2023-06-01")],
+            r#"{"worker_epoch":4,"events":[{"payload":{"type":"system"}}]}"#,
+        );
+        assert_eq!(detect_name(&reg, &req), None);
     }
 
     #[test]
