@@ -11,6 +11,12 @@ pub struct ClaudeCliProfile;
 const SESSION_HEADER: &str = "x-claude-code-session-id";
 const UA_PREFIX: &str = "claude-cli/";
 
+/// System-prompt signature of Claude Code's **security-monitor sidecar**: a
+/// background `/v1/messages` call that feeds the running transcript to a
+/// supervisor prompt and returns a tiny `<block>yes/no` verdict (no `tools`
+/// field, `stop_sequences=["</block>"]`). It is housekeeping, not conversation.
+const SECURITY_MONITOR_SYSTEM_SIG: &str = "You are a security monitor for autonomous AI coding agents";
+
 /// Tool-call anchor for session synthesis when the legacy
 /// `x-claude-code-session-id` header is absent (Claude Code stopped sending it
 /// around v2.1). Mirrors `GenericProfile`'s anthropic branch: the first user
@@ -59,6 +65,24 @@ fn looks_like_subagent(req: &Value) -> bool {
     match parse_tools(req) {
         Some(tools) => !tools.is_empty() && !tools.iter().any(|n| n == "Agent"),
         None => false,
+    }
+}
+
+/// True if the request is Claude Code's security-monitor sidecar (see
+/// [`SECURITY_MONITOR_SYSTEM_SIG`]). Scans every `system` block — both the
+/// string shorthand and the `[{"type":"text","text":...}]` array form — so a
+/// multi-block system prompt (billing-header block + monitor prompt block)
+/// still matches regardless of which block carries the signature.
+fn is_security_monitor(req: &Value) -> bool {
+    match req.get("system") {
+        Some(Value::String(s)) => s.contains(SECURITY_MONITOR_SYSTEM_SIG),
+        Some(Value::Array(blocks)) => blocks.iter().any(|b| {
+            b.get("text")
+                .and_then(|t| t.as_str())
+                .map(|t| t.contains(SECURITY_MONITOR_SYSTEM_SIG))
+                .unwrap_or(false)
+        }),
+        _ => false,
     }
 }
 
@@ -246,6 +270,17 @@ impl AgentProfile for ClaudeCliProfile {
         let Some(req) = ctx.req else {
             return false;
         };
+        // Claude Code's security-monitor sidecar is a one-shot supervisor check,
+        // not conversation. It embeds the running transcript, so left in turn
+        // tracking it synthesizes the SAME session anchor as the real
+        // conversation and merges into that turn — overwriting the turn's answer
+        // with its "<block>no" verdict and flooding the turns view. It carries
+        // NO `tools` field, so the empty-tools rule below would miss it; flag it
+        // explicitly so the tracker drops it from turn grouping (the call is
+        // still stored in llm_calls).
+        if is_security_monitor(req) {
+            return true;
+        }
         // Auxiliary = non-agentic one-shot (e.g., session-title generation):
         // `tools` field explicitly present and empty. A missing `tools` field
         // is ambiguous (could be a test fixture or a legitimate non-agentic
@@ -605,6 +640,47 @@ mod tests {
     fn is_auxiliary_false_when_tools_field_missing() {
         // Ambiguous: could be legacy/test fixture. Conservative = not aux.
         let body = r#"{"messages":[{"role":"user","content":"x"}]}"#;
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
+        assert!(!ClaudeCliProfile.is_auxiliary(&c.ctx()));
+    }
+
+    #[test]
+    fn is_auxiliary_true_for_security_monitor_string_system_no_tools() {
+        // Real shape: security-monitor sidecar — `system` carries the supervisor
+        // prompt (after Claude Code's billing-header prefix), NO `tools` field,
+        // `stop_sequences=["</block>"]`. Pre-fix this slipped through (tools
+        // missing → not auxiliary) and merged into the real conversation turn,
+        // overwriting its answer with "<block>no".
+        let body = r#"{
+            "system":"x-anthropic-billing-header: cc=1; You are a security monitor for autonomous AI coding agents\n\n## Context",
+            "messages":[{"role":"user","content":[{"type":"text","text":"<transcript>\nUser: hi"}]}],
+            "stop_sequences":["</block>"]
+        }"#;
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
+        assert!(ClaudeCliProfile.is_auxiliary(&c.ctx()));
+    }
+
+    #[test]
+    fn is_auxiliary_true_for_security_monitor_array_system_non_first_block() {
+        // Array `system` form with the signature in a NON-first block — the scan
+        // must check every block, not just the first (which carries only the
+        // billing header).
+        let body = r#"{
+            "system":[{"type":"text","text":"x-anthropic-billing-header: cc=1"},{"type":"text","text":"You are a security monitor for autonomous AI coding agents"}],
+            "messages":[{"role":"user","content":"<transcript>"}]
+        }"#;
+        let c = call_with(wa::ANTHROPIC, vec![], Some(body));
+        assert!(ClaudeCliProfile.is_auxiliary(&c.ctx()));
+    }
+
+    #[test]
+    fn is_auxiliary_false_for_normal_system_prompt_no_tools() {
+        // A normal (non-monitor) system prompt with no `tools` field stays
+        // conservative — not auxiliary (no regression to the tools-missing rule).
+        let body = r#"{
+            "system":"You are Claude Code, an interactive CLI tool.",
+            "messages":[{"role":"user","content":"x"}]
+        }"#;
         let c = call_with(wa::ANTHROPIC, vec![], Some(body));
         assert!(!ClaudeCliProfile.is_auxiliary(&c.ctx()));
     }
