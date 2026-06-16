@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-linux%20%C2%B7%20macOS-informational)](docs/install.md)
 
-**Agent observability from the network wire.** A passive analyzer that watches LLM traffic on the wire and reconstructs what your agents are actually *doing* — tool calls, multi-step plans, where time is spent, where loops happen, who calls whom — without an SDK, sidecar, or proxy in the request path.
+**Passive agent observability — no SDK, no sidecar, no proxy.** Heron reconstructs what your agents are actually *doing* — tool calls, multi-step plans, where time is spent, where loops happen, who calls whom — from their LLM traffic, captured off the network wire or lifted from the host's TLS boundary by eBPF — never in the request path.
 
 > **Try it in 30 seconds, no live capture, no privileges:** grab a `.pcap` with LLM
 > traffic and replay it —
@@ -16,7 +16,7 @@
 
 ## What it does
 
-Most agent code looks fine on paper and falls apart in production: a tool call stalls, the planner loops between two states, a downstream service silently substitutes a different model. Heron reconstructs that behavior from the bytes on the wire — packet capture → HTTP / SSE parse → wire-API decode → semantic extraction → **agent-turn assembly** — and serves the result through a console that's organized around *turns and sessions*, not raw HTTP calls.
+Most agent code looks fine on paper and falls apart in production: a tool call stalls, the planner loops between two states, a downstream service silently substitutes a different model. Heron reconstructs that behavior from the raw traffic itself — capture → HTTP / SSE parse → wire-API decode → semantic extraction → **agent-turn assembly** — and serves the result through a console that's organized around *turns and sessions*, not raw HTTP calls.
 
 It reads post-TLS traffic — on the inference host, behind a TLS terminator, or fed in from a SPAN/TAP point via [cloud-probe](https://github.com/Netis/cloud-probe). On Linux it can also read straight from the in-process TLS boundary via an experimental [eBPF](docs/design/02-capture.md#ebpf-ssl-uprobe-capture-linux-experimental) source — hooking `SSL_read` / `SSL_write` to observe TLS-encrypted calls *on the host that makes them*, each attributed to its owning process, with no terminator or proxy. Multi-call agent interactions (planner → tool → planner → tool …) stitch into a single addressable turn. Multi-leg proxy hops (litellm in front of vLLM/SGLang/haproxy) fold automatically. The pipeline never sits in the request path, so the observer can fail without breaking the calls being observed.
 
@@ -89,7 +89,7 @@ The trade-off is honest: you give up cross-cluster client tracing, you get a sin
 
 ![Agent Turns list — sorted by call count to surface the most complex agent runs first](docs/images/agent-turns.png)
 
-**Service topology — see the agent's call graph, not just the calls.** The Services page's Path view shows your inference fleet as a directed graph: clients → litellm proxies → vLLM / SGLang backends, with edge thickness scaled by turn count. Proxy hops paired by the passive sweeper render as solid edges; heuristically-inferred hops (when the inbound `client_ip` matches a known service) render as dashed; anonymous client traffic is dotted. The classifier names what each endpoint actually serves — vLLM, SGLang, Ollama, llama.cpp, LiteLLM — from the bytes on the wire, not from configuration the operator told it.
+**Service topology — see the agent's call graph, not just the calls.** The Services page's Path view shows your inference fleet as a directed graph: clients → litellm proxies → vLLM / SGLang backends, with edge thickness scaled by turn count. Proxy hops paired by the passive sweeper render as solid edges; heuristically-inferred hops (when the inbound `client_ip` matches a known service) render as dashed; anonymous client traffic is dotted. The classifier names what each endpoint actually serves — vLLM, SGLang, Ollama, llama.cpp, LiteLLM — from the traffic itself, not from configuration the operator told it.
 
 ![Services Path view — service-to-service call graph with proxy / inferred / client edges, colored by app](docs/images/services-path.png)
 
@@ -135,7 +135,7 @@ This covers OpenAI direct, Azure OpenAI, Anthropic direct, AWS Bedrock / GCP Ver
 - **Agent developers** — debug stalled tool calls, detect plan-loop / "no submit" failure modes, and see exactly which model+endpoint each turn hit, without modifying the agent or its SDK
 - **AI platform / inference ops** — see the real service-to-service topology your traffic flows through (clients → litellm → vLLM / SGLang), measure each hop independently, and catch silent model substitutions
 - **FinOps & engineering managers** — attribute spend across teams/repos/projects from real turns, not periodic SDK exports that can drift
-- **Compliance & security** — capture-once evidence chain of what crossed the wire, scoped per agent kind and per session
+- **Compliance & security** — capture-once evidence chain of what each agent actually sent and received, scoped per agent kind and per session
 - **Model trainers / fine-tuners** — turn real captured agent runs into SFT datasets, per turn or whole session, without hand-labeling or re-running the agent
 
 ## Quickstart
