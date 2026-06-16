@@ -1,0 +1,118 @@
+# heron-probe — privileged DaemonSet: one eBPF capture pod per node, shipping
+# RawPacket batches (process attribution included) to a central heron over mTLS.
+#
+# Before applying, create the mTLS Secret from the probe's client cert/key + the
+# central's server CA (see deploy/probe/README.md):
+#   kubectl -n heron create secret generic heron-probe-tls \
+#     --from-file=client.crt --from-file=client.key --from-file=ca.crt
+#
+# Replace the image and central_endpoint placeholders below for your cluster.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: heron
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: heron-probe-config
+  namespace: heron
+data:
+  heron-probe.toml: |
+    # source_id is injected per-pod from the node name (Downward API env
+    # HERON_PROBE_SOURCE_ID below), so it is intentionally omitted here.
+    central_endpoint = "heron-central.heron.svc.cluster.local:5556"  # <-- replace
+    server_name = "heron-central"                                    # <-- must match a SAN in the central's server cert
+
+    [tls]
+    cert = "/etc/heron-probe/tls/client.crt"
+    key = "/etc/heron-probe/tls/client.key"
+    server_ca = "/etc/heron-probe/tls/ca.crt"
+
+    [source]
+    type = "ebpf"
+    ssl_libs = []        # empty = autodetect libssl by scanning processes
+    pid_allowlist = []
+    segment_size = 16384
+
+    # Edge redaction (defence-in-depth on top of mTLS): scrub API keys before
+    # they leave the node. Strongly recommended for the distributed topology.
+    [source.redaction]
+    enabled = true
+
+    [batching]
+    max_packets = 256
+    flush_ms = 100
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: heron-probe
+  namespace: heron
+  labels:
+    app: heron-probe
+spec:
+  selector:
+    matchLabels:
+      app: heron-probe
+  template:
+    metadata:
+      labels:
+        app: heron-probe
+    spec:
+      # Share the host PID namespace so /proc/<pid>/exe resolves host processes
+      # (the uprobe targets) and the probe can follow npm-style inode rotation.
+      hostPID: true
+      # Run on every node, including control-plane, if the operator wants it.
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: heron-probe
+          image: ghcr.io/netis/heron-probe:latest   # <-- replace with your built image
+          imagePullPolicy: IfNotPresent
+          # eBPF uprobe attach + BTF read. `privileged` is the pragmatic choice
+          # for an on-host eBPF agent; to tighten, drop privileged and add only
+          # capabilities: [BPF, PERFMON, SYS_ADMIN, SYS_RESOURCE] (SYS_ADMIN is
+          # needed on kernels < ~5.16 with a hardened perf_event_paranoid).
+          securityContext:
+            privileged: true
+          env:
+            # source_id = the node this pod runs on (per-node identity in the
+            # central console). Overrides the config's (omitted) source_id.
+            - name: HERON_PROBE_SOURCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: config
+              mountPath: /etc/heron-probe/heron-probe.toml
+              subPath: heron-probe.toml
+              readOnly: true
+            - name: tls
+              mountPath: /etc/heron-probe/tls
+              readOnly: true
+            # Kernel BTF for CO-RE; the node provides it.
+            - name: btf
+              mountPath: /sys/kernel/btf
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: heron-probe-config
+        - name: tls
+          secret:
+            secretName: heron-probe-tls
+        - name: btf
+          hostPath:
+            path: /sys/kernel/btf
+            type: Directory
+      # One pod per node; tolerate disruption so a node drain replaces it.
+  updateStrategy:
+    type: RollingUpdate

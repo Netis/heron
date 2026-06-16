@@ -1,0 +1,44 @@
+# heron-probe systemd unit — edge eBPF capture agent for an inference / gateway
+# server. Ships RawPacket batches (process attribution included) to a central
+# heron over mTLS. Install: see deploy/probe/README.md.
+#
+#   /usr/local/bin/heron-probe            the binary (built --features ebpf)
+#   /etc/heron-probe/heron-probe.toml     config (central_endpoint, tls, source)
+#   /etc/heron-probe/{client.crt,client.key,ca.crt}   mTLS material (chmod 600)
+#   user/group: heron-probe (operator-created, unprivileged)
+
+[Unit]
+Description=heron-probe — edge eBPF capture agent (mTLS uplink to central heron)
+Documentation=https://github.com/Netis/heron
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=heron-probe
+Group=heron-probe
+ExecStart=/usr/local/bin/heron-probe --config /etc/heron-probe/heron-probe.toml
+Restart=on-failure
+RestartSec=2s
+
+# eBPF SSL-uprobe attach needs these capabilities — granted ambiently by systemd
+# so the process runs unprivileged otherwise (no full root). CAP_BPF + CAP_PERFMON
+# suffice on modern kernels; on kernels older than ~5.16 with a hardened
+# perf_event_paranoid the uprobe perf_event_open is also gated on CAP_SYS_ADMIN
+# (verified on a 5.15 host). Listed in both the ambient set (granted) and the
+# bounding set (ceiling). Drop CAP_SYS_ADMIN if your kernel does not require it.
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
+
+# The probe writes nothing to disk (it ships over the network), so it can run
+# read-only against the rest of the system. /proc (for /proc/<pid>/exe) and
+# /sys (for /sys/kernel/btf) stay readable under ProtectSystem.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+
+# Keep memory honest on a shared inference host.
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

@@ -91,8 +91,14 @@ async fn run(cfg: ProbeConfig) -> Result<(), String> {
     let mut metrics_sys = MetricsSystem::new();
     let capture_metrics = metrics_sys.register_worker("capture", CAPTURE_METRICS);
 
-    // Empty source_id → the central uses our client-cert CN (per-probe identity).
-    let source_id = cfg.source_id.clone().unwrap_or_default();
+    // Resolve the probe identity. HERON_PROBE_SOURCE_ID (e.g. the K8s node name
+    // injected via the Downward API in the DaemonSet) overrides the config file;
+    // an empty result means the central falls back to our client-cert CN.
+    let source_id = std::env::var("HERON_PROBE_SOURCE_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| cfg.source_id.clone())
+        .unwrap_or_default();
 
     let (tx, rx) = mpsc::channel::<RawPacket>(cfg.queue_capacity);
     let cancel_src = cancel.clone();
