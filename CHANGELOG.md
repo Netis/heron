@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.5] — 2026-06-16
+
+### Fixed
+
+- **Anthropic control-plane telemetry no longer recorded as `model=unknown` LLM
+  calls.** Claude Code stamps the `anthropic-version` header on *all* its
+  api.anthropic.com POSTs, including control-plane telemetry
+  (`/v1/code/.../worker/events`) that carries no `{model, messages}` body. The
+  Anthropic route classifier had a header-only fallback that accepted any
+  anthropic-header request on a non-canonical path, short-circuiting the body
+  check — so that telemetry was stored as a `model=unknown` Anthropic call.
+  Harmless before, but the per-inode eBPF rescan (0.5.4) now captures whole
+  interactive sessions, so these flooded the calls view. The header-only
+  non-canonical path now defers to the shape pass, which requires an inference
+  body and treats the anthropic header / `sk-ant-` key as the vendor
+  disambiguator: telemetry (no model/messages) is dropped while real inference —
+  canonical `/v1/messages` *and* gateway-rewritten paths — still classifies.
+
 ## [0.5.4] — 2026-06-15
 
 ### Fixed
