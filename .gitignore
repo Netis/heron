@@ -54,4 +54,10 @@ __pycache__/
 .superpowers
 .worktrees/
 
+# Transient clone of the internal Olympus agent repo, created by the agent-loop
+# runner. Never commit it — a checked-in gitlink breaks public clones (no
+# .gitmodules) and its .git/config holds a runner credential.
+/_agentops/
+/_agentops
+
 /logs/

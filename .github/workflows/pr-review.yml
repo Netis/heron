@@ -1,13 +1,13 @@
 name: pr-review
 
-# Headless code-review agent (vivi) — now DELEGATES to the shared agent-ops
-# mechanism (Netis/agent-ops). The review bot's identity, the auto-agent label,
+# Headless code-review agent (vivi) — now DELEGATES to the shared olympus
+# mechanism (Netis/olympus). The review bot's identity, the auto-agent label,
 # the default branch, and the build command all live in this repo's
-# `.agent-ops.json`; the reviewer code + reusable workflow live in agent-ops,
+# `.olympus.json`; the reviewer code + reusable workflow live in olympus,
 # pinned to a tag. Upgrading the mechanism = bumping the @ref below (and
-# `agent_ops_ref`) in lockstep.
+# `olympus_ref`) in lockstep.
 #
-# heron dogfooding the framework it spun out: agent-ops's review.yml was
+# heron dogfooding the framework it spun out: olympus's review.yml was
 # extracted FROM this repo's in-tree scripts/pr-review/* + scripts/agent-bot/
 # {auto_merge,revise_dispatch}.sh, which have since been removed
 # now that this delegation is proven (same staged approach as
@@ -17,7 +17,7 @@ name: pr-review
 # after `ci` succeeds on a same-repo PR, reviews the diff, posts a structured
 # review, then for auto-agent PRs either admin-merges (APPROVE + allowlisted
 # author) or dispatches the pr-revise workflow (CHANGES_REQUESTED). Manual
-# re-review via workflow_dispatch is preserved (needs agent-ops ≥ v0.2.0, which
+# re-review via workflow_dispatch is preserved (needs olympus ≥ v0.2.0, which
 # added the pr_number input).
 
 on:
@@ -39,9 +39,9 @@ permissions:
 
 jobs:
   review:
-    uses: Netis/olympus/.github/workflows/review.yml@v0.3.1
+    uses: Netis/olympus/.github/workflows/review.yml@v0.4.0
     with:
-      agent_ops_ref: v0.3.1
+      olympus_ref: v0.4.0
       runner_labels: '["self-hosted","heron"]'
       # Empty on the workflow_run path (resolved from the run event); the PR
       # number typed on a manual workflow_dispatch re-review.
