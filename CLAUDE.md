@@ -111,10 +111,17 @@ class of past failure has a deterministic gate before it can ship.
   private IP / key material / machine path in any tracked file).
 - `cargo bench -p h-protocol --no-run` — criterion hot-path benches compiled so
   they can't bitrot (timings are too noisy on shared runners to gate on).
-- Stdlib unit tests for the staging-soak and longevity judges.
+- Stdlib unit tests for the staging-soak, longevity, and distributed-soak judges.
+- Wire-equivalence + transport tests for the distributed eBPF topology
+  (`cargo test --workspace`): the **differential keystone** replays the corpus
+  locally vs through the probe→mTLS→central path and asserts identical turns/
+  calls (proving the central is byte-for-byte the local source); plus
+  redaction-over-wire and many-probe scale/churn/backpressure/version-skew.
 - An automated PR-review agent reviews the diff.
 
-**On merge to `main`** — `ci → deploy-staging → staging-soak`:
+**On merge to `main`** — `ci → deploy-staging → { staging-soak, ebpf-soak,
+distributed-soak }` (the three soaks run in parallel, each stamping a commit
+status):
 - **staging-soak** replays a known pcap corpus through the freshly deployed
   binary on the staging VM and asserts parse/pairing/turn/persistence
   invariants, then runs a **rate-controlled sustained-load soak** (bounded
@@ -122,17 +129,26 @@ class of past failure has a deterministic gate before it can ship.
   dual-binary known-good — a too-tight environment surfaces as `harness_broken`,
   not a false candidate-reject. On pass it stamps a `staging-soaked` commit
   status.
+- **ebpf-soak** proves on-host SSL-uprobe capture end-to-end on the staging VM →
+  `ebpf-soaked`.
+- **distributed-soak** runs the large-scale distributed-capture soak — N
+  synthetic probes (looped pcap-file source over mTLS) → one isolated central —
+  asserting central health (queues/RSS/flush) + every probe correctly attributed
+  → `distributed-soaked`. (B2: a small real-eBPF multi-VM fidelity check reuses
+  the ebpf-soak mechanism.)
 
-**Before production** — `staging-soak → [manual approval] → deploy-prod`:
+**Before production** — `{ staging-soak, ebpf-soak, distributed-soak } →
+[manual approval] → deploy-prod`:
 - deploy-prod builds on the prod host, restarts the service, gates on a health
   check with **automatic rollback**, and supersedes older waiting approvals so
-  the queue can't wedge. The load soak is **enforcing** here — a regression vs
-  known-good blocks the deploy.
+  the queue can't wedge. The post-approval gate requires all three commit
+  statuses (`staging-soaked` + `ebpf-soaked` + `distributed-soaked`) green; the
+  load soak is **enforcing** — a regression vs known-good blocks the deploy.
 
 **Before a release** — push a `v*` tag → `release.yml`:
-- A `gate` job refuses to build/publish unless the tagged commit carries a
-  passing `staging-soaked` status, so the multi-arch binaries are never cut from
-  un-soaked code. Cutting a release: `just bump` (the `VERSION` file is the SSOT
+- A `gate` job refuses to build/publish unless the tagged commit carries passing
+  `staging-soaked` + `ebpf-soaked` + `distributed-soaked` statuses, so the
+  multi-arch binaries are never cut from un-soaked code. Cutting a release: `just bump` (the `VERSION` file is the SSOT
   for the binary's embedded version) → tag `v<version>` on the soaked commit →
   `release.yml` builds the binaries and creates the Release, keyed by the tag,
   with notes from the matching `CHANGELOG.md` section. (Tag/`VERSION` agreement
