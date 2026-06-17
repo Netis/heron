@@ -169,6 +169,12 @@ jobs:
         # (scripts/staging/longevity_check.py). Stdlib-only.
         run: python3 scripts/staging/tests/test_longevity_check.py
 
+      - name: distributed-soak checker tests
+        # Guards the distributed-capture soak judgement logic
+        # (scripts/staging/distributed_invariants.py — many probes → one central).
+        # Stdlib-only; reuses tara_invariants' load invariants.
+        run: python3 scripts/staging/tests/test_distributed_invariants.py
+
       # NOTE: the agent-bot tests (triage reply composition + mara debounce)
       # moved to agent-ops with the agent loop; they run in agent-ops's own CI
       # against the canonical scripts/agent-bot/* now that heron delegates those
