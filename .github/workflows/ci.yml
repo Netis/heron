@@ -82,8 +82,14 @@ jobs:
       - name: lint — validated constructors are scoped
         run: python3 scripts/lint/check-validated-constructors.py
 
+      - name: lint — olympus migration is complete + consistent
+        # Enforces the Olympus rename/version migration invariants so a future
+        # workflow edit can't silently revert to agent_ops_ref or leave the 5
+        # wrapper pins out of sync (the class that left pr-review.yml ahead).
+        run: bash scripts/lint/check-olympus-migration.sh
+
       # NOTE: the generic internal-infra LEAKAGE gate now runs in the separate
-      # guard.yml workflow (delegated to agent-ops guard.yml@v0.2.0). The in-tree
+      # guard.yml workflow (delegated to olympus guard.yml@v0.4.0). The in-tree
       # scripts/lint/check-leakage.sh is retained only for the pcap-corpus gate +
       # the self-test below; heron-specific lints stay here.
 
@@ -170,7 +176,7 @@ jobs:
         run: python3 scripts/staging/tests/test_longevity_check.py
 
       # NOTE: the agent-bot tests (triage reply composition + mara debounce)
-      # moved to agent-ops with the agent loop; they run in agent-ops's own CI
+      # moved to olympus with the agent loop; they run in olympus's own CI
       # against the canonical scripts/agent-bot/* now that heron delegates those
       # surfaces. heron no longer carries the in-tree scripts or their tests.
 

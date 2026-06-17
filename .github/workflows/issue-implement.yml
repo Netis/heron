@@ -1,14 +1,14 @@
 name: issue-implement
 
-# Dev agent **wiwi** — now DELEGATES to the shared agent-ops mechanism
-# (Netis/agent-ops). This repo's implement policy — the default branch wiwi
+# Dev agent **wiwi** — now DELEGATES to the shared olympus mechanism
+# (Netis/olympus). This repo's implement policy — the default branch wiwi
 # branches off, the build+test command it must make green, the scope ceiling,
 # the `auto-agent` label on the DRAFT PR, and the agent name — all live in
-# `.agent-ops.json`. The agent code + reusable workflow live in agent-ops,
+# `.olympus.json`. The agent code + reusable workflow live in olympus,
 # pinned to a tag. Upgrading the mechanism = bumping the @ref below (and
-# `agent_ops_ref`) in lockstep.
+# `olympus_ref`) in lockstep.
 #
-# This is heron dogfooding the framework it spun out: agent-ops was extracted
+# This is heron dogfooding the framework it spun out: olympus was extracted
 # FROM heron's in-tree scripts/agent-bot/run_wiwi.sh, which has since been
 # removed now that this delegation is proven (same staged approach as
 # issue-triage.yml).
@@ -21,7 +21,7 @@ name: issue-implement
 #
 # Behavioral note (intentional): the in-tree workflow used
 # `concurrency: cancel-in-progress: true` (re-labelling cancelled an in-flight
-# wiwi). agent-ops's implement.yml fixes concurrency to cancel-in-progress:
+# wiwi). olympus's implement.yml fixes concurrency to cancel-in-progress:
 # false — safer, since it never kills wiwi mid-push/half-PR. To retry a stuck
 # run, cancel it explicitly via `gh run cancel` rather than re-labelling.
 
@@ -37,8 +37,8 @@ permissions:
 jobs:
   implement:
     if: ${{ github.event.label.name == 'agent:try' }}
-    uses: Netis/olympus/.github/workflows/implement.yml@v0.2.0
+    uses: Netis/olympus/.github/workflows/implement.yml@v0.4.0
     with:
-      agent_ops_ref: v0.2.0
+      olympus_ref: v0.4.0
       runner_labels: '["self-hosted","heron"]'
     secrets: inherit          # LITELLM_BASE_URL / API_KEY / NO_PROXY + AGENT_GH_TOKEN + AUTO_MERGE_TEAM
