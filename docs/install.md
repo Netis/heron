@@ -315,5 +315,7 @@ Nothing about it needs to live in this repo.
 
 - [Configuration reference](configure.md) — pipelines, sources, storage,
   retention, API.
+- [Distributed eBPF capture](distributed-capture.md) — install, run, and
+  verify the thin-probe → central-collector topology (mTLS, edge redaction).
 - [Architecture overview](design/01-architecture.md) — what the pipeline
   actually does with the captured packets.
