@@ -14,7 +14,7 @@ use rcgen::{
 };
 
 /// PEM material for one throwaway PKI.
-pub(crate) struct TestPki {
+pub struct TestPki {
     pub ca_pem: String,
     pub server_cert_pem: String,
     pub server_key_pem: String,
@@ -24,7 +24,7 @@ pub(crate) struct TestPki {
 }
 
 /// Generate a CA + server cert (SAN `localhost`) + client cert (CN `client_cn`).
-pub(crate) fn gen_pki(client_cn: &str) -> TestPki {
+pub fn gen_pki(client_cn: &str) -> TestPki {
     let ca_key = KeyPair::generate().unwrap();
     let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -65,7 +65,7 @@ pub(crate) fn gen_pki(client_cn: &str) -> TestPki {
 }
 
 /// Write `contents` to `dir/name` and return its path as a String.
-pub(crate) fn write_pem(dir: &Path, name: &str, contents: &str) -> String {
+pub fn write_pem(dir: &Path, name: &str, contents: &str) -> String {
     let path = dir.join(name);
     let mut f = std::fs::File::create(&path).unwrap();
     f.write_all(contents.as_bytes()).unwrap();
@@ -73,7 +73,7 @@ pub(crate) fn write_pem(dir: &Path, name: &str, contents: &str) -> String {
 }
 
 /// Reserve a free localhost TCP port.
-pub(crate) fn pick_free_port() -> u16 {
+pub fn pick_free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()

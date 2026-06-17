@@ -17,7 +17,10 @@ tokio = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-h-capture.workspace = true
+# `test-helpers` exposes h-capture's throwaway-PKI helper for the wire-equivalence
+# differential test (replay corpus locally vs through the probe→central transport).
+h-capture = { workspace = true, features = ["test-helpers"] }
 h-metrics.workspace = true
 h-protocol.workspace = true
 toml = "0.8"
+tempfile = "3"

@@ -10,6 +10,12 @@ license.workspace = true
 # (`src/ebpf/source.rs`) + the out-of-band BPF program build (build.rs +
 # aya-build). The cross-platform pump (`src/ebpf/mod.rs`) is always built/tested.
 ebpf = ["dep:aya", "dep:h-ebpf-common", "tokio/net"]
+# Exposes the throwaway-PKI helper (`src/testpki.rs`) as a public API so OTHER
+# crates' integration tests (h-turn's distributed-capture verification) can build
+# the same loopback mTLS setup. Opt-in, never in a default/release build. Pulls
+# rcgen as a normal (optional) dep; rcgen is also a dev-dep here for this crate's
+# own `#[cfg(test)]` tests.
+test-helpers = ["dep:rcgen"]
 
 [dependencies]
 h-common.workspace = true
@@ -34,6 +40,9 @@ rustls-pemfile.workspace = true
 x509-parser.workspace = true
 # Stream/Sink extensions for the length-delimited Framed transport.
 futures-util.workspace = true
+# Optional: only compiled under the `test-helpers` feature (throwaway PKI for
+# cross-crate mTLS tests). Also a dev-dep below for this crate's own tests.
+rcgen = { workspace = true, optional = true }
 
 # eBPF deps are Linux-only and optional (pulled in only by the `ebpf` feature),
 # so neither macOS nor a default Linux build compiles them.

@@ -27,8 +27,12 @@ mod probe_uplink;
 mod routing;
 mod source;
 pub mod synth;
-#[cfg(test)]
-pub(crate) mod testpki;
+// Throwaway-PKI test helper. Compiled for this crate's own tests, and exposed to
+// other crates' integration tests via the opt-in `test-helpers` feature (so the
+// distributed-capture verification in h-turn can reuse one canonical PKI). Never
+// in a default/release build.
+#[cfg(any(test, feature = "test-helpers"))]
+pub mod testpki;
 mod thin_probe;
 pub mod tls;
 pub mod wire;
