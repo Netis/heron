@@ -35,6 +35,11 @@ pub mod synth;
 pub mod testpki;
 mod thin_probe;
 pub mod tls;
+// Cross-component transport stress tests (many probes → one central, churn,
+// backpressure, version-skew). A cfg(test) module so it sees `testpki` + the
+// crate internals and runs under `cargo test` with no feature flag / VMs / root.
+#[cfg(test)]
+mod transport_scale_test;
 pub mod wire;
 
 pub use cloud_probe::CloudProbeSource;
