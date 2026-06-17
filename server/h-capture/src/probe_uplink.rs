@@ -177,6 +177,7 @@ impl ProbeUplink {
                 biased;
                 _ = cancel.cancelled() => {
                     let _ = self.flush(&mut framed, &mut batch).await;
+                    self.graceful_close(&mut framed).await;
                     return PumpExit::Cancelled;
                 }
                 maybe = rx.recv() => {
@@ -191,6 +192,7 @@ impl ProbeUplink {
                         }
                         None => {
                             let _ = self.flush(&mut framed, &mut batch).await;
+                            self.graceful_close(&mut framed).await;
                             return PumpExit::SourceClosed;
                         }
                     }
@@ -202,6 +204,14 @@ impl ProbeUplink {
                 }
             }
         }
+    }
+
+    /// Cleanly shut the stream down on a *graceful* exit (capture ended /
+    /// cancelled) so the central sees a TLS `close_notify` + clean EOF rather
+    /// than a dirty close it would count as a read error. Best-effort: on a
+    /// broken stream this is a no-op.
+    async fn graceful_close(&self, framed: &mut ClientFramed) {
+        let _ = framed.close().await;
     }
 
     /// Encode and ship the accumulated batch. `Err(())` means the stream broke

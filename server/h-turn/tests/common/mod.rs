@@ -273,22 +273,34 @@ pub fn response_tool_uses(c: &h_llm::model::LlmCall) -> serde_json::Value {
     if let Some(content) = v.get("content").and_then(|x| x.as_array()) {
         for b in content {
             if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                let name = b.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                let name = b
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let has_input = matches!(b.get("input"),
                     Some(serde_json::Value::Object(o)) if !o.is_empty());
                 out.push(serde_json::json!({"name": name, "has_input": has_input}));
             }
         }
     }
-    if let Some(tcs) = v.get("choices").and_then(|c| c.get(0))
-        .and_then(|c| c.get("message")).and_then(|m| m.get("tool_calls"))
+    if let Some(tcs) = v
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("tool_calls"))
         .and_then(|t| t.as_array())
     {
         for tc in tcs {
             let f = tc.get("function");
-            let name = f.and_then(|f| f.get("name")).and_then(|n| n.as_str())
-                .unwrap_or("").to_string();
-            let args = f.and_then(|f| f.get("arguments")).and_then(|a| a.as_str())
+            let name = f
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args = f
+                .and_then(|f| f.get("arguments"))
+                .and_then(|a| a.as_str())
                 .unwrap_or("");
             let has_input = !args.trim().is_empty() && args.trim() != "{}";
             out.push(serde_json::json!({"name": name, "has_input": has_input}));
@@ -298,7 +310,11 @@ pub fn response_tool_uses(c: &h_llm::model::LlmCall) -> serde_json::Value {
     if let Some(items) = v.get("output").and_then(|o| o.as_array()) {
         for it in items {
             if it.get("type").and_then(|t| t.as_str()) == Some("function_call") {
-                let name = it.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                let name = it
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let args = it.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
                 let has_input = !args.trim().is_empty() && args.trim() != "{}";
                 out.push(serde_json::json!({"name": name, "has_input": has_input}));
