@@ -35,10 +35,10 @@ jobs:
   # only; workflow_dispatch (artifacts-only, for verifying the build matrix) skips
   # it.
   gate:
-    name: Require staging-soaked + ebpf-soaked
+    name: Require staging-soaked + ebpf-soaked + distributed-soaked
     runs-on: ubuntu-latest
     steps:
-      - name: assert the tagged commit passed both staging gates
+      - name: assert the tagged commit passed all staging gates
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,18 +46,18 @@ jobs:
           set -euo pipefail
           sha="${{ github.sha }}"
           fail=0
-          for ctx in staging-soaked ebpf-soaked; do
+          for ctx in staging-soaked ebpf-soaked distributed-soaked; do
             state="$(gh api "repos/${{ github.repository }}/commits/$sha/status" \
               --jq "[.statuses[] | select(.context==\"$ctx\")] | sort_by(.updated_at) | last | .state // \"none\"")"
             if [ "$state" != "success" ]; then
-              echo "::error::commit $sha has no passing '$ctx' status (got '$state'). A release must be cut from a commit that passed both staging gates — merge to main, let ci → deploy-staging → {staging-soak, ebpf-soak} run, then tag that commit."
+              echo "::error::commit $sha has no passing '$ctx' status (got '$state'). A release must be cut from a commit that passed all staging gates — merge to main, let ci → deploy-staging → {staging-soak, ebpf-soak, distributed-soak} run, then tag that commit."
               fail=1
             else
               echo "✓ $ctx=success on $sha"
             fi
           done
           [ "$fail" = 0 ] || exit 1
-          echo "✓ both staging gates green on $sha — clear to release"
+          echo "✓ all staging gates green on $sha — clear to release"
 
   console:
     name: Build console

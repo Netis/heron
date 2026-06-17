@@ -76,7 +76,7 @@ jobs:
       # ebpf-soak is still finishing when staging-soak triggered this run.
       # A manual workflow_dispatch is the deliberate operator-override escape
       # hatch and is not hard-gated (warn only).
-      - name: require staging-soaked + ebpf-soaked
+      - name: require staging-soaked + ebpf-soaked + distributed-soaked
         if: github.event_name == 'workflow_run'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -97,25 +97,26 @@ jobs:
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$SHA/status")"
             s_staging="$(ctx_state "$statuses" staging-soaked)"
             s_ebpf="$(ctx_state "$statuses" ebpf-soaked)"
-            echo "attempt $attempt: staging-soaked=$s_staging ebpf-soaked=$s_ebpf"
-            if [ "$s_staging" = success ] && [ "$s_ebpf" = success ]; then
-              echo "✓ both staging gates green on $SHA — clear to deploy to prod"
+            s_dist="$(ctx_state "$statuses" distributed-soaked)"
+            echo "attempt $attempt: staging-soaked=$s_staging ebpf-soaked=$s_ebpf distributed-soaked=$s_dist"
+            if [ "$s_staging" = success ] && [ "$s_ebpf" = success ] && [ "$s_dist" = success ]; then
+              echo "✓ all staging gates green on $SHA — clear to deploy to prod"
               exit 0
             fi
             # Hard-fail immediately on an explicit failure; only poll while a
             # gate is still pending/absent (parallel soak not done yet).
-            if [ "$s_staging" = failure ] || [ "$s_ebpf" = failure ]; then
-              echo "::error::a staging gate FAILED on $SHA (staging-soaked=$s_staging ebpf-soaked=$s_ebpf) — refusing to promote to prod"
+            if [ "$s_staging" = failure ] || [ "$s_ebpf" = failure ] || [ "$s_dist" = failure ]; then
+              echo "::error::a staging gate FAILED on $SHA (staging-soaked=$s_staging ebpf-soaked=$s_ebpf distributed-soaked=$s_dist) — refusing to promote to prod"
               exit 1
             fi
             sleep 10
           done
-          echo "::error::staging gates not green on $SHA within timeout (staging-soaked=$s_staging ebpf-soaked=$s_ebpf) — refusing to promote to prod"
+          echo "::error::staging gates not green on $SHA within timeout (staging-soaked=$s_staging ebpf-soaked=$s_ebpf distributed-soaked=$s_dist) — refusing to promote to prod"
           exit 1
 
       - name: note manual-dispatch gate bypass
         if: github.event_name == 'workflow_dispatch'
-        run: echo "::warning::manual deploy-prod dispatch — staging-soaked/ebpf-soaked gate is NOT auto-enforced (deliberate operator override). Verify both statuses on the target commit yourself."
+        run: echo "::warning::manual deploy-prod dispatch — staging-soaked/ebpf-soaked/distributed-soaked gate is NOT auto-enforced (deliberate operator override). Verify all three statuses on the target commit yourself."
 
       - name: deploy to prod + health gate (rollback on failure)
         env:

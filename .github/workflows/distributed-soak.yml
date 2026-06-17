@@ -1,0 +1,97 @@
+name: distributed-soak
+
+# Quality-infra: large-scale soak for the distributed eBPF capture topology
+# (thin-probe → central collector). After a staging deploy succeeds, build the
+# central + probe from the SOAKED commit and run N synthetic heron-probes
+# (pcap-file source, looped at a steady rate — no eBPF/NIC needed) → one isolated
+# central over mTLS, on a single host. Asserts the central holds up under the
+# fan-in (bounded queues, stable RSS, no drops/flush-errors) AND every probe is
+# correctly attributed (see scripts/staging/distributed_invariants.py).
+#
+# This is the B1 scale gate. B2 (real-eBPF multi-VM fidelity) reuses ebpf-soak.sh
+# against a small VM set and is tracked separately; the eBPF capture path itself
+# is already gated single-node by ebpf-soak.
+#
+# Chains after deploy-staging, in parallel with staging-soak + ebpf-soak:
+#   ci(main) -> deploy-staging -> { staging-soak, ebpf-soak, distributed-soak }
+# Prod promotion (deploy-prod.yml / release.yml) requires `staging-soaked`,
+# `ebpf-soaked`, AND `distributed-soaked` to be green on the commit.
+on:
+  workflow_run:
+    workflows: [deploy-staging]
+    types: [completed]
+  workflow_dispatch: {}
+
+concurrency:
+  group: distributed-soak
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # The build pool has the Rust toolchain; the soak is single-host (no VM), so
+    # it does not need the staging-deploy runner. Builds + runs the SOAKED commit.
+    runs-on: [self-hosted, ci-pool]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Build the exact commit that was deployed/soaked, not main's current
+          # HEAD (which may have advanced). The corpus fixture is committed (not
+          # git-LFS), so no lfs pull is needed.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: build central + probe (default features — B1 needs no eBPF)
+        working-directory: server
+        run: cargo build --release --bin heron --bin heron-probe
+
+      - name: distributed scale soak (N synthetic probes → 1 central)
+        id: soak
+        run: |
+          bash scripts/staging/distributed-soak.sh \
+            --central server/target/release/heron \
+            --probe server/target/release/heron-probe \
+            --corpus server/h-protocol/tests/fixtures/keepalive_2sse_pipelined.pcap \
+            --probes "${{ vars.HERON_DSOAK_PROBES || '8' }}" \
+            --duration "${{ vars.HERON_DSOAK_SECS || '45' }}" \
+            --rate-pps "${{ vars.HERON_DSOAK_PPS || '300' }}" \
+            --json-out distributed-verdict.json
+
+      # Authoritative go/no-go for the prod gate. Only the workflow_run path
+      # carries the deployed commit; a skipped chain (CI not green) never reaches
+      # here, so a commit with NO `distributed-soaked` status simply wasn't soaked
+      # — don't promote it.
+      - name: Stamp `distributed-soaked` commit status
+        if: ${{ always() && github.event_name == 'workflow_run' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          OUTCOME: ${{ steps.soak.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$OUTCOME" = "success" ]; then
+            state="success"; desc="distributed-capture scale soak passed — safe to promote to prod"
+          else
+            state="failure"; desc="distributed-capture scale soak ${OUTCOME} — do NOT promote"
+          fi
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${SHA}" \
+            -d "{\"state\":\"${state}\",\"context\":\"distributed-soaked\",\"description\":\"${desc}\",\"target_url\":\"${RUN_URL}\"}" \
+            || echo "000")
+          if [ "$code" = "201" ]; then
+            echo "stamped distributed-soaked=${state} on ${SHA}"
+          else
+            echo "::warning::failed to stamp distributed-soaked status (HTTP ${code}); the soak result itself stands"
+          fi
+          {
+            echo "### distributed-soak → \`distributed-soaked\` = **${state}**"
+            echo ""
+            echo "- commit: \`${SHA}\`"
+            echo "- $desc"
+          } >> "$GITHUB_STEP_SUMMARY"
