@@ -1464,4 +1464,88 @@ mod route_classification_tests {
         let p2 = ParsedJson::from_bytes(bytes::Bytes::copy_from_slice(with_sys.as_bytes()));
         assert!(api.matches_shape(&r, &p2));
     }
+
+    // ─── Regression: Claude Code multi-tool turn start ──────────────────────
+    //
+    // Reproduces a production defect observed on a live Claude Code session:
+    // one agent turn = N calls in a tool loop (tool_use × (N-1) → end_turn).
+    // Claude Code is a stateless client — every request carries the full
+    // conversation history, INCLUDING the current roundtrip's tool_result.
+    //
+    // Consequence for the turn's FIRST call (the one that opens the turn,
+    // whose messages[0] is the user's opening text): the messages array grows
+    // as [user_text, assistant_tool_use, user_tool_result, ...], so the LAST
+    // user message is a tool_result, NOT the opening text. The opening user
+    // text lives at messages[0] and is buried under the tool roundtrips.
+    //
+    // `is_user_turn_start` today looks at "the last non-system message": if
+    // it's `user` with a visible (non-tool_result) block → Some(true). For the
+    // turn's first call that last user message is a tool_result → Some(false).
+    // So NO call in the turn reports user_turn_start=true, the tracker's
+    // `has_user_start` guard fails (`emit_or_discard`), and the ENTIRE turn
+    // is dropped as `TurnDiscardedNoUserStart` — every call stays at the
+    // LlmCalls level with turn_id=None.
+    //
+    // This test captures the broken behavior so a fix has a red signal. When
+    // the fix lands, flip the asserted value.
+    fn cc_turn_first_call_request() -> Value {
+        // Mirrors the shape of the real first call: opening user text at
+        // messages[0], then a tool roundtrip, ending on user:tool_result.
+        serde_json::json!({
+            "messages": [
+                {"role":"user","content":[
+                    {"type":"text","text":"修改9000上的litellm，把对外GLM5.1转给GLM5.2"}
+                ]},
+                {"role":"assistant","content":[
+                    {"type":"text","text":"I'll edit the config."},
+                    {"type":"tool_use","id":"toolu_1","name":"Edit","input":{}}
+                ]},
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}
+                ]}
+            ]
+        })
+    }
+
+    #[test]
+    fn is_user_turn_start_true_for_plain_text_opening() {
+        // Control case: the simple shape the current logic was designed for —
+        // a single user text message, no tool roundtrip. This MUST stay true.
+        let req = serde_json::json!({
+            "messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]
+        });
+        assert_eq!(is_user_turn_start(&req), Some(true));
+    }
+
+    #[test]
+    fn is_user_turn_start_false_for_pure_tool_result_continuation() {
+        // Control case: a pure continuation — last user message is ONLY a
+        // tool_result (a prior turn's tool_use getting its result). This MUST
+        // stay false; it is not a turn start.
+        let req = serde_json::json!({
+            "messages":[
+                {"role":"user","content":[{"type":"text","text":"old question"}]},
+                {"role":"assistant","content":[{"type":"tool_use","id":"t_old","name":"Read","input":{}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"t_old","content":"data"}]}
+            ]
+        });
+        assert_eq!(is_user_turn_start(&req), Some(false));
+    }
+
+    #[test]
+    fn is_user_turn_start_currently_broken_for_cc_tool_loop_first_call() {
+        // The defect: this is the FIRST call of a Claude Code turn (user's
+        // opening text is at messages[0]), but the messages array ends on a
+        // tool_result because the client carries full history. Today this
+        // returns Some(false), which drops the whole turn.
+        let req = cc_turn_first_call_request();
+        // FIXME(turn-start): expected after fix = Some(true). The opening user
+        // text at messages[0] is the turn start; trailing tool_result is the
+        // current roundtrip, not a continuation of a PRIOR turn.
+        assert_eq!(
+            is_user_turn_start(&req),
+            Some(false),
+            "documents the bug: CC turn-start call reports false today"
+        );
+    }
 }
