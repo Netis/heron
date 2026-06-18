@@ -881,6 +881,7 @@ async fn generic_profile_anthropic_two_call_session() {
             Metric::TurnClosedByGrace,
             Metric::TurnClosedByIdle,
             Metric::TurnDiscardedNoUserStart,
+            Metric::TurnKeptByPidAttribution,
         ],
     );
     let _turn_svc = turn_sys.start();

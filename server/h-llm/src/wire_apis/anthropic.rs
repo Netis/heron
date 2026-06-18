@@ -1465,36 +1465,36 @@ mod route_classification_tests {
         assert!(api.matches_shape(&r, &p2));
     }
 
-    // ─── Regression: Claude Code multi-tool turn start ──────────────────────
+    // ─── Claude Code tool-loop continuation shape ───────────────────────────
     //
-    // Reproduces a production defect observed on a live Claude Code session:
-    // one agent turn = N calls in a tool loop (tool_use × (N-1) → end_turn).
-    // Claude Code is a stateless client — every request carries the full
-    // conversation history, INCLUDING the current roundtrip's tool_result.
+    // Background — a production defect observed on a live Claude Code session:
+    // one PID issued 8 same-session calls (tool_use×7 → end_turn), all with
+    // turn_id=None. Root cause (traced end-to-end): the turn's OPENING call
+    // (the only call whose `messages[-1]` is user text, hence the only one
+    // that reports `is_user_turn_start=Some(true)`) was missed by the eBPF
+    // source (connection-setup / uprobe-attach timing). Every captured call
+    // is a CONTINUATION: Claude Code is stateless, so each request carries
+    // full `messages` history plus the current roundtrip's tool_result, and
+    // the last user message is a `tool_result`, not the opening text.
     //
-    // Consequence for the turn's FIRST call (the one that opens the turn,
-    // whose messages[0] is the user's opening text): the messages array grows
-    // as [user_text, assistant_tool_use, user_tool_result, ...], so the LAST
-    // user message is a tool_result, NOT the opening text. The opening user
-    // text lives at messages[0] and is buried under the tool roundtrips.
+    // So `is_user_turn_start` correctly returns `Some(false)` for every
+    // captured call — the logic is right, the opening call just isn't among
+    // them. The defect is that the tracker then had no `has_user_start` and
+    // dropped the whole partition. The fix lives in the tracker
+    // (`partition_has_pid_attribution` fallback in `emit_or_discard`): when
+    // no main-agent user-start survived but the calls share eBPF process
+    // attribution, the partition is kept (`TurnKeptByPidAttribution`).
     //
-    // `is_user_turn_start` today looks at "the last non-system message": if
-    // it's `user` with a visible (non-tool_result) block → Some(true). For the
-    // turn's first call that last user message is a tool_result → Some(false).
-    // So NO call in the turn reports user_turn_start=true, the tracker's
-    // `has_user_start` guard fails (`emit_or_discard`), and the ENTIRE turn
-    // is dropped as `TurnDiscardedNoUserStart` — every call stays at the
-    // LlmCalls level with turn_id=None.
-    //
-    // This test captures the broken behavior so a fix has a red signal. When
-    // the fix lands, flip the asserted value.
-    fn cc_turn_first_call_request() -> Value {
-        // Mirrors the shape of the real first call: opening user text at
-        // messages[0], then a tool roundtrip, ending on user:tool_result.
+    // These tests pin the CONTINUATION shape's verdict (false) so the
+    // tracker-side fix can rely on it, plus the two control cases that must
+    // not regress. See `tracker::tests::pid_attribution_keeps_turn_*`.
+    fn cc_continuation_call_request() -> Value {
+        // A continuation call: opening user text at messages[0] (carried as
+        // history), then a tool roundtrip, ending on user:tool_result.
         serde_json::json!({
             "messages": [
                 {"role":"user","content":[
-                    {"type":"text","text":"修改9000上的litellm，把对外GLM5.1转给GLM5.2"}
+                    {"type":"text","text":"update the gateway config to route model A to model B"}
                 ]},
                 {"role":"assistant","content":[
                     {"type":"text","text":"I'll edit the config."},
@@ -1533,19 +1533,18 @@ mod route_classification_tests {
     }
 
     #[test]
-    fn is_user_turn_start_currently_broken_for_cc_tool_loop_first_call() {
-        // The defect: this is the FIRST call of a Claude Code turn (user's
-        // opening text is at messages[0]), but the messages array ends on a
-        // tool_result because the client carries full history. Today this
-        // returns Some(false), which drops the whole turn.
-        let req = cc_turn_first_call_request();
-        // FIXME(turn-start): expected after fix = Some(true). The opening user
-        // text at messages[0] is the turn start; trailing tool_result is the
-        // current roundtrip, not a continuation of a PRIOR turn.
-        assert_eq!(
-            is_user_turn_start(&req),
-            Some(false),
-            "documents the bug: CC turn-start call reports false today"
-        );
+    fn is_user_turn_start_false_for_cc_tool_loop_continuation() {
+        // A Claude Code CONTINUATION call: opening user text sits at
+        // messages[0] (carried as history), but the messages array ends on a
+        // tool_result (the current roundtrip's result). This is NOT the turn's
+        // opening call — that call was missed by the eBPF source — so
+        // `is_user_turn_start` correctly returns Some(false). The fix for the
+        // production drop is NOT here (the verdict is right); it is the
+        // tracker's `partition_has_pid_attribution` fallback in
+        // `emit_or_discard`, which keeps the partition via the shared PID when
+        // no main-agent user-start survived. This test pins the verdict the
+        // tracker fix relies on.
+        let req = cc_continuation_call_request();
+        assert_eq!(is_user_turn_start(&req), Some(false));
     }
 }
