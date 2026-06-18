@@ -1,14 +1,14 @@
 name: pr-revise
 
-# wiwi REVISION pass — now DELEGATES to the shared agent-ops mechanism
-# (Netis/agent-ops). Dispatched by the review workflow's revise_dispatch step
+# wiwi REVISION pass — now DELEGATES to the shared olympus mechanism
+# (Netis/olympus). Dispatched by the review workflow's revise_dispatch step
 # (`gh workflow run pr-revise.yml -f pr_number=N`) when vivi REQUEST_CHANGES a
 # wiwi PR (label `auto-agent`) and the round cap isn't hit. The workflow NAME
 # must stay `pr-revise.yml` because revise_dispatch targets it by filename.
 #
-# It checks out the PR head, runs agent-ops's run_revise.sh to address the
+# It checks out the PR head, runs olympus's run_revise.sh to address the
 # blocking feedback, and pushes back — which re-triggers ci → pr-review, so
-# vivi re-reviews. The round cap lives in revise_dispatch.sh (agent-ops side).
+# vivi re-reviews. The round cap lives in revise_dispatch.sh (olympus side).
 #
 # Dispatch-only: the trigger is a PAT-authenticated `gh workflow run` (a review
 # posted by GITHUB_TOKEN can't start a workflow run — GitHub anti-recursion).
@@ -30,9 +30,9 @@ permissions:
 
 jobs:
   revise:
-    uses: Netis/olympus/.github/workflows/revise.yml@v0.2.0
+    uses: Netis/olympus/.github/workflows/revise.yml@v0.4.0
     with:
       pr_number: ${{ inputs.pr_number }}
-      agent_ops_ref: v0.2.0
+      olympus_ref: v0.4.0
       runner_labels: '["self-hosted","heron"]'
     secrets: inherit          # LITELLM_* + AGENT_GH_TOKEN

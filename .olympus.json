@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/Netis/agent-ops/main/schema/agent-ops.schema.json",
+  "$schema": "https://raw.githubusercontent.com/Netis/olympus/main/schema/olympus.schema.json",
   "project": {
     "name": "heron",
     "default_branch": "main"

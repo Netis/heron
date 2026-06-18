@@ -1,12 +1,12 @@
 name: issue-triage
 
-# Triage now DELEGATES to the shared agent-ops mechanism (Netis/agent-ops).
+# Triage now DELEGATES to the shared olympus mechanism (Netis/olympus).
 # This repo's triage policy — gates, labels, reply language, agent names —
-# lives in `.agent-ops.json`; the agent code + reusable workflow live in
-# agent-ops, pinned to a tag. Upgrading the mechanism = bumping the @ref below
-# (and `agent_ops_ref`) in lockstep.
+# lives in `.olympus.json`; the agent code + reusable workflow live in
+# olympus, pinned to a tag. Upgrading the mechanism = bumping the @ref below
+# (and `olympus_ref`) in lockstep.
 #
-# This is heron dogfooding the framework it spun out: agent-ops was extracted
+# This is heron dogfooding the framework it spun out: olympus was extracted
 # FROM heron's in-tree scripts/agent-bot/run_triage.sh, which has since been
 # removed now that this delegation is proven in production.
 #
@@ -24,8 +24,8 @@ permissions:
 
 jobs:
   triage:
-    uses: Netis/olympus/.github/workflows/triage.yml@v0.2.0
+    uses: Netis/olympus/.github/workflows/triage.yml@v0.4.0
     with:
-      agent_ops_ref: v0.2.0
+      olympus_ref: v0.4.0
       runner_labels: '["self-hosted","heron"]'
     secrets: inherit          # LITELLM_BASE_URL / API_KEY / NO_PROXY + AGENT_GH_TOKEN
