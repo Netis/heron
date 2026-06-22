@@ -14,7 +14,7 @@
 //! stable across the same chat session because the conversation prefix
 //! grows between user turns — so a long opencode chat fragments into
 //! several `gen-*` session ids and the UI shows each user turn as a
-//! detached 1-call AgentTurn. Pulling `x-session-affinity` straight off
+//! detached 1-call Trace. Pulling `x-session-affinity` straight off
 //! the wire keeps the whole conversation under one stable session.
 
 use crate::agent_primitives::{AgentPrimitives, SystemPromptMarkers};

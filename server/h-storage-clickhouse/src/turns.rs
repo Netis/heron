@@ -1,9 +1,9 @@
 //! `traces` table I/O — write, paginated query, by-id detail, pair-sweeper
-//! support (`query_pair_candidates` / `update_turn_metadata`).
+//! support (`query_pair_candidates` / `update_trace_metadata`).
 //!
 //! `traces` is `ReplacingMergeTree(_version)`: it is the only mutated
 //! table. Writes insert with `_version = end_time` (micros); reads use `FINAL`;
-//! `update_turn_metadata` reads the full row (FINAL), merges the JSON patch, and
+//! `update_trace_metadata` reads the full row (FINAL), merges the JSON patch, and
 //! re-inserts the whole row with a wall-clock-micros `_version` so the latest
 //! metadata wins on the next FINAL read.
 
@@ -15,7 +15,7 @@ use serde::Deserialize;
 use h_common::error::{AppError, Result};
 use h_storage::convert::parse_json_string_list;
 use h_storage::query::*;
-use h_turn::{AgentTurn, PairCandidate};
+use h_turn::{Trace, PairCandidate};
 
 use crate::client::{ch_err, insert_all};
 use crate::rows::TurnRow;
@@ -25,7 +25,7 @@ use crate::ClickHouseBackend;
 /// Full `traces` column list in `TurnRow` field order, with the two
 /// `DateTime64(6)` columns surfaced as `i64` micros so they deserialize into
 /// `TurnRow`'s `i64` fields and round-trip on re-insert. Used by
-/// `update_turn_metadata`'s read-modify-write.
+/// `update_trace_metadata`'s read-modify-write.
 const TURN_ROW_SELECT: &str = "turn_id, source_id, session_id, wire_api, agent_kind, \
      client_ip, server_ip, \
      toUnixTimestamp64Micro(start_time) AS start_time, \
@@ -104,7 +104,7 @@ struct TurnListRow {
 }
 
 #[derive(Row, Deserialize)]
-struct TurnDetailRow {
+struct TraceDetailRow {
     turn_id: String,
     source_id: String,
     session_id: String,
@@ -127,7 +127,7 @@ struct TurnDetailRow {
     user_call_id: Option<String>,
     final_answer_preview: Option<String>,
     final_call_id: Option<String>,
-    call_ids: String,
+    span_ids: String,
     metadata: Option<String>,
     client_ip: String,
     server_ip: String,
@@ -160,13 +160,13 @@ struct CountRow {
 }
 
 impl ClickHouseBackend {
-    pub(crate) async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()> {
+    pub(crate) async fn write_traces(&self, turns: Vec<Trace>) -> Result<()> {
         let rows: Vec<TurnRow> = turns.into_iter().map(TurnRow::from).collect();
         insert_all!(self.client, "traces", TurnRow, rows);
         Ok(())
     }
 
-    pub(crate) async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage> {
+    pub(crate) async fn query_traces(&self, query: &TracesQuery) -> Result<TracesPage> {
         const VALID_SORT_FIELDS: &[&str] = &[
             "start_time",
             "end_time",
@@ -246,7 +246,7 @@ impl ClickHouseBackend {
             ))
             .fetch_one::<CountRow>()
             .await
-            .map_err(|e| ch_err("query_turns count", e))?
+            .map_err(|e| ch_err("query_traces count", e))?
             .n;
 
         let offset = (query.page.saturating_sub(1)) as u64 * query.page_size as u64;
@@ -267,7 +267,7 @@ impl ClickHouseBackend {
             .query(&items_sql)
             .fetch_all::<TurnListRow>()
             .await
-            .map_err(|e| ch_err("query_turns items", e))?;
+            .map_err(|e| ch_err("query_traces items", e))?;
 
         let items = rows
             .into_iter()
@@ -282,7 +282,7 @@ impl ClickHouseBackend {
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or_default();
-                TurnListItem {
+                TraceListItem {
                     turn_id: r.turn_id,
                     source_id: r.source_id,
                     session_id: r.session_id,
@@ -312,10 +312,10 @@ impl ClickHouseBackend {
                 }
             })
             .collect();
-        Ok(TurnsPage { total, items })
+        Ok(TracesPage { total, items })
     }
 
-    pub(crate) async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>> {
+    pub(crate) async fn query_trace_by_id(&self, turn_id: &str) -> Result<Option<TraceDetail>> {
         let sql = format!(
             "SELECT turn_id, source_id, session_id, wire_api, agent_kind, \
              toUnixTimestamp64Milli(start_time) AS start_time_ms, \
@@ -333,16 +333,16 @@ impl ClickHouseBackend {
         let row = self
             .client
             .query(&sql)
-            .fetch_all::<TurnDetailRow>()
+            .fetch_all::<TraceDetailRow>()
             .await
-            .map_err(|e| ch_err("query_turn_by_id", e))?
+            .map_err(|e| ch_err("query_trace_by_id", e))?
             .into_iter()
             .next();
         let Some(r) = row else { return Ok(None) };
 
         let models_used = parse_json_string_list(r.models_used.as_deref());
         let subagents_used = parse_json_string_list(r.subagents_used.as_deref());
-        let call_ids = parse_json_string_list(Some(&r.call_ids));
+        let span_ids = parse_json_string_list(Some(&r.span_ids));
         let metadata = r
             .metadata
             .as_deref()
@@ -357,7 +357,7 @@ impl ClickHouseBackend {
         // re-running the agent profile extractor over the referenced call
         // bodies (the DuckDB path's `extract_full_text`). We surface the stored
         // previews best-effort; truncated previews (ending `…`) stay truncated.
-        Ok(Some(TurnDetail {
+        Ok(Some(TraceDetail {
             turn_id: r.turn_id,
             source_id: r.source_id,
             session_id: r.session_id,
@@ -382,7 +382,7 @@ impl ClickHouseBackend {
             user_input: r.user_input_preview,
             final_call_id: r.final_call_id,
             final_answer: r.final_answer_preview,
-            call_ids,
+            span_ids,
             metadata,
             tool_surfaces,
             tool_call_total: r.tool_call_total,
@@ -437,7 +437,7 @@ impl ClickHouseBackend {
             .collect())
     }
 
-    pub(crate) async fn update_turn_metadata(
+    pub(crate) async fn update_trace_metadata(
         &self,
         turn_id: &str,
         patch: serde_json::Value,
@@ -454,7 +454,7 @@ impl ClickHouseBackend {
             .query(&sql)
             .fetch_all::<TurnRow>()
             .await
-            .map_err(|e| ch_err("update_turn_metadata read", e))?
+            .map_err(|e| ch_err("update_trace_metadata read", e))?
             .into_iter()
             .next();
         let Some(mut row) = existing else {

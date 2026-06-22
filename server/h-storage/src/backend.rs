@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use h_llm::model::LlmCall;
 use h_metrics::model::{LlmFinishMetric, LlmMetric};
 use h_protocol::HttpExchange;
-use h_turn::{AgentTurn, PairCandidate};
+use h_turn::{Trace, PairCandidate};
 
 use crate::query::*;
 use crate::retention::{RetentionPolicy, RetentionReport};
@@ -16,7 +16,7 @@ pub trait StorageBackend: Send + Sync {
 
     /// Batch-write LlmCall records. Takes ownership so the backend can move
     /// the batch into a blocking task without an extra clone.
-    async fn write_calls(&self, calls: Vec<LlmCall>) -> Result<()>;
+    async fn write_spans(&self, calls: Vec<LlmCall>) -> Result<()>;
 
     /// Batch-write LlmMetric records.
     async fn write_metrics(&self, metrics: Vec<LlmMetric>) -> Result<()>;
@@ -25,8 +25,8 @@ pub trait StorageBackend: Send + Sync {
     /// `llm_finish_metrics` table.
     async fn write_finish_metrics(&self, metrics: Vec<LlmFinishMetric>) -> Result<()>;
 
-    /// Batch-write AgentTurn records.
-    async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()>;
+    /// Batch-write Trace records.
+    async fn write_traces(&self, turns: Vec<Trace>) -> Result<()>;
 
     /// Batch-write HttpExchange records. Authoritative transport-layer record
     /// for all HTTP traffic (LLM + non-LLM). Soft-FK'd from `llm_calls` via
@@ -37,7 +37,7 @@ pub trait StorageBackend: Send + Sync {
     async fn query_http_exchange_by_id(&self, id: &str) -> Result<Option<HttpExchangeDetail>>;
 
     /// Paginated, filterable list of HTTP exchanges. Powers the HTTP
-    /// Exchanges page and mirrors `query_calls`'s shape.
+    /// Exchanges page and mirrors `query_spans`'s shape.
     async fn query_http_exchanges(&self, query: &HttpExchangesQuery) -> Result<HttpExchangesPage>;
 
     async fn query_metrics_timeseries(
@@ -100,10 +100,10 @@ pub trait StorageBackend: Send + Sync {
         &self,
         query: &FinishReasonsQuery,
     ) -> Result<Vec<FinishReasonTimeseries>>;
-    async fn query_calls(&self, query: &CallsQuery) -> Result<CallsPage>;
-    async fn query_call_by_id(&self, id: &str) -> Result<Option<CallDetail>>;
-    async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage>;
-    async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>>;
+    async fn query_spans(&self, query: &SpansQuery) -> Result<SpansPage>;
+    async fn query_span_by_id(&self, id: &str) -> Result<Option<SpanDetail>>;
+    async fn query_traces(&self, query: &TracesQuery) -> Result<TracesPage>;
+    async fn query_trace_by_id(&self, turn_id: &str) -> Result<Option<TraceDetail>>;
     /// `include_bodies = false` makes the four heavy fields
     /// (`request_body`, `response_body`, `request_headers`,
     /// `response_headers`) come back as `None`. On mega-turns (878
@@ -111,23 +111,23 @@ pub trait StorageBackend: Send + Sync {
     /// the body-bearing response freezes browsers; lite mode keeps the
     /// summary < 1 MB. `tokens_estimated` cannot be derived without
     /// the response body and defaults to `false` in lite mode.
-    async fn query_turn_calls(
+    async fn query_trace_spans(
         &self,
         turn_id: &str,
         include_bodies: bool,
-    ) -> Result<Vec<TurnCallItem>>;
-    /// Sister of `query_turn_calls` for in-progress turns: the API
-    /// already knows the call_ids (from the in-memory active-turn
+    ) -> Result<Vec<TraceSpanItem>>;
+    /// Sister of `query_trace_spans` for in-progress turns: the API
+    /// already knows the span_ids (from the in-memory active-turn
     /// registry) and only needs Step 2 of the join. Returns the same
-    /// `TurnCallItem` shape so the frontend's calls panel renders
+    /// `TraceSpanItem` shape so the frontend's calls panel renders
     /// identically whether the turn is still in progress or finalized.
     /// Calls not yet flushed from `WriteBuffer` to `llm_calls` are
     /// silently skipped — they appear on the next refresh.
-    async fn query_calls_by_ids(
+    async fn query_spans_by_ids(
         &self,
-        call_ids: &[String],
+        span_ids: &[String],
         include_bodies: bool,
-    ) -> Result<Vec<TurnCallItem>>;
+    ) -> Result<Vec<TraceSpanItem>>;
 
     /// Paginated session list (view over `agent_turns`; no materialised
     /// session table). A session is included when at least one of its turns
@@ -146,7 +146,7 @@ pub trait StorageBackend: Send + Sync {
 
     /// Paginated list of the session's turns, ordered by start_time DESC. Not
     /// time-windowed — the session detail page shows the full history.
-    async fn query_session_turns(&self, query: &SessionTurnsQuery) -> Result<SessionTurnsPage>;
+    async fn query_session_traces(&self, query: &SessionTracesQuery) -> Result<SessionTracesPage>;
     async fn query_distinct_wire_apis(&self) -> Result<Vec<String>>;
     async fn query_distinct_models(&self) -> Result<Vec<String>>;
     async fn query_distinct_server_ips(&self) -> Result<Vec<String>>;
@@ -193,18 +193,18 @@ pub trait StorageBackend: Send + Sync {
     /// Returns `Ok(())` even if `turn_id` doesn't exist — the sweeper
     /// races finalization and a turn may briefly be unwritten when the
     /// patch arrives.
-    async fn update_turn_metadata(&self, _turn_id: &str, _patch: serde_json::Value) -> Result<()> {
+    async fn update_trace_metadata(&self, _turn_id: &str, _patch: serde_json::Value) -> Result<()> {
         Ok(())
     }
 
     /// Compact pending MVCC tombstones on the agent_turns writer.
     /// Called by the pair sweeper after each batch of
-    /// `update_turn_metadata` so the version chain stays short —
+    /// `update_trace_metadata` so the version chain stays short —
     /// high-frequency UPDATEs on an indexed table (PRIMARY KEY on
     /// `turn_id`) without checkpoints can hit a "Failed to delete all
     /// rows from index" FATAL inside DuckDB that poisons the entire
     /// process's connection. Default no-op for mock backends.
-    async fn checkpoint_turns_writer(&self) -> Result<()> {
+    async fn checkpoint_traces_writer(&self) -> Result<()> {
         Ok(())
     }
 

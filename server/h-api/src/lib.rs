@@ -26,7 +26,7 @@ use h_common::error::{AppError, Result};
 use h_common::internal_metrics::{AggregateHistory, MetricsSvc};
 use h_pcap_extract::PipelineRoot;
 use h_storage::StorageBackend;
-use h_turn::ActiveTurnRegistry;
+use h_turn::ActiveTraceRegistry;
 
 /// Carriers for `/api/internal-metrics` — every per-pipeline `MetricsSvc`
 /// plus the cross-pipeline (storage) one. Build this in `main.rs` after
@@ -74,14 +74,14 @@ pub struct ApiHealthContext {
 
 /// Composite state for the `/api/agent-turns*` routes. Carries both the
 /// storage backend (for finalized rows) and the in-memory
-/// `ActiveTurnRegistry` (for in-progress rows). The list handler unions
+/// `ActiveTraceRegistry` (for in-progress rows). The list handler unions
 /// the two; detail / calls only need storage. We pass the composite
 /// around for all three handlers so the registry is available where it
 /// matters without a separate router for the list endpoint.
 #[derive(Clone)]
 pub struct ApiAgentTurnsContext {
     pub storage: Arc<dyn StorageBackend>,
-    pub active_turns: ActiveTurnRegistry,
+    pub active_turns: ActiveTraceRegistry,
 }
 
 /// Bind the API server listener. Call this before spawning so bind errors
@@ -102,7 +102,7 @@ pub fn router(
     runtime_config: ApiRuntimeConfigContext,
     health: ApiHealthContext,
     pcap_roots: Arc<Vec<PipelineRoot>>,
-    active_turns: ActiveTurnRegistry,
+    active_turns: ActiveTraceRegistry,
 ) -> Router {
     let internal_metrics_routes = Router::new()
         .route(

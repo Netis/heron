@@ -10,7 +10,7 @@
 //!     rows are SUM/MAX-aggregated at read, one row per bucket from the
 //!     aggregator, so no dedup is needed.
 //!   * `agent_turns` — `ReplacingMergeTree(_version)`: it is the only mutated
-//!     table (`update_turn_metadata`), so reads use `FINAL` and updates
+//!     table (`update_trace_metadata`), so reads use `FINAL` and updates
 //!     re-insert the whole row with a higher `_version`.
 //!
 //! Timestamps are `DateTime64(6, 'UTC')`; the `clickhouse` crate maps a Rust

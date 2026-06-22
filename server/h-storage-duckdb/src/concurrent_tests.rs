@@ -9,10 +9,10 @@ use h_llm::model::{ApiType, LlmCall};
 use h_llm::wire_apis as wa;
 use h_metrics::model::LlmMetric;
 use h_storage::query::{
-    DimensionFilter, DistinctAgentKindsQuery, TimeRange, TurnsQuery,
+    DimensionFilter, DistinctAgentKindsQuery, TimeRange, TracesQuery,
 };
 use h_storage::StorageBackend;
-use h_turn::{AgentTurn, TurnStatus};
+use h_turn::{Trace, TraceStatus};
 
 fn mk_call(i: usize) -> LlmCall {
     LlmCall {
@@ -54,8 +54,8 @@ fn mk_call(i: usize) -> LlmCall {
     }
 }
 
-fn mk_turn(i: usize) -> AgentTurn {
-    AgentTurn {
+fn mk_turn(i: usize) -> Trace {
+    Trace {
         source_id: String::new(),
         turn_id: format!("turn-{i:08}"),
         session_id: format!("session-{}", i % 10),
@@ -74,13 +74,13 @@ fn mk_turn(i: usize) -> AgentTurn {
         total_cache_read_input_tokens: 0,
         total_cache_creation_input_tokens: 0,
         total_cost_usd: None,
-        status: TurnStatus::Complete,
+        status: TraceStatus::Complete,
         final_finish_reason: None,
         user_input_preview: None,
         user_call_id: None,
         final_answer_preview: None,
         final_call_id: None,
-        call_ids: vec![format!("call-{i:08}")],
+        span_ids: vec![format!("call-{i:08}")],
         metadata: serde_json::json!({}),
         tool_surfaces: vec![],
         tool_call_total: 0,
@@ -160,7 +160,7 @@ async fn concurrent_writes_to_three_tables() {
     let calls_task = tokio::spawn(async move {
         for b in 0..BATCHES {
             let batch: Vec<_> = (0..PER_TABLE).map(|i| mk_call(b * PER_TABLE + i)).collect();
-            calls_backend.write_calls(batch).await.unwrap();
+            calls_backend.write_spans(batch).await.unwrap();
         }
     });
 
@@ -168,7 +168,7 @@ async fn concurrent_writes_to_three_tables() {
     let turns_task = tokio::spawn(async move {
         for b in 0..BATCHES {
             let batch: Vec<_> = (0..PER_TABLE).map(|i| mk_turn(b * PER_TABLE + i)).collect();
-            turns_backend.write_turns(batch).await.unwrap();
+            turns_backend.write_traces(batch).await.unwrap();
         }
     });
 
@@ -216,10 +216,10 @@ async fn llm_call_round_trip_with_agent_fields() {
     call.tool_names = vec!["Read".to_string(), "Edit".to_string()];
     let call_id = call.id.clone();
 
-    backend.write_calls(vec![call]).await.unwrap();
+    backend.write_spans(vec![call]).await.unwrap();
 
     let back = backend
-        .query_call_by_id(&call_id)
+        .query_span_by_id(&call_id)
         .await
         .unwrap()
         .expect("call should round-trip");
@@ -256,12 +256,12 @@ async fn reopen_all_connections_keeps_reads_and_writes_alive() {
         Arc::new(DuckDbBackend::open_with_pool(path.to_str().unwrap(), 2).unwrap());
     backend.init().await.unwrap();
 
-    backend.write_turns(vec![mk_turn(0)]).await.unwrap();
+    backend.write_traces(vec![mk_turn(0)]).await.unwrap();
 
     backend.reopen_all_connections().await.unwrap();
 
     // Read path 1: turn list query — goes through the read pool.
-    let turns_q = TurnsQuery {
+    let turns_q = TracesQuery {
         time_range: TimeRange {
             start_us: 1_700_000_000_000_000 - 1_000_000,
             end_us: 1_700_000_000_000_000 + 60_000_000_000,
@@ -277,10 +277,10 @@ async fn reopen_all_connections_keeps_reads_and_writes_alive() {
         page_size: 50,
         include_proxy_hops: false,
     };
-    let page = backend.query_turns(&turns_q).await.unwrap();
+    let page = backend.query_traces(&turns_q).await.unwrap();
     assert_eq!(
         page.total, 1,
-        "query_turns after reopen must see the pre-reopen row"
+        "query_traces after reopen must see the pre-reopen row"
     );
 
     // Read path 2: distinct agent kinds — different code path but
@@ -304,12 +304,12 @@ async fn reopen_all_connections_keeps_reads_and_writes_alive() {
 
     // Write path on every writer mutex — proves all four writers
     // were rebuilt, not just turns.
-    backend.write_turns(vec![mk_turn(1)]).await.unwrap();
-    backend.write_calls(vec![mk_call(0)]).await.unwrap();
+    backend.write_traces(vec![mk_turn(1)]).await.unwrap();
+    backend.write_spans(vec![mk_call(0)]).await.unwrap();
     backend.write_metrics(vec![mk_metric(0)]).await.unwrap();
 
     // And re-confirm the post-reopen reads pick up the new row.
-    let page2 = backend.query_turns(&turns_q).await.unwrap();
+    let page2 = backend.query_traces(&turns_q).await.unwrap();
     assert_eq!(
         page2.total, 2,
         "post-reopen writes must persist and be queryable"
@@ -340,7 +340,7 @@ async fn reopen_recovers_from_injected_duckdb_invalidate() {
     backend.init().await.unwrap();
 
     // Baseline write, before any fault — exercises the writer set.
-    backend.write_turns(vec![mk_turn(0)]).await.unwrap();
+    backend.write_traces(vec![mk_turn(0)]).await.unwrap();
 
     // ARM: every write path now synthesizes a FATAL invalidation error
     // identical in shape to what DuckDB returns when its in-process
@@ -350,18 +350,18 @@ async fn reopen_recovers_from_injected_duckdb_invalidate() {
         assert!(backend.fault_set().should_fire(FaultPoint::DuckDbInvalidate));
 
         let err = backend
-            .write_turns(vec![mk_turn(1)])
+            .write_traces(vec![mk_turn(1)])
             .await
-            .expect_err("write_turns must surface the injected FATAL");
+            .expect_err("write_traces must surface the injected FATAL");
         assert!(
             format!("{err}").contains("FATAL"),
             "injected error message must mention FATAL: got {err}"
         );
 
         let err = backend
-            .write_calls(vec![mk_call(0)])
+            .write_spans(vec![mk_call(0)])
             .await
-            .expect_err("write_calls must surface the injected FATAL");
+            .expect_err("write_spans must surface the injected FATAL");
         assert!(format!("{err}").contains("FATAL"));
 
         let err = backend
@@ -387,11 +387,11 @@ async fn reopen_recovers_from_injected_duckdb_invalidate() {
     // every reader path (turn list, distinct-agent-kinds — backed by
     // the pool that `reopen_all_connections` is supposed to have fully
     // replaced) must serve the new row plus the pre-fault baseline.
-    backend.write_turns(vec![mk_turn(2)]).await.unwrap();
-    backend.write_calls(vec![mk_call(0)]).await.unwrap();
+    backend.write_traces(vec![mk_turn(2)]).await.unwrap();
+    backend.write_spans(vec![mk_call(0)]).await.unwrap();
     backend.write_metrics(vec![mk_metric(0)]).await.unwrap();
 
-    let turns_q = TurnsQuery {
+    let turns_q = TracesQuery {
         time_range: TimeRange {
             start_us: 1_700_000_000_000_000 - 1_000_000,
             end_us: 1_700_000_000_000_000 + 60_000_000_000,
@@ -407,7 +407,7 @@ async fn reopen_recovers_from_injected_duckdb_invalidate() {
         page_size: 50,
         include_proxy_hops: false,
     };
-    let page = backend.query_turns(&turns_q).await.unwrap();
+    let page = backend.query_traces(&turns_q).await.unwrap();
     assert_eq!(
         page.total, 2,
         "post-recovery list query must see baseline turn-0 + new turn-2"
@@ -446,9 +446,9 @@ async fn read_pool_poisoned_fault_propagates_to_reads() {
     let backend =
         Arc::new(DuckDbBackend::open_with_pool(path.to_str().unwrap(), 2).unwrap());
     backend.init().await.unwrap();
-    backend.write_turns(vec![mk_turn(0)]).await.unwrap();
+    backend.write_traces(vec![mk_turn(0)]).await.unwrap();
 
-    let turns_q = TurnsQuery {
+    let turns_q = TracesQuery {
         time_range: TimeRange {
             start_us: 1_700_000_000_000_000 - 1_000_000,
             end_us: 1_700_000_000_000_000 + 60_000_000_000,
@@ -468,7 +468,7 @@ async fn read_pool_poisoned_fault_propagates_to_reads() {
     {
         let _guard = FaultGuard::arm(backend.fault_set(), FaultPoint::ReadPoolPoisoned);
         let err = backend
-            .query_turns(&turns_q)
+            .query_traces(&turns_q)
             .await
             .expect_err("query must surface poisoned-pool error");
         assert!(
@@ -478,7 +478,7 @@ async fn read_pool_poisoned_fault_propagates_to_reads() {
     }
 
     // After guard drops, queries work again.
-    let page = backend.query_turns(&turns_q).await.unwrap();
+    let page = backend.query_traces(&turns_q).await.unwrap();
     assert_eq!(page.total, 1);
 }
 
@@ -527,7 +527,7 @@ async fn chaos_burst(
             for r in 0..rounds {
                 let base = id_base + (w * rounds + r) * CHAOS_BATCH;
                 let batch: Vec<_> = (0..CHAOS_BATCH).map(|i| mk_call(base + i)).collect();
-                match be.write_calls(batch).await {
+                match be.write_spans(batch).await {
                     Ok(_) => {
                         ok.fetch_add(1, Ordering::Relaxed);
                     }

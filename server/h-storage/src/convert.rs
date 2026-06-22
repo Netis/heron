@@ -60,7 +60,7 @@ pub fn headers_to_json(headers: &[(String, String)]) -> String {
 }
 
 /// Parse a JSON-encoded array-of-strings (as stored in agent_turns.models_used /
-/// subagents_used / call_ids) into a `Vec<String>`. Missing or malformed values
+/// subagents_used / span_ids) into a `Vec<String>`. Missing or malformed values
 /// degrade to an empty vec — the turn payload is still returnable.
 pub fn parse_json_string_list(raw: Option<&str>) -> Vec<String> {
     match raw {

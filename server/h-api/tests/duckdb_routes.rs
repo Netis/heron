@@ -91,7 +91,7 @@ async fn finish_reasons_endpoint_returns_one_series_per_raw_value() {
         test_runtime_config_context(),
         test_health_context(),
         std::sync::Arc::new(vec![]),
-        h_turn::new_active_turn_registry(),
+        h_turn::new_active_trace_registry(),
     );
 
     // start/end are seconds (matches existing /api/metrics/* convention).
@@ -168,7 +168,7 @@ async fn finish_reasons_endpoint_accepts_csv_wire_api_filter() {
         test_runtime_config_context(),
         test_health_context(),
         std::sync::Arc::new(vec![]),
-        h_turn::new_active_turn_registry(),
+        h_turn::new_active_trace_registry(),
     );
 
     let start_s = (ts / 1_000_000) - 1;
@@ -252,7 +252,7 @@ async fn finish_reasons_endpoint_filters_by_server_ip() {
         test_runtime_config_context(),
         test_health_context(),
         std::sync::Arc::new(vec![]),
-        h_turn::new_active_turn_registry(),
+        h_turn::new_active_trace_registry(),
     );
 
     let start_s = (ts / 1_000_000) - 1;
@@ -366,7 +366,7 @@ async fn timeseries_endpoint_backfills_full_grid_for_sparse_data() {
         test_runtime_config_context(),
         test_health_context(),
         std::sync::Arc::new(vec![]),
-        h_turn::new_active_turn_registry(),
+        h_turn::new_active_trace_registry(),
     );
 
     let start_s = ts / 1_000_000;
@@ -422,7 +422,7 @@ async fn timeseries_endpoint_emits_grid_when_no_rows_exist() {
         test_runtime_config_context(),
         test_health_context(),
         std::sync::Arc::new(vec![]),
-        h_turn::new_active_turn_registry(),
+        h_turn::new_active_trace_registry(),
     );
 
     let start_s = 1_700_000_040i64;
@@ -461,7 +461,7 @@ async fn finish_reasons_endpoint_rejects_invalid_granularity() {
         test_runtime_config_context(),
         test_health_context(),
         std::sync::Arc::new(vec![]),
-        h_turn::new_active_turn_registry(),
+        h_turn::new_active_trace_registry(),
     );
     let resp = app
         .oneshot(
@@ -490,7 +490,7 @@ async fn invalid_status_code_returns_json_envelope() {
         test_runtime_config_context(),
         test_health_context(),
         std::sync::Arc::new(vec![]),
-        h_turn::new_active_turn_registry(),
+        h_turn::new_active_trace_registry(),
     );
 
     let resp = app
@@ -534,7 +534,7 @@ async fn contains_params_parse() {
         test_runtime_config_context(),
         test_health_context(),
         std::sync::Arc::new(vec![]),
-        h_turn::new_active_turn_registry(),
+        h_turn::new_active_trace_registry(),
     );
 
     let resp = app
@@ -637,7 +637,7 @@ async fn metrics_filters_by_tool_surface() {
         test_runtime_config_context(),
         test_health_context(),
         std::sync::Arc::new(vec![]),
-        h_turn::new_active_turn_registry(),
+        h_turn::new_active_trace_registry(),
     );
 
     let start_s = ts / 1_000_000;

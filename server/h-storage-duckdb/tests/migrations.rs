@@ -28,7 +28,7 @@ use tempfile::TempDir;
 
 use h_common::process::ProcessInfo;
 use h_llm::model::{ApiType, LlmCall};
-use h_storage::query::{DimensionFilter, TimeRange, TurnsQuery};
+use h_storage::query::{DimensionFilter, TimeRange, TracesQuery};
 use h_storage::StorageBackend;
 use h_storage_duckdb::DuckDbBackend;
 
@@ -376,9 +376,9 @@ async fn phase6_adds_body_bytes_dropped_and_appender_stays_aligned_on_legacy_db(
     // read both trailing columns back. Distinct sentinels (7 vs 4242) catch a
     // positional swap.
     backend
-        .write_calls(vec![sample_call("call-phase6", 7, 4242)])
+        .write_spans(vec![sample_call("call-phase6", 7, 4242)])
         .await
-        .expect("write_calls must succeed against a migrated table");
+        .expect("write_spans must succeed against a migrated table");
 
     // Close the backend (checkpoints DuckDB to the file) before reading via a
     // fresh connection — a second live connection sees the pre-write snapshot.
@@ -391,7 +391,7 @@ async fn phase6_adds_body_bytes_dropped_and_appender_stays_aligned_on_legacy_db(
             [],
             |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u64>(1)?)),
         )
-        .expect("row must be present after write_calls");
+        .expect("row must be present after write_spans");
     assert_eq!(
         tool_call_count, 7,
         "tool_call_count must round-trip (appender column alignment)"
@@ -451,9 +451,9 @@ async fn phase7_adds_process_columns_and_appender_stays_aligned_on_legacy_db() {
         exe: Some("/usr/bin/python3.12".into()),
     });
     backend
-        .write_calls(vec![call])
+        .write_spans(vec![call])
         .await
-        .expect("write_calls must succeed against a migrated table");
+        .expect("write_spans must succeed against a migrated table");
 
     drop(backend);
 
@@ -472,7 +472,7 @@ async fn phase7_adds_process_columns_and_appender_stays_aligned_on_legacy_db() {
                 ))
             },
         )
-        .expect("row must be present after write_calls");
+        .expect("row must be present after write_spans");
     assert_eq!(pid, Some(31337), "process_pid must round-trip");
     assert_eq!(comm.as_deref(), Some("python3"), "process_comm must round-trip");
     assert_eq!(
@@ -619,7 +619,7 @@ async fn init_is_idempotent_against_canonical_schema() {
 
     // And the read path must still work.
     let _ = backend
-        .query_turns(&TurnsQuery {
+        .query_traces(&TracesQuery {
             time_range: TimeRange {
                 start_us: 0,
                 end_us: i64::MAX,
@@ -636,7 +636,7 @@ async fn init_is_idempotent_against_canonical_schema() {
             include_proxy_hops: false,
         })
         .await
-        .expect("query_turns must work after double-init");
+        .expect("query_traces must work after double-init");
 }
 
 /// Phase-8 OTel rename: a complete pre-rename database (legacy `llm_calls`

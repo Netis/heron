@@ -157,7 +157,7 @@ pub fn classify_app(
 
     // -- vLLM signature in the request body. Agentic flows include
     // -- prior `assistant.tool_calls[].id` values in their message
-    // -- history, and vLLM-generated tool_call_ids carry the
+    // -- history, and vLLM-generated tool_span_ids carry the
     // -- `chatcmpl-tool-` prefix. Works even when the response is
     // -- SSE-streamed (response_body is NULL).
     if let Some(body) = sample_request_body {
@@ -414,7 +414,7 @@ mod tests {
     fn vllm_via_request_body_tool_history() {
         // Streaming-only endpoint — response_body is null. Agentic
         // round N+1 sends prior assistant.tool_calls history back to
-        // the server, and vLLM's tool_call_ids carry `chatcmpl-tool-`.
+        // the server, and vLLM's tool_span_ids carry `chatcmpl-tool-`.
         let c = C {
             server_header: Some("uvicorn".into()),
             raw_response_headers_json: Some(hdrs(&[("server", "uvicorn")])),

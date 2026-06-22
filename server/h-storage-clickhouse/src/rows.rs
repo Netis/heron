@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use h_llm::model::LlmCall;
 use h_metrics::model::{LlmFinishMetric, LlmMetric};
 use h_protocol::HttpExchange;
-use h_turn::AgentTurn;
+use h_turn::Trace;
 
 use h_storage::convert::headers_to_json;
 
@@ -280,15 +280,15 @@ pub(crate) struct TurnRow {
     pub _version: u64,
 }
 
-impl From<AgentTurn> for TurnRow {
-    fn from(t: AgentTurn) -> Self {
+impl From<Trace> for TurnRow {
+    fn from(t: Trace) -> Self {
         let tool_surfaces_json = {
             let strings: Vec<String> = t.tool_surfaces.iter().map(|s| s.to_string()).collect();
             serde_json::to_string(&strings).unwrap_or_else(|_| "[]".to_string())
         };
         let suspicious_skills_json =
             serde_json::to_string(&t.suspicious_skills).unwrap_or_else(|_| "[]".to_string());
-        // Initial finalize version = end_time (micros). `update_turn_metadata`
+        // Initial finalize version = end_time (micros). `update_trace_metadata`
         // re-inserts with a strictly-greater wall-clock-micros version so the
         // ReplacingMergeTree keeps the latest metadata.
         let version = t.end_time_us.max(0) as u64;
@@ -317,7 +317,7 @@ impl From<AgentTurn> for TurnRow {
             user_call_id: t.user_call_id,
             final_answer_preview: t.final_answer_preview,
             final_call_id: t.final_call_id,
-            span_ids: serde_json::to_string(&t.call_ids).unwrap_or_default(),
+            span_ids: serde_json::to_string(&t.span_ids).unwrap_or_default(),
             metadata: Some(t.metadata.to_string()),
             tool_surfaces_json: Some(tool_surfaces_json),
             tool_call_total: t.tool_call_total,

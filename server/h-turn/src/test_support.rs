@@ -11,7 +11,7 @@ use h_llm::model::{ApiType, LlmCall};
 use h_llm::wire_apis as wa;
 
 use crate::tracker::{TrackerConfig, TurnEvent, TurnTracker};
-use crate::AgentTurn;
+use crate::Trace;
 
 pub use h_llm::model::{AgentCall, AgentCallInfo};
 
@@ -105,10 +105,10 @@ pub fn make_call(
 }
 
 /// Feed `calls` through a `TurnTracker` (with zero grace) and return the
-/// single finalized `AgentTurn`. The first call is forced into the user-start
+/// single finalized `Trace`. The first call is forced into the user-start
 /// role and the last into the terminal role so the partition closes exactly
 /// once, no matter how the caller built each `AgentCall`.
-pub fn feed_session_and_finalize(session_id: &str, calls: &[AgentCall]) -> AgentTurn {
+pub fn feed_session_and_finalize(session_id: &str, calls: &[AgentCall]) -> Trace {
     assert!(
         !calls.is_empty(),
         "need at least one call to finalize a turn"
@@ -138,7 +138,7 @@ pub fn feed_session_and_finalize(session_id: &str, calls: &[AgentCall]) -> Agent
     }
     events.extend(tracker.flush_all());
 
-    let mut turns: Vec<AgentTurn> = events
+    let mut turns: Vec<Trace> = events
         .into_iter()
         .map(|TurnEvent::Completed(t)| t)
         .collect();

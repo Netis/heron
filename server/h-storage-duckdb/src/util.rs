@@ -186,18 +186,18 @@ pub(crate) fn extract_full_text_batch(
     }
 
     // Build agent_kind lookup keyed by call_id (last-writer-wins if a call id
-    // appears twice — extremely unlikely given AgentTurn invariants).
+    // appears twice — extremely unlikely given Trace invariants).
     let mut agent_by_call: HashMap<&str, &str> = HashMap::new();
     for (ak, cid) in requests {
         agent_by_call.insert(cid.as_str(), ak.as_str());
     }
-    let call_ids: Vec<&str> = agent_by_call.keys().copied().collect();
+    let span_ids: Vec<&str> = agent_by_call.keys().copied().collect();
 
     let col = match kind {
         ExtractKind::User => "request_body",
         ExtractKind::Assistant => "response_body",
     };
-    let placeholders = vec!["?"; call_ids.len()].join(",");
+    let placeholders = vec!["?"; span_ids.len()].join(",");
     let sql = format!("SELECT id, wire_api, {col} FROM spans WHERE id IN ({placeholders})");
 
     let registry = build_default_registry();
@@ -206,7 +206,7 @@ pub(crate) fn extract_full_text_batch(
         return out;
     };
     let params: Vec<&dyn duckdb::ToSql> =
-        call_ids.iter().map(|s| s as &dyn duckdb::ToSql).collect();
+        span_ids.iter().map(|s| s as &dyn duckdb::ToSql).collect();
     let Ok(mut rows) = stmt.query(duckdb::params_from_iter(params.iter().copied())) else {
         return out;
     };

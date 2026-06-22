@@ -488,7 +488,7 @@ pub struct QueueConfig {
     /// llm stage → shared storage sink (LlmCall records)
     #[serde(default = "default_queue_capacity")]
     pub storage_calls: usize,
-    /// turn stage → shared storage sink (AgentTurn records)
+    /// turn stage → shared storage sink (Trace records)
     #[serde(default = "default_queue_capacity")]
     pub storage_turns: usize,
     /// metrics stage → shared storage sink (LlmMetric records)
@@ -1033,7 +1033,7 @@ pub enum ConfigIssue {
     /// Fail validation hard so the operator sees the problem before deploy.
     UnsafePcapDumpPipelineName { pipeline: String },
     /// `agent_turns` retention outlives `llm_calls` retention, so the
-    /// no-JOIN turn-detail read (`agent_turns.call_ids` → `llm_calls`
+    /// no-JOIN turn-detail read (`agent_turns.span_ids` → `llm_calls`
     /// IN-lookup) returns empty/partial calls for surviving turns once the
     /// calls sweep crosses their `request_time`. `turns_days = 0` is the
     /// sentinel for "never expire" (which always violates a finite
@@ -1266,7 +1266,7 @@ impl AppConfig {
             issues.push(ConfigIssue::UnknownRetentionGranularity(unknown.clone()));
         }
 
-        // agent_turns references llm_calls via JSON call_ids; the no-JOIN
+        // agent_turns references llm_calls via JSON span_ids; the no-JOIN
         // turn-detail read trusts that referenced calls still exist. If turns
         // outlive calls, surviving turns end up pointing at deleted call ids
         // and the detail view shows empty/partial results. 0 = never expire,

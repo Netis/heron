@@ -3,7 +3,7 @@
 //! Each `(source_id, session_id)` owns a `SessionBuffer` that holds calls
 //! sorted by `request_time` until a main-agent terminal call appears and its
 //! grace window elapses. On grace expiry the buffer is partitioned at each
-//! terminal and every partition becomes one `AgentTurn`. Partitions that
+//! terminal and every partition becomes one `Trace`. Partitions that
 //! contain no `is_user_turn_start = Some(true)` call are discarded.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -16,7 +16,7 @@ use h_common::internal_metrics::{Metric, MetricsWorker};
 use h_llm::agent_classifier::SuspiciousSignal;
 use h_llm::model::AgentCall;
 
-use crate::model::{ActiveTurnRegistry, AgentTurn, TurnStatus};
+use crate::model::{ActiveTraceRegistry, Trace, TraceStatus};
 use crate::SuspiciousSkillRollup;
 
 const FINAL_ANSWER_PREVIEW_CHARS: usize = 500;
@@ -63,7 +63,7 @@ impl Default for TrackerConfig {
 /// events were removed when the buffer model replaced ActiveTurn (04b §6.4).
 #[derive(Debug, Clone)]
 pub enum TurnEvent {
-    Completed(AgentTurn),
+    Completed(Trace),
 }
 
 #[derive(Debug)]
@@ -99,7 +99,7 @@ struct SessionBuffer {
     /// Stable `turn_id` for the in-progress turn currently assembling in
     /// this buffer. Minted lazily on the first ingest after the previous
     /// turn was finalized; reused by every snapshot inserted into the
-    /// `ActiveTurnRegistry` and by the eventual `Completed` turn so the
+    /// `ActiveTraceRegistry` and by the eventual `Completed` turn so the
     /// in-memory in-progress entry's id matches the row that gets
     /// persisted (lets the API drop the registry entry without a
     /// frontend "row jump"). Cleared on every finalize / sweep / flush.
@@ -136,7 +136,7 @@ pub struct TurnTracker {
     /// upserts a snapshot into the registry, and every finalize /
     /// sweep / flush removes the entry. `None` is used by tests that
     /// don't care about the snapshot path.
-    active_registry: Option<ActiveTurnRegistry>,
+    active_registry: Option<ActiveTraceRegistry>,
 }
 
 impl TurnTracker {
@@ -144,14 +144,14 @@ impl TurnTracker {
         Self::with_registry(config, metrics, None)
     }
 
-    /// Variant that wires an [`ActiveTurnRegistry`] into the tracker so
+    /// Variant that wires an [`ActiveTraceRegistry`] into the tracker so
     /// the API can read in-progress snapshots without going through the
     /// DB or a channel fan-out. Pipelines call this; tests that don't
     /// exercise the snapshot path use [`Self::new`].
     pub fn with_registry(
         config: TrackerConfig,
         metrics: MetricsWorker,
-        active_registry: Option<ActiveTurnRegistry>,
+        active_registry: Option<ActiveTraceRegistry>,
     ) -> Self {
         Self {
             config,
@@ -249,14 +249,14 @@ impl TurnTracker {
         }
 
         // Refresh the registry's snapshot for this turn. Cheap (one HashMap
-        // upsert + an AgentTurn alloc); skipped if no registry is wired (e.g.
+        // upsert + an Trace alloc); skipped if no registry is wired (e.g.
         // tests via `TurnTracker::new`).
         self.refresh_active_snapshot(&source_id, &session_id);
 
         self.flush_ready_buffers(now_wall)
     }
 
-    /// Build the in-progress AgentTurn snapshot for a given session and
+    /// Build the in-progress Trace snapshot for a given session and
     /// upsert it into the active registry. Truncates the partition at the
     /// first main-agent terminal so multi-turn buffers don't mix two
     /// turns' state into one snapshot. Applies the same discard rule as
@@ -310,7 +310,7 @@ impl TurnTracker {
         let mut snap = build_turn(
             &partition,
             Some(turn_id.clone()),
-            Some(TurnStatus::InProgress),
+            Some(TraceStatus::InProgress),
         );
         snap.source_id = source_id.to_string();
         snap.session_id = session_id.to_string();
@@ -323,8 +323,8 @@ impl TurnTracker {
     /// Read-side helper used by tests to inspect the registry contents
     /// without going through the lock directly. Returns a clone of every
     /// in-progress snapshot currently registered. Production reads happen
-    /// in `h-api` directly against the `ActiveTurnRegistry` Arc.
-    pub fn snapshot_active(&self) -> Vec<AgentTurn> {
+    /// in `h-api` directly against the `ActiveTraceRegistry` Arc.
+    pub fn snapshot_active(&self) -> Vec<Trace> {
         match &self.active_registry {
             Some(reg) => reg
                 .read()
@@ -732,7 +732,7 @@ fn push_unique(list: &mut Vec<String>, value: String) {
 ///
 /// `turn_id_override`: caller-supplied id. Used by the in-progress
 /// snapshot path so every snapshot for the same in-flight turn shares
-/// one id, and the eventual finalized `AgentTurn` carries the same id
+/// one id, and the eventual finalized `Trace` carries the same id
 /// the registry has been advertising. `None` mints a fresh UUID.
 ///
 /// `status_override`: forces a status. Used by the in-progress snapshot
@@ -756,8 +756,8 @@ fn push_unique(list: &mut Vec<String>, value: String) {
 fn build_turn(
     calls: &[&AgentCall],
     turn_id_override: Option<String>,
-    status_override: Option<TurnStatus>,
-) -> AgentTurn {
+    status_override: Option<TraceStatus>,
+) -> Trace {
     assert!(!calls.is_empty(), "build_turn requires at least one call");
     let first = calls[0];
     let source_id = first.call.source_id.clone();
@@ -782,7 +782,7 @@ fn build_turn(
     let duration_ms = ((end_time_us - start_time_us).max(0) / 1000) as u64;
 
     let call_count = calls.len() as u32;
-    let call_ids: Vec<String> = calls.iter().map(|ic| ic.call.id.clone()).collect();
+    let span_ids: Vec<String> = calls.iter().map(|ic| ic.call.id.clone()).collect();
 
     let mut models_used: Vec<String> = Vec::new();
     let mut subagents_used: Vec<String> = Vec::new();
@@ -849,8 +849,8 @@ fn build_turn(
     // window — the row should flip to Complete only via the Completed
     // event, never via an in-progress snapshot).
     let status = status_override.unwrap_or_else(|| match terminal {
-        Some(_) => TurnStatus::Complete,
-        None => TurnStatus::Incomplete,
+        Some(_) => TraceStatus::Complete,
+        None => TraceStatus::Incomplete,
     });
 
     let (final_answer_preview, final_call_id, final_finish_reason) = match terminal {
@@ -910,7 +910,7 @@ fn build_turn(
     suspicious.retain(|s| seen.insert(s.tool_name.clone()));
     let tool_surfaces: Vec<ToolSurface> = surfaces.into_iter().collect();
 
-    AgentTurn {
+    Trace {
         source_id,
         turn_id,
         session_id,
@@ -935,7 +935,7 @@ fn build_turn(
         user_call_id,
         final_answer_preview,
         final_call_id,
-        call_ids,
+        span_ids,
         metadata: serde_json::json!({}),
         tool_surfaces,
         tool_call_total,
@@ -1141,7 +1141,7 @@ mod tests {
         }
     }
 
-    fn drain_completed(events: Vec<TurnEvent>) -> Vec<AgentTurn> {
+    fn drain_completed(events: Vec<TurnEvent>) -> Vec<Trace> {
         events
             .into_iter()
             .map(|TurnEvent::Completed(t)| t)
@@ -1173,9 +1173,9 @@ mod tests {
         events.extend(t.ingest(ic(c2.clone(), id2)));
         let turns = drain_completed(events);
         assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].status, TurnStatus::Complete);
+        assert_eq!(turns[0].status, TraceStatus::Complete);
         assert_eq!(turns[0].call_count, 2);
-        assert_eq!(turns[0].call_ids, vec![c1.id, c2.id]);
+        assert_eq!(turns[0].span_ids, vec![c1.id, c2.id]);
     }
 
     #[test]
@@ -1366,7 +1366,7 @@ mod tests {
         let events = t.ingest(ic(c, id));
         let turns = drain_completed(events);
         assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].status, TurnStatus::Complete);
+        assert_eq!(turns[0].status, TraceStatus::Complete);
         assert_eq!(t.active_count(), 0);
     }
 
@@ -1380,7 +1380,7 @@ mod tests {
         let id = call_info_for_anthropic(&c);
         let turns = drain_completed(t.ingest(ic(c, id)));
         assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].status, TurnStatus::Complete);
+        assert_eq!(turns[0].status, TraceStatus::Complete);
         assert_eq!(
             turns[0].final_finish_reason.as_deref(),
             Some("max_tokens"),
@@ -1426,7 +1426,7 @@ mod tests {
         assert_eq!(t.active_count(), 1);
         let turns = drain_completed(t.flush_all());
         assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].status, TurnStatus::Incomplete);
+        assert_eq!(turns[0].status, TraceStatus::Incomplete);
         // No terminal ⇒ no final_*. Guards against regressing to "last call by
         // request_time wins" which would mislabel the ToolUse call as final.
         assert!(turns[0].final_call_id.is_none());
@@ -1473,7 +1473,7 @@ mod tests {
         let id = call_info_for_codex(&c);
         let turns = drain_completed(t.ingest(ic(c, id)));
         assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].status, TurnStatus::Complete);
+        assert_eq!(turns[0].status, TraceStatus::Complete);
     }
 
     #[test]
@@ -1514,7 +1514,7 @@ mod tests {
         assert_eq!(t.active_count(), 1);
         let turns = drain_completed(t.flush_all());
         assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].status, TurnStatus::Incomplete);
+        assert_eq!(turns[0].status, TraceStatus::Incomplete);
         assert!(turns[0].final_call_id.is_none());
         assert!(turns[0].final_finish_reason.is_none());
         assert!(turns[0].final_answer_preview.is_none());
@@ -1540,12 +1540,12 @@ mod tests {
         let swept =
             drain_completed(t.advance_time_at(arrival + 1_000_000, &source_id, Instant::now()));
         assert_eq!(swept.len(), 1);
-        assert_eq!(swept[0].status, TurnStatus::Incomplete);
+        assert_eq!(swept[0].status, TraceStatus::Incomplete);
         assert_eq!(t.active_count(), 0);
     }
 
     #[test]
-    fn ingest_populates_call_ids_into_finalized_turn() {
+    fn ingest_populates_span_ids_into_finalized_turn() {
         let mut t = mk_tracker_no_grace();
         // Two codex calls, second is terminal-output → grace fires.
         let mut c1 = codex_call("s1", "t1", "message", "completed");
@@ -1568,7 +1568,7 @@ mod tests {
         events.extend(t.ingest(ic(c2, id2)));
         let turns = drain_completed(events);
         assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].call_ids, vec!["c1".to_string(), "c2".to_string()]);
+        assert_eq!(turns[0].span_ids, vec!["c1".to_string(), "c2".to_string()]);
     }
 
     #[test]
@@ -1594,17 +1594,17 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // ActiveTurnRegistry — in-memory in-progress visibility (PR B / Plan C)
+    // ActiveTraceRegistry — in-memory in-progress visibility (PR B / Plan C)
     // -----------------------------------------------------------------
 
-    fn mk_tracker_with_registry() -> (TurnTracker, crate::model::ActiveTurnRegistry) {
-        let reg = crate::model::new_active_turn_registry();
+    fn mk_tracker_with_registry() -> (TurnTracker, crate::model::ActiveTraceRegistry) {
+        let reg = crate::model::new_active_trace_registry();
         let t =
             TurnTracker::with_registry(TrackerConfig::default(), test_metrics(), Some(reg.clone()));
         (t, reg)
     }
 
-    fn registry_snapshot(reg: &crate::model::ActiveTurnRegistry) -> Vec<AgentTurn> {
+    fn registry_snapshot(reg: &crate::model::ActiveTraceRegistry) -> Vec<Trace> {
         reg.read().unwrap().values().cloned().collect()
     }
 
@@ -1625,7 +1625,7 @@ mod tests {
         let snaps = registry_snapshot(&reg);
         assert_eq!(snaps.len(), 1, "exactly one in-progress snapshot");
         let s = &snaps[0];
-        assert_eq!(s.status, TurnStatus::InProgress);
+        assert_eq!(s.status, TraceStatus::InProgress);
         assert_eq!(s.call_count, 1);
         assert_eq!(s.session_id, "S-reg");
         assert!(s.final_finish_reason.is_none());
@@ -1655,7 +1655,7 @@ mod tests {
         let s = &snaps[0];
         assert_eq!(s.turn_id, first_id, "turn_id stable across ingests");
         assert_eq!(s.call_count, 3, "snapshot reflects cumulative state");
-        assert_eq!(s.status, TurnStatus::InProgress);
+        assert_eq!(s.status, TraceStatus::InProgress);
     }
 
     #[test]
@@ -1686,7 +1686,7 @@ mod tests {
             completed[0].turn_id, in_progress_id,
             "Completed reuses in-progress turn_id (UI sees in-place transition)"
         );
-        assert_eq!(completed[0].status, TurnStatus::Complete);
+        assert_eq!(completed[0].status, TraceStatus::Complete);
         assert!(
             registry_snapshot(&reg).is_empty(),
             "registry entry must be removed once Completed lands in DB"
@@ -1706,7 +1706,7 @@ mod tests {
             sweep_interval_us: 100_000,
             grace: Duration::from_millis(1_000),
         };
-        let reg = crate::model::new_active_turn_registry();
+        let reg = crate::model::new_active_trace_registry();
         let mut t = TurnTracker::with_registry(cfg, test_metrics(), Some(reg.clone()));
         let now = std::time::Instant::now();
 
@@ -1719,7 +1719,7 @@ mod tests {
         let completed = drain_completed(events);
         assert_eq!(completed.len(), 1, "idle sweep emits exactly one Completed");
         assert_eq!(completed[0].turn_id, in_progress_id);
-        assert_eq!(completed[0].status, TurnStatus::Incomplete);
+        assert_eq!(completed[0].status, TraceStatus::Incomplete);
         assert!(
             registry_snapshot(&reg).is_empty(),
             "idle sweep must drop the in-progress registry entry"
@@ -1816,7 +1816,7 @@ mod tests {
             "every snapshot reflects the full per-session ingest count"
         );
         assert!(
-            snaps.iter().all(|s| s.status == TurnStatus::InProgress),
+            snaps.iter().all(|s| s.status == TraceStatus::InProgress),
             "every snapshot is in_progress"
         );
 

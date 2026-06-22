@@ -4,11 +4,11 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use h_storage::query::{
-    AgentActivityPoint, AgentActivityQuery, AgentKindSummary, AgentSummaryQuery, CallDetail,
+    AgentActivityPoint, AgentActivityQuery, AgentKindSummary, AgentSummaryQuery, SpanDetail,
     HeaderDiffEntry, HeaderDiffKind, HeaderValueByLeg, LatencyBreakdown, ModelRewrite,
-    ProxyViewMember, ProxyViewResponse, TurnDetail, TurnListItem, TurnsQuery,
+    ProxyViewMember, ProxyViewResponse, TraceDetail, TraceListItem, TracesQuery,
 };
-use h_turn::AgentTurn;
+use h_turn::Trace;
 
 use crate::extractors::{Path, Query};
 use crate::params::*;
@@ -77,7 +77,7 @@ pub async fn list(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let query = TurnsQuery {
+    let query = TracesQuery {
         time_range: to_time_range(params.start, params.end)?,
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip, &None),
         client_ips: parse_csv(&params.client_ip),
@@ -91,7 +91,7 @@ pub async fn list(
         include_proxy_hops: params.include_proxy_hops,
     };
 
-    let mut page = ctx.storage.query_turns(&query).await?;
+    let mut page = ctx.storage.query_traces(&query).await?;
 
     // Snapshot the in-memory active-turn registry, filter by the same
     // params the SQL query used, and prepend matching rows to page 1 so
@@ -120,8 +120,8 @@ pub async fn list(
 
 /// Read the active-turn registry under its read lock, filter by the
 /// query's time range, dimension filter, status, agent_kind, and
-/// client_ip lists, and convert the survivors to `TurnListItem`s.
-fn collect_in_progress(ctx: &ApiAgentTurnsContext, query: &TurnsQuery) -> Vec<TurnListItem> {
+/// client_ip lists, and convert the survivors to `TraceListItem`s.
+fn collect_in_progress(ctx: &ApiAgentTurnsContext, query: &TracesQuery) -> Vec<TraceListItem> {
     let map = match ctx.active_turns.read() {
         Ok(g) => g,
         Err(_) => return Vec::new(), // poisoned lock — degrade to empty
@@ -130,7 +130,7 @@ fn collect_in_progress(ctx: &ApiAgentTurnsContext, query: &TurnsQuery) -> Vec<Tu
     let end_us = query.time_range.end_us;
     let filter = &query.filter;
 
-    let mut out: Vec<TurnListItem> = map
+    let mut out: Vec<TraceListItem> = map
         .values()
         .filter(|t| {
             // Time-range overlap with the requested window. An in-progress
@@ -163,17 +163,17 @@ fn collect_in_progress(ctx: &ApiAgentTurnsContext, query: &TurnsQuery) -> Vec<Tu
     out
 }
 
-/// Convert a tracker-side `AgentTurn` to the API list response shape.
+/// Convert a tracker-side `Trace` to the API list response shape.
 /// In-progress turns never have a pair annotation yet — the sweeper
 /// only inspects finalized rows in the DB — so `proxy_role` /
 /// `proxy_peer_turn_id` are always `None` here. Once the turn
 /// finalizes and the sweeper sees it, the DB row carries the role.
-fn agent_turn_to_list_item(t: &AgentTurn) -> TurnListItem {
-    TurnListItem {
+fn agent_turn_to_list_item(t: &Trace) -> TraceListItem {
+    TraceListItem {
         turn_id: t.turn_id.clone(),
         source_id: t.source_id.clone(),
         session_id: t.session_id.clone(),
-        // `TurnListItem.start_time`/`end_time` are MILLISECONDS — the DB query
+        // `TraceListItem.start_time`/`end_time` are MILLISECONDS — the DB query
         // path returns `epoch_ms(start_time)`, and the console renders the field
         // with `new Date(ms)`. The in-memory turn carries MICROSECONDS, so divide
         // by 1000 here; emitting the raw µs made in-progress turns render as the
@@ -209,12 +209,12 @@ fn agent_turn_to_list_item(t: &AgentTurn) -> TurnListItem {
 }
 
 /// Wire-api / model / server-ip dimension filter — mirrors
-/// `query_turns`'s SQL WHERE clause. Each list is an OR group; an empty
+/// `query_traces`'s SQL WHERE clause. Each list is an OR group; an empty
 /// list means "any". The turn matches if for every non-empty list at
 /// least one entry matches the corresponding turn field (with `model`
 /// matching against the turn's `models_used` set since a turn can span
 /// several models).
-fn matches_filter(t: &AgentTurn, f: &h_storage::query::DimensionFilter) -> bool {
+fn matches_filter(t: &Trace, f: &h_storage::query::DimensionFilter) -> bool {
     if !f.wire_apis.is_empty() && !f.wire_apis.iter().any(|w| w == &t.wire_api) {
         return false;
     }
@@ -245,20 +245,20 @@ pub async fn detail(
             return Ok(ApiResponse::ok(agent_turn_to_detail(t.clone())));
         }
     }
-    match ctx.storage.query_turn_by_id(&turn_id).await? {
+    match ctx.storage.query_trace_by_id(&turn_id).await? {
         Some(detail) => Ok(ApiResponse::ok(detail)),
         None => Err(ApiError::NotFound(format!("turn not found: {turn_id}"))),
     }
 }
 
-/// Convert a snapshot `AgentTurn` to a `TurnDetail`-shaped payload. The
-/// DB-side `query_turn_by_id` returns a richer `TurnDetail` that pulls
+/// Convert a snapshot `Trace` to a `TraceDetail`-shaped payload. The
+/// DB-side `query_trace_by_id` returns a richer `TraceDetail` that pulls
 /// full bodies from referenced `llm_calls` rows; for in-progress turns
 /// we don't have those joins, so the previews and counts are returned
 /// as-is. The frontend tolerates the lighter payload (preview-only).
-fn agent_turn_to_detail(t: AgentTurn) -> h_storage::query::TurnDetail {
-    use h_storage::query::TurnDetail;
-    TurnDetail {
+fn agent_turn_to_detail(t: Trace) -> h_storage::query::TraceDetail {
+    use h_storage::query::TraceDetail;
+    TraceDetail {
         turn_id: t.turn_id,
         source_id: t.source_id,
         session_id: t.session_id,
@@ -285,7 +285,7 @@ fn agent_turn_to_detail(t: AgentTurn) -> h_storage::query::TurnDetail {
         user_input: t.user_input_preview,
         final_call_id: t.final_call_id,
         final_answer: t.final_answer_preview,
-        call_ids: t.call_ids,
+        span_ids: t.span_ids,
         metadata: Some(t.metadata),
         tool_surfaces: t.tool_surfaces.iter().map(|s| s.to_string()).collect(),
         tool_call_total: t.tool_call_total,
@@ -316,29 +316,29 @@ pub async fn calls(
 ) -> Result<impl IntoResponse, ApiError> {
     let include_bodies = params.lite == 0;
 
-    // In-progress turns: pull call_ids from the in-memory registry
+    // In-progress turns: pull span_ids from the in-memory registry
     // snapshot, then ask storage to fetch the matching `llm_calls`
     // rows. A call may be ingested into the tracker microseconds before
     // its row gets flushed from `WriteBuffer` to DuckDB; in that
     // narrow window the call is missing from the result and shows up on
     // the next refresh. Total lag is bounded by storage.flush_interval_ms
     // (200 ms after PR #5).
-    let in_progress_call_ids: Option<Vec<String>> = ctx
+    let in_progress_span_ids: Option<Vec<String>> = ctx
         .active_turns
         .read()
         .ok()
-        .and_then(|map| map.get(&turn_id).map(|t| t.call_ids.clone()));
+        .and_then(|map| map.get(&turn_id).map(|t| t.span_ids.clone()));
 
-    if let Some(call_ids) = in_progress_call_ids {
+    if let Some(span_ids) = in_progress_span_ids {
         let items = ctx
             .storage
-            .query_calls_by_ids(&call_ids, include_bodies)
+            .query_spans_by_ids(&span_ids, include_bodies)
             .await?;
         return Ok(ApiResponse::ok(items));
     }
     let items = ctx
         .storage
-        .query_turn_calls(&turn_id, include_bodies)
+        .query_trace_spans(&turn_id, include_bodies)
         .await?;
     Ok(ApiResponse::ok(items))
 }
@@ -356,7 +356,7 @@ pub async fn proxy_view(
     State(ctx): State<ApiAgentTurnsContext>,
     Path(turn_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let turn = match ctx.storage.query_turn_by_id(&turn_id).await? {
+    let turn = match ctx.storage.query_trace_by_id(&turn_id).await? {
         Some(t) => t,
         None => return Err(ApiError::NotFound(format!("turn not found: {turn_id}"))),
     };
@@ -404,7 +404,7 @@ pub async fn proxy_view(
     for pid in &peer_ids {
         // Resolve each peer's role by fetching its metadata.proxy.role.
         // Cheap relative to the request bodies we're about to pull.
-        let peer_turn = ctx.storage.query_turn_by_id(pid).await?;
+        let peer_turn = ctx.storage.query_trace_by_id(pid).await?;
         let role = peer_turn
             .as_ref()
             .and_then(|t| t.metadata.as_ref())
@@ -423,16 +423,16 @@ pub async fn proxy_view(
             .then_with(|| a_id.cmp(b_id))
     });
 
-    // Fetch each member's TurnDetail + first call body.
+    // Fetch each member's TraceDetail + first call body.
     let mut members: Vec<ProxyViewMember> = Vec::with_capacity(order.len());
     for (tid, role) in &order {
-        let detail = match ctx.storage.query_turn_by_id(tid).await? {
+        let detail = match ctx.storage.query_trace_by_id(tid).await? {
             Some(t) => t,
             None => continue, // peer evicted by retention since the sweep — skip
         };
-        let first_call_id = detail.call_ids.first().cloned();
-        let first_call: Option<CallDetail> = match first_call_id {
-            Some(ref id) => ctx.storage.query_call_by_id(id).await?,
+        let first_call_id = detail.span_ids.first().cloned();
+        let first_call: Option<SpanDetail> = match first_call_id {
+            Some(ref id) => ctx.storage.query_span_by_id(id).await?,
             None => None,
         };
         members.push(member_from(detail, role.clone(), first_call));
@@ -466,9 +466,9 @@ fn role_sort_key(role: &str) -> u8 {
 }
 
 fn member_from(
-    detail: TurnDetail,
+    detail: TraceDetail,
     role: String,
-    first_call: Option<CallDetail>,
+    first_call: Option<SpanDetail>,
 ) -> ProxyViewMember {
     let (
         request_headers,
@@ -829,8 +829,8 @@ mod proxy_view_tests {
         assert!(parse_headers_json(Some("garbage")).is_empty());
     }
 
-    fn turn_with_start_us(start_us: i64) -> h_turn::AgentTurn {
-        h_turn::AgentTurn {
+    fn turn_with_start_us(start_us: i64) -> h_turn::Trace {
+        h_turn::Trace {
             source_id: String::new(),
             turn_id: "t".into(),
             session_id: "s".into(),
@@ -849,13 +849,13 @@ mod proxy_view_tests {
             total_cache_read_input_tokens: 0,
             total_cache_creation_input_tokens: 0,
             total_cost_usd: None,
-            status: h_turn::TurnStatus::InProgress,
+            status: h_turn::TraceStatus::InProgress,
             final_finish_reason: None,
             user_input_preview: None,
             user_call_id: None,
             final_answer_preview: None,
             final_call_id: None,
-            call_ids: vec![],
+            span_ids: vec![],
             metadata: serde_json::json!({}),
             tool_surfaces: vec![],
             tool_call_total: 0,
@@ -866,8 +866,8 @@ mod proxy_view_tests {
 
     // ───────────────────── timestamp-unit suite ─────────────────────
     //
-    // The active-turn registry holds `AgentTurn`s in MICROSECONDS, but the
-    // console-facing `TurnListItem`/`TurnDetail.start_time`/`end_time` are
+    // The active-turn registry holds `Trace`s in MICROSECONDS, but the
+    // console-facing `TraceListItem`/`TraceDetail.start_time`/`end_time` are
     // MILLISECONDS — the DB query path returns `epoch_ms(start_time)` and the
     // UI renders with `new Date(ms)`. These tests pin that boundary so an
     // in-progress (active-registry) turn never again diverges from a finalized

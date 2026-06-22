@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::Deserialize;
-use h_storage::query::CallsQuery;
+use h_storage::query::SpansQuery;
 use h_storage::StorageBackend;
 
 use crate::extractors::{Path, Query};
@@ -91,7 +91,7 @@ pub async fn list(
         }
     };
 
-    let query = CallsQuery {
+    let query = SpansQuery {
         time_range: to_time_range(params.start, params.end)?,
         filter: to_dimension_filter(&params.wire_api, &params.model, &params.server_ip, &None),
         status_codes,
@@ -106,7 +106,7 @@ pub async fn list(
         page_size,
     };
 
-    let page = storage.query_calls(&query).await?;
+    let page = storage.query_spans(&query).await?;
     Ok(ApiResponse::ok(page))
 }
 
@@ -114,7 +114,7 @@ pub async fn detail(
     State(storage): State<Arc<dyn StorageBackend>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    match storage.query_call_by_id(&id).await? {
+    match storage.query_span_by_id(&id).await? {
         Some(detail) => Ok(ApiResponse::ok(detail)),
         None => Err(ApiError::NotFound(format!("call not found: {id}"))),
     }

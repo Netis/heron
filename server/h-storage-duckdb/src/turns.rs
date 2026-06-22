@@ -3,7 +3,7 @@
 use duckdb::types::{TimeUnit, Value};
 use h_common::error::{AppError, Result};
 use h_storage::query::*;
-use h_turn::AgentTurn;
+use h_turn::Trace;
 
 use crate::util::{extract_full_text, parse_json_string_list, us_to_timestamp, ExtractKind};
 use crate::DuckDbBackend;
@@ -70,7 +70,7 @@ struct PreparedTurn {
     user_call_id: Option<String>,
     final_answer_preview: Option<String>,
     final_call_id: Option<String>,
-    call_ids: String,
+    span_ids: String,
     metadata: String,
     tool_surfaces_json: String,
     tool_call_total: u32,
@@ -78,7 +78,7 @@ struct PreparedTurn {
     suspicious_skills_json: String,
 }
 
-fn prepare_turn(t: AgentTurn) -> PreparedTurn {
+fn prepare_turn(t: Trace) -> PreparedTurn {
     // Serialize tool_surfaces as a JSON array of snake_case strings.
     let tool_surfaces_json = {
         let strings: Vec<String> = t.tool_surfaces.iter().map(|s| s.to_string()).collect();
@@ -111,7 +111,7 @@ fn prepare_turn(t: AgentTurn) -> PreparedTurn {
         user_call_id: t.user_call_id,
         final_answer_preview: t.final_answer_preview,
         final_call_id: t.final_call_id,
-        call_ids: serde_json::to_string(&t.call_ids).unwrap_or_default(),
+        span_ids: serde_json::to_string(&t.span_ids).unwrap_or_default(),
         metadata: t.metadata.to_string(),
         tool_surfaces_json,
         tool_call_total: t.tool_call_total,
@@ -121,7 +121,7 @@ fn prepare_turn(t: AgentTurn) -> PreparedTurn {
 }
 
 impl DuckDbBackend {
-    pub(crate) async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()> {
+    pub(crate) async fn write_traces(&self, turns: Vec<Trace>) -> Result<()> {
         if turns.is_empty() {
             return Ok(());
         }
@@ -135,7 +135,7 @@ impl DuckDbBackend {
                 return Err(crate::fault_injection::disk_full_error());
             }
         }
-        let conn = self.write_turns_conn.clone();
+        let conn = self.write_traces_conn.clone();
         tokio::task::spawn_blocking(move || {
             let prepared: Vec<PreparedTurn> = turns.into_iter().map(prepare_turn).collect();
 
@@ -172,7 +172,7 @@ impl DuckDbBackend {
                         p.user_call_id,
                         p.final_answer_preview,
                         p.final_call_id,
-                        p.call_ids,
+                        p.span_ids,
                         p.metadata,
                         p.tool_surfaces_json,
                         p.tool_call_total,
@@ -190,7 +190,7 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    pub(crate) async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage> {
+    pub(crate) async fn query_traces(&self, query: &TracesQuery) -> Result<TracesPage> {
         const VALID_SORT_FIELDS: &[&str] = &[
             "start_time",
             "end_time",
@@ -367,7 +367,7 @@ impl DuckDbBackend {
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or_default();
-                items.push(TurnListItem {
+                items.push(TraceListItem {
                     turn_id: row
                         .get(0)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
@@ -436,13 +436,13 @@ impl DuckDbBackend {
                 });
             }
 
-            Ok(TurnsPage { total, items })
+            Ok(TracesPage { total, items })
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    pub(crate) async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>> {
+    pub(crate) async fn query_trace_by_id(&self, turn_id: &str) -> Result<Option<TraceDetail>> {
         let conn = self.read_pool.acquire().await?;
         let turn_id = turn_id.to_string();
 
@@ -493,7 +493,7 @@ impl DuckDbBackend {
                     row.get::<_, Option<String>>(19)?, // user_call_id
                     row.get::<_, Option<String>>(20)?, // final_answer_preview
                     row.get::<_, Option<String>>(21)?, // final_call_id
-                    row.get::<_, Option<String>>(22)?, // call_ids (JSON)
+                    row.get::<_, Option<String>>(22)?, // span_ids (JSON)
                     row.get::<_, Option<String>>(23)?, // metadata
                     row.get::<_, String>(24)?,         // client_ip
                     row.get::<_, String>(25)?,         // server_ip
@@ -537,7 +537,7 @@ impl DuckDbBackend {
                 user_call_id,
                 final_answer_preview,
                 final_call_id,
-                call_ids_raw,
+                span_ids_raw,
                 metadata_raw,
                 client_ip,
                 server_ip,
@@ -549,7 +549,7 @@ impl DuckDbBackend {
 
             let models_used = parse_json_string_list(models_used_raw.as_deref());
             let subagents_used = parse_json_string_list(subagents_used_raw.as_deref());
-            let call_ids = parse_json_string_list(call_ids_raw.as_deref());
+            let span_ids = parse_json_string_list(span_ids_raw.as_deref());
             let metadata = metadata_raw
                 .as_deref()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
@@ -584,7 +584,7 @@ impl DuckDbBackend {
                 .or_else(|| final_answer_preview.clone()),
             };
 
-            Ok(Some(TurnDetail {
+            Ok(Some(TraceDetail {
                 turn_id,
                 source_id,
                 session_id,
@@ -609,7 +609,7 @@ impl DuckDbBackend {
                 user_input,
                 final_call_id,
                 final_answer,
-                call_ids,
+                span_ids,
                 metadata,
                 tool_surfaces,
                 tool_call_total,
@@ -719,7 +719,7 @@ impl DuckDbBackend {
     /// `patch` (shallow, top-level key replacement) into the existing
     /// JSON object. No-op if `turn_id` doesn't exist — the sweeper may
     /// race finalization and a target turn can be momentarily absent.
-    pub(crate) async fn update_turn_metadata(
+    pub(crate) async fn update_trace_metadata(
         &self,
         turn_id: &str,
         patch: serde_json::Value,
@@ -734,7 +734,7 @@ impl DuckDbBackend {
                 return Err(crate::fault_injection::disk_full_error());
             }
         }
-        let conn = self.write_turns_conn.clone();
+        let conn = self.write_traces_conn.clone();
         let turn_id = turn_id.to_string();
         tokio::task::spawn_blocking(move || {
             let conn = conn
@@ -787,7 +787,7 @@ mod tests {
     use h_llm::wire_apis as wa;
     use h_storage::query::*;
     use h_storage::StorageBackend;
-    use h_turn::{AgentTurn, TurnStatus};
+    use h_turn::{Trace, TraceStatus};
 
     fn sample_turn(
         turn_id: &str,
@@ -797,10 +797,10 @@ mod tests {
         start_us: i64,
         duration_ms: u64,
         call_count: u32,
-        call_ids: Vec<&str>,
-        status: TurnStatus,
-    ) -> AgentTurn {
-        AgentTurn {
+        span_ids: Vec<&str>,
+        status: TraceStatus,
+    ) -> Trace {
+        Trace {
             source_id: String::new(),
             turn_id: turn_id.into(),
             session_id: session_id.into(),
@@ -825,7 +825,7 @@ mod tests {
             user_call_id: None,
             final_answer_preview: Some("world".into()),
             final_call_id: None,
-            call_ids: call_ids.into_iter().map(String::from).collect(),
+            span_ids: span_ids.into_iter().map(String::from).collect(),
             metadata: serde_json::json!({}),
             tool_surfaces: vec![],
             tool_call_total: 0,
@@ -887,13 +887,13 @@ mod tests {
             1500,
             3,
             vec!["call-42"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
-        backend.write_turns(vec![turn]).await.unwrap();
+        backend.write_traces(vec![turn]).await.unwrap();
     }
 
-    fn base_turns_query() -> TurnsQuery {
-        TurnsQuery {
+    fn base_turns_query() -> TracesQuery {
+        TracesQuery {
             time_range: TimeRange {
                 start_us: 1_700_000_000_000_000 - 1,
                 end_us: 1_800_000_000_000_000,
@@ -912,7 +912,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_turns_filters_and_paginates() {
+    async fn query_traces_filters_and_paginates() {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
 
@@ -927,7 +927,7 @@ mod tests {
                 100,
                 1,
                 vec!["c1"],
-                TurnStatus::Complete,
+                TraceStatus::Complete,
             ),
             sample_turn(
                 "t2",
@@ -938,7 +938,7 @@ mod tests {
                 200,
                 2,
                 vec!["c2", "c3"],
-                TurnStatus::Complete,
+                TraceStatus::Complete,
             ),
             sample_turn(
                 "t3",
@@ -949,7 +949,7 @@ mod tests {
                 300,
                 3,
                 vec!["c4"],
-                TurnStatus::Incomplete,
+                TraceStatus::Incomplete,
             ),
             sample_turn(
                 "t4",
@@ -960,13 +960,13 @@ mod tests {
                 400,
                 4,
                 vec!["c5"],
-                TurnStatus::Complete,
+                TraceStatus::Complete,
             ),
         ];
-        backend.write_turns(turns).await.unwrap();
+        backend.write_traces(turns).await.unwrap();
 
         // No filter: all 4 turns, default sort_by=start_time DESC
-        let page = backend.query_turns(&base_turns_query()).await.unwrap();
+        let page = backend.query_traces(&base_turns_query()).await.unwrap();
         assert_eq!(page.total, 4);
         assert_eq!(page.items.len(), 4);
         assert_eq!(page.items[0].turn_id, "t4");
@@ -977,23 +977,23 @@ mod tests {
         // wire_api filter
         let mut q = base_turns_query();
         q.filter.wire_apis = vec![wa::ANTHROPIC.into()];
-        let page = backend.query_turns(&q).await.unwrap();
+        let page = backend.query_traces(&q).await.unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].turn_id, "t2");
 
         // Model filter via list_has_any — should include t1 and t4 (both list gpt-4)
         let mut q = base_turns_query();
         q.filter.models = vec!["gpt-4".into()];
-        let page = backend.query_turns(&q).await.unwrap();
+        let page = backend.query_traces(&q).await.unwrap();
         assert_eq!(page.total, 2);
         let ids: Vec<_> = page.items.iter().map(|t| t.turn_id.clone()).collect();
         assert!(ids.contains(&"t1".to_string()));
         assert!(ids.contains(&"t4".to_string()));
 
-        // Status filter (TurnStatus Display: incomplete)
+        // Status filter (TraceStatus Display: incomplete)
         let mut q = base_turns_query();
         q.statuses = vec!["incomplete".into()];
-        let page = backend.query_turns(&q).await.unwrap();
+        let page = backend.query_traces(&q).await.unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].turn_id, "t3");
 
@@ -1001,7 +1001,7 @@ mod tests {
         let mut q = base_turns_query();
         q.sort_by = "duration_ms".into();
         q.sort_order = "asc".into();
-        let page = backend.query_turns(&q).await.unwrap();
+        let page = backend.query_traces(&q).await.unwrap();
         let durations: Vec<_> = page.items.iter().map(|t| t.duration_ms).collect();
         assert_eq!(durations, vec![100, 200, 300, 400]);
 
@@ -1009,22 +1009,22 @@ mod tests {
         let mut q = base_turns_query();
         q.page_size = 2;
         q.page = 1;
-        let page1 = backend.query_turns(&q).await.unwrap();
+        let page1 = backend.query_traces(&q).await.unwrap();
         assert_eq!(page1.total, 4);
         assert_eq!(page1.items.len(), 2);
         q.page = 2;
-        let page2 = backend.query_turns(&q).await.unwrap();
+        let page2 = backend.query_traces(&q).await.unwrap();
         assert_eq!(page2.items.len(), 2);
         assert_ne!(page1.items[0].turn_id, page2.items[0].turn_id);
 
         // Invalid sort field is rejected
         let mut q = base_turns_query();
         q.sort_by = "bogus".into();
-        assert!(backend.query_turns(&q).await.is_err());
+        assert!(backend.query_traces(&q).await.is_err());
     }
 
     #[tokio::test]
-    async fn query_turn_by_id_hit_and_miss() {
+    async fn query_trace_by_id_hit_and_miss() {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
 
@@ -1037,25 +1037,25 @@ mod tests {
             1500,
             2,
             vec!["call-a", "call-b"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
-        backend.write_turns(vec![turn]).await.unwrap();
+        backend.write_traces(vec![turn]).await.unwrap();
 
-        let hit = backend.query_turn_by_id("t-detail").await.unwrap();
+        let hit = backend.query_trace_by_id("t-detail").await.unwrap();
         let d = hit.expect("turn exists");
         assert_eq!(d.turn_id, "t-detail");
         assert_eq!(d.models_used, vec!["claude-sonnet", "claude-haiku"]);
-        assert_eq!(d.call_ids, vec!["call-a", "call-b"]);
+        assert_eq!(d.span_ids, vec!["call-a", "call-b"]);
         // With no user_call_id/final_call_id, full text falls back to previews.
         assert_eq!(d.user_input.as_deref(), Some("hello"));
         assert_eq!(d.final_answer.as_deref(), Some("world"));
 
-        let miss = backend.query_turn_by_id("does-not-exist").await.unwrap();
+        let miss = backend.query_trace_by_id("does-not-exist").await.unwrap();
         assert!(miss.is_none());
     }
 
     #[tokio::test]
-    async fn query_turn_by_id_skips_calls_lookup_when_preview_complete() {
+    async fn query_trace_by_id_skips_calls_lookup_when_preview_complete() {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
 
@@ -1072,7 +1072,7 @@ mod tests {
         asst_call.response_body =
             Some(r#"{"content":[{"type":"text","text":"DB-ASSISTANT-FULL"}]}"#.into());
         backend
-            .write_calls(vec![user_call, asst_call])
+            .write_spans(vec![user_call, asst_call])
             .await
             .unwrap();
 
@@ -1085,16 +1085,16 @@ mod tests {
             1500,
             2,
             vec!["c-user", "c-asst"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
         turn.user_input_preview = Some("hi".into());
         turn.user_call_id = Some("c-user".into());
         turn.final_answer_preview = Some("bye".into());
         turn.final_call_id = Some("c-asst".into());
-        backend.write_turns(vec![turn]).await.unwrap();
+        backend.write_traces(vec![turn]).await.unwrap();
 
         let d = backend
-            .query_turn_by_id("t-short")
+            .query_trace_by_id("t-short")
             .await
             .unwrap()
             .expect("turn exists");
@@ -1104,7 +1104,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_turn_by_id_reads_full_text_when_preview_truncated() {
+    async fn query_trace_by_id_reads_full_text_when_preview_truncated() {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
 
@@ -1130,7 +1130,7 @@ mod tests {
             .to_string(),
         );
         backend
-            .write_calls(vec![user_call, asst_call])
+            .write_spans(vec![user_call, asst_call])
             .await
             .unwrap();
 
@@ -1145,16 +1145,16 @@ mod tests {
             1500,
             2,
             vec!["c-user", "c-asst"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
         turn.user_input_preview = Some(truncated_user);
         turn.user_call_id = Some("c-user".into());
         turn.final_answer_preview = Some(truncated_asst);
         turn.final_call_id = Some("c-asst".into());
-        backend.write_turns(vec![turn]).await.unwrap();
+        backend.write_traces(vec![turn]).await.unwrap();
 
         let d = backend
-            .query_turn_by_id("t-long")
+            .query_trace_by_id("t-long")
             .await
             .unwrap()
             .expect("turn exists");
@@ -1163,7 +1163,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_turn_calls_orders_and_sequences() {
+    async fn query_trace_spans_orders_and_sequences() {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
 
@@ -1173,10 +1173,10 @@ mod tests {
             mk_call_with_time("call-b", base + 2_000_000),
             mk_call_with_time("call-a", base + 1_000_000),
             mk_call_with_time("call-c", base + 3_000_000),
-            // Extra call not in the turn's call_ids — must be excluded.
+            // Extra call not in the turn's span_ids — must be excluded.
             mk_call_with_time("call-other", base + 500_000),
         ];
-        backend.write_calls(calls).await.unwrap();
+        backend.write_spans(calls).await.unwrap();
 
         let turn = sample_turn(
             "t-calls",
@@ -1187,11 +1187,11 @@ mod tests {
             3000,
             3,
             vec!["call-a", "call-b", "call-c"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
-        backend.write_turns(vec![turn]).await.unwrap();
+        backend.write_traces(vec![turn]).await.unwrap();
 
-        let items = backend.query_turn_calls("t-calls", true).await.unwrap();
+        let items = backend.query_trace_spans("t-calls", true).await.unwrap();
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].id, "call-a");
         assert_eq!(items[0].sequence, 1);
@@ -1205,7 +1205,7 @@ mod tests {
         // identical. Use this same fixture to verify the contract: ids,
         // sequence, timing, etc. all match; only the 4 heavy fields
         // come back as None.
-        let lite = backend.query_turn_calls("t-calls", false).await.unwrap();
+        let lite = backend.query_trace_spans("t-calls", false).await.unwrap();
         assert_eq!(lite.len(), 3);
         for (full, lite) in items.iter().zip(lite.iter()) {
             assert_eq!(full.id, lite.id);
@@ -1220,7 +1220,7 @@ mod tests {
 
         // Unknown turn → empty vec (not error).
         let empty = backend
-            .query_turn_calls("no-such-turn", true)
+            .query_trace_spans("no-such-turn", true)
             .await
             .unwrap();
         assert!(empty.is_empty());
@@ -1231,7 +1231,7 @@ mod tests {
         session_id: &str,
         start_us: i64,
         user_input: Option<&str>,
-    ) -> AgentTurn {
+    ) -> Trace {
         let mut t = sample_turn(
             turn_id,
             session_id,
@@ -1241,7 +1241,7 @@ mod tests {
             500,
             1,
             vec![turn_id],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
         t.user_input_preview = user_input.map(String::from);
         t.user_call_id = user_input.map(|_| format!("call-{turn_id}"));
@@ -1260,7 +1260,7 @@ mod tests {
         let base = 1_700_000_000_000_000_i64;
         let us = |secs: i64| base + secs * 1_000_000;
         backend
-            .write_turns(vec![
+            .write_traces(vec![
                 sample_turn_for_session("t1a", "S1", us(10), Some("first S1")),
                 sample_turn_for_session("t1b", "S1", us(50), None),
                 sample_turn_for_session("t2a", "S2", us(30), Some("first S2")),
@@ -1350,7 +1350,7 @@ mod tests {
         let base = 1_700_000_000_000_000_i64;
         let us = |secs: i64| base + secs * 1_000_000;
         backend
-            .write_turns(vec![
+            .write_traces(vec![
                 sample_turn_for_session("ta", "SX", us(10), Some("opener")),
                 sample_turn_for_session("tb", "SX", us(20), None),
                 sample_turn_for_session("tc", "SX", us(30), None),
@@ -1372,7 +1372,7 @@ mod tests {
 
         // Turns list: ordered by start_time DESC.
         let turns = backend
-            .query_session_turns(&SessionTurnsQuery {
+            .query_session_traces(&SessionTracesQuery {
                 source_id: String::new(),
                 session_id: "SX".into(),
                 cursor: None,
@@ -1388,7 +1388,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_session_turns_cursor_pagination() {
+    async fn query_session_traces_cursor_pagination() {
         use h_storage::query::decode_session_turns_cursor;
 
         let backend = DuckDbBackend::open(":memory:").unwrap();
@@ -1399,7 +1399,7 @@ mod tests {
         // no full-text extraction round-trip is triggered.
         let base = 1_700_000_000_000_000_i64;
         let us = |secs: i64| base + secs * 1_000_000;
-        let turns: Vec<AgentTurn> = (0..5)
+        let turns: Vec<Trace> = (0..5)
             .map(|i| {
                 sample_turn_for_session(
                     &format!("turn-{i}"),
@@ -1409,11 +1409,11 @@ mod tests {
                 )
             })
             .collect();
-        backend.write_turns(turns).await.unwrap();
+        backend.write_traces(turns).await.unwrap();
 
         // Page 1: newest 2 (turn-4, turn-3).
         let p1 = backend
-            .query_session_turns(&SessionTurnsQuery {
+            .query_session_traces(&SessionTracesQuery {
                 source_id: String::new(),
                 session_id: "S-CURSOR".into(),
                 cursor: None,
@@ -1428,7 +1428,7 @@ mod tests {
 
         // Page 2: turn-2, turn-1.
         let p2 = backend
-            .query_session_turns(&SessionTurnsQuery {
+            .query_session_traces(&SessionTracesQuery {
                 source_id: String::new(),
                 session_id: "S-CURSOR".into(),
                 cursor: decode_session_turns_cursor(&cursor1),
@@ -1443,7 +1443,7 @@ mod tests {
 
         // Page 3: turn-0, no next cursor.
         let p3 = backend
-            .query_session_turns(&SessionTurnsQuery {
+            .query_session_traces(&SessionTracesQuery {
                 source_id: String::new(),
                 session_id: "S-CURSOR".into(),
                 cursor: decode_session_turns_cursor(&cursor2),
@@ -1457,7 +1457,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_session_turns_extracts_full_text_when_preview_truncated() {
+    async fn query_session_traces_extracts_full_text_when_preview_truncated() {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
 
@@ -1486,7 +1486,7 @@ mod tests {
             .to_string(),
         );
         backend
-            .write_calls(vec![user_call, asst_call])
+            .write_spans(vec![user_call, asst_call])
             .await
             .unwrap();
 
@@ -1502,16 +1502,16 @@ mod tests {
             1500,
             2,
             vec!["sc-user", "sc-asst"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
         turn.user_input_preview = Some(truncated_user);
         turn.user_call_id = Some("sc-user".into());
         turn.final_answer_preview = Some(truncated_asst);
         turn.final_call_id = Some("sc-asst".into());
-        backend.write_turns(vec![turn]).await.unwrap();
+        backend.write_traces(vec![turn]).await.unwrap();
 
         let page = backend
-            .query_session_turns(&SessionTurnsQuery {
+            .query_session_traces(&SessionTracesQuery {
                 source_id: String::new(),
                 session_id: "S-EXTRACT".into(),
                 cursor: None,
@@ -1547,7 +1547,7 @@ mod tests {
             1000,
             1,
             vec!["c1"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
         let mut t2 = sample_turn(
             "t2",
@@ -1558,7 +1558,7 @@ mod tests {
             1000,
             1,
             vec!["c2"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
         // t2 already paired — sweeper should skip it.
         t2.metadata = serde_json::json!({
@@ -1568,7 +1568,7 @@ mod tests {
                 "peer_turn_id": "tX",
             }
         });
-        backend.write_turns(vec![t1, t2]).await.unwrap();
+        backend.write_traces(vec![t1, t2]).await.unwrap();
 
         let cands = backend
             .query_pair_candidates(base - 1, base + 2_000_000_000)
@@ -1582,7 +1582,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_turn_metadata_merges_into_existing_object() {
+    async fn update_trace_metadata_merges_into_existing_object() {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
         let mut turn = sample_turn(
@@ -1594,11 +1594,11 @@ mod tests {
             1500,
             1,
             vec!["c1"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
         // Pre-existing metadata key — must survive the patch.
         turn.metadata = serde_json::json!({"unrelated": "preserve_me"});
-        backend.write_turns(vec![turn]).await.unwrap();
+        backend.write_traces(vec![turn]).await.unwrap();
 
         let patch = serde_json::json!({
             "proxy": {
@@ -1607,9 +1607,9 @@ mod tests {
                 "peer_turn_id": "tB",
             }
         });
-        backend.update_turn_metadata("tA", patch).await.unwrap();
+        backend.update_trace_metadata("tA", patch).await.unwrap();
 
-        let detail = backend.query_turn_by_id("tA").await.unwrap().unwrap();
+        let detail = backend.query_trace_by_id("tA").await.unwrap().unwrap();
         let meta = detail.metadata.expect("metadata json");
         assert_eq!(
             meta.get("unrelated"),
@@ -1620,7 +1620,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_turns_hides_proxy_hops_by_default_and_surfaces_them_with_flag() {
+    async fn query_traces_hides_proxy_hops_by_default_and_surfaces_them_with_flag() {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
         let base = 1_700_000_000_000_000_i64;
@@ -1635,7 +1635,7 @@ mod tests {
             1500,
             1,
             vec!["c_in"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
         t_in.metadata = serde_json::json!({
             "proxy": {"role": "proxy_in", "pair_id": "p1", "peer_turn_id": "t_out"}
@@ -1649,7 +1649,7 @@ mod tests {
             1500,
             1,
             vec!["c_out"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
         t_out.metadata = serde_json::json!({
             "proxy": {"role": "proxy_out", "pair_id": "p1", "peer_turn_id": "t_in"}
@@ -1663,10 +1663,10 @@ mod tests {
             1500,
             1,
             vec!["c_d"],
-            TurnStatus::Complete,
+            TraceStatus::Complete,
         );
         backend
-            .write_turns(vec![t_in.clone(), t_out.clone(), t_direct.clone()])
+            .write_traces(vec![t_in.clone(), t_out.clone(), t_direct.clone()])
             .await
             .unwrap();
 
@@ -1675,7 +1675,7 @@ mod tests {
         q.time_range.start_us = base - 1;
         q.time_range.end_us = base + 1_000_000_000;
         q.include_proxy_hops = false;
-        let page = backend.query_turns(&q).await.unwrap();
+        let page = backend.query_traces(&q).await.unwrap();
         let ids: Vec<String> = page.items.iter().map(|i| i.turn_id.clone()).collect();
         assert!(ids.contains(&"t_in".to_string()));
         assert!(ids.contains(&"t_direct".to_string()));
@@ -1695,20 +1695,20 @@ mod tests {
 
         // Flag flipped — every row is returned including proxy_out.
         q.include_proxy_hops = true;
-        let page = backend.query_turns(&q).await.unwrap();
+        let page = backend.query_traces(&q).await.unwrap();
         let ids: Vec<String> = page.items.iter().map(|i| i.turn_id.clone()).collect();
         assert!(ids.contains(&"t_out".to_string()));
         assert_eq!(page.total, 3);
     }
 
     #[tokio::test]
-    async fn update_turn_metadata_is_noop_when_turn_absent() {
+    async fn update_trace_metadata_is_noop_when_turn_absent() {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
         // No turn written; update must succeed silently.
         let patch = serde_json::json!({"proxy": {"role": "proxy_in"}});
         backend
-            .update_turn_metadata("never-existed", patch)
+            .update_trace_metadata("never-existed", patch)
             .await
             .expect("noop on missing row");
     }

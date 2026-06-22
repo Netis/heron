@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 use h_common::internal_metrics::{Metric, MetricsSystem};
 use h_llm::model::TurnShardInput;
 
-use crate::model::{ActiveTurnRegistry, AgentTurn};
+use crate::model::{ActiveTraceRegistry, Trace};
 use crate::tracker::{TrackerConfig, TurnEvent, TurnTracker};
 
 /// Spawn one turn-tracker task per shard (inferred from `shard_rxs.len()`).
@@ -26,9 +26,9 @@ use crate::tracker::{TrackerConfig, TurnEvent, TurnTracker};
 pub fn spawn_turn_stage(
     tracker_cfg: TrackerConfig,
     shard_rxs: Vec<mpsc::Receiver<TurnShardInput>>,
-    turns_tx: mpsc::Sender<AgentTurn>,
+    turns_tx: mpsc::Sender<Trace>,
     metrics_sys: &mut MetricsSystem,
-    active_registry: Option<ActiveTurnRegistry>,
+    active_registry: Option<ActiveTraceRegistry>,
 ) -> Vec<JoinHandle<()>> {
     assert!(
         !shard_rxs.is_empty(),
@@ -41,7 +41,7 @@ pub fn spawn_turn_stage(
     // a finalized turn. NOTE: this counts CALLS, not open turns; a single
     // conversation with N concurrent calls contributes N. For the "open
     // agent turns" signal the dashboard uses, see `agent_turns_open`
-    // (registered on the global svc against ActiveTurnRegistry).
+    // (registered on the global svc against ActiveTraceRegistry).
     let active_gauges: Vec<Arc<AtomicU64>> = (0..shard_rxs.len())
         .map(|_| Arc::new(AtomicU64::new(0)))
         .collect();
@@ -222,7 +222,7 @@ mod tests {
     #[tokio::test]
     async fn single_shard_produces_turn() {
         let (shard_tx, shard_rx) = mpsc::channel::<TurnShardInput>(16);
-        let (turns_tx, mut turns_rx) = mpsc::channel::<AgentTurn>(16);
+        let (turns_tx, mut turns_rx) = mpsc::channel::<Trace>(16);
 
         let mut metrics_sys = MetricsSystem::new();
         spawn_turn_stage(
@@ -262,7 +262,7 @@ mod tests {
             turns.push(t);
         }
         assert_eq!(turns.len(), 1, "one complete turn expected");
-        assert_eq!(turns[0].call_ids, vec![id1, id2]);
+        assert_eq!(turns[0].span_ids, vec![id1, id2]);
     }
 
     #[tokio::test]
@@ -274,7 +274,7 @@ mod tests {
             shard_txs.push(tx);
             shard_rxs.push(rx);
         }
-        let (turns_tx, mut turns_rx) = mpsc::channel::<AgentTurn>(64);
+        let (turns_tx, mut turns_rx) = mpsc::channel::<Trace>(64);
 
         let mut metrics_sys = MetricsSystem::new();
         spawn_turn_stage(
@@ -316,13 +316,13 @@ mod tests {
         let sessions: std::collections::HashSet<_> =
             turns.iter().map(|t| t.session_id.clone()).collect();
         assert_eq!(sessions.len(), 4);
-        assert!(turns.iter().all(|t| t.call_ids.len() == 2));
+        assert!(turns.iter().all(|t| t.span_ids.len() == 2));
     }
 
     #[tokio::test]
     #[should_panic(expected = "spawn_turn_stage: shard_rxs must be non-empty")]
     async fn panics_on_empty_shard_rxs() {
-        let (_turns_tx, _turns_rx) = mpsc::channel::<AgentTurn>(1);
+        let (_turns_tx, _turns_rx) = mpsc::channel::<Trace>(1);
         let mut metrics_sys = MetricsSystem::new();
         spawn_turn_stage(
             TrackerConfig::default(),

@@ -2,7 +2,7 @@
 //!
 //! Data-driven: reads `testdata/pcaps/corpus.toml`, replays each committed
 //! fixture through the FULL pipeline (capture → protocol → llm → turn), projects
-//! the extracted `LlmCall`/`AgentTurn` into a DETERMINISTIC JSON shape (no uuids,
+//! the extracted `LlmCall`/`Trace` into a DETERMINISTIC JSON shape (no uuids,
 //! no timing fields), and compares it to `testdata/pcaps/golden/<id>.json`.
 //!
 //! - Missing fixtures (or unsmudged git-LFS pointers) are SKIPPED, so the
@@ -69,7 +69,7 @@ fn fixture(file: &str) -> Option<PathBuf> {
 
 async fn run_pcap_collecting_calls(
     file: &str,
-) -> Option<(Vec<h_turn::AgentTurn>, Vec<Arc<h_llm::model::LlmCall>>)> {
+) -> Option<(Vec<h_turn::Trace>, Vec<Arc<h_llm::model::LlmCall>>)> {
     let path = fixture(file)?;
     let mut metrics_sys = MetricsSystem::new();
 
@@ -122,7 +122,7 @@ async fn run_pcap_collecting_calls(
     }
 
     let (calls_tx, mut calls_rx) = mpsc::channel::<Arc<h_llm::model::LlmCall>>(queue_size);
-    let (turns_tx, mut turns_rx) = mpsc::channel::<h_turn::AgentTurn>(queue_size);
+    let (turns_tx, mut turns_rx) = mpsc::channel::<h_turn::Trace>(queue_size);
     let (m_out_tx, mut m_out_rx) = mpsc::channel::<h_metrics::model::LlmMetricsBatch>(queue_size);
 
     spawn_flow_dispatcher(raw_rx, parsed_txs, "dispatcher", &mut metrics_sys);
@@ -177,7 +177,7 @@ async fn run_pcap_collecting_calls(
     });
     let metrics_drain = tokio::spawn(async move { while m_out_rx.recv().await.is_some() {} });
 
-    let mut finalized: Vec<h_turn::AgentTurn> = Vec::new();
+    let mut finalized: Vec<h_turn::Trace> = Vec::new();
     while let Some(turn) = turns_rx.recv().await {
         finalized.push(turn);
     }
@@ -205,7 +205,7 @@ fn sorted_strings(v: &[String]) -> Vec<String> {
     s
 }
 
-fn project_turn(t: &h_turn::AgentTurn) -> serde_json::Value {
+fn project_turn(t: &h_turn::Trace) -> serde_json::Value {
     let tool_surfaces: Vec<String> = {
         let mut s: Vec<String> = t.tool_surfaces.iter().map(|x| x.to_string()).collect();
         s.sort();
@@ -315,7 +315,7 @@ fn sort_values(mut v: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
 }
 
 fn build_golden(
-    turns: &[h_turn::AgentTurn],
+    turns: &[h_turn::Trace],
     calls: &[Arc<h_llm::model::LlmCall>],
 ) -> serde_json::Value {
     let turns_p = sort_values(turns.iter().map(project_turn).collect());

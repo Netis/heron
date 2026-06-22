@@ -21,7 +21,7 @@
 //!
 //! ```ignore
 //! let _guard = FaultGuard::arm(&backend, FaultPoint::DuckDbInvalidate);
-//! let err = backend.write_turns(vec![mk_turn(0)]).await.unwrap_err();
+//! let err = backend.write_traces(vec![mk_turn(0)]).await.unwrap_err();
 //! // _guard's Drop disarms automatically — no leakage into sibling tests.
 //! ```
 

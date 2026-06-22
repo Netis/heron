@@ -1,5 +1,5 @@
 //! Verify the turn-finalize rollup combines per-call agent fields into the
-//! correct aggregate fields on `AgentTurn`.
+//! correct aggregate fields on `Trace`.
 
 use h_common::agent::{AgentTopology, ToolSurface};
 use h_llm::agent_classifier::SuspiciousSignal;

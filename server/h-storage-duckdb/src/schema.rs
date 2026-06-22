@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS http_exchanges (
 pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
     // Any writer works — they share the same DuckDB instance. Using the
     // calls writer keeps init deterministic.
-    let conn = backend.write_calls_conn.clone();
+    let conn = backend.write_spans_conn.clone();
     tokio::task::spawn_blocking(move || {
         let conn = conn
             .lock()
@@ -314,7 +314,7 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
             }
         }
 
-        // Phase 3 collapsed TurnStatus to Complete | Incomplete. Migrate
+        // Phase 3 collapsed TraceStatus to Complete | Incomplete. Migrate
         // legacy values:
         //   'length'             -> 'complete'   (max_tokens IS a wire terminal)
         //   'failed'/'cancelled' -> 'incomplete' (no wire terminal landed)

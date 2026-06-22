@@ -4,7 +4,7 @@
 //! On each tick it asks the storage backend for a window of finalized
 //! turns whose `metadata.proxy.role` is unset, runs the in-memory
 //! `pair_all` classifier, and writes the resulting pair annotations
-//! back via `update_turn_metadata`. The sweep is fully idempotent: a
+//! back via `update_trace_metadata`. The sweep is fully idempotent: a
 //! turn that is already paired is excluded by the backend query, so
 //! repeat sweeps converge.
 //!
@@ -23,7 +23,7 @@
 //!
 //! ### Why a sweeper (not inline at write-time)
 //!
-//! When `write_turns` flushes a batch, the peer of a pair may not yet
+//! When `write_traces` flushes a batch, the peer of a pair may not yet
 //! have arrived — it might still be sitting in another shard's buffer
 //! waiting for grace. Inline pairing at write time would systematically
 //! miss the first of any pair. A sweeper that scans recently-finalized
@@ -84,7 +84,7 @@ pub fn spawn_pair_sweeper(
                     // MVCC tombstone chain doesn't grow into the
                     // DuckDB "Failed to delete all rows from index"
                     // FATAL trap. Cheap when nothing to compact.
-                    if let Err(e) = storage.checkpoint_turns_writer().await {
+                    if let Err(e) = storage.checkpoint_traces_writer().await {
                         tracing::warn!(error = %e, "pair-sweeper: post-sweep CHECKPOINT failed");
                     }
                 }
@@ -137,7 +137,7 @@ pub async fn sweep_once(
             let patch = g
                 .metadata_for(&member.turn_id)
                 .expect("member belongs to group it came from");
-            storage.update_turn_metadata(&member.turn_id, patch).await?;
+            storage.update_trace_metadata(&member.turn_id, patch).await?;
             turns_tagged += 1;
         }
     }
@@ -174,7 +174,7 @@ mod tests {
     use h_protocol::HttpExchange;
 
     use h_turn::proxy_pair::PairCandidate;
-    use h_turn::AgentTurn;
+    use h_turn::Trace;
 
     /// In-memory stub storage that holds the candidates the sweeper will
     /// see and records the metadata patches it writes back. Lets us test
@@ -189,7 +189,7 @@ mod tests {
         async fn init(&self) -> Result<()> {
             Ok(())
         }
-        async fn write_calls(&self, _: Vec<LlmCall>) -> Result<()> {
+        async fn write_spans(&self, _: Vec<LlmCall>) -> Result<()> {
             Ok(())
         }
         async fn write_metrics(&self, _: Vec<LlmMetric>) -> Result<()> {
@@ -198,7 +198,7 @@ mod tests {
         async fn write_finish_metrics(&self, _: Vec<LlmFinishMetric>) -> Result<()> {
             Ok(())
         }
-        async fn write_turns(&self, _: Vec<AgentTurn>) -> Result<()> {
+        async fn write_traces(&self, _: Vec<Trace>) -> Result<()> {
             Ok(())
         }
         async fn write_exchanges(&self, _: Vec<HttpExchange>) -> Result<()> {
@@ -272,36 +272,36 @@ mod tests {
         ) -> Result<Vec<FinishReasonTimeseries>> {
             Ok(vec![])
         }
-        async fn query_calls(&self, _: &CallsQuery) -> Result<CallsPage> {
-            Ok(CallsPage {
+        async fn query_spans(&self, _: &SpansQuery) -> Result<SpansPage> {
+            Ok(SpansPage {
                 total: 0,
                 items: vec![],
             })
         }
-        async fn query_call_by_id(&self, _: &str) -> Result<Option<CallDetail>> {
+        async fn query_span_by_id(&self, _: &str) -> Result<Option<SpanDetail>> {
             Ok(None)
         }
-        async fn query_turns(&self, _: &TurnsQuery) -> Result<TurnsPage> {
-            Ok(TurnsPage {
+        async fn query_traces(&self, _: &TracesQuery) -> Result<TracesPage> {
+            Ok(TracesPage {
                 total: 0,
                 items: vec![],
             })
         }
-        async fn query_turn_by_id(&self, _: &str) -> Result<Option<TurnDetail>> {
+        async fn query_trace_by_id(&self, _: &str) -> Result<Option<TraceDetail>> {
             Ok(None)
         }
-        async fn query_turn_calls(
+        async fn query_trace_spans(
             &self,
             _: &str,
             _include_bodies: bool,
-        ) -> Result<Vec<TurnCallItem>> {
+        ) -> Result<Vec<TraceSpanItem>> {
             Ok(vec![])
         }
-        async fn query_calls_by_ids(
+        async fn query_spans_by_ids(
             &self,
             _: &[String],
             _include_bodies: bool,
-        ) -> Result<Vec<TurnCallItem>> {
+        ) -> Result<Vec<TraceSpanItem>> {
             Ok(vec![])
         }
         async fn query_sessions(&self, _: &SessionListQuery) -> Result<SessionsPage> {
@@ -313,8 +313,8 @@ mod tests {
         async fn query_session_by_id(&self, _: &str, _: &str) -> Result<Option<SessionDetail>> {
             Ok(None)
         }
-        async fn query_session_turns(&self, _: &SessionTurnsQuery) -> Result<SessionTurnsPage> {
-            Ok(SessionTurnsPage {
+        async fn query_session_traces(&self, _: &SessionTracesQuery) -> Result<SessionTracesPage> {
+            Ok(SessionTracesPage {
                 items: vec![],
                 next_cursor: None,
             })
@@ -343,7 +343,7 @@ mod tests {
         async fn query_pair_candidates(&self, _: i64, _: i64) -> Result<Vec<PairCandidate>> {
             Ok(self.candidates.clone())
         }
-        async fn update_turn_metadata(
+        async fn update_trace_metadata(
             &self,
             turn_id: &str,
             patch: serde_json::Value,
@@ -387,7 +387,7 @@ mod tests {
         // The second test verifies the actual patch contents written
         // through the stub. Here we just assert pair detection ran end
         // to end — the sweeper only counts a pair after BOTH
-        // update_turn_metadata calls succeeded.
+        // update_trace_metadata calls succeeded.
     }
 
     #[tokio::test]

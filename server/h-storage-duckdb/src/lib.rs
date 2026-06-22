@@ -23,7 +23,7 @@ use h_common::error::{AppError, Result};
 use h_llm::model::LlmCall;
 use h_metrics::model::{LlmFinishMetric, LlmMetric};
 use h_protocol::HttpExchange;
-use h_turn::{AgentTurn, PairCandidate};
+use h_turn::{Trace, PairCandidate};
 
 use h_storage::query::*;
 use h_storage::retention::{RetentionPolicy, RetentionReport};
@@ -46,8 +46,8 @@ const DEFAULT_READ_POOL_SIZE: usize = 4;
 /// A small pool of reader connections is cloned from the calls writer.
 /// Queries never contend with writes on any of the writer Mutexes.
 pub struct DuckDbBackend {
-    pub(crate) write_calls_conn: Arc<StdMutex<Connection>>,
-    pub(crate) write_turns_conn: Arc<StdMutex<Connection>>,
+    pub(crate) write_spans_conn: Arc<StdMutex<Connection>>,
+    pub(crate) write_traces_conn: Arc<StdMutex<Connection>>,
     pub(crate) write_metrics_conn: Arc<StdMutex<Connection>>,
     pub(crate) write_exchanges_conn: Arc<StdMutex<Connection>>,
     pub(crate) read_pool: ReadPool,
@@ -113,8 +113,8 @@ impl DuckDbBackend {
         let fault_set = fault_injection::FaultSet::new();
 
         Ok(Self {
-            write_calls_conn: Arc::new(StdMutex::new(calls_writer)),
-            write_turns_conn: Arc::new(StdMutex::new(turns_writer)),
+            write_spans_conn: Arc::new(StdMutex::new(calls_writer)),
+            write_traces_conn: Arc::new(StdMutex::new(turns_writer)),
             write_metrics_conn: Arc::new(StdMutex::new(metrics_writer)),
             write_exchanges_conn: Arc::new(StdMutex::new(exchanges_writer)),
             read_pool: ReadPool::new(
@@ -137,7 +137,7 @@ impl DuckDbBackend {
 
     #[cfg(test)]
     pub(crate) fn test_conn(&self) -> &StdMutex<Connection> {
-        &self.write_calls_conn
+        &self.write_spans_conn
     }
 }
 
@@ -147,8 +147,8 @@ impl StorageBackend for DuckDbBackend {
         schema::init(self).await
     }
 
-    async fn write_calls(&self, calls: Vec<LlmCall>) -> Result<()> {
-        DuckDbBackend::write_calls(self, calls).await
+    async fn write_spans(&self, calls: Vec<LlmCall>) -> Result<()> {
+        DuckDbBackend::write_spans(self, calls).await
     }
 
     async fn write_exchanges(&self, exchanges: Vec<HttpExchange>) -> Result<()> {
@@ -171,8 +171,8 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::write_finish_metrics(self, metrics).await
     }
 
-    async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()> {
-        DuckDbBackend::write_turns(self, turns).await
+    async fn write_traces(&self, turns: Vec<Trace>) -> Result<()> {
+        DuckDbBackend::write_traces(self, turns).await
     }
 
     async fn query_metrics_timeseries(
@@ -228,36 +228,36 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::query_finish_reasons(self, query).await
     }
 
-    async fn query_calls(&self, query: &CallsQuery) -> Result<CallsPage> {
-        DuckDbBackend::query_calls(self, query).await
+    async fn query_spans(&self, query: &SpansQuery) -> Result<SpansPage> {
+        DuckDbBackend::query_spans(self, query).await
     }
 
-    async fn query_call_by_id(&self, id: &str) -> Result<Option<CallDetail>> {
-        DuckDbBackend::query_call_by_id(self, id).await
+    async fn query_span_by_id(&self, id: &str) -> Result<Option<SpanDetail>> {
+        DuckDbBackend::query_span_by_id(self, id).await
     }
 
-    async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage> {
-        DuckDbBackend::query_turns(self, query).await
+    async fn query_traces(&self, query: &TracesQuery) -> Result<TracesPage> {
+        DuckDbBackend::query_traces(self, query).await
     }
 
-    async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>> {
-        DuckDbBackend::query_turn_by_id(self, turn_id).await
+    async fn query_trace_by_id(&self, turn_id: &str) -> Result<Option<TraceDetail>> {
+        DuckDbBackend::query_trace_by_id(self, turn_id).await
     }
 
-    async fn query_turn_calls(
+    async fn query_trace_spans(
         &self,
         turn_id: &str,
         include_bodies: bool,
-    ) -> Result<Vec<TurnCallItem>> {
-        DuckDbBackend::query_turn_calls(self, turn_id, include_bodies).await
+    ) -> Result<Vec<TraceSpanItem>> {
+        DuckDbBackend::query_trace_spans(self, turn_id, include_bodies).await
     }
 
-    async fn query_calls_by_ids(
+    async fn query_spans_by_ids(
         &self,
-        call_ids: &[String],
+        span_ids: &[String],
         include_bodies: bool,
-    ) -> Result<Vec<TurnCallItem>> {
-        DuckDbBackend::query_calls_by_ids(self, call_ids, include_bodies).await
+    ) -> Result<Vec<TraceSpanItem>> {
+        DuckDbBackend::query_spans_by_ids(self, span_ids, include_bodies).await
     }
 
     async fn query_sessions(&self, query: &SessionListQuery) -> Result<SessionsPage> {
@@ -272,8 +272,8 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::query_session_by_id(self, source_id, session_id).await
     }
 
-    async fn query_session_turns(&self, query: &SessionTurnsQuery) -> Result<SessionTurnsPage> {
-        DuckDbBackend::query_session_turns(self, query).await
+    async fn query_session_traces(&self, query: &SessionTracesQuery) -> Result<SessionTracesPage> {
+        DuckDbBackend::query_session_traces(self, query).await
     }
 
     async fn query_distinct_wire_apis(&self) -> Result<Vec<String>> {
@@ -311,12 +311,12 @@ impl StorageBackend for DuckDbBackend {
         DuckDbBackend::query_pair_candidates(self, start_us, end_us).await
     }
 
-    async fn update_turn_metadata(&self, turn_id: &str, patch: serde_json::Value) -> Result<()> {
-        DuckDbBackend::update_turn_metadata(self, turn_id, patch).await
+    async fn update_trace_metadata(&self, turn_id: &str, patch: serde_json::Value) -> Result<()> {
+        DuckDbBackend::update_trace_metadata(self, turn_id, patch).await
     }
 
-    async fn checkpoint_turns_writer(&self) -> Result<()> {
-        let conn = self.write_turns_conn.clone();
+    async fn checkpoint_traces_writer(&self) -> Result<()> {
+        let conn = self.write_traces_conn.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn
                 .lock()
@@ -332,8 +332,8 @@ impl StorageBackend for DuckDbBackend {
     async fn reopen_all_connections(&self) -> Result<()> {
         let path = self.db_path.clone();
         let pool_size = self.read_pool_size;
-        let calls_arc = self.write_calls_conn.clone();
-        let turns_arc = self.write_turns_conn.clone();
+        let calls_arc = self.write_spans_conn.clone();
+        let turns_arc = self.write_traces_conn.clone();
         let metrics_arc = self.write_metrics_conn.clone();
         let exchanges_arc = self.write_exchanges_conn.clone();
         let read_pool = self.read_pool.clone();

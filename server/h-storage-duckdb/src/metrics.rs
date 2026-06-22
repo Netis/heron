@@ -1228,7 +1228,7 @@ impl DuckDbBackend {
     ///     proxy_out.server_endpoint` pair becomes one edge, counted
     ///     by number of paired turns. `traces` has no
     ///     `server_port`, so we look it up via the turn's first
-    ///     `call_ids` entry against `spans`.
+    ///     `span_ids` entry against `spans`.
     ///   * Client edges — any service that has a non-`proxy_out` turn
     ///     in the window gets a virtual edge from `__clients__`. So
     ///     entry-point services (no inbound proxy hop) still appear
