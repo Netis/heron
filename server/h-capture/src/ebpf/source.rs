@@ -22,6 +22,7 @@ use tokio::io::unix::AsyncFd;
 use tokio_util::sync::CancellationToken;
 
 use aya::maps::RingBuf;
+use aya::programs::uprobe::UProbeLinkId;
 use aya::programs::UProbe;
 use aya::Ebpf;
 
@@ -36,6 +37,14 @@ use crate::pcap_dump::PacketDumperConfig;
 use crate::routing::RoutingSender;
 use crate::source::CaptureSource;
 use crate::synth::{StreamDir, SynthConfig};
+
+/// The uprobe links installed on one target inode: the `(program_name,
+/// link_id)` pairs returned by each [`UProbe::attach`]. We keep the ids so the
+/// links can be **detached** when the inode goes dead — aya owns the link (and
+/// its `bpf_link` fd) inside the program's link map until `detach`/`take_link`
+/// removes it, so dropping the id at attach time would leak the fd for the
+/// process's whole lifetime.
+type InodeLinks = Vec<(&'static str, UProbeLinkId)>;
 
 /// eBPF SSL-uprobe capture source.
 pub struct EbpfSource {
@@ -171,9 +180,10 @@ impl CaptureSource for EbpfSource {
         let libs_count = libs.len();
         // `seen` = every inode we've attempted (success or deterministic sig
         // failure) so we neither re-attach nor re-warn on each rescan; `attached`
-        // = inodes actually carrying probes (drives the health gauge).
+        // = inodes actually carrying probes, mapped to the link ids that hold
+        // their `bpf_link` fds (drives the health gauge and the dead-inode GC).
         let mut seen_inodes: HashSet<(u64, u64)> = HashSet::new();
-        let mut attached_inodes: HashSet<(u64, u64)> = HashSet::new();
+        let mut attached_inodes: HashMap<(u64, u64), InodeLinks> = HashMap::new();
         rescan_targets(
             &mut ebpf,
             &self.targets,
@@ -244,18 +254,20 @@ impl CaptureSource for EbpfSource {
                     metrics.counter(Metric::CaptureHeartbeatsEmitted).inc();
                 }
                 _ = rescan.tick() => {
-                    let newly = rescan_targets(
+                    let (newly, detached) = rescan_targets(
                         &mut ebpf,
                         &self.targets,
                         &mut seen_inodes,
                         &mut attached_inodes,
                     );
-                    if newly > 0 {
+                    if newly > 0 || detached > 0 {
                         tracing::info!(
-                            "ebpf: rescan attached {newly} new target inode(s) \
-                             (total target inodes={})",
+                            "ebpf: rescan attached {newly} new, detached {detached} dead \
+                             target inode(s) (live target inodes={})",
                             attached_inodes.len()
                         );
+                        // Reflect both attaches and detaches so the gauge tracks
+                        // the live set (it must fall, not ratchet up forever).
                         metrics
                             .counter(Metric::EbpfUprobesAttached)
                             .set((libs_count + attached_inodes.len()) as u64);
@@ -420,14 +432,17 @@ fn attach_sym(
 }
 
 /// Attach an already-loaded program to a static binary at a resolved **file
-/// offset** (no symbol). The path for the Bun/BoringSSL Phase-3 case.
+/// offset** (no symbol). The path for the Bun/BoringSSL Phase-3 case. Returns
+/// the [`UProbeLinkId`] so the caller can detach this probe (and free its
+/// `bpf_link` fd) once the inode goes dead — aya keeps the link alive in the
+/// program's link map until it's explicitly detached.
 fn attach_offset(
     ebpf: &mut Ebpf,
     prog_name: &str,
     offset: u64,
     binary: &std::path::Path,
     ret: bool,
-) -> crate::Result<()> {
+) -> crate::Result<UProbeLinkId> {
     let program: &mut UProbe = ebpf
         .program_mut(prog_name)
         .ok_or_else(|| crate::CaptureError::Other(format!("program {prog_name} missing")))?
@@ -440,8 +455,25 @@ fn attach_offset(
                 "attach {prog_name} at offset {offset:#x} in {} (ret={ret}): {e}",
                 binary.display()
             ))
-        })?;
-    Ok(())
+        })
+}
+
+/// Detach a set of uprobe links, freeing each one's `bpf_link` fd. Best-effort:
+/// a program that vanished or a link already gone is logged and skipped. Used
+/// both for dead-inode GC and to unwind a partially-attached inode on error.
+fn detach_links(ebpf: &mut Ebpf, links: InodeLinks) {
+    for (prog_name, link_id) in links {
+        let Some(program) = ebpf.program_mut(prog_name) else {
+            continue;
+        };
+        let uprobe: &mut UProbe = match program.try_into() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if let Err(e) = uprobe.detach(link_id) {
+            tracing::warn!("ebpf: detach {prog_name} link failed: {e}");
+        }
+    }
 }
 
 /// Built-in BoringSSL prologue signatures for a flavor, using the anchor + window
@@ -654,42 +686,63 @@ fn resolve_target_offsets(
 /// Attach the (already-loaded) SSL uprobes to `attach_path` at the resolved
 /// offsets. `attach_path` may be the on-disk binary or a `/proc/<pid>/exe`
 /// handle to a deleted inode — the kernel resolves both to the same inode and
-/// installs the probe on it. Returns `Ok(true)` if at least one probe attached.
+/// installs the probe on it. Returns the link ids of the probes attached (empty
+/// if neither offset resolved). On a partial failure it detaches whatever did
+/// attach before returning the error, so a half-attached inode never orphans a
+/// `bpf_link` fd outside the caller's tracking.
 fn attach_at(
     ebpf: &mut Ebpf,
     attach_path: &Path,
     read_off: Option<u64>,
     write_off: Option<u64>,
-) -> crate::Result<bool> {
-    let mut any = false;
-    if let Some(off) = write_off {
-        attach_offset(ebpf, "ssl_write", off, attach_path, false)?;
-        any = true;
+) -> crate::Result<InodeLinks> {
+    let mut links: InodeLinks = Vec::new();
+    // write first, then the read entry/exit pair — same order as before. The
+    // entry probe captures the buffer pointer; the return probe reads the bytes
+    // SSL_read filled in. Both reads attach at the function entry offset.
+    let probes: [(&'static str, Option<u64>, bool); 3] = [
+        ("ssl_write", write_off, false),
+        ("ssl_read_enter", read_off, false),
+        ("ssl_read_exit", read_off, true),
+    ];
+    for (name, off, ret) in probes {
+        let Some(off) = off else { continue };
+        match attach_offset(ebpf, name, off, attach_path, ret) {
+            Ok(id) => links.push((name, id)),
+            Err(e) => {
+                detach_links(ebpf, std::mem::take(&mut links));
+                return Err(e);
+            }
+        }
     }
-    if let Some(off) = read_off {
-        // Entry probe captures the buffer pointer; the return probe reads the
-        // bytes SSL_read filled in. Both attach at the function entry.
-        attach_offset(ebpf, "ssl_read_enter", off, attach_path, false)?;
-        attach_offset(ebpf, "ssl_read_exit", off, attach_path, true)?;
-        any = true;
-    }
-    Ok(any)
+    Ok(links)
 }
 
 /// Attach SSL uprobes to every distinct inode backing the configured static
 /// targets, covering both the on-disk install path (future fresh execs of the
 /// current build) and every running session via `/proc/<pid>/exe` (already-
 /// running sessions on a deleted inode after an auto-update). Idempotent across
-/// calls: `seen` skips any inode already attempted, `attached` records inodes
-/// actually carrying probes. Returns the count of inodes newly attached this
-/// pass. Never propagates errors — a bad target must not take down capture.
+/// calls: `seen` skips any inode already attempted, `attached` maps each inode
+/// carrying probes to its link ids.
+///
+/// Also **garbage-collects dead inodes**: an inode that's no longer backed by
+/// any on-disk path or running target process has its uprobes detached, freeing
+/// their `bpf_link` fds. Without this the attachments — and their fds — pile up
+/// monotonically as npm-style auto-updates rotate inodes and sessions come and
+/// go, eventually exhausting the process fd limit and starving the API listener.
+///
+/// Returns `(newly_attached, detached)` inode counts. Never propagates errors —
+/// a bad target must not take down capture.
 fn rescan_targets(
     ebpf: &mut Ebpf,
     targets: &[EbpfTarget],
     seen: &mut HashSet<(u64, u64)>,
-    attached: &mut HashSet<(u64, u64)>,
-) -> usize {
+    attached: &mut HashMap<(u64, u64), InodeLinks>,
+) -> (usize, usize) {
     let mut newly = 0;
+    // Every inode currently backed by an on-disk path or a live target process.
+    // Anything in `attached`/`seen` but absent here is dead and gets reaped.
+    let mut live: HashSet<(u64, u64)> = HashSet::new();
     for target in targets {
         if !target_has_source(target) {
             continue; // warned once at startup
@@ -716,6 +769,9 @@ fn rescan_targets(
             let Some(ino) = inode_of(&path) else {
                 continue; // process exited mid-scan; retry next pass
             };
+            // Resolvable inode ⇒ live this pass; protects it from GC below even
+            // when it was attached on an earlier pass and is skipped by `seen`.
+            live.insert(ino);
             if seen.contains(&ino) {
                 continue;
             }
@@ -732,8 +788,8 @@ fn rescan_targets(
             seen.insert(ino);
             let (read_off, write_off) = resolve_target_offsets(&data, target, &target.binary);
             match attach_at(ebpf, &path, read_off, write_off) {
-                Ok(true) => {
-                    attached.insert(ino);
+                Ok(links) if !links.is_empty() => {
+                    attached.insert(ino, links);
                     newly += 1;
                     tracing::info!(
                         "ebpf: attached {} via {} (inode {}:{})",
@@ -743,7 +799,7 @@ fn rescan_targets(
                         ino.1
                     );
                 }
-                Ok(false) => tracing::warn!(
+                Ok(_) => tracing::warn!(
                     "ebpf: {} via {}: no usable SSL offset (wrong signature/flavor?)",
                     target.binary,
                     path.display()
@@ -756,7 +812,27 @@ fn rescan_targets(
             }
         }
     }
-    newly
+
+    // GC dead inodes: detach their uprobes (frees the bpf_link fds) and drop
+    // them from `seen` so the same inode number reused by a future build is
+    // re-attached rather than silently skipped.
+    let dead: Vec<(u64, u64)> = attached
+        .keys()
+        .filter(|ino| !live.contains(ino))
+        .copied()
+        .collect();
+    let detached = dead.len();
+    for ino in dead {
+        if let Some(links) = attached.remove(&ino) {
+            tracing::info!("ebpf: detaching dead target inode {}:{}", ino.0, ino.1);
+            detach_links(ebpf, links);
+        }
+    }
+    // Keep `seen` bounded to the live set (+ still-attached inodes): a dead inode
+    // won't reappear, and pruning lets a reused inode number be re-attempted.
+    seen.retain(|ino| live.contains(ino) || attached.contains_key(ino));
+
+    (newly, detached)
 }
 
 /// Discover `libssl` shared objects on the host. Tries `ldconfig -p` first, then
