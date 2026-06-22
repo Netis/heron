@@ -23,10 +23,10 @@ impl DuckDbBackend {
                     .map_err(|e| AppError::Storage(format!("failed to lock calls writer: {e}")))?;
                 let n = conn
                     .execute(
-                        "DELETE FROM llm_calls WHERE request_time < ?1",
+                        "DELETE FROM spans WHERE request_time < ?1",
                         duckdb::params![ts],
                     )
-                    .map_err(|e| AppError::Storage(format!("failed to delete llm_calls: {e}")))?;
+                    .map_err(|e| AppError::Storage(format!("failed to delete spans: {e}")))?;
                 report.calls_deleted = n as u64;
             }
 
@@ -53,10 +53,10 @@ impl DuckDbBackend {
                     .map_err(|e| AppError::Storage(format!("failed to lock turns writer: {e}")))?;
                 let n = conn
                     .execute(
-                        "DELETE FROM agent_turns WHERE end_time < ?1",
+                        "DELETE FROM traces WHERE end_time < ?1",
                         duckdb::params![ts],
                     )
-                    .map_err(|e| AppError::Storage(format!("failed to delete agent_turns: {e}")))?;
+                    .map_err(|e| AppError::Storage(format!("failed to delete traces: {e}")))?;
                 report.turns_deleted = n as u64;
             }
 
@@ -346,10 +346,10 @@ mod tests {
 
         let conn = backend.test_conn().lock().unwrap();
         let calls_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM llm_calls", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM spans", [], |r| r.get(0))
             .unwrap();
         let turns_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM agent_turns", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM traces", [], |r| r.get(0))
             .unwrap();
         let total_metrics: i64 = conn
             .query_row("SELECT COUNT(*) FROM llm_metrics", [], |r| r.get(0))

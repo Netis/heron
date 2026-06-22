@@ -190,10 +190,10 @@ async fn concurrent_writes_to_three_tables() {
     let expected = (PER_TABLE * BATCHES) as i64;
     let conn = backend.test_conn().lock().unwrap();
     let calls_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM llm_calls", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM spans", [], |r| r.get(0))
         .unwrap();
     let turns_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM agent_turns", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM traces", [], |r| r.get(0))
         .unwrap();
     let metrics_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM llm_metrics", [], |r| r.get(0))
@@ -549,7 +549,7 @@ async fn chaos_burst(
 fn count_calls(backend: &DuckDbBackend) -> usize {
     let conn = backend.test_conn().lock().unwrap();
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM llm_calls", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM spans", [], |r| r.get(0))
         .unwrap();
     n as usize
 }

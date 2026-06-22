@@ -7,7 +7,7 @@ use h_common::error::{AppError, Result};
 use crate::DuckDbBackend;
 
 const CREATE_LLM_CALLS: &str = "
-CREATE TABLE IF NOT EXISTS llm_calls (
+CREATE TABLE IF NOT EXISTS spans (
     id                VARCHAR NOT NULL PRIMARY KEY,
     source_id         VARCHAR NOT NULL DEFAULT '',
     client_ip         VARCHAR NOT NULL,
@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     body_bytes_dropped UBIGINT NOT NULL DEFAULT 0,
     process_pid       UINTEGER,
     process_comm      VARCHAR,
-    process_exe       VARCHAR
+    process_exe       VARCHAR,
+    kind              VARCHAR NOT NULL DEFAULT 'llm'
 );
 ";
 
@@ -117,7 +118,7 @@ CREATE INDEX IF NOT EXISTS idx_llm_finish_metrics_ts
 ";
 
 const CREATE_LLM_TURNS: &str = "
-CREATE TABLE IF NOT EXISTS agent_turns (
+CREATE TABLE IF NOT EXISTS traces (
     turn_id                   VARCHAR NOT NULL PRIMARY KEY,
     source_id                 VARCHAR NOT NULL DEFAULT '',
     session_id                VARCHAR NOT NULL,
@@ -142,7 +143,7 @@ CREATE TABLE IF NOT EXISTS agent_turns (
     user_call_id              VARCHAR,
     final_answer_preview      VARCHAR,
     final_call_id             VARCHAR,
-    call_ids                  JSON NOT NULL,
+    span_ids                  JSON NOT NULL,
     metadata                  VARCHAR,
     tool_surfaces_json        VARCHAR,
     tool_call_total           UINTEGER NOT NULL DEFAULT 0,
@@ -183,15 +184,44 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         let conn = conn
             .lock()
             .map_err(|e| AppError::Storage(format!("failed to lock writer: {e}")))?;
+
+        // Phase 8 migration: OpenTelemetry rename (agent_turns -> traces,
+        // llm_calls -> spans, traces.call_ids -> span_ids). Runs BEFORE any
+        // CREATE TABLE so that on a migrated DB the `CREATE TABLE IF NOT EXISTS
+        // spans/traces` statements below see the renamed tables and no-op,
+        // instead of creating empty tables that would collide with the rename.
+        // DuckDB's RENAME has no `IF EXISTS` form, so each rename is guarded by
+        // detect-then-rename (old present AND new absent) to stay idempotent
+        // across repeated init() calls. The `kind` column is added later
+        // (post-CREATE), where `spans` is guaranteed to exist.
+        if table_exists(&conn, "agent_turns") && !table_exists(&conn, "traces") {
+            match conn.execute_batch("ALTER TABLE agent_turns RENAME TO traces;") {
+                Ok(()) => info!("phase8 migration: renamed agent_turns -> traces"),
+                Err(e) => tracing::warn!(error = %e, "phase8 migration: rename agent_turns -> traces failed (non-fatal)"),
+            }
+        }
+        if table_exists(&conn, "llm_calls") && !table_exists(&conn, "spans") {
+            match conn.execute_batch("ALTER TABLE llm_calls RENAME TO spans;") {
+                Ok(()) => info!("phase8 migration: renamed llm_calls -> spans"),
+                Err(e) => tracing::warn!(error = %e, "phase8 migration: rename llm_calls -> spans failed (non-fatal)"),
+            }
+        }
+        if column_exists(&conn, "traces", "call_ids") && !column_exists(&conn, "traces", "span_ids") {
+            match conn.execute_batch("ALTER TABLE traces RENAME COLUMN call_ids TO span_ids;") {
+                Ok(()) => info!("phase8 migration: renamed traces.call_ids -> span_ids"),
+                Err(e) => tracing::warn!(error = %e, "phase8 migration: rename traces.call_ids -> span_ids failed (non-fatal)"),
+            }
+        }
+
         conn.execute_batch(CREATE_LLM_CALLS)
-            .map_err(|e| AppError::Storage(format!("failed to create llm_calls: {e}")))?;
+            .map_err(|e| AppError::Storage(format!("failed to create spans: {e}")))?;
         conn.execute_batch(CREATE_LLM_METRICS)
             .map_err(|e| AppError::Storage(format!("failed to create llm_metrics: {e}")))?;
         conn.execute_batch(CREATE_LLM_FINISH_METRICS).map_err(|e| {
             AppError::Storage(format!("failed to create llm_finish_metrics: {e}"))
         })?;
         conn.execute_batch(CREATE_LLM_TURNS)
-            .map_err(|e| AppError::Storage(format!("failed to create agent_turns: {e}")))?;
+            .map_err(|e| AppError::Storage(format!("failed to create traces: {e}")))?;
         conn.execute_batch(CREATE_HTTP_EXCHANGES)
             .map_err(|e| AppError::Storage(format!("failed to create http_exchanges: {e}")))?;
 
@@ -292,11 +322,11 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         // lives in agent_turns.final_finish_reason, so no information
         // loss beyond the status-axis collapse.
         match conn.execute_batch(
-            "UPDATE agent_turns SET status='complete'   WHERE status = 'length';\n\
-             UPDATE agent_turns SET status='incomplete' WHERE status IN ('failed', 'cancelled');",
+            "UPDATE traces SET status='complete'   WHERE status = 'length';\n\
+             UPDATE traces SET status='incomplete' WHERE status IN ('failed', 'cancelled');",
         ) {
             Ok(()) => tracing::debug!(
-                "phase3 migration: agent_turns.status legacy values rewritten (or absent)"
+                "phase3 migration: traces.status legacy values rewritten (or absent)"
             ),
             Err(e) => tracing::warn!(
                 error = %e,
@@ -323,11 +353,11 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         // writes stay aligned. Fresh installs still get NOT NULL via
         // CREATE TABLE.
         let agent_columns = [
-            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS is_agent_request BOOLEAN DEFAULT FALSE;",
-            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS tool_surface VARCHAR;",
-            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS agent_topology VARCHAR;",
-            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS tool_call_count UINTEGER DEFAULT 0;",
-            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS tool_names_json VARCHAR;",
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS is_agent_request BOOLEAN DEFAULT FALSE;",
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS tool_surface VARCHAR;",
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS agent_topology VARCHAR;",
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS tool_call_count UINTEGER DEFAULT 0;",
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS tool_names_json VARCHAR;",
         ];
         for stmt in agent_columns {
             match conn.execute_batch(stmt) {
@@ -351,10 +381,10 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         // of the table in both CREATE and ALTER so the appender's positional
         // writes stay aligned. Fresh installs get NOT NULL via CREATE TABLE.
         match conn.execute_batch(
-            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS body_bytes_dropped UBIGINT DEFAULT 0;",
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS body_bytes_dropped UBIGINT DEFAULT 0;",
         ) {
             Ok(()) => tracing::debug!(
-                "phase6 migration: llm_calls.body_bytes_dropped added (or already present)"
+                "phase6 migration: spans.body_bytes_dropped added (or already present)"
             ),
             Err(e) => {
                 tracing::info!("phase6 migration: llm_calls.body_bytes_dropped add skipped: {e}")
@@ -370,9 +400,9 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         // at the tail of the table in both CREATE and ALTER so the appender's
         // positional writes stay aligned.
         let process_columns = [
-            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS process_pid UINTEGER;",
-            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS process_comm VARCHAR;",
-            "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS process_exe VARCHAR;",
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS process_pid UINTEGER;",
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS process_comm VARCHAR;",
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS process_exe VARCHAR;",
         ];
         for stmt in process_columns {
             match conn.execute_batch(stmt) {
@@ -392,10 +422,10 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         // abort the rest.
         // Same NOT NULL-omission rationale as the llm_calls block above.
         let turn_agent_columns = [
-            "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS tool_surfaces_json VARCHAR;",
-            "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS tool_call_total UINTEGER DEFAULT 0;",
-            "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS agent_topology VARCHAR;",
-            "ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS suspicious_skills_json VARCHAR;",
+            "ALTER TABLE traces ADD COLUMN IF NOT EXISTS tool_surfaces_json VARCHAR;",
+            "ALTER TABLE traces ADD COLUMN IF NOT EXISTS tool_call_total UINTEGER DEFAULT 0;",
+            "ALTER TABLE traces ADD COLUMN IF NOT EXISTS agent_topology VARCHAR;",
+            "ALTER TABLE traces ADD COLUMN IF NOT EXISTS suspicious_skills_json VARCHAR;",
         ];
         for stmt in turn_agent_columns {
             match conn.execute_batch(stmt) {
@@ -421,6 +451,19 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
             ),
         }
 
+        // Phase 8 (kind column): added here, post-CREATE, where `spans` is
+        // guaranteed to exist (fresh CREATE or Phase-8 rename above). Added
+        // nullable-with-default for the same DuckDB reason as Phase 5/6/7
+        // (DuckDB rejects `ADD COLUMN ... NOT NULL DEFAULT`). It sits at the
+        // tail of the table in both CREATE and ALTER so the appender's
+        // positional writes stay aligned. Fresh installs get NOT NULL via
+        // CREATE TABLE. Today every span is an LLM call (`kind='llm'`); the
+        // column is forward-looking for wire-visible tool spans.
+        match conn.execute_batch("ALTER TABLE spans ADD COLUMN IF NOT EXISTS kind VARCHAR DEFAULT 'llm';") {
+            Ok(()) => tracing::debug!("phase8 migration: spans.kind added (or already present)"),
+            Err(e) => tracing::info!("phase8 migration: spans.kind add skipped: {e}"),
+        }
+
         info!("storage tables initialized");
         Ok(())
     })
@@ -440,9 +483,34 @@ fn rollup_empty_but_calls_present(conn: &duckdb::Connection) -> bool {
         return false;
     }
     let call_rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM llm_calls", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM spans", [], |r| r.get(0))
         .unwrap_or(0);
     call_rows > 0
+}
+
+/// Whether a table with `name` exists in the current DuckDB database.
+/// Used by the Phase 8 OTel rename to guard the (no-`IF EXISTS`) RENAME
+/// statements so init() stays idempotent.
+fn table_exists(conn: &duckdb::Connection, name: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = ?",
+        [name],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+/// Whether `table`.`column` exists. Companion to `table_exists` for the
+/// Phase 8 column rename guard.
+fn column_exists(conn: &duckdb::Connection, table: &str, column: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM duckdb_columns() WHERE table_name = ? AND column_name = ?",
+        [table, column],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
 }
 
 /// Build the SQL that re-aggregates llm_calls into llm_metrics at one
@@ -539,7 +607,7 @@ fn backfill_sql(granularity_label: &str, time_bucket_interval: &str) -> String {
                 THEN (EPOCH_US(complete_time) - EPOCH_US(response_time))
                      / 1000.0 / output_tokens END, 0.99),
             NULL AS tool_surface
-        FROM llm_calls
+        FROM spans
         GROUP BY
             time_bucket({time_bucket_interval}, request_time),
             source_id,
@@ -613,7 +681,7 @@ mod tests {
         backend.init().await.unwrap();
 
         let conn = backend.test_conn().lock().unwrap();
-        let mut stmt = conn.prepare("SELECT COUNT(*) FROM llm_calls").unwrap();
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM spans").unwrap();
         let count: i64 = stmt.query_row([], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
 

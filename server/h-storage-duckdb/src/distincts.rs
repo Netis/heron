@@ -120,7 +120,7 @@ impl DuckDbBackend {
             }
 
             let sql = format!(
-                "SELECT DISTINCT agent_kind FROM agent_turns WHERE {} ORDER BY agent_kind",
+                "SELECT DISTINCT agent_kind FROM traces WHERE {} ORDER BY agent_kind",
                 where_parts.join(" AND ")
             );
             let mut stmt = conn.prepare(&sql).map_err(|e| {

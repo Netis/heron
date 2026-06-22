@@ -1,6 +1,6 @@
 //! `llm_metrics` + `llm_finish_metrics` table I/O — aggregation writes plus the
 //! read-side time-series / summary / model-axis / finish-reason rollups and the
-//! agent-distribution / activity aggregates over `agent_turns`.
+//! agent-distribution / activity aggregates over `traces`.
 //!
 //! The dynamic-column time-series SELECT (the field count varies per request)
 //! is expressed as a single `[expr, ...] AS vals` array projection of
@@ -511,7 +511,7 @@ impl ClickHouseBackend {
                 sum(total_output_tokens) AS total_output_tokens, \
                 toNullable(avg(duration_ms)) AS avg_duration_ms, \
                 toUnixTimestamp64Milli(max(start_time)) AS last_seen_ms \
-             FROM agent_turns FINAL \
+             FROM traces FINAL \
              WHERE {ts_pred} \
              GROUP BY agent_kind \
              ORDER BY turn_count DESC"
@@ -563,7 +563,7 @@ impl ClickHouseBackend {
                 toInt64(toUnixTimestamp(toStartOfInterval(start_time, INTERVAL {bucket} SECOND))) * 1000 AS ts, \
                 agent_kind, \
                 count() AS turn_count \
-             FROM agent_turns FINAL \
+             FROM traces FINAL \
              WHERE {ts_pred} \
              GROUP BY ts, agent_kind \
              ORDER BY ts ASC, agent_kind ASC"

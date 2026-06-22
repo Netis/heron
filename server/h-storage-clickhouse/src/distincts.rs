@@ -5,7 +5,7 @@
 //! The first three read the pre-aggregated `llm_metrics` table and exclude the
 //! `'*'` rollup tier; `query_distinct_finish_reasons` does the same against
 //! `llm_finish_metrics`. `query_distinct_agent_kinds` reads the mutable
-//! `agent_turns` table (so it uses `FINAL`) and optionally drops proxy-hop rows
+//! `traces` table (so it uses `FINAL`) and optionally drops proxy-hop rows
 //! by inspecting the `metadata` JSON.
 
 use clickhouse::Row;
@@ -77,7 +77,7 @@ impl ClickHouseBackend {
         &self,
         query: &DistinctAgentKindsQuery,
     ) -> Result<Vec<String>> {
-        // `agent_turns` is a ReplacingMergeTree, so reads must use FINAL to see
+        // `traces` is a ReplacingMergeTree, so reads must use FINAL to see
         // the latest version per turn_id.
         let mut where_parts = vec![time_where(
             "start_time",
@@ -119,7 +119,7 @@ impl ClickHouseBackend {
         }
 
         let sql = format!(
-            "SELECT DISTINCT agent_kind AS v FROM agent_turns FINAL \
+            "SELECT DISTINCT agent_kind AS v FROM traces FINAL \
              WHERE {} ORDER BY agent_kind",
             where_parts.join(" AND ")
         );

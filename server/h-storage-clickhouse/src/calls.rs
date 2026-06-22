@@ -1,4 +1,4 @@
-//! `llm_calls` table I/O — write + paginated / by-id / by-id-list reads.
+//! `spans` table I/O — write + paginated / by-id / by-id-list reads.
 
 use clickhouse::Row;
 use serde::Deserialize;
@@ -125,7 +125,7 @@ struct TurnCallRow {
 impl ClickHouseBackend {
     pub(crate) async fn write_calls(&self, calls: Vec<LlmCall>) -> Result<()> {
         let rows: Vec<CallRow> = calls.into_iter().map(CallRow::from).collect();
-        insert_all!(self.client, "llm_calls", CallRow, rows);
+        insert_all!(self.client, "spans", CallRow, rows);
         Ok(())
     }
 
@@ -186,7 +186,7 @@ impl ClickHouseBackend {
 
         let total = self
             .client
-            .query(&format!("SELECT count() AS n FROM llm_calls WHERE {where_sql}"))
+            .query(&format!("SELECT count() AS n FROM spans WHERE {where_sql}"))
             .fetch_one::<CountRow>()
             .await
             .map_err(|e| ch_err("query_calls count", e))?
@@ -199,7 +199,7 @@ impl ClickHouseBackend {
              input_tokens, output_tokens, client_ip, server_ip, server_port, request_path, \
              response_body, is_agent_request, tool_surface, agent_topology, tool_call_count, \
              tool_names_json, process_pid, process_comm, process_exe \
-             FROM llm_calls WHERE {where_sql} \
+             FROM spans WHERE {where_sql} \
              ORDER BY {} {sort_order} LIMIT {} OFFSET {offset}",
             query.sort_by, query.page_size,
         );
@@ -225,7 +225,7 @@ impl ClickHouseBackend {
              client_ip, client_port, server_ip, server_port, request_body, response_body, \
              request_headers, response_headers, is_agent_request, tool_surface, agent_topology, \
              tool_call_count, tool_names_json, process_pid, process_comm, process_exe \
-             FROM llm_calls WHERE id = '{}' LIMIT 1",
+             FROM spans WHERE id = '{}' LIMIT 1",
             escape_str(id)
         );
         let row = self
@@ -257,7 +257,7 @@ impl ClickHouseBackend {
         self.read_calls_by_ids(call_ids, include_bodies).await
     }
 
-    /// Read `agent_turns.call_ids` (JSON array) for one turn. `FINAL` so the
+    /// Read `traces.call_ids` (JSON array) for one turn. `FINAL` so the
     /// latest ReplacingMergeTree version wins.
     async fn turn_call_ids(&self, turn_id: &str) -> Result<Vec<String>> {
         #[derive(Row, Deserialize)]
@@ -265,7 +265,7 @@ impl ClickHouseBackend {
             call_ids: String,
         }
         let sql = format!(
-            "SELECT call_ids FROM agent_turns FINAL WHERE turn_id = '{}' LIMIT 1",
+            "SELECT span_ids FROM traces FINAL WHERE turn_id = '{}' LIMIT 1",
             escape_str(turn_id)
         );
         let row = self
@@ -282,7 +282,7 @@ impl ClickHouseBackend {
     }
 
     /// Shared "fetch calls by id list" — used by `query_turn_calls` (ids from
-    /// the persisted `agent_turns.call_ids`) and `query_calls_by_ids` (ids from
+    /// the persisted `traces.call_ids`) and `query_calls_by_ids` (ids from
     /// the in-memory active-turn registry). Calls not yet flushed simply don't
     /// return. Lite mode (`include_bodies = false`) selects NULL for the four
     /// heavy body/header fields.
@@ -315,7 +315,7 @@ impl ClickHouseBackend {
              wire_api, model, status_code, is_stream, finish_reason, ttft_ms, e2e_latency_ms, \
              input_tokens, output_tokens, request_path, client_ip, client_port, server_ip, \
              server_port, {body_columns} \
-             FROM llm_calls WHERE id IN ({}) \
+             FROM spans WHERE id IN ({}) \
              ORDER BY request_time ASC, complete_time ASC",
             sql_in_list(call_ids),
         );

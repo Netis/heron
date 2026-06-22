@@ -75,10 +75,10 @@ macro_rules! require_backend {
 }
 
 const ALL_TABLES: &[&str] = &[
-    "llm_calls",
+    "spans",
     "llm_metrics",
     "llm_finish_metrics",
-    "agent_turns",
+    "traces",
     "http_exchanges",
 ];
 
@@ -367,7 +367,7 @@ async fn write_paths_round_trip_all_tables() {
         .client
         .query(
             "SELECT id, model, input_tokens, toUnixTimestamp64Micro(request_time) AS request_time_us \
-             FROM llm_calls WHERE id = 'call-1'",
+             FROM spans WHERE id = 'call-1'",
         )
         .fetch_one::<RtCall>()
         .await
@@ -558,7 +558,7 @@ async fn agent_and_turns_reads_smoke() {
         .await
         .unwrap();
 
-    // agent summary/activity (over agent_turns FINAL).
+    // agent summary/activity (over traces FINAL).
     let summ = backend
         .query_agent_summary(&AgentSummaryQuery { time_range: full_range() })
         .await
@@ -611,7 +611,7 @@ async fn agent_and_turns_reads_smoke() {
         .update_turn_metadata("t1", serde_json::json!({"proxy": {"role": "proxy_in"}}))
         .await
         .unwrap();
-    assert_eq!(count(&backend, "agent_turns FINAL").await, 1);
+    assert_eq!(count(&backend, "traces FINAL").await, 1);
     let after = backend.query_turn_by_id("t1").await.unwrap().expect("t1");
     assert_eq!(
         after.metadata.as_ref().and_then(|m| m.pointer("/proxy/role")).and_then(|v| v.as_str()),
@@ -787,7 +787,7 @@ async fn retention_deletes_old_rows() {
         .write_metrics(vec![fixtures::sample_metric("1m", TS)])
         .await
         .unwrap();
-    assert_eq!(count(&backend, "llm_calls").await, 1);
+    assert_eq!(count(&backend, "spans").await, 1);
 
     // Cutoff = now → everything older than now (the 2023 fixtures) is deleted.
     let policy = RetentionPolicy {
@@ -800,5 +800,5 @@ async fn retention_deletes_old_rows() {
     assert_eq!(report.calls_deleted, 1);
     assert_eq!(report.turns_deleted, 1);
     assert_eq!(report.metrics_deleted.get("1m").copied(), Some(1));
-    assert_eq!(count(&backend, "llm_calls").await, 0, "old calls swept");
+    assert_eq!(count(&backend, "spans").await, 0, "old calls swept");
 }

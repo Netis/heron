@@ -1,4 +1,4 @@
-//! Session-scoped queries. Sessions are a view over `agent_turns`
+//! Session-scoped queries. Sessions are a view over `traces`
 //! grouped by `(source_id, session_id)` — no schema of their own.
 
 use h_common::error::{AppError, Result};
@@ -56,7 +56,7 @@ impl DuckDbBackend {
 
             let step1_sql = format!(
                 "SELECT source_id, session_id, epoch_ms(MAX(end_time)) AS last_ms \
-                 FROM agent_turns \
+                 FROM traces \
                  WHERE {where_sql} \
                  GROUP BY source_id, session_id{having_sql} \
                  ORDER BY MAX(end_time) DESC, source_id DESC, session_id DESC \
@@ -141,7 +141,7 @@ impl DuckDbBackend {
                            total_cache_read_input_tokens, total_cache_creation_input_tokens, \
                            total_cost_usd, agent_kind, user_input_preview, user_call_id, \
                            ROW_NUMBER() OVER (PARTITION BY source_id, session_id ORDER BY start_time) AS rn \
-                    FROM agent_turns \
+                    FROM traces \
                     WHERE (source_id, session_id) IN ({pairs_sql}) \
                  ) t \
                  GROUP BY source_id, session_id"
@@ -268,7 +268,7 @@ impl DuckDbBackend {
                                  total_cache_read_input_tokens, total_cache_creation_input_tokens, \
                                  total_cost_usd, agent_kind, user_input_preview, user_call_id, \
                                  ROW_NUMBER() OVER (PARTITION BY source_id, session_id ORDER BY start_time) AS rn \
-                          FROM agent_turns \
+                          FROM traces \
                           WHERE source_id = ? AND session_id = ? \
                        ) t \
                        GROUP BY source_id, session_id";
@@ -376,7 +376,7 @@ impl DuckDbBackend {
                         user_input_preview, user_call_id, \
                         final_answer_preview, final_call_id, \
                         tool_surfaces_json, tool_call_total, agent_topology, suspicious_skills_json \
-                 FROM agent_turns \
+                 FROM traces \
                  WHERE source_id = ? AND session_id = ?{cursor_sql} \
                  ORDER BY start_time DESC, turn_id DESC \
                  LIMIT {limit}"

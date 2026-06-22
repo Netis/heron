@@ -1,4 +1,4 @@
-//! `agent_turns` table I/O — write, paginated query, by-id detail.
+//! `traces` table I/O — write, paginated query, by-id detail.
 
 use duckdb::types::{TimeUnit, Value};
 use h_common::error::{AppError, Result};
@@ -143,7 +143,7 @@ impl DuckDbBackend {
                 .lock()
                 .map_err(|e| AppError::Storage(format!("failed to lock writer: {e}")))?;
             let mut appender = conn
-                .appender("agent_turns")
+                .appender("traces")
                 .map_err(|e| AppError::Storage(format!("failed to create turns appender: {e}")))?;
             for p in &prepared {
                 appender
@@ -270,15 +270,15 @@ impl DuckDbBackend {
                 where_parts.push(format!("client_ip IN ({})", list.join(", ")));
             }
             if !query.server_ports.is_empty() {
-                // agent_turns has no server_port column, so we resolve it
-                // via the turn's first call_id against llm_calls — same
+                // traces has no server_port column, so we resolve it
+                // via the turn's first call_id against spans — same
                 // shortcut the topology query uses. EXISTS is cheaper
                 // than a JOIN here because we never select from the
                 // joined row.
                 let list: Vec<String> = query.server_ports.iter().map(|p| p.to_string()).collect();
                 where_parts.push(format!(
-                    "EXISTS (SELECT 1 FROM llm_calls c \
-                       WHERE c.id = json_extract_string(agent_turns.call_ids, '$[0]') \
+                    "EXISTS (SELECT 1 FROM spans c \
+                       WHERE c.id = json_extract_string(traces.span_ids, '$[0]') \
                          AND c.server_port IN ({}))",
                     list.join(", ")
                 ));
@@ -310,7 +310,7 @@ impl DuckDbBackend {
             let where_sql = where_parts.join(" AND ");
             let sort_by = &query.sort_by;
 
-            let count_sql = format!("SELECT COUNT(*) FROM agent_turns WHERE {where_sql}");
+            let count_sql = format!("SELECT COUNT(*) FROM traces WHERE {where_sql}");
             let mut count_stmt = conn
                 .prepare(&count_sql)
                 .map_err(|e| AppError::Storage(format!("failed to prepare count query: {e}")))?;
@@ -328,7 +328,7 @@ impl DuckDbBackend {
                  final_finish_reason, user_input_preview, final_answer_preview, \
                  client_ip, server_ip, metadata, \
                  tool_surfaces_json, tool_call_total, agent_topology, suspicious_skills_json \
-                 FROM agent_turns WHERE {where_sql} \
+                 FROM traces WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
             );
@@ -457,10 +457,10 @@ impl DuckDbBackend {
                     total_cost_usd, status, final_finish_reason,
                     user_input_preview, user_call_id,
                     final_answer_preview, final_call_id,
-                    call_ids, metadata,
+                    span_ids, metadata,
                     client_ip, server_ip,
                     tool_surfaces_json, tool_call_total, agent_topology, suspicious_skills_json
-                FROM agent_turns
+                FROM traces
                 WHERE turn_id = ?
             ";
 
@@ -562,7 +562,7 @@ impl DuckDbBackend {
 
             // `truncate_preview` in h-turn appends `…` only when it truncates,
             // so a preview that does not end in `…` is already the full text —
-            // skip the llm_calls lookup + profile re-extraction in that case.
+            // skip the spans lookup + profile re-extraction in that case.
             let user_input = match user_input_preview.as_deref() {
                 Some(p) if !p.ends_with('…') => user_input_preview.clone(),
                 _ => extract_full_text(
@@ -621,7 +621,7 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    /// Light projection of `agent_turns` rows for pair-detection. Skips
+    /// Light projection of `traces` rows for pair-detection. Skips
     /// rows whose `metadata` already encodes a `proxy.role`.
     pub(crate) async fn query_pair_candidates(
         &self,
@@ -645,7 +645,7 @@ impl DuckDbBackend {
                        final_finish_reason,
                        models_used,
                        client_ip, server_ip
-                  FROM agent_turns
+                  FROM traces
                  WHERE start_time >= ?
                    AND start_time <  ?
                    AND (metadata IS NULL
@@ -715,7 +715,7 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    /// Read-modify-write `agent_turns.metadata` on a single row: merge
+    /// Read-modify-write `traces.metadata` on a single row: merge
     /// `patch` (shallow, top-level key replacement) into the existing
     /// JSON object. No-op if `turn_id` doesn't exist — the sweeper may
     /// race finalization and a target turn can be momentarily absent.
@@ -742,7 +742,7 @@ impl DuckDbBackend {
                 .map_err(|e| AppError::Storage(format!("failed to lock writer: {e}")))?;
             let existing: Option<Option<String>> = conn
                 .query_row(
-                    "SELECT metadata FROM agent_turns WHERE turn_id = ?",
+                    "SELECT metadata FROM traces WHERE turn_id = ?",
                     duckdb::params![turn_id],
                     |r| r.get(0),
                 )
@@ -768,7 +768,7 @@ impl DuckDbBackend {
             };
             let merged_str = merged.to_string();
             conn.execute(
-                "UPDATE agent_turns SET metadata = ? WHERE turn_id = ?",
+                "UPDATE traces SET metadata = ? WHERE turn_id = ?",
                 duckdb::params![merged_str, turn_id],
             )
             .map_err(|e| AppError::Storage(format!("update turn metadata: {e}")))?;
@@ -1059,7 +1059,7 @@ mod tests {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
 
-        // A matching llm_calls row exists with full-body text that differs from
+        // A matching spans row exists with full-body text that differs from
         // the preview. If the optimization works, we return the preview
         // (short, no trailing `…`) and never touch the body.
         let base = 1_700_000_000_000_000_i64;
@@ -1098,7 +1098,7 @@ mod tests {
             .await
             .unwrap()
             .expect("turn exists");
-        // Preview is returned as-is; no llm_calls lookup happened.
+        // Preview is returned as-is; no spans lookup happened.
         assert_eq!(d.user_input.as_deref(), Some("hi"));
         assert_eq!(d.final_answer.as_deref(), Some("bye"));
     }
@@ -1108,7 +1108,7 @@ mod tests {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
 
-        // Truncated previews (ending in `…`) must fall through to the llm_calls
+        // Truncated previews (ending in `…`) must fall through to the spans
         // lookup and return the full body text.
         let base = 1_700_000_000_000_000_i64;
         let full_user: String = "u".repeat(600);
@@ -1461,7 +1461,7 @@ mod tests {
         let backend = DuckDbBackend::open(":memory:").unwrap();
         backend.init().await.unwrap();
 
-        // Build llm_calls carrying real bodies that the Anthropic profile
+        // Build spans carrying real bodies that the Anthropic profile
         // extractor can parse. Bodies must be long enough that the preview is
         // `…`-terminated (i.e. > 500 chars so the stored preview is truncated).
         let base = 1_700_000_000_000_000_i64;

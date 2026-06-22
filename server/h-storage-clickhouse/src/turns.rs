@@ -1,7 +1,7 @@
-//! `agent_turns` table I/O — write, paginated query, by-id detail, pair-sweeper
+//! `traces` table I/O — write, paginated query, by-id detail, pair-sweeper
 //! support (`query_pair_candidates` / `update_turn_metadata`).
 //!
-//! `agent_turns` is `ReplacingMergeTree(_version)`: it is the only mutated
+//! `traces` is `ReplacingMergeTree(_version)`: it is the only mutated
 //! table. Writes insert with `_version = end_time` (micros); reads use `FINAL`;
 //! `update_turn_metadata` reads the full row (FINAL), merges the JSON patch, and
 //! re-inserts the whole row with a wall-clock-micros `_version` so the latest
@@ -22,7 +22,7 @@ use crate::rows::TurnRow;
 use crate::sql::{escape_str, sql_in_list, time_where};
 use crate::ClickHouseBackend;
 
-/// Full `agent_turns` column list in `TurnRow` field order, with the two
+/// Full `traces` column list in `TurnRow` field order, with the two
 /// `DateTime64(6)` columns surfaced as `i64` micros so they deserialize into
 /// `TurnRow`'s `i64` fields and round-trip on re-insert. Used by
 /// `update_turn_metadata`'s read-modify-write.
@@ -35,7 +35,7 @@ const TURN_ROW_SELECT: &str = "turn_id, source_id, session_id, wire_api, agent_k
      total_cache_read_input_tokens, total_cache_creation_input_tokens, \
      total_cost_usd, status, final_finish_reason, \
      user_input_preview, user_call_id, final_answer_preview, final_call_id, \
-     call_ids, metadata, tool_surfaces_json, tool_call_total, agent_topology, \
+     span_ids, metadata, tool_surfaces_json, tool_call_total, agent_topology, \
      suspicious_skills_json, _version";
 
 /// Read `metadata.proxy.{role, peer_turn_id, peer_turn_ids}` out of a row's
@@ -162,7 +162,7 @@ struct CountRow {
 impl ClickHouseBackend {
     pub(crate) async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()> {
         let rows: Vec<TurnRow> = turns.into_iter().map(TurnRow::from).collect();
-        insert_all!(self.client, "agent_turns", TurnRow, rows);
+        insert_all!(self.client, "traces", TurnRow, rows);
         Ok(())
     }
 
@@ -213,14 +213,14 @@ impl ClickHouseBackend {
             where_parts.push(format!("client_ip IN ({})", sql_in_list(&query.client_ips)));
         }
         if !query.server_ports.is_empty() {
-            // agent_turns has no server_port; resolve via the turn's first
-            // call_id against llm_calls. ClickHouse can't do the DuckDB
+            // traces has no server_port; resolve via the turn's first
+            // call_id against spans. ClickHouse can't do the DuckDB
             // correlated EXISTS, so use an uncorrelated IN-subquery (still
             // not a JOIN): the turn's first call_id ∈ { calls on those ports }.
             let ports: Vec<String> = query.server_ports.iter().map(|p| p.to_string()).collect();
             where_parts.push(format!(
-                "arrayElement(JSONExtract(call_ids, 'Array(String)'), 1) IN \
-                 (SELECT id FROM llm_calls WHERE server_port IN ({}))",
+                "arrayElement(JSONExtract(span_ids, 'Array(String)'), 1) IN \
+                 (SELECT id FROM spans WHERE server_port IN ({}))",
                 ports.join(", ")
             ));
         }
@@ -242,7 +242,7 @@ impl ClickHouseBackend {
         let total = self
             .client
             .query(&format!(
-                "SELECT count() AS n FROM agent_turns FINAL WHERE {where_sql}"
+                "SELECT count() AS n FROM traces FINAL WHERE {where_sql}"
             ))
             .fetch_one::<CountRow>()
             .await
@@ -258,7 +258,7 @@ impl ClickHouseBackend {
              total_input_tokens, total_output_tokens, status, final_finish_reason, \
              user_input_preview, final_answer_preview, client_ip, server_ip, metadata, \
              tool_surfaces_json, tool_call_total, agent_topology, suspicious_skills_json \
-             FROM agent_turns FINAL WHERE {where_sql} \
+             FROM traces FINAL WHERE {where_sql} \
              ORDER BY {} {sort_order} LIMIT {} OFFSET {offset}",
             query.sort_by, query.page_size,
         );
@@ -325,9 +325,9 @@ impl ClickHouseBackend {
              total_cache_read_input_tokens, total_cache_creation_input_tokens, \
              total_cost_usd, status, final_finish_reason, \
              user_input_preview, user_call_id, final_answer_preview, final_call_id, \
-             call_ids, metadata, client_ip, server_ip, \
+             span_ids, metadata, client_ip, server_ip, \
              tool_surfaces_json, tool_call_total, agent_topology, suspicious_skills_json \
-             FROM agent_turns FINAL WHERE turn_id = '{}' LIMIT 1",
+             FROM traces FINAL WHERE turn_id = '{}' LIMIT 1",
             escape_str(turn_id)
         );
         let row = self
@@ -403,7 +403,7 @@ impl ClickHouseBackend {
              toUnixTimestamp64Micro(end_time) AS end_time_us, \
              call_count, total_input_tokens, total_output_tokens, \
              final_finish_reason, models_used, client_ip, server_ip \
-             FROM agent_turns FINAL \
+             FROM traces FINAL \
              WHERE {ts_pred} \
                AND JSONExtractString(coalesce(metadata, ''), 'proxy', 'role') = '' \
              ORDER BY start_time ASC"
@@ -446,7 +446,7 @@ impl ClickHouseBackend {
         // (FINAL = latest version), shallow-merge the patch into metadata, and
         // re-insert with a strictly-greater `_version` (wall-clock micros).
         let sql = format!(
-            "SELECT {TURN_ROW_SELECT} FROM agent_turns FINAL WHERE turn_id = '{}' LIMIT 1",
+            "SELECT {TURN_ROW_SELECT} FROM traces FINAL WHERE turn_id = '{}' LIMIT 1",
             escape_str(turn_id)
         );
         let existing = self
@@ -478,7 +478,7 @@ impl ClickHouseBackend {
         row.metadata = Some(base.to_string());
         row._version = now_micros();
 
-        insert_all!(self.client, "agent_turns", TurnRow, vec![row]);
+        insert_all!(self.client, "traces", TurnRow, vec![row]);
         Ok(())
     }
 }

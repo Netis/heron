@@ -1,10 +1,10 @@
-//! Session-scoped queries. Sessions are a view over `agent_turns` grouped by
+//! Session-scoped queries. Sessions are a view over `traces` grouped by
 //! `(source_id, session_id)` — no schema of their own. Ported from the DuckDB
 //! backend (`h-storage-duckdb/src/sessions.rs`); aggregates, windowing, and
 //! cursor semantics match it column-for-column.
 //!
-//! `agent_turns` is a `ReplacingMergeTree(_version)`, so every read here uses
-//! `FROM agent_turns FINAL` to ensure only the latest version per `turn_id`
+//! `traces` is a `ReplacingMergeTree(_version)`, so every read here uses
+//! `FROM traces FINAL` to ensure only the latest version per `turn_id`
 //! participates in the aggregates (otherwise stale pre-`update_turn_metadata`
 //! rows would double-count tokens / costs and skew MIN/MAX).
 //!
@@ -131,7 +131,7 @@ impl ClickHouseBackend {
         let step1_sql = format!(
             "SELECT source_id, session_id, \
                     toUnixTimestamp64Milli(max(end_time)) AS last_ms \
-             FROM agent_turns FINAL \
+             FROM traces FINAL \
              WHERE {where_sql} \
              GROUP BY source_id, session_id{having_sql} \
              ORDER BY max(end_time) DESC, source_id DESC, session_id DESC \
@@ -186,7 +186,7 @@ impl ClickHouseBackend {
                        total_cache_read_input_tokens, total_cache_creation_input_tokens, \
                        total_cost_usd, agent_kind, user_input_preview, user_call_id, \
                        row_number() OVER (PARTITION BY source_id, session_id ORDER BY start_time) AS rn \
-                FROM agent_turns FINAL \
+                FROM traces FINAL \
                 WHERE (source_id, session_id) IN ({pairs_sql}) \
              ) t \
              GROUP BY source_id, session_id"
@@ -276,7 +276,7 @@ impl ClickHouseBackend {
                        total_cache_read_input_tokens, total_cache_creation_input_tokens, \
                        total_cost_usd, agent_kind, user_input_preview, user_call_id, \
                        row_number() OVER (PARTITION BY source_id, session_id ORDER BY start_time) AS rn \
-                FROM agent_turns FINAL \
+                FROM traces FINAL \
                 WHERE source_id = '{}' AND session_id = '{}' \
              ) t \
              GROUP BY source_id, session_id \
@@ -347,7 +347,7 @@ impl ClickHouseBackend {
                     status, final_finish_reason, \
                     user_input_preview, final_answer_preview, \
                     tool_surfaces_json, tool_call_total, agent_topology, suspicious_skills_json \
-             FROM agent_turns FINAL \
+             FROM traces FINAL \
              WHERE source_id = '{}' AND session_id = '{}'{cursor_sql} \
              ORDER BY start_time DESC, turn_id DESC \
              LIMIT {limit}",
