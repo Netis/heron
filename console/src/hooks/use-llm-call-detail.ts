@@ -5,7 +5,7 @@ import type { LlmCallDetail } from "@/types/api"
 export function useLlmCallDetail(id: string | null) {
   return useQuery({
     queryKey: ["llm-call-detail", id],
-    queryFn: () => apiFetch<LlmCallDetail>(`/api/llm-calls/${id}`),
+    queryFn: () => apiFetch<LlmCallDetail>(`/api/spans/${id}`),
     enabled: id != null,
   })
 }

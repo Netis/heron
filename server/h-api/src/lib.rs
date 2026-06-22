@@ -134,35 +134,50 @@ pub fn router(
         .route("/api/pcap/extract", get(routes::pcap_extract::handler))
         .with_state(pcap_roots);
 
-    // Agent-turns routes use a composite state (storage + in-memory
-    // active-turn registry) so the list handler can union finalized
-    // (DuckDB) and in-progress (RAM) rows in one response. detail/calls
-    // only need storage but ride on the same composite for plumbing
-    // simplicity.
-    let agent_turns_state = ApiAgentTurnsContext {
+    // Trace routes use a composite state (storage + in-memory active-trace
+    // registry) so the list handler can union finalized (DuckDB) and
+    // in-progress (RAM) rows in one response. detail/spans only need storage
+    // but ride on the same composite for plumbing simplicity.
+    let traces_state = ApiAgentTurnsContext {
         storage: storage.clone(),
         active_turns,
     };
-    let agent_turns_routes = Router::new()
-        .route("/api/agent-turns", get(routes::agent_turns::list))
+    // Canonical OpenTelemetry-aligned routes.
+    let traces_routes = Router::new()
+        .route("/api/traces", get(routes::traces::list))
+        .route("/api/traces/summary", get(routes::traces::summary))
+        .route("/api/traces/activity", get(routes::traces::activity))
+        .route("/api/traces/{id}", get(routes::traces::detail))
+        .route("/api/traces/{id}/spans", get(routes::traces::calls))
         .route(
-            "/api/agent-turns/summary",
-            get(routes::agent_turns::summary),
+            "/api/traces/{id}/proxy-view",
+            get(routes::traces::proxy_view),
         )
-        .route(
-            "/api/agent-turns/activity",
-            get(routes::agent_turns::activity),
-        )
-        .route("/api/agent-turns/{id}", get(routes::agent_turns::detail))
-        .route(
-            "/api/agent-turns/{id}/calls",
-            get(routes::agent_turns::calls),
-        )
+        .with_state(traces_state.clone());
+    // Deprecated pre-rename aliases → identical handlers, stamped with an
+    // RFC 8594 `Deprecation` header pointing at the canonical path. Kept one
+    // release cycle for the external consumer still calling `/api/agent-turns`.
+    let traces_alias_routes = Router::new()
+        .route("/api/agent-turns", get(routes::traces::list))
+        .route("/api/agent-turns/summary", get(routes::traces::summary))
+        .route("/api/agent-turns/activity", get(routes::traces::activity))
+        .route("/api/agent-turns/{id}", get(routes::traces::detail))
+        .route("/api/agent-turns/{id}/calls", get(routes::traces::calls))
         .route(
             "/api/agent-turns/{id}/proxy-view",
-            get(routes::agent_turns::proxy_view),
+            get(routes::traces::proxy_view),
         )
-        .with_state(agent_turns_state);
+        .with_state(traces_state)
+        .layer(axum::middleware::map_response(deprecate_traces));
+
+    // Spans: canonical `/api/spans` lives on the main storage router below;
+    // the deprecated `/api/llm-calls` alias rides its own sub-router so it can
+    // carry the Deprecation header without affecting the canonical path.
+    let spans_alias_routes = Router::new()
+        .route("/api/llm-calls", get(routes::spans::list))
+        .route("/api/llm-calls/{id}", get(routes::spans::detail))
+        .with_state(storage.clone())
+        .layer(axum::middleware::map_response(deprecate_spans));
 
     let capture_routes = Router::new().route(
         "/api/capture/interfaces",
@@ -193,8 +208,8 @@ pub fn router(
             "/api/metrics/finish-reasons",
             get(routes::metrics::finish_reasons),
         )
-        .route("/api/llm-calls", get(routes::llm_calls::list))
-        .route("/api/llm-calls/{id}", get(routes::llm_calls::detail))
+        .route("/api/spans", get(routes::spans::list))
+        .route("/api/spans/{id}", get(routes::spans::detail))
         .route("/api/http-exchanges", get(routes::http_exchanges::list))
         .route(
             "/api/http-exchanges/{id}",
@@ -218,7 +233,31 @@ pub fn router(
         .merge(runtime_config_routes)
         .merge(health_routes)
         .merge(pcap_extract_routes)
-        .merge(agent_turns_routes)
+        .merge(traces_routes)
+        .merge(traces_alias_routes)
+        .merge(spans_alias_routes)
         .merge(capture_routes)
         .layer(CorsLayer::permissive())
+}
+
+/// Stamp the RFC 8594 `Deprecation` header (+ a `Link` to the canonical
+/// successor) on responses served from a deprecated pre-rename alias route.
+async fn deprecate_traces(mut res: axum::response::Response) -> axum::response::Response {
+    let h = res.headers_mut();
+    h.insert("deprecation", axum::http::HeaderValue::from_static("true"));
+    h.insert(
+        "link",
+        axum::http::HeaderValue::from_static("</api/traces>; rel=\"successor-version\""),
+    );
+    res
+}
+
+async fn deprecate_spans(mut res: axum::response::Response) -> axum::response::Response {
+    let h = res.headers_mut();
+    h.insert("deprecation", axum::http::HeaderValue::from_static("true"));
+    h.insert(
+        "link",
+        axum::http::HeaderValue::from_static("</api/spans>; rel=\"successor-version\""),
+    );
+    res
 }

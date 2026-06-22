@@ -9,7 +9,7 @@ export function useAgentSummary() {
   return useQuery({
     queryKey: ["agent-summary", { start, end }],
     queryFn: () =>
-      apiFetch<AgentSummaryData>("/api/agent-turns/summary", { start, end }),
+      apiFetch<AgentSummaryData>("/api/traces/summary", { start, end }),
     placeholderData: (prev) => prev,
   })
 }
@@ -20,7 +20,7 @@ export function useAgentActivity() {
   return useQuery({
     queryKey: ["agent-activity", { start, end }],
     queryFn: () =>
-      apiFetch<AgentActivityData>("/api/agent-turns/activity", { start, end }),
+      apiFetch<AgentActivityData>("/api/traces/activity", { start, end }),
     placeholderData: (prev) => prev,
   })
 }

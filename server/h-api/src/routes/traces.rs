@@ -16,7 +16,7 @@ use crate::response::{ApiError, ApiResponse};
 use crate::ApiAgentTurnsContext;
 
 #[derive(Debug, Deserialize)]
-pub struct TurnsParams {
+pub struct TracesParams {
     pub start: i64,
     pub end: i64,
     #[serde(default)]
@@ -65,7 +65,7 @@ fn default_page_size() -> u32 {
 
 pub async fn list(
     State(ctx): State<ApiAgentTurnsContext>,
-    Query(params): Query<TurnsParams>,
+    Query(params): Query<TracesParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let page_size = params.page_size.min(200);
 
@@ -299,7 +299,7 @@ fn agent_turn_to_detail(t: Trace) -> h_storage::query::TraceDetail {
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub struct CallsParams {
+pub struct SpansParams {
     /// `lite=1` strips request_body, response_body, request_headers,
     /// response_headers from the response so a mega-turn (hundreds of
     /// agentic iterations × hundreds of KB body each) doesn't OOM the
@@ -312,7 +312,7 @@ pub struct CallsParams {
 pub async fn calls(
     State(ctx): State<ApiAgentTurnsContext>,
     Path(turn_id): Path<String>,
-    Query(params): Query<CallsParams>,
+    Query(params): Query<SpansParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let include_bodies = params.lite == 0;
 

@@ -11,7 +11,7 @@ use crate::params::*;
 use crate::response::{ApiError, ApiResponse};
 
 #[derive(Debug, Deserialize)]
-pub struct CallsParams {
+pub struct SpansParams {
     pub start: i64,
     pub end: i64,
     #[serde(default)]
@@ -61,7 +61,7 @@ fn default_page_size() -> u32 {
 
 pub async fn list(
     State(storage): State<Arc<dyn StorageBackend>>,
-    Query(params): Query<CallsParams>,
+    Query(params): Query<SpansParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let page_size = params.page_size.min(200);
     let status_codes: Vec<u16> = parse_csv(&params.status_code)

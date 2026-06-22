@@ -46,7 +46,7 @@ pub struct ExportTrajectoryParams {
     pub session_id: Option<String>,
 }
 
-/// Mirrors `agent_turns::TurnsParams` (the list filters) so a batch export
+/// Mirrors `traces::TracesParams` (the list filters) so a batch export
 /// covers exactly the turns the user is looking at.
 #[derive(Debug, Deserialize)]
 pub struct ExportBatchParams {

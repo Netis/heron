@@ -43,7 +43,7 @@ export function useLlmCalls({
       statusCode, finishReason, clientIp, serverPort, requestPath, isStream,
     }],
     queryFn: () =>
-      apiFetch<LlmCallsPage>("/api/llm-calls", {
+      apiFetch<LlmCallsPage>("/api/spans", {
         start,
         end,
         page,

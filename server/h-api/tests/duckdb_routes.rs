@@ -475,7 +475,7 @@ async fn finish_reasons_endpoint_rejects_invalid_granularity() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-// ---------- /api/llm-calls* ----------
+// ---------- /api/spans* (canonical) + /api/llm-calls* (deprecated alias) ----------
 
 #[tokio::test]
 async fn invalid_status_code_returns_json_envelope() {
@@ -496,7 +496,7 @@ async fn invalid_status_code_returns_json_envelope() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/api/llm-calls?start=0&end=1&status_code=200,abc")
+                .uri("/api/spans?start=0&end=1&status_code=200,abc")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -540,7 +540,7 @@ async fn contains_params_parse() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/api/llm-calls?start=0&end=1&client_ip=10.0.0.1&request_path=/v1/chat")
+                .uri("/api/spans?start=0&end=1&client_ip=10.0.0.1&request_path=/v1/chat")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -548,6 +548,51 @@ async fn contains_params_parse() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// The deprecated pre-rename aliases (`/api/llm-calls`, `/api/agent-turns`)
+/// still resolve to the same handlers AND carry the RFC 8594 `Deprecation`
+/// header + a `Link` to the canonical successor, so clients can detect they
+/// should migrate to `/api/spans` / `/api/traces`.
+#[tokio::test]
+async fn deprecated_aliases_work_and_carry_deprecation_header() {
+    let backend = DuckDbBackend::open(":memory:").unwrap();
+    <DuckDbBackend as h_storage::StorageBackend>::init(&backend)
+        .await
+        .unwrap();
+    let storage: std::sync::Arc<dyn h_storage::StorageBackend> = std::sync::Arc::new(backend);
+    let app = router(
+        storage,
+        test_metrics_context(),
+        test_runtime_config_context(),
+        test_health_context(),
+        std::sync::Arc::new(vec![]),
+        h_turn::new_active_trace_registry(),
+    );
+
+    for (alias, successor) in [
+        ("/api/llm-calls?start=0&end=1", "</api/spans>"),
+        ("/api/agent-turns?start=0&end=1", "</api/traces>"),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(alias).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "alias {alias} must still serve");
+        assert_eq!(
+            resp.headers().get("deprecation").map(|v| v.to_str().unwrap()),
+            Some("true"),
+            "alias {alias} must carry Deprecation: true",
+        );
+        assert!(
+            resp.headers()
+                .get("link")
+                .map(|v| v.to_str().unwrap().contains(successor))
+                .unwrap_or(false),
+            "alias {alias} Link must point at {successor}",
+        );
+    }
 }
 
 /// `/api/metrics/timeseries?tool_surface=...` must SUM only the rows whose
