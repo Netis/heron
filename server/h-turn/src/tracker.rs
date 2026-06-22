@@ -296,14 +296,18 @@ impl TurnTracker {
             return;
         }
         // Same discard rule as emit_or_discard — only show in-progress rows
-        // whose partition has a main-agent user_turn_start. Without this, a
-        // sub-agent dispatch's first call (which carries
-        // `is_user_turn_start=Some(true)` AND `subagent_name=Some(_)`) would
-        // produce a phantom row that finalize will eventually drop.
-        let has_user_start = partition.iter().any(|ic| {
-            ic.agent.subagent_name.is_none() && ic.agent.is_user_turn_start == Some(true)
-        });
-        if !has_user_start {
+        // whose partition has a main-agent user_turn_start, OR (PID fallback)
+        // whose calls share eBPF process attribution when the turn's opening
+        // call was missed. Without this, a sub-agent dispatch's first call
+        // (which carries `is_user_turn_start=Some(true)` AND
+        // `subagent_name=Some(_)`) would produce a phantom row that finalize
+        // will eventually drop — the sub-agent guard in both predicates still
+        // filters those out. Metric is bumped only at finalize (emit_or_discard),
+        // not here — this refresh runs on every ingest and would double-count.
+        let has_user_start = partition.iter().any(|ic| main_agent_user_turn_start(ic));
+        let kept_by_pid =
+            !has_user_start && partition_has_pid_attribution(partition.iter().copied());
+        if !(has_user_start || kept_by_pid) {
             return;
         }
 
@@ -666,6 +670,30 @@ fn finalize_session(
     }
 }
 
+/// A main-agent call that opens a user turn: `is_user_turn_start == Some(true)`
+/// AND not a sub-agent. The sub-agent guard prevents a sub-agent dispatch
+/// (whose body looks like a fresh user message) from satisfying a partition's
+/// "needs a main-agent user start" requirement on its own.
+fn main_agent_user_turn_start(ic: &AgentCall) -> bool {
+    ic.agent.subagent_name.is_none() && ic.agent.is_user_turn_start == Some(true)
+}
+
+/// Whether any *main-agent* call in the partition carries eBPF process
+/// attribution (`call.process.is_some()`). Used as the `has_user_start`
+/// fallback: when no main-agent user-turn-start survived (the turn's opening
+/// call was missed by the eBPF source), a shared PID still proves these are
+/// one process's contiguous agent traffic, so the partition is kept rather
+/// than discarded. Sub-agent calls are excluded — a sub-agent-only partition
+/// must still be dropped even if the calls happen to carry a PID.
+fn partition_has_pid_attribution<'a, I>(calls: I) -> bool
+where
+    I: IntoIterator<Item = &'a AgentCall>,
+{
+    calls
+        .into_iter()
+        .any(|ic| ic.agent.subagent_name.is_none() && ic.call.process.is_some())
+}
+
 /// Apply the discard rule and emit (or count-and-drop) one turn per drained
 /// partition. The caller has already removed `calls` from the buffer and
 /// updated bookkeeping. Pass `turn_id_override` to reuse the in-progress
@@ -699,15 +727,28 @@ fn emit_or_discard(
     // `is_user_turn_start=Some(true)` *and* `subagent_name=Some(_)`; without
     // the sub-agent guard here those would slip through and produce phantom
     // "Incomplete with user_input=None" turns.
-    let has_user_start = calls.iter().any(|bc| {
-        bc.ic.agent.subagent_name.is_none() && bc.ic.agent.is_user_turn_start == Some(true)
-    });
-    if !has_user_start {
+    let refs: Vec<&AgentCall> = calls.iter().map(|bc| &bc.ic).collect();
+    let has_user_start = refs
+        .iter()
+        .any(|ic| main_agent_user_turn_start(ic));
+    // PID fallback: when no main-agent user-turn-start survived into this
+    // partition (typically because the eBPF source missed the turn's opening
+    // call — the only call whose `messages[-1]` is user text rather than a
+    // tool_result), a shared process attribution on the partition's calls is
+    // proof enough that these are one process's contiguous agent traffic. Keep
+    // the partition rather than dropping it; the opening call is gone but the
+    // rest of the turn is real and would otherwise be lost entirely. See
+    // `TurnKeptByPidAttribution` for the hit rate. Passive-tap calls carry no
+    // `process`, so this fallback is inert for them — behavior unchanged.
+    let kept_by_pid = !has_user_start && partition_has_pid_attribution(refs.iter().copied());
+    if kept_by_pid {
+        metrics.counter(Metric::TurnKeptByPidAttribution).inc();
+    }
+    if !(has_user_start || kept_by_pid) {
         metrics.counter(Metric::TurnDiscardedNoUserStart).inc();
         return false;
     }
 
-    let refs: Vec<&AgentCall> = calls.iter().map(|bc| &bc.ic).collect();
     let mut turn = build_turn(&refs, turn_id_override, None);
     // The buffer key is authoritative for source/session — call.source_id
     // can legitimately be empty in tests; identity.session_id may differ
@@ -966,6 +1007,7 @@ mod tests {
                 Metric::TurnClosedByGrace,
                 Metric::TurnClosedByIdle,
                 Metric::TurnDiscardedNoUserStart,
+                Metric::TurnKeptByPidAttribution,
                 Metric::TurnHeartbeatsReceived,
             ],
         );
@@ -1310,6 +1352,103 @@ mod tests {
         assert!(
             drain_completed(events).is_empty(),
             "sub-agent-only partition must be discarded, never emitted"
+        );
+    }
+
+    // Regression: an eBPF-captured agent turn whose OPENING call was missed.
+    //
+    // Claude Code is stateless — every request carries full `messages`
+    // history. The turn's opening call (the one whose `messages[-1]` is user
+    // text, hence `is_user_turn_start=true`) is the ONLY call in the turn
+    // that reports a user-start. When the eBPF source misses it (connection-
+    // setup / uprobe-attach timing — observed in production: one PID issued
+    // 8 same-session calls tool_use×7 → end_turn, all turn_id=None), every
+    // captured call is a continuation whose `messages[-1]` is a tool_result,
+    // so `is_user_turn_start=false` for all of them. The partition has no
+    // main-agent user-start → `emit_or_discard` would discard the whole turn.
+    //
+    // But the calls DO carry a shared `process` (eBPF attribution), which is
+    // proof they are one process's contiguous agent traffic. The PID fallback
+    // in `has_user_start` keeps the partition; `TurnKeptByPidAttribution` is
+    // bumped. Turn boundaries are unaffected (still driven by `is_turn_terminal`).
+    fn anthropic_continuation_call(
+        session: &str,
+        request_time_us: i64,
+        finish: &str,
+        with_pid: bool,
+    ) -> LlmCall {
+        let mut c = anthropic_call(session, request_time_us, "tool_result", finish);
+        if with_pid {
+            c.process = Some(h_common::process::ProcessInfo::new(12345, "agent-cli"));
+        }
+        c
+    }
+
+    #[test]
+    fn pid_attribution_keeps_turn_when_opening_call_missed() {
+        let metrics = test_metrics();
+        let mut t =
+            TurnTracker::new(TrackerConfig::default(), metrics.clone());
+
+        // Two continuation calls (tool_result bodies → is_user_turn_start=false),
+        // both carrying the same eBPF PID. The second closes the turn (end_turn).
+        let c1 = anthropic_continuation_call("S", 1_000_000, "tool_use", true);
+        let c2 = anthropic_continuation_call("S", 2_000_000, "end_turn", true);
+        let id1 = call_info_for_anthropic(&c1);
+        let id2 = call_info_for_anthropic(&c2);
+        // Sanity: neither call reports a user-turn-start — the precondition
+        // for the discard that the fallback must override.
+        assert_eq!(id1.is_user_turn_start, Some(false));
+        assert_eq!(id2.is_user_turn_start, Some(false));
+
+        let mut events = t.ingest(ic(c1, id1));
+        events.extend(t.ingest(ic(c2, id2)));
+        events.extend(t.flush_all());
+        let turns = drain_completed(events);
+
+        assert_eq!(turns.len(), 1, "PID fallback must keep the partition");
+        assert_eq!(turns[0].call_count, 2);
+        assert_eq!(
+            metrics.counter(Metric::TurnKeptByPidAttribution).get(),
+            1,
+            "fallback path must bump the attribution counter"
+        );
+        assert_eq!(
+            metrics.counter(Metric::TurnDiscardedNoUserStart).get(),
+            0,
+            "partition must not be counted as discarded"
+        );
+    }
+
+    #[test]
+    fn no_pid_no_user_start_still_discarded() {
+        // Control: identical continuation-only partition, but no eBPF PID
+        // (passive-tap calls carry `process=None`). The fallback must NOT
+        // fire — a partition with no user-start and no process attribution
+        // is still discarded, exactly as before.
+        let metrics = test_metrics();
+        let mut t =
+            TurnTracker::new(TrackerConfig::default(), metrics.clone());
+
+        let c1 = anthropic_continuation_call("S", 1_000_000, "tool_use", false);
+        let c2 = anthropic_continuation_call("S", 2_000_000, "end_turn", false);
+        let id1 = call_info_for_anthropic(&c1);
+        let id2 = call_info_for_anthropic(&c2);
+
+        let mut events = t.ingest(ic(c1, id1));
+        events.extend(t.ingest(ic(c2, id2)));
+        events.extend(t.flush_all());
+        let turns = drain_completed(events);
+
+        assert!(turns.is_empty(), "passive-tap partition must be discarded");
+        assert_eq!(
+            metrics.counter(Metric::TurnKeptByPidAttribution).get(),
+            0,
+            "fallback must not fire without PID"
+        );
+        assert_eq!(
+            metrics.counter(Metric::TurnDiscardedNoUserStart).get(),
+            1,
         );
     }
 

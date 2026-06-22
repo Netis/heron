@@ -34,6 +34,7 @@ fn test_metrics() -> MetricsWorker {
             Metric::TurnClosedByGrace,
             Metric::TurnClosedByIdle,
             Metric::TurnDiscardedNoUserStart,
+            Metric::TurnKeptByPidAttribution,
             Metric::TurnHeartbeatsReceived,
         ],
     );
