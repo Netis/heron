@@ -791,14 +791,14 @@ async fn retention_deletes_old_rows() {
 
     // Cutoff = now → everything older than now (the 2023 fixtures) is deleted.
     let policy = RetentionPolicy {
-        calls_before: Some(SystemTime::now()),
-        turns_before: Some(SystemTime::now()),
+        spans_before: Some(SystemTime::now()),
+        traces_before: Some(SystemTime::now()),
         http_exchanges_before: None,
         metrics_before: vec![("1m".to_string(), SystemTime::now())],
     };
     let report = backend.apply_retention(policy).await.unwrap();
-    assert_eq!(report.calls_deleted, 1);
-    assert_eq!(report.turns_deleted, 1);
+    assert_eq!(report.spans_deleted, 1);
+    assert_eq!(report.traces_deleted, 1);
     assert_eq!(report.metrics_deleted.get("1m").copied(), Some(1));
     assert_eq!(count(&backend, "spans").await, 0, "old calls swept");
 }

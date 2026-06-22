@@ -220,7 +220,7 @@ optimize_on_sweep = false                      # OPTIMIZE TABLE ... FINAL after 
 ```
 
 The backend talks to ClickHouse over its HTTP interface and creates the schema
-(MergeTree fact tables + a ReplacingMergeTree `agent_turns`) on first run.
+(MergeTree fact tables + a ReplacingMergeTree `traces`) on first run.
 Retention runs through the same `[storage.retention]` schedule as DuckDB, using
 lightweight `DELETE`. `optimize_on_sweep` eagerly reclaims space after each
 sweep at the cost of a full-table merge; off by default (TTL-style background
@@ -249,8 +249,8 @@ defaults** — you only need to add it to override:
 [storage.retention]
 enabled = true                 # set to false to opt out entirely
 check_interval_secs = 3600     # how often to run the cleanup sweep
-calls = 30                     # keep llm_calls for N days; caps `turns`
-turns = 30                     # keep agent_turns for N days; must be <= calls
+spans = 30                     # keep spans (per-call detail) for N days; caps `traces`
+traces = 30                    # keep traces (agent turns) for N days; must be <= spans
 http_exchanges = 7             # keep http_exchanges (bulkiest table) for N days
 
 # Per-granularity retention for llm_metrics. Missing keys fall back to
@@ -274,11 +274,13 @@ Behavior:
 - `http_exchanges` stores raw HTTP transport records (headers + bodies)
   per request/response and is by far the bulkiest table; keep its TTL
   short unless you specifically need a longer forensics window.
-- `turns` must not outlive `calls`. `agent_turns.call_ids` references
-  rows in `llm_calls`, and the no-JOIN turn-detail read returns
-  empty/partial call lists once those references go stale. `heron
-  config validate` enforces `turns <= calls` (with `calls = 0` treated
-  as infinite, which satisfies any finite `turns`).
+- `traces` must not outlive `spans`. `traces.span_ids` references
+  rows in `spans`, and the no-JOIN trace-detail read returns
+  empty/partial span lists once those references go stale. `heron
+  config validate` enforces `traces <= spans` (with `spans = 0` treated
+  as infinite, which satisfies any finite `traces`).
+- The pre-rename keys `calls` / `turns` are still accepted as deprecated
+  aliases for `spans` / `traces`, so existing config files keep working.
 
 ## `[api]` — REST server
 

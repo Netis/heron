@@ -19,8 +19,8 @@ use crate::backend::StorageBackend;
 /// A concrete cutoff decision for each table. `None` means "skip".
 #[derive(Debug, Clone, Default)]
 pub struct RetentionPolicy {
-    pub calls_before: Option<SystemTime>,
-    pub turns_before: Option<SystemTime>,
+    pub spans_before: Option<SystemTime>,
+    pub traces_before: Option<SystemTime>,
     pub http_exchanges_before: Option<SystemTime>,
     /// `(granularity_label, cutoff)` pairs. Only listed granularities are swept.
     pub metrics_before: Vec<(String, SystemTime)>,
@@ -29,8 +29,8 @@ pub struct RetentionPolicy {
 impl RetentionPolicy {
     /// True when no tables have a cutoff — used to short-circuit the sweep.
     pub fn is_empty(&self) -> bool {
-        self.calls_before.is_none()
-            && self.turns_before.is_none()
+        self.spans_before.is_none()
+            && self.traces_before.is_none()
             && self.http_exchanges_before.is_none()
             && self.metrics_before.is_empty()
     }
@@ -39,8 +39,8 @@ impl RetentionPolicy {
 /// Per-table row counts from a single sweep.
 #[derive(Debug, Clone, Default)]
 pub struct RetentionReport {
-    pub calls_deleted: u64,
-    pub turns_deleted: u64,
+    pub spans_deleted: u64,
+    pub traces_deleted: u64,
     pub http_exchanges_deleted: u64,
     /// Per-granularity deletion counts — one entry per swept label.
     pub metrics_deleted: HashMap<String, u64>,
@@ -48,8 +48,8 @@ pub struct RetentionReport {
 
 impl RetentionReport {
     pub fn total(&self) -> u64 {
-        self.calls_deleted
-            + self.turns_deleted
+        self.spans_deleted
+            + self.traces_deleted
             + self.http_exchanges_deleted
             + self.metrics_deleted.values().sum::<u64>()
     }
@@ -80,8 +80,8 @@ pub fn policy_from_config(cfg: &RetentionConfig, now: SystemTime) -> RetentionPo
         .collect();
 
     RetentionPolicy {
-        calls_before: days_to_cutoff(cfg.calls),
-        turns_before: days_to_cutoff(cfg.turns),
+        spans_before: days_to_cutoff(cfg.spans),
+        traces_before: days_to_cutoff(cfg.traces),
         http_exchanges_before: days_to_cutoff(cfg.http_exchanges),
         metrics_before,
     }
@@ -132,8 +132,8 @@ pub fn spawn_retention_task(
                         Ok(report) => {
                             if report.total() > 0 {
                                 info!(
-                                    calls = report.calls_deleted,
-                                    turns = report.turns_deleted,
+                                    calls = report.spans_deleted,
+                                    turns = report.traces_deleted,
                                     http_exchanges = report.http_exchanges_deleted,
                                     metrics = ?report.metrics_deleted,
                                     "retention: sweep complete"
@@ -163,8 +163,8 @@ mod tests {
     fn make_cfg(calls: u32, turns: u32, metrics: &[(&str, u32)]) -> RetentionConfig {
         let mut cfg = RetentionConfig::default();
         cfg.enabled = true;
-        cfg.calls = calls;
-        cfg.turns = turns;
+        cfg.spans = calls;
+        cfg.traces = turns;
         cfg.http_exchanges = 0;
         cfg.metrics = metrics
             .iter()
@@ -178,8 +178,8 @@ mod tests {
         let cfg = make_cfg(0, 0, &[]);
         let now = SystemTime::now();
         let policy = policy_from_config(&cfg, now);
-        assert!(policy.calls_before.is_none());
-        assert!(policy.turns_before.is_none());
+        assert!(policy.spans_before.is_none());
+        assert!(policy.traces_before.is_none());
         assert!(policy.http_exchanges_before.is_none());
         assert!(policy.metrics_before.is_empty());
         assert!(policy.is_empty());
@@ -214,8 +214,8 @@ mod tests {
         let cfg = make_cfg(7, 30, &[]);
         let now = SystemTime::now();
         let policy = policy_from_config(&cfg, now);
-        let calls_before = policy.calls_before.expect("calls cutoff");
-        let elapsed = now.duration_since(calls_before).expect("cutoff before now");
+        let spans_before = policy.spans_before.expect("calls cutoff");
+        let elapsed = now.duration_since(spans_before).expect("cutoff before now");
         // Within 1 second of exactly 7*86400 seconds.
         let expected = Duration::from_secs(7 * 86_400);
         let delta = if elapsed > expected {

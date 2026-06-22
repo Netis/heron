@@ -16,7 +16,7 @@ impl DuckDbBackend {
         tokio::task::spawn_blocking(move || {
             let mut report = RetentionReport::default();
 
-            if let Some(cutoff) = policy.calls_before {
+            if let Some(cutoff) = policy.spans_before {
                 let ts = timestamp_value(cutoff)?;
                 let conn = calls_conn
                     .lock()
@@ -27,7 +27,7 @@ impl DuckDbBackend {
                         duckdb::params![ts],
                     )
                     .map_err(|e| AppError::Storage(format!("failed to delete spans: {e}")))?;
-                report.calls_deleted = n as u64;
+                report.spans_deleted = n as u64;
             }
 
             if let Some(cutoff) = policy.http_exchanges_before {
@@ -46,7 +46,7 @@ impl DuckDbBackend {
                 report.http_exchanges_deleted = n as u64;
             }
 
-            if let Some(cutoff) = policy.turns_before {
+            if let Some(cutoff) = policy.traces_before {
                 let ts = timestamp_value(cutoff)?;
                 let conn = turns_conn
                     .lock()
@@ -57,7 +57,7 @@ impl DuckDbBackend {
                         duckdb::params![ts],
                     )
                     .map_err(|e| AppError::Storage(format!("failed to delete traces: {e}")))?;
-                report.turns_deleted = n as u64;
+                report.traces_deleted = n as u64;
             }
 
             for (label, cutoff) in &policy.metrics_before {
@@ -325,8 +325,8 @@ mod tests {
             .unwrap();
 
         let policy = RetentionPolicy {
-            calls_before: Some(now - Duration::from_secs(7 * 86_400)),
-            turns_before: Some(now - Duration::from_secs(14 * 86_400)),
+            spans_before: Some(now - Duration::from_secs(7 * 86_400)),
+            traces_before: Some(now - Duration::from_secs(14 * 86_400)),
             http_exchanges_before: None,
             metrics_before: vec![
                 ("10s".to_string(), now - Duration::from_secs(86_400)),
@@ -337,8 +337,8 @@ mod tests {
         };
 
         let report = backend.apply_retention(policy).await.unwrap();
-        assert_eq!(report.calls_deleted, 1);
-        assert_eq!(report.turns_deleted, 1);
+        assert_eq!(report.spans_deleted, 1);
+        assert_eq!(report.traces_deleted, 1);
         assert_eq!(report.metrics_deleted.get("10s"), Some(&1));
         assert_eq!(report.metrics_deleted.get("1m"), Some(&1));
         assert_eq!(report.metrics_deleted.get("5m"), Some(&1));

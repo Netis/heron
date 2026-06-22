@@ -5,21 +5,21 @@
 Four data entities, described in a storage-agnostic format (no SQL DDL). Each entity maps to a table/collection in the chosen storage backend (DuckDB / PostgreSQL / ClickHouse).
 
 ```
-agent_turns  ─── 1:N ───  llm_calls  ─── aggregated into ───  llm_metrics
+traces  ─── 1:N ───  spans  ─── aggregated into ───  llm_metrics
                                                          ╲
                                                           ─── llm_finish_metrics
 ```
 
-Per the project-wide read-path rule, cross-entity reads never use `JOIN` — `agent_turns` carries its child `call_ids` inline and detail reads issue a follow-up `IN (?, ?, ...)` lookup against `llm_calls`. Finish-reason counts live in their own long-format table (`llm_finish_metrics`) so the wide pre-aggregation table can keep a fixed column set.
+Per the project-wide read-path rule, cross-entity reads never use `JOIN` — `traces` carries its child `span_ids` inline and detail reads issue a follow-up `IN (?, ?, ...)` lookup against `spans`. Finish-reason counts live in their own long-format table (`llm_finish_metrics`) so the wide pre-aggregation table can keep a fixed column set.
 
 ---
 
-## 1. `llm_calls` — Per-Request Detail
+## 1. `spans` — Per-Request Detail
 
 One record per LLM API call. The core fact table. Includes full request/response body content.
 
 ```
-llm_calls
+spans
 ├── Primary Key
 │   └── id: string (UUID v7, time-ordered)
 │
@@ -96,12 +96,12 @@ Future provider values flow through verbatim; no normalization is performed. The
 
 ---
 
-## 2. `agent_turns` — One Agent Interaction (1:N over `llm_calls`)
+## 2. `traces` — One Agent Interaction (1:N over `spans`)
 
-One record per agent turn (a contiguous sequence of `llm_calls` for a single agent run). Inline `call_ids` keeps cross-entity reads JOIN-free per the project-wide rule.
+One record per agent turn (a contiguous sequence of `spans` for a single agent run). Inline `span_ids` keeps cross-entity reads JOIN-free per the project-wide rule.
 
 ```
-agent_turns
+traces
 ├── Primary Key
 │   └── id: string (UUID v7, time-ordered, minted at finalize)
 │
@@ -109,7 +109,7 @@ agent_turns
 │   ├── agent_kind: string            # e.g. anthropic / openai-codex / generic
 │   ├── session_id: string?           # client-supplied session marker, when available
 │   ├── source_id: u32                # capture source (matches llm_metrics.source_id)
-│   └── call_ids: string[]            # ordered list of llm_calls.id in this turn
+│   └── span_ids: string[]            # ordered list of spans.id in this turn
 │
 ├── Timestamps
 │   ├── start_time: timestamp         # first call's request_time
@@ -131,8 +131,8 @@ Indexes:
 ### Field notes
 
 - **`status`** (`VARCHAR NOT NULL`) — Two values only: `complete` (a wire-level terminal landed before finalize) or `incomplete` (idle timeout, pcap EOF, server shutdown, or connection RST mid-stream). The wire-level reason — `end_turn`, `max_tokens`, `refusal`, etc. — lives in `final_finish_reason`. Older databases written when the column carried `length` / `failed` / `cancelled` are upgraded in place on init: `length → complete`, `failed`/`cancelled → incomplete`. The wire reason for those legacy rows is unrecoverable.
-- **`final_finish_reason`** (`VARCHAR`, nullable) — Raw `finish_reason` of the call that closed this turn. Same vocabulary as `llm_calls.finish_reason` (per `wire_api`); same migration caveat for rows pre-dating the raw-string refactor.
-- **`call_ids`** carries the ordered child UUIDs inline so detail reads can issue a single `SELECT ... FROM llm_calls WHERE id IN (?, ?, ...)` follow-up. See `query_turn_calls` in `ts-storage/src/duckdb.rs` for the canonical pattern. Storing this list inline is the project's chosen alternative to a relational JOIN.
+- **`final_finish_reason`** (`VARCHAR`, nullable) — Raw `finish_reason` of the call that closed this turn. Same vocabulary as `spans.finish_reason` (per `wire_api`); same migration caveat for rows pre-dating the raw-string refactor.
+- **`span_ids`** carries the ordered child UUIDs inline so detail reads can issue a single `SELECT ... FROM spans WHERE id IN (?, ?, ...)` follow-up. See `query_trace_spans` in `h-storage-duckdb/src/turns.rs` for the canonical pattern. Storing this list inline is the project's chosen alternative to a relational JOIN.
 
 ---
 
@@ -213,7 +213,7 @@ Indexes:
   - `active_calls_max` → `MAX()`.
   - Percentiles → `SUM(*_p* * *_count) / SUM(*_count)` (approximation — weighting by the matching `*_count` keeps slow-response rows with `call_count=0` from collapsing the result to zero, but it is not equivalent to merging the underlying t-digests. Serialized t-digest bytes is the planned long-term fix.)
 - **Aggregation levels**: finest `(wire_api, model, server_ip)` for drilldown, global `(*, *, *)` for overview. Additional dimensions will be added as they are validated with real traffic.
-- **Other dimension analysis**: query `llm_calls` detail table with GROUP BY for dimensions not yet in pre-aggregation.
+- **Other dimension analysis**: query `spans` detail table with GROUP BY for dimensions not yet in pre-aggregation.
 - **`*_sum / *_count` instead of `*_avg`**: averages are not additive across rows; storing the exact sum and count lets the query layer SUM over any set of rows (multi-source, multi-drain-slice) and divide to get a correct average. The per-row percentiles (`*_p*`) are t-digest estimates over that row's slice only — single-row views can read them directly.
 - **Multi-granularity**: Fine-grained (10s) for realtime dashboards, coarse (1h) for historical trends. Each granularity has its own drain cadence equal to its window size, so steady-state row count per granularity matches the number of windows covered.
 - **Active Calls**: Per-`DimensionKey` counter (+1 on `Start`, -1 on `Complete`); every Start writes the current value as a sample into `active_calls_sum / active_calls_sample_count` and updates `active_calls_max`. Cross-row avg via the `sum / count` pair; peak via `MAX(active_calls_max)`.
@@ -257,12 +257,12 @@ Indexes:
 Retention is **enabled by default** with sane TTLs (`calls = turns = 30` days, `http_exchanges = 7` days). Operators tune via `[storage.retention]`; set `enabled = false` to opt out, or set any field to `0` to make that table never expire. A background sweeper (spawned at startup, cancelled on Ctrl+C) runs every `check_interval_secs` (default 3600) and deletes rows older than the per-table / per-granularity cutoff.
 
 **Cutoff columns** (what "old" means):
-- `llm_calls.request_time`
-- `agent_turns.end_time` (NOT NULL; turn completion — safer than start_time)
+- `spans.request_time`
+- `traces.end_time` (NOT NULL; turn completion — safer than start_time)
 - `llm_metrics.timestamp`, further keyed by `granularity`
 - `llm_finish_metrics.timestamp`, further keyed by `granularity` (sweeper reuses the `llm_metrics` per-granularity cutoffs)
 
-**Cross-table constraint:** `turns` must not outlive `calls`. `agent_turns.call_ids` references `llm_calls.id`, and the no-JOIN turn-detail read trusts those references — turns surviving past their calls would render with empty/partial call lists. `validate()` enforces `turns <= calls` (with `calls = 0` treated as infinite, satisfying any finite `turns`).
+**Cross-table constraint:** `traces` must not outlive `spans`. `traces.span_ids` references `spans.id`, and the no-JOIN trace-detail read trusts those references — traces surviving past their spans would render with empty/partial span lists. `validate()` enforces `traces <= spans` (with `spans = 0` treated as infinite, satisfying any finite `traces`). The pre-rename keys `calls`/`turns` are still accepted as deprecated serde aliases.
 
 **Defaults** (active out of the box):
 
@@ -270,8 +270,8 @@ Retention is **enabled by default** with sane TTLs (`calls = turns = 30` days, `
 [storage.retention]
 enabled = true
 check_interval_secs = 3600
-calls = 30    # llm_calls max age in days; caps `turns`
-turns = 30    # agent_turns max age in days; must be <= calls (or set calls = 0)
+spans = 30    # per-call detail (spans) max age in days; caps `traces`
+traces = 30   # agent-trace summaries max age; must be <= spans (or set spans = 0)
 http_exchanges = 7
 
 [storage.retention.metrics]
@@ -284,7 +284,7 @@ http_exchanges = 7
 Each backend implements `StorageBackend::apply_retention` with a dialect-appropriate strategy:
 - **DuckDB** (current): per-table DELETE + `CHECKPOINT` once per sweep to reclaim on-disk space (DuckDB DELETEs are MVCC tombstones until checkpoint).
 - **PostgreSQL** (planned): simple DELETE, or declarative partitioning + `DROP TABLE partition`; with TimescaleDB, `drop_chunks`.
-- **ClickHouse** (implemented): per-table lightweight `DELETE FROM ... WHERE <col> < cutoff` (counts gathered via a `count()` immediately before each delete, since CH `DELETE` returns no affected-row count); `agent_turns`/`llm_metrics` use the same per-table / per-granularity cutoffs as DuckDB. Optional `OPTIMIZE TABLE ... FINAL` per swept table when `optimize_on_sweep = true` (off by default — background merges reclaim lazily). No declarative `TTL` is set, so a single `apply_retention` path drives both backends identically.
+- **ClickHouse** (implemented): per-table lightweight `DELETE FROM ... WHERE <col> < cutoff` (counts gathered via a `count()` immediately before each delete, since CH `DELETE` returns no affected-row count); `traces`/`llm_metrics` use the same per-table / per-granularity cutoffs as DuckDB. Optional `OPTIMIZE TABLE ... FINAL` per swept table when `optimize_on_sweep = true` (off by default — background merges reclaim lazily). No declarative `TTL` is set, so a single `apply_retention` path drives both backends identically.
 
 ---
 
@@ -295,7 +295,7 @@ Each backend implements `StorageBackend::apply_retention` with a dialect-appropr
 | `id` (UUID v7) | VARCHAR | `uuid` native type | String |
 | `timestamp` | TIMESTAMP | `timestamptz` | `DateTime64(6)` |
 | `request_body` / `response_body` | VARCHAR or JSON | TEXT | String |
-| `llm_calls` ordering | B-tree on `request_time` | B-tree on `request_time` | `ORDER BY (request_time, id)` MergeTree |
+| `spans` ordering | B-tree on `request_time` | B-tree on `request_time` | `ORDER BY (request_time, id)` MergeTree |
 | `llm_metrics` optimization | plain table | TimescaleDB hypertable on `timestamp` (optional) | `ORDER BY (granularity, timestamp, model)` |
 | `llm_finish_metrics` optimization | plain table | TimescaleDB hypertable on `timestamp` (optional) | `ORDER BY (granularity, timestamp, finish_reason)` |
 | Percentile storage | plain DOUBLE | plain f64 | plain f64, or `AggregateFunction(quantilesTDigest, Float64)` for re-aggregation |
@@ -306,18 +306,41 @@ Each backend implements `StorageBackend::apply_retention` with a dialect-appropr
 
 ## Upgrade Notes
 
+### OpenTelemetry-aligned rename (`agent_turns`→`traces`, `llm_calls`→`spans`)
+
+Aligns the storage + API vocabulary with the industry-standard Session → Trace →
+Span hierarchy (a session is the existing `(source_id, session_id)` view over
+traces).
+
+- Tables `agent_turns` → `traces`, `llm_calls` → `spans`; column
+  `traces.call_ids` → `span_ids`.
+- New forward-looking `spans.kind` column (always `'llm'` today) so future
+  wire-visible tool spans can carry `kind='tool'`.
+- **In-place auto-migration** on init() (unlike the older rename below): an
+  idempotent detect-then-rename runs before `CREATE TABLE IF NOT EXISTS`, so
+  existing DuckDB/ClickHouse databases migrate without data loss — no need to
+  delete the file. `RENAME` has no `IF EXISTS`, so each is guarded by a
+  table/column existence check.
+- Back-compat: HTTP routes `/api/agent-turns*` and `/api/llm-calls*` keep
+  working as deprecated aliases (RFC 8594 `Deprecation` header) for the
+  canonical `/api/traces*` and `/api/spans*`. Retention config keys
+  `calls`/`turns` remain accepted as serde aliases for `spans`/`traces`.
+
 ### `AgentTurn` rename (`LlmTurn` → `AgentTurn`)
 
-- Table `llm_turns` → `agent_turns`
+- Table `llm_turns` → `agent_turns` (now further renamed to `traces` — see above)
 - Column `client_kind` → `agent_kind`
 
-No online migration is performed. Existing `server/data/heron.duckdb` files from before the rename should be deleted before restart — the backend will recreate the new schema on first run via `CREATE TABLE IF NOT EXISTS`.
+No online migration was performed for this older rename. Existing
+`server/data/heron.duckdb` files from before *this* rename should be deleted
+before restart — the backend recreates the schema on first run via
+`CREATE TABLE IF NOT EXISTS`.
 
 ### `finish_reason` raw-string refactor (see `CHANGELOG`)
 
 Idempotent on-init migrations on the DuckDB backend:
 
 - `llm_metrics`: `ALTER TABLE ... DROP COLUMN IF EXISTS finish_complete_count` (and the four sibling columns: `finish_length_count`, `finish_tool_use_count`, `finish_error_count`, `finish_cancelled_count`).
-- `agent_turns`: one-time `UPDATE agent_turns SET status='complete' WHERE status='length'` and `UPDATE agent_turns SET status='incomplete' WHERE status IN ('failed','cancelled')`. After this update the legacy `length` / `failed` / `cancelled` values cannot reappear; the wire reason for those rows is unrecoverable.
-- `llm_calls.finish_reason` is **not** rewritten. Pre-refactor rows keep their normalized labels (`complete`, `length`, `tool_use`, `error`, `cancelled`); post-refactor rows carry raw provider values. The two are distinguishable by row date. Application code that filters or groups across the boundary must handle both vocabularies.
+- `traces`: one-time `UPDATE traces SET status='complete' WHERE status='length'` and `UPDATE traces SET status='incomplete' WHERE status IN ('failed','cancelled')`. After this update the legacy `length` / `failed` / `cancelled` values cannot reappear; the wire reason for those rows is unrecoverable.
+- `spans.finish_reason` is **not** rewritten. Pre-refactor rows keep their normalized labels (`complete`, `length`, `tool_use`, `error`, `cancelled`); post-refactor rows carry raw provider values. The two are distinguishable by row date. Application code that filters or groups across the boundary must handle both vocabularies.
 - `llm_finish_metrics` is created via `CREATE TABLE IF NOT EXISTS` on first run; no historical backfill from the old `finish_*_count` columns is performed.

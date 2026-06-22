@@ -141,15 +141,16 @@ flush_interval_ms = 200
 # active defaults, shown for reference). Set `enabled = false` to opt out, or
 # set any field to `0` to make that table never expire.
 #
-# Constraint: `turns` must not outlive `calls` (validate enforces
-# `turns <= calls`, with `calls = 0` treated as infinite). Surviving turns
-# whose llm_calls have been pruned would render as empty/partial in the
-# detail view, since `agent_turns.call_ids` references rows in `llm_calls`.
+# Constraint: `traces` must not outlive `spans` (validate enforces
+# `traces <= spans`, with `spans = 0` treated as infinite). Surviving traces
+# whose spans have been pruned would render as empty/partial in the
+# detail view, since `traces.span_ids` references rows in `spans`.
+# The pre-rename keys `calls`/`turns` are still accepted as deprecated aliases.
 # [storage.retention]
 # enabled = true
 # check_interval_secs = 3600
-# calls = 30             # LLM call detail (request/response bodies); caps `turns`
-# turns = 30             # Agent turn summaries; must be <= calls (or set calls = 0)
+# spans = 30             # Per-call detail (request/response bodies); caps `traces`
+# traces = 30            # Agent-trace summaries; must be <= spans (or set spans = 0)
 # http_exchanges = 7     # Raw HTTP transport records (headers + bodies) — bulkiest table
 #
 # Per-granularity retention for llm_metrics. Missing keys fall back to the

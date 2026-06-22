@@ -73,10 +73,10 @@ impl ClickHouseBackend {
         let mut swept: Vec<&'static str> = Vec::new();
 
         // spans — keyed on request_time.
-        if let Some(cutoff) = policy.calls_before {
+        if let Some(cutoff) = policy.spans_before {
             let us = cutoff_micros(cutoff)?;
             let predicate = format!("request_time < fromUnixTimestamp64Micro({us})");
-            report.calls_deleted = self.count_where("spans", &predicate).await?;
+            report.spans_deleted = self.count_where("spans", &predicate).await?;
             self.exec(&format!("DELETE FROM spans WHERE {predicate}"))
                 .await?;
             swept.push("spans");
@@ -93,10 +93,10 @@ impl ClickHouseBackend {
         }
 
         // traces — keyed on end_time.
-        if let Some(cutoff) = policy.turns_before {
+        if let Some(cutoff) = policy.traces_before {
             let us = cutoff_micros(cutoff)?;
             let predicate = format!("end_time < fromUnixTimestamp64Micro({us})");
-            report.turns_deleted = self.count_where("traces", &predicate).await?;
+            report.traces_deleted = self.count_where("traces", &predicate).await?;
             self.exec(&format!("DELETE FROM traces WHERE {predicate}"))
                 .await?;
             swept.push("traces");
