@@ -1464,4 +1464,87 @@ mod route_classification_tests {
         let p2 = ParsedJson::from_bytes(bytes::Bytes::copy_from_slice(with_sys.as_bytes()));
         assert!(api.matches_shape(&r, &p2));
     }
+
+    // ─── Claude Code tool-loop continuation shape ───────────────────────────
+    //
+    // Background — a production defect observed on a live Claude Code session:
+    // one PID issued 8 same-session calls (tool_use×7 → end_turn), all with
+    // turn_id=None. Root cause (traced end-to-end): the turn's OPENING call
+    // (the only call whose `messages[-1]` is user text, hence the only one
+    // that reports `is_user_turn_start=Some(true)`) was missed by the eBPF
+    // source (connection-setup / uprobe-attach timing). Every captured call
+    // is a CONTINUATION: Claude Code is stateless, so each request carries
+    // full `messages` history plus the current roundtrip's tool_result, and
+    // the last user message is a `tool_result`, not the opening text.
+    //
+    // So `is_user_turn_start` correctly returns `Some(false)` for every
+    // captured call — the logic is right, the opening call just isn't among
+    // them. The defect is that the tracker then had no `has_user_start` and
+    // dropped the whole partition. The fix lives in the tracker
+    // (`partition_has_pid_attribution` fallback in `emit_or_discard`): when
+    // no main-agent user-start survived but the calls share eBPF process
+    // attribution, the partition is kept (`TurnKeptByPidAttribution`).
+    //
+    // These tests pin the CONTINUATION shape's verdict (false) so the
+    // tracker-side fix can rely on it, plus the two control cases that must
+    // not regress. See `tracker::tests::pid_attribution_keeps_turn_*`.
+    fn cc_continuation_call_request() -> Value {
+        // A continuation call: opening user text at messages[0] (carried as
+        // history), then a tool roundtrip, ending on user:tool_result.
+        serde_json::json!({
+            "messages": [
+                {"role":"user","content":[
+                    {"type":"text","text":"update the gateway config to route model A to model B"}
+                ]},
+                {"role":"assistant","content":[
+                    {"type":"text","text":"I'll edit the config."},
+                    {"type":"tool_use","id":"toolu_1","name":"Edit","input":{}}
+                ]},
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}
+                ]}
+            ]
+        })
+    }
+
+    #[test]
+    fn is_user_turn_start_true_for_plain_text_opening() {
+        // Control case: the simple shape the current logic was designed for —
+        // a single user text message, no tool roundtrip. This MUST stay true.
+        let req = serde_json::json!({
+            "messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]
+        });
+        assert_eq!(is_user_turn_start(&req), Some(true));
+    }
+
+    #[test]
+    fn is_user_turn_start_false_for_pure_tool_result_continuation() {
+        // Control case: a pure continuation — last user message is ONLY a
+        // tool_result (a prior turn's tool_use getting its result). This MUST
+        // stay false; it is not a turn start.
+        let req = serde_json::json!({
+            "messages":[
+                {"role":"user","content":[{"type":"text","text":"old question"}]},
+                {"role":"assistant","content":[{"type":"tool_use","id":"t_old","name":"Read","input":{}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"t_old","content":"data"}]}
+            ]
+        });
+        assert_eq!(is_user_turn_start(&req), Some(false));
+    }
+
+    #[test]
+    fn is_user_turn_start_false_for_cc_tool_loop_continuation() {
+        // A Claude Code CONTINUATION call: opening user text sits at
+        // messages[0] (carried as history), but the messages array ends on a
+        // tool_result (the current roundtrip's result). This is NOT the turn's
+        // opening call — that call was missed by the eBPF source — so
+        // `is_user_turn_start` correctly returns Some(false). The fix for the
+        // production drop is NOT here (the verdict is right); it is the
+        // tracker's `partition_has_pid_attribution` fallback in
+        // `emit_or_discard`, which keeps the partition via the shared PID when
+        // no main-agent user-start survived. This test pins the verdict the
+        // tracker fix relies on.
+        let req = cc_continuation_call_request();
+        assert_eq!(is_user_turn_start(&req), Some(false));
+    }
 }

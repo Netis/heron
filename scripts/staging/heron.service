@@ -26,6 +26,13 @@ WorkingDirectory=/opt/heron
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
 NoNewPrivileges=true
+# Defense-in-depth fd headroom. The capture pipeline holds a bounded set of
+# fds (capture sockets, a few bpf_link/map fds per live target inode, DB
+# files, plus the API listener's accepted connections), so the systemd default
+# soft limit of 1024 is the floor at which any fd regression starves the API
+# listener's accept(). A generous ceiling turns a slow fd leak into a logged
+# warning with hours of margin instead of a dead HTTP port.
+LimitNOFILE=65536
 Restart=on-failure
 RestartSec=5
 
