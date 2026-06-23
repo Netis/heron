@@ -70,6 +70,7 @@ pub fn spawn_turn_stage(
                 Metric::TurnClosedByGrace,
                 Metric::TurnClosedByIdle,
                 Metric::TurnDiscardedNoUserStart,
+                Metric::TurnKeptByPidAttribution,
                 Metric::TurnHeartbeatsReceived,
             ],
         );

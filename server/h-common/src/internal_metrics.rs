@@ -208,6 +208,14 @@ define_metrics! {
     TurnClosedByGrace        => { kind: Counter, group: Turn, short: "turns_closed_grace"            },
     TurnClosedByIdle         => { kind: Counter, group: Turn, short: "turns_closed_idle"             },
     TurnDiscardedNoUserStart => { kind: Counter, group: Turn, short: "turns_discarded_no_user_start" },
+    // A partition with no main-agent `is_user_turn_start` would normally be
+    // discarded (see `TurnDiscardedNoUserStart`), but when its calls carry a
+    // common eBPF process attribution (`call.process`), they are provably one
+    // process's contiguous agent traffic — usually a turn whose opening call
+    // was missed by the eBPF source (connection-setup / uprobe-attach timing).
+    // Counted here so the fallback's hit rate is observable; it indirectly
+    // surfaces the eBPF miss rate for opening calls.
+    TurnKeptByPidAttribution => { kind: Counter, group: Turn, short: "turns_kept_by_pid_attribution" },
     TurnHeartbeatsReceived   => { kind: Counter, group: Turn, short: "turn_heartbeats_received"      },
     TurnHeartbeatsDropped    => { kind: Counter, group: Turn, short: "turn_heartbeats_dropped"       },
     TurnActive               => { kind: Gauge,   group: Turn, short: "turn_calls_buffered"           },

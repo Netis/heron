@@ -5,8 +5,8 @@
     "default_branch": "main"
   },
   "agents": {
-    "review_bot_login": "vivi",
-    "dev_agent_name": "wiwi"
+    "review_bot_login": "themis",
+    "dev_agent_name": "hephaestus"
   },
   "labels": {
     "assess": "agent:assess",
@@ -30,11 +30,11 @@
     "service_name": "heron",
     "health_url": "",
     "repo": "Netis/heron",
-    "labels": "mara,incident",
+    "labels": "argus,incident",
     "readiness": {
       "jq": ".data.pipelines[0].running",
       "expect": "true"
     }
   },
-  "model": "claude-3-5-sonnet-20241022"
+  "model": "claude-sonnet-4-6"
 }
