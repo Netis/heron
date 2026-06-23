@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-06-24
+
+### Fixed
+
+- **Console blank-page regression from the v0.7.0 OTel rename.** The traces API
+  serializes `span_ids` (renamed from `call_ids`), but the `AgentTurnDetail`
+  type and the `agent-breakdown` component still read `call_ids`, so opening an
+  agent trace detail threw `TypeError: undefined is not an object (evaluating
+  '…call_ids.length')` and — with no React error boundary — blanked the entire
+  console. Aligned the type + component to `span_ids` and guarded the access so
+  a missing field degrades to "0 calls" instead of a white screen.
+
+### Changed
+
+- **UI vocabulary aligned with the OTel model.** Renamed user-visible labels:
+  "Agent Turns" → "Agent Traces" and "HTTP Exchanges" → "HTTP Logs" (nav, detail
+  titles, the overview gauge, the "Trace ID" metadata row, empty/error states,
+  the SFT export tooltip, and the distribution chart). A trace is one agent
+  interaction; a step within it remains a turn/span. Backend metric names, route
+  paths, and code identifiers are unchanged.
+
 ## [0.7.0] — 2026-06-24
 
 ### Added
