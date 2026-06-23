@@ -38,8 +38,8 @@ export function AgentBreakdown({ turn, calls }: Props) {
 
         <div className="text-muted-foreground">Tool calls</div>
         <div>
-          {turn.tool_call_total} total across {turn.call_ids.length} call
-          {turn.call_ids.length === 1 ? "" : "s"}
+          {turn.tool_call_total} total across {turn.span_ids?.length ?? 0} call
+          {(turn.span_ids?.length ?? 0) === 1 ? "" : "s"}
         </div>
 
         {turn.suspicious_skills.length > 0 && (
