@@ -179,40 +179,6 @@ impl ProxyGroup {
     }
 }
 
-/// Content fingerprint (everything that must agree across all members
-/// of a group) — used to bucket candidates before time-clustering.
-///
-/// Intentionally NOT in the fingerprint (all observed in live
-/// production capture data, mirrors the same exclusions in the front-end call-level
-/// `lib/call-pair.ts::contentKey`):
-///
-/// * `wire_api` — LiteLLM and similar proxies translate API styles
-///   across the boundary (client Anthropic → upstream OpenAI etc.).
-/// * `final_finish_reason` — translates alongside the API style
-///   (`end_turn` ↔ `stop`, `tool_use` ↔ `tool_calls`, `max_tokens` ↔
-///   `length`).
-/// * `primary_model` — LiteLLM advertises a model alias on the client
-///   side (e.g. `glm5`) and rewrites it to the upstream's canonical
-///   name (`GLM-5.1`) before forwarding. Surfaced in Proxy view, not
-///   pairing-key material.
-///
-/// `session_id` is the strongest signal — agent profiles already
-/// content-hash on first user message, so cross-proxy legs land in
-/// the same session by construction. `agent_kind` and `call_count`
-/// co-vary with the session derivation and stay in the key as
-/// inexpensive sanity-checks. Tokens are passed through unchanged by
-/// well-behaved proxies and are the API-format-invariant content
-/// signal.
-fn content_fingerprint(c: &PairCandidate) -> (&str, &str, u32, u64, u64) {
-    (
-        c.session_id.as_str(),
-        c.agent_kind.as_str(),
-        c.call_count,
-        c.total_input_tokens,
-        c.total_output_tokens,
-    )
-}
-
 /// Within a content-fingerprint-equal bucket, walk in start_time order
 /// and grow a cluster as long as the next turn falls within
 /// `MAX_REQ_TIME_GAP_US` of the *latest* member's start_time. A new
@@ -298,19 +264,62 @@ fn assign_roles(
 /// A candidate that doesn't fit any cluster (no peer found) is simply
 /// omitted from the returned list — absence of `metadata.proxy` is the
 /// signal for "direct, non-duplicate turn".
+///
+/// Bucketing is by `(call_count, total_input_tokens,
+/// total_output_tokens)` — the fields a proxy cannot rewrite without
+/// altering the body. Within each bucket, time-clustering forms
+/// candidate groups and a per-cluster admission check sorts real
+/// duplicate groups from coincidentally-same-shape unrelated calls:
+///
+/// * **`Strict`** — every member shares `session_id` + `agent_kind`.
+///   Catches header-preserving proxies (haproxy, mirror capture,
+///   LiteLLM) where both legs classify the same way.
+///
+/// * **`HeaderStrip`** — every member shares `wire_api` +
+///   `final_finish_reason` + `primary_model` AND members span at
+///   least two distinct `agent_kind`s. Catches proxies that strip
+///   client headers (UA, `X-Claude-Code-Session-Id`, etc.) before
+///   forwarding: the inbound leg classifies by header (e.g. `claude-cli`
+///   with a UUID `session_id`) while the outbound leg falls through to a
+///   body-fingerprint profile (e.g. `generic` with a `gen-<hash>`
+///   `session_id`). Both `agent_kind` AND `session_id` diverge across
+///   the boundary even though the body — and therefore `wire_api`,
+///   `final_finish_reason`, `primary_model`, `call_count`, and tokens —
+///   passes through unchanged. The ≥2-distinct-agent_kind guard is the
+///   discriminator that separates a real header-strip from two
+///   coincidentally-same-shape unrelated calls in different sessions
+///   (which would share tokens + wire_api + finish_reason + model but
+///   share one `agent_kind`).
+///
+/// A cluster is admitted if either rule passes. Both rules can apply
+/// simultaneously in a mixed topology (e.g. an inbound mirror pair on
+/// `claude-cli` plus a stripped upstream hop on `generic`): the strict
+/// rule covers the mirror, the header-strip rule covers the
+/// mixed-classification cluster, and a single group is emitted for the
+/// whole set.
 pub fn group_all(set: &[PairCandidate]) -> Vec<ProxyGroup> {
-    let mut by_fp: HashMap<(&str, &str, u32, u64, u64), Vec<usize>> = HashMap::new();
+    let mut by_body: HashMap<(u32, u64, u64), Vec<usize>> = HashMap::new();
     for (i, c) in set.iter().enumerate() {
-        by_fp.entry(content_fingerprint(c)).or_default().push(i);
+        let body_fp = (c.call_count, c.total_input_tokens, c.total_output_tokens);
+        by_body.entry(body_fp).or_default().push(i);
     }
 
     let mut groups = Vec::new();
-    for (_, ids) in by_fp {
+    for (_, ids) in by_body {
         if ids.len() < 2 {
             continue;
         }
         for cluster in time_clusters(ids, set) {
             if cluster.len() < 2 {
+                continue;
+            }
+            // Per-cluster admission: strict (same session_id + agent_kind)
+            // OR header-strip (same wire_api + finish_reason + primary_model
+            // + ≥2 agent_kinds). A cluster matching neither is a
+            // coincidental same-shape pair across unrelated sessions — drop.
+            let strict_ok = Admission::Strict.admits(&cluster, set);
+            let strip_ok = !strict_ok && Admission::HeaderStrip.admits(&cluster, set);
+            if !strict_ok && !strip_ok {
                 continue;
             }
             let canonical_idx = pick_canonical(&cluster, set);
@@ -354,6 +363,72 @@ pub fn group_all(set: &[PairCandidate]) -> Vec<ProxyGroup> {
         }
     }
     groups
+}
+
+/// Admission policy for a cluster. `Strict` requires every member to
+/// share `session_id` + `agent_kind` (the existing pre-strip behavior).
+/// `HeaderStrip` requires members to share `wire_api` +
+/// `final_finish_reason` + `primary_model` AND to span at least two
+/// distinct `agent_kind`s (the header-strip signature).
+enum Admission {
+    Strict,
+    HeaderStrip,
+}
+
+impl Admission {
+    fn admits(&self, cluster: &[usize], set: &[PairCandidate]) -> bool {
+        match self {
+            Admission::Strict => {
+                let mut sessions: Vec<&str> = cluster
+                    .iter()
+                    .map(|&i| set[i].session_id.as_str())
+                    .collect();
+                sessions.sort_unstable();
+                sessions.dedup();
+                let mut kinds: Vec<&str> = cluster
+                    .iter()
+                    .map(|&i| set[i].agent_kind.as_str())
+                    .collect();
+                kinds.sort_unstable();
+                kinds.dedup();
+                !sessions.is_empty() && sessions.len() == 1 && !kinds.is_empty() && kinds.len() == 1
+            }
+            Admission::HeaderStrip => {
+                let mut kinds: Vec<&str> = cluster
+                    .iter()
+                    .map(|&i| set[i].agent_kind.as_str())
+                    .collect();
+                kinds.sort_unstable();
+                kinds.dedup();
+                if kinds.len() < 2 {
+                    return false;
+                }
+                let mut wires: Vec<&str> =
+                    cluster.iter().map(|&i| set[i].wire_api.as_str()).collect();
+                wires.sort_unstable();
+                wires.dedup();
+                if wires.len() != 1 {
+                    return false;
+                }
+                let mut finishes: Vec<Option<&str>> = cluster
+                    .iter()
+                    .map(|&i| set[i].final_finish_reason.as_deref())
+                    .collect();
+                finishes.sort_unstable();
+                finishes.dedup();
+                if finishes.len() != 1 {
+                    return false;
+                }
+                let mut models: Vec<Option<&str>> = cluster
+                    .iter()
+                    .map(|&i| set[i].primary_model.as_deref())
+                    .collect();
+                models.sort_unstable();
+                models.dedup();
+                models.len() == 1
+            }
+        }
+    }
 }
 
 /// Build a `PairCandidate` from an `AgentTurn`, used by callers that have
@@ -614,5 +689,207 @@ mod tests {
             },
         ]);
         assert!(g.metadata_for("unrelated").is_none());
+    }
+
+    /// Build a candidate with explicit agent_kind / session_id / wire_api /
+    /// finish_reason / model — the fields the header-stripping scenario
+    /// mutates across the proxy boundary.
+    #[allow(clippy::too_many_arguments)]
+    fn mk_full(
+        turn_id: &str,
+        session: &str,
+        agent_kind: &str,
+        wire_api: &str,
+        finish: Option<&str>,
+        model: Option<&str>,
+        start_us: i64,
+        end_us: i64,
+        net_view: &str,
+    ) -> PairCandidate {
+        PairCandidate {
+            turn_id: turn_id.into(),
+            session_id: session.into(),
+            agent_kind: agent_kind.into(),
+            wire_api: wire_api.into(),
+            start_time_us: start_us,
+            end_time_us: end_us,
+            call_count: 1,
+            total_input_tokens: 11345,
+            total_output_tokens: 128,
+            final_finish_reason: finish.map(str::to_string),
+            primary_model: model.map(str::to_string),
+            network_view: net_view.into(),
+        }
+    }
+
+    #[test]
+    fn header_strip_proxy_leg_pairs_across_profile_split() {
+        // The exact scenario from issue #169: a proxy strips client headers
+        // (User-Agent, X-Claude-Code-Session-Id) before forwarding upstream.
+        // The inbound leg (with headers) classifies as `claude-cli` with a
+        // header-derived session_id (UUID); the outbound leg (no headers)
+        // falls through to `generic` with a body-derived session_id
+        // (`gen-<hash>`). Both agent_kind AND session_id differ across the
+        // proxy boundary, but the proxy passed the body through unchanged
+        // so tokens, call_count, wire_api, finish_reason, and primary_model
+        // all agree. Time nesting and distinct network_view are present.
+        // The grouping MUST fold these into one logical call.
+        let inbound = mk_full(
+            "in",
+            "deadbeef-0000-0000-0000-000000000000",
+            "claude-cli",
+            "anthropic",
+            Some("end_turn"),
+            Some("claude-sonnet-4-5"),
+            348_294_000,
+            350_588_000,
+            "192.0.2.100->192.0.2.81",
+        );
+        let outbound = mk_full(
+            "out",
+            "gen-0123456789abcdef",
+            "generic",
+            "anthropic",
+            Some("end_turn"),
+            Some("claude-sonnet-4-5"),
+            348_296_000,
+            350_587_000,
+            "172.17.0.1->172.17.0.4",
+        );
+        let groups = group_all(&[inbound, outbound]);
+        assert_eq!(
+            groups.len(),
+            1,
+            "header-stripped legs must fold into one group"
+        );
+        let g = &groups[0];
+        assert_eq!(g.members.len(), 2);
+        // Inbound is the wider-span leg → canonical (proxy_in).
+        assert_eq!(role_of(g, "in"), Some(ProxyRole::ProxyIn));
+        assert_eq!(role_of(g, "out"), Some(ProxyRole::ProxyOut));
+    }
+
+    #[test]
+    fn header_strip_does_not_pair_when_wire_api_differs() {
+        // Header-stripping alone never translates the wire API — that's
+        // LiteLLM's job (already handled by the wire_api-excluded primary
+        // fingerprint). A scenario where headers are stripped AND the
+        // wire_api differs is not a header-strip signature; it's two
+        // unrelated calls or a translation proxy with no shared session.
+        // Either way the fallback must NOT pair them — the wire_api match
+        // is the invariant that distinguishes header-strip from coincidence.
+        let inbound = mk_full(
+            "in",
+            "deadbeef-0000-0000-0000-000000000000",
+            "claude-cli",
+            "anthropic",
+            Some("end_turn"),
+            Some("claude-sonnet-4-5"),
+            0,
+            2_000_000,
+            "C->proxy",
+        );
+        let outbound = mk_full(
+            "out",
+            "gen-0123456789abcdef",
+            "generic",
+            "openai-chat", // different wire_api — not header-strip
+            Some("stop"),
+            Some("claude-sonnet-4-5"),
+            1_000,
+            1_999_000,
+            "proxy->upstream",
+        );
+        let groups = group_all(&[inbound, outbound]);
+        assert!(
+            groups.is_empty(),
+            "wire_api differs → not a header-strip signature, no fallback pair"
+        );
+    }
+
+    #[test]
+    fn header_strip_does_not_pair_unrelated_same_token_calls() {
+        // Two genuinely unrelated calls that happen to share token counts,
+        // wire_api, finish_reason, and model within the time window. The
+        // header-strip fallback must not pair them — they share the same
+        // agent_kind, so there's no header-strip signature. Distinct
+        // sessions stay distinct.
+        let a = mk_full(
+            "a",
+            "session_one",
+            "generic",
+            "anthropic",
+            Some("end_turn"),
+            Some("claude-sonnet-4-5"),
+            0,
+            2_000_000,
+            "client-A->server-A",
+        );
+        let b = mk_full(
+            "b",
+            "session_two",
+            "generic",
+            "anthropic",
+            Some("end_turn"),
+            Some("claude-sonnet-4-5"),
+            1_000,
+            1_999_000,
+            "client-B->server-B",
+        );
+        let groups = group_all(&[a, b]);
+        assert!(
+            groups.is_empty(),
+            "same agent_kind + same wire_api + different sessions = no header-strip, no pair"
+        );
+    }
+
+    #[test]
+    fn header_strip_pairs_three_legs_when_one_leg_classifies_differently() {
+        // Haproxy three-leg topology where one of the legs (the upstream
+        // hop) loses its headers and re-classifies as `generic`. The
+        // mirror pair keeps claude-cli classification. All three must
+        // still fold into one group.
+        let a = mk_full(
+            "a_br0",
+            "deadbeef-0000-0000-0000-000000000000",
+            "claude-cli",
+            "anthropic",
+            Some("end_turn"),
+            Some("claude-sonnet-4-5"),
+            1_000_000,
+            3_000_000,
+            "192.0.2.100->192.0.2.81",
+        );
+        let b = mk_full(
+            "b_dock0",
+            "deadbeef-0000-0000-0000-000000000000",
+            "claude-cli",
+            "anthropic",
+            Some("end_turn"),
+            Some("claude-sonnet-4-5"),
+            1_000_000,
+            3_000_000,
+            "192.0.2.100->172.17.0.9",
+        );
+        // Upstream hop — proxy stripped headers, re-classifies as generic,
+        // body-derived session_id. Nested inside the mirror pair.
+        let c = mk_full(
+            "c_hop",
+            "gen-0123456789abcdef",
+            "generic",
+            "anthropic",
+            Some("end_turn"),
+            Some("claude-sonnet-4-5"),
+            1_002_000,
+            2_999_000,
+            "172.17.0.1->172.17.0.4",
+        );
+        let groups = group_all(&[a, b, c]);
+        assert_eq!(groups.len(), 1, "all three legs must fold into one group");
+        let g = &groups[0];
+        assert_eq!(g.members.len(), 3);
+        assert_eq!(role_of(g, "a_br0"), Some(ProxyRole::ProxyIn));
+        assert_eq!(role_of(g, "b_dock0"), Some(ProxyRole::MirrorSecondary));
+        assert_eq!(role_of(g, "c_hop"), Some(ProxyRole::ProxyOut));
     }
 }
