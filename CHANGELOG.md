@@ -8,6 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.7.0] — 2026-06-24
 
+### Added
+
+- **eBPF capture discoverability — an experimental, opt-in advisory.** When no
+  eBPF source is active, the server now logs a one-line notice (Linux only) that
+  on-host TLS capture exists and how to enable it (`ebpf` cargo feature + a
+  `type = "ebpf"` source — there is no `--ebpf` runtime flag). The Settings
+  page's eBPF capture toggle is now tagged **experimental** and its description
+  spells out the opt-in requirements.
+
 ### Changed
 
 - **OpenTelemetry-aligned rename of the storage entities and HTTP API.** The

@@ -324,6 +324,12 @@ function EbpfCaptureToggle({
         <div className="flex items-center gap-2 text-xs font-medium">
           <span aria-hidden>🛰️</span>
           <span>eBPF capture (on-host TLS)</span>
+          <span
+            className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-normal text-amber-700 dark:text-amber-400"
+            title="On-host eBPF capture is experimental and opt-in."
+          >
+            experimental
+          </span>
           {!available && (
             <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
               unavailable in this build
@@ -332,8 +338,8 @@ function EbpfCaptureToggle({
         </div>
         <div className="mt-0.5 text-[11px] text-muted-foreground">
           {available
-            ? "Read TLS plaintext at the SSL_read / SSL_write boundary with per-process attribution. Toggling rewrites the config and restarts capture (~2–3s)."
-            : "Requires a Linux build compiled with the `ebpf` feature (CAP_BPF + kernel BTF)."}
+            ? "Experimental, opt-in. Read TLS plaintext at the SSL_read / SSL_write boundary with per-process attribution. Toggling rewrites the config and restarts capture (~2–3s)."
+            : "Experimental, opt-in. Requires a Linux build compiled with the `ebpf` feature (CAP_BPF + kernel BTF)."}
         </div>
       </div>
       <button
