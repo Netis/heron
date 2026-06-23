@@ -15,11 +15,11 @@ or at the host's TLS boundary, never in the request path.
 > interaction. No code changes. No cooperation from the workloads being observed.
 
 <p align="center">
-  <img src="docs/images/hero.gif" alt="Heron demo — replay a pcap file and instantly see 247 LLM calls reconstructed into 12 agent turns, with timeline, metrics, and SFT export" width="800">
+  <img src="docs/images/hero.gif" alt="Heron live dashboard — real-time LLM traffic reconstructed off the wire: total calls, TTFT, E2E latency, error rate, token throughput, call volume by API, latency percentiles, and agent activity/distribution" width="800">
 </p>
 
 <p align="center">
-  <em>One command. 247 calls → 12 agent turns. Every tool call visible. <a href="#30-second-quick-start">Try it now ↓</a></em>
+  <em>One command. Live TTFT, latency, throughput, error rate, and per-agent mix — reconstructed straight off the wire. <a href="#30-second-quick-start">Try it now ↓</a></em>
 </p>
 
 ---
