@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "h-api"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "axum",
  "chrono",
@@ -1350,7 +1350,7 @@ dependencies = [
 
 [[package]]
 name = "h-capture"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "aya",
@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "h-common"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "config",
  "serde",
@@ -1385,11 +1385,11 @@ dependencies = [
 
 [[package]]
 name = "h-ebpf-common"
-version = "0.6.0"
+version = "0.7.0"
 
 [[package]]
 name = "h-export"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "h-llm",
  "serde",
@@ -1399,7 +1399,7 @@ dependencies = [
 
 [[package]]
 name = "h-llm"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bitflags 2.11.0",
  "bytes",
@@ -1419,7 +1419,7 @@ dependencies = [
 
 [[package]]
 name = "h-metrics"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "h-common",
  "h-llm",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "h-pcap-extract"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bytes",
  "futures",
@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "h-protocol"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -1465,7 +1465,7 @@ dependencies = [
 
 [[package]]
 name = "h-storage"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "h-storage-clickhouse"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "h-storage-duckdb"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1524,7 +1524,7 @@ dependencies = [
 
 [[package]]
 name = "h-turn"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "h-capture",
  "h-common",
@@ -1614,7 +1614,7 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "heron"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "axum",
  "clap",
