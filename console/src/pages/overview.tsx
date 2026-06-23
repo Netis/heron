@@ -156,14 +156,14 @@ export function OverviewPage() {
         </div>
         <div className="rounded-lg border border-border/50 bg-card p-4 card-elevated">
           <h3 className="mb-3 text-sm font-medium">
-            Active Agent Turns
+            Active Agent Traces
             <span className="ml-2 text-xs font-normal text-muted-foreground">
-              in-progress agent turns (registry size)
+              in-progress agent traces (registry size)
             </span>
           </h3>
           <ActiveGaugeChart
             metric="agent_turns_open"
-            label="Open turns"
+            label="Open traces"
             color="#10b981"
             data={gauges}
           />

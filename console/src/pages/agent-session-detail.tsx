@@ -70,9 +70,9 @@ export function AgentSessionDetailPage() {
             <Loader2 className="size-5 animate-spin text-muted-foreground" />
           </div>
         ) : errorTurns ? (
-          <div className="py-10 text-center text-sm text-destructive">Failed to load turns</div>
+          <div className="py-10 text-center text-sm text-destructive">Failed to load traces</div>
         ) : turns.length === 0 ? (
-          <div className="py-10 text-center text-sm text-muted-foreground">No turns in this session</div>
+          <div className="py-10 text-center text-sm text-muted-foreground">No traces in this session</div>
         ) : (
           turns.map((t) => (
             <TurnBlock
@@ -90,7 +90,7 @@ export function AgentSessionDetailPage() {
               disabled={isFetchingNextPage}
               className="rounded border border-border bg-background px-4 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
-              {isFetchingNextPage ? "Loading…" : "Load older turns"}
+              {isFetchingNextPage ? "Loading…" : "Load older traces"}
             </button>
           </div>
         )}

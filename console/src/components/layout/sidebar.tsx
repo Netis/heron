@@ -33,9 +33,9 @@ const observeItems = [
 const exploreItems = [
   { to: "/services", icon: Server, label: "Services" },
   { to: "/agent-sessions", icon: MessageSquare, label: "Agent Sessions" },
-  { to: "/agent-turns", icon: MessagesSquare, label: "Agent Turns" },
+  { to: "/agent-turns", icon: MessagesSquare, label: "Agent Traces" },
   { to: "/llm-calls", icon: Sparkles, label: "LLM Calls" },
-  { to: "/http-exchanges", icon: Network, label: "HTTP Exchanges" },
+  { to: "/http-exchanges", icon: Network, label: "HTTP Logs" },
 ]
 
 const THEME_META: Record<ThemeMode, { icon: typeof Moon; label: string; next: ThemeMode }> = {

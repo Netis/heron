@@ -300,13 +300,13 @@ export function HttpExchangesPage() {
             ) : isError ? (
               <tr>
                 <td colSpan={columns.length} className="py-20 text-center text-destructive">
-                  Failed to load http exchanges: {error?.message}
+                  Failed to load HTTP logs: {error?.message}
                 </td>
               </tr>
             ) : items.length === 0 ? (
               <tr>
                 <td colSpan={columns.length} className="py-20 text-center text-muted-foreground">
-                  No HTTP exchanges in the selected time range
+                  No HTTP logs in the selected time range
                 </td>
               </tr>
             ) : (
