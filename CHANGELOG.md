@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-06-24
+
 ### Changed
 
 - **OpenTelemetry-aligned rename of the storage entities and HTTP API.** The
@@ -20,6 +22,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   header). Retention config keys `calls`/`turns` are accepted as serde aliases
   for `spans`/`traces`. Existing DuckDB/ClickHouse databases auto-migrate in
   place on init() with no data loss (idempotent detect-then-rename).
+
+### Docs
+
+- **README rebuilt for the launch — GIF-first, conversion-driven layout.**
+  Headline tagline "The Wireshark for AI Agents", a hero demo GIF up top, a
+  30-second pcap-replay quick start, and a three-up "What Makes Heron Different"
+  table (agent-turn reconstruction · service topology · SFT trajectory export),
+  while preserving the existing technical accuracy (passive positioning across
+  wire *and* on-host TLS boundary, opt-in eBPF, `docs/configure.md` links,
+  `just`-based contributor flow). API examples updated to the canonical
+  `/api/traces` routes.
+- **Corrected launch collateral added under `launch/`.** Paste-ready Product
+  Hunt / Hacker News / Twitter copy aligned to the shipped product: install via
+  the `curl … install.sh` one-liner (no npm package), canonical `/api/traces`
+  endpoint, and v0.7.0 framing.
 
 ## [0.6.0] — 2026-06-16
 
