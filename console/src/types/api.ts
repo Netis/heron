@@ -339,7 +339,7 @@ export interface AgentTurnDetail {
   user_input: string | null
   final_call_id: string | null
   final_answer: string | null
-  call_ids: string[]
+  span_ids: string[]
   metadata: unknown
   /** See AgentTurnListItem. */
   tool_surfaces: ToolSurface[]

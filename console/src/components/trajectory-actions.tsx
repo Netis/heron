@@ -49,7 +49,7 @@ export function DownloadTrajectoryButton({
 }
 
 /** Labeled batch-export button with inline written/skipped feedback
- * (Agent Turns list — exports every turn matching the current filters). */
+ * (Agent Traces list — exports every trace matching the current filters). */
 export function BatchExportButton({
   url,
   fallbackName = "trajectories.jsonl",
@@ -82,7 +82,7 @@ export function BatchExportButton({
             setBusy(false)
           }
         }}
-        title="Export every turn matching the current filters as SFT trajectories (.jsonl)"
+        title="Export every trace matching the current filters as SFT trajectories (.jsonl)"
         className={cn(
           "inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50",
           className,

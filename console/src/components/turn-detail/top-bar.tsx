@@ -19,7 +19,7 @@ export function TopBar({ turn, onClose }: Props) {
   const [metaOpen, setMetaOpen] = useState(false)
   return (
     <div className="relative flex h-10 shrink-0 items-center justify-between border-b border-border px-4">
-      <h2 className="text-sm font-semibold">Agent Turn Detail</h2>
+      <h2 className="text-sm font-semibold">Agent Trace Detail</h2>
       <div className="flex items-center gap-3 text-xs text-muted-foreground">
         <span>{turn.agent_kind}</span>
         <span>·</span>

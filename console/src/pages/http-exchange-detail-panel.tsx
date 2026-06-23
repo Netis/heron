@@ -108,7 +108,7 @@ export function HttpExchangeDetailPanel({ id, onClose, onNavigate, hasPrev, hasN
       <div className="fixed top-0 right-0 z-50 flex h-full w-[60%] min-w-[480px] flex-col border-l border-border bg-background shadow-xl animate-in slide-in-from-right duration-200">
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
-          <h2 className="text-sm font-semibold">HTTP Exchange Detail</h2>
+          <h2 className="text-sm font-semibold">HTTP Log Detail</h2>
           <div className="flex items-center gap-1">
             {detail && (
               <ExtractPacketsButton anchor={{ type: "http_exchange", row: detail }} />

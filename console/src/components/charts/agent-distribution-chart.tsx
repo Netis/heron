@@ -62,7 +62,7 @@ export function AgentDistributionChart({ rows }: Props) {
         />
         <Tooltip
           formatter={(value, name) => {
-            if (name === "turns") return [formatNumber(Number(value)), "Turns"]
+            if (name === "turns") return [formatNumber(Number(value)), "Traces"]
             return [String(value), String(name)]
           }}
           labelFormatter={(_label, payload) =>
