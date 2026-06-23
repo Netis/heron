@@ -10,7 +10,7 @@
 //!     rows are SUM/MAX-aggregated at read, one row per bucket from the
 //!     aggregator, so no dedup is needed.
 //!   * `agent_turns` — `ReplacingMergeTree(_version)`: it is the only mutated
-//!     table (`update_turn_metadata`), so reads use `FINAL` and updates
+//!     table (`update_trace_metadata`), so reads use `FINAL` and updates
 //!     re-insert the whole row with a higher `_version`.
 //!
 //! Timestamps are `DateTime64(6, 'UTC')`; the `clickhouse` crate maps a Rust
@@ -29,7 +29,7 @@ use crate::client::ch_err;
 use crate::ClickHouseBackend;
 
 const CREATE_LLM_CALLS: &str = "
-CREATE TABLE IF NOT EXISTS llm_calls (
+CREATE TABLE IF NOT EXISTS spans (
     id                String,
     source_id         String DEFAULT '',
     client_ip         String,
@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     body_bytes_dropped UInt64 DEFAULT 0,
     process_pid       Nullable(UInt32),
     process_comm      Nullable(String),
-    process_exe       Nullable(String)
+    process_exe       Nullable(String),
+    kind              String DEFAULT 'llm'
 ) ENGINE = MergeTree ORDER BY (request_time, id)
 ";
 
@@ -138,7 +139,7 @@ ORDER BY (granularity, timestamp, finish_reason, wire_api, model, server_ip)
 ";
 
 const CREATE_AGENT_TURNS: &str = "
-CREATE TABLE IF NOT EXISTS agent_turns (
+CREATE TABLE IF NOT EXISTS traces (
     turn_id                   String,
     source_id                 String DEFAULT '',
     session_id                String,
@@ -163,7 +164,7 @@ CREATE TABLE IF NOT EXISTS agent_turns (
     user_call_id              Nullable(String),
     final_answer_preview      Nullable(String),
     final_call_id             Nullable(String),
-    call_ids                  String,
+    span_ids                  String,
     metadata                  Nullable(String),
     tool_surfaces_json        Nullable(String),
     tool_call_total           UInt32 DEFAULT 0,
@@ -219,6 +220,38 @@ pub(crate) async fn init(backend: &ClickHouseBackend) -> Result<()> {
         .await
         .map_err(|e| ch_err("create database", e))?;
 
+    // Step 1.5: Phase 8 migration — OpenTelemetry rename (agent_turns -> traces,
+    // llm_calls -> spans, traces.call_ids -> span_ids, + spans.kind). Runs
+    // before the CREATE loop so a migrated DB no-ops the `CREATE TABLE IF NOT
+    // EXISTS spans/traces` below instead of creating empty tables that collide
+    // with the rename. ClickHouse `RENAME TABLE` has no `IF EXISTS` form, so
+    // each rename is guarded by a system.tables existence check to stay
+    // idempotent across repeated init() calls.
+    if table_exists(backend, "agent_turns").await? && !table_exists(backend, "traces").await? {
+        backend.exec("RENAME TABLE agent_turns TO traces").await?;
+        info!("phase8 migration: renamed agent_turns -> traces");
+    }
+    if table_exists(backend, "llm_calls").await? && !table_exists(backend, "spans").await? {
+        backend.exec("RENAME TABLE llm_calls TO spans").await?;
+        info!("phase8 migration: renamed llm_calls -> spans");
+    }
+    if column_exists(backend, "traces", "call_ids").await?
+        && !column_exists(backend, "traces", "span_ids").await?
+    {
+        backend
+            .exec("ALTER TABLE traces RENAME COLUMN call_ids TO span_ids")
+            .await?;
+        info!("phase8 migration: renamed traces.call_ids -> span_ids");
+    }
+    // `kind` on a migrated `spans` (ClickHouse supports `ADD COLUMN IF NOT
+    // EXISTS` with a NOT-NULL String DEFAULT). On a fresh DB `spans` does not
+    // exist yet — the CREATE below supplies `kind` — so guard on existence.
+    if table_exists(backend, "spans").await? {
+        backend
+            .exec("ALTER TABLE spans ADD COLUMN IF NOT EXISTS kind String DEFAULT 'llm'")
+            .await?;
+    }
+
     // Step 2: create every table on the db-scoped client. Idempotent.
     for ddl in CREATE_TABLES {
         backend.exec(ddl).await?;
@@ -226,6 +259,40 @@ pub(crate) async fn init(backend: &ClickHouseBackend) -> Result<()> {
 
     info!(database = %backend.database, "clickhouse storage tables initialized");
     Ok(())
+}
+
+/// Whether `name` exists as a table in the backend's current database. Guards
+/// the Phase 8 (no-`IF EXISTS`) `RENAME TABLE` statements for idempotency.
+async fn table_exists(backend: &ClickHouseBackend, name: &str) -> Result<bool> {
+    let sql = format!(
+        "SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = '{}'",
+        name.replace('\'', "\\'")
+    );
+    let n: u64 = backend
+        .client
+        .query(&sql)
+        .fetch_one::<u64>()
+        .await
+        .map_err(|e| ch_err("table_exists", e))?;
+    Ok(n > 0)
+}
+
+/// Whether `table`.`column` exists in the current database. Companion to
+/// `table_exists` for the Phase 8 column-rename guard.
+async fn column_exists(backend: &ClickHouseBackend, table: &str, column: &str) -> Result<bool> {
+    let sql = format!(
+        "SELECT count() FROM system.columns \
+         WHERE database = currentDatabase() AND table = '{}' AND name = '{}'",
+        table.replace('\'', "\\'"),
+        column.replace('\'', "\\'")
+    );
+    let n: u64 = backend
+        .client
+        .query(&sql)
+        .fetch_one::<u64>()
+        .await
+        .map_err(|e| ch_err("column_exists", e))?;
+    Ok(n > 0)
 }
 
 /// Backtick-quote a ClickHouse identifier, doubling embedded backticks.

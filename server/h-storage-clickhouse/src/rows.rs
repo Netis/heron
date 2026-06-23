@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use h_llm::model::LlmCall;
 use h_metrics::model::{LlmFinishMetric, LlmMetric};
 use h_protocol::HttpExchange;
-use h_turn::AgentTurn;
+use h_turn::Trace;
 
 use h_storage::convert::headers_to_json;
 
@@ -57,6 +57,10 @@ pub(crate) struct CallRow {
     pub process_pid: Option<u32>,
     pub process_comm: Option<String>,
     pub process_exe: Option<String>,
+    /// OTel span kind. Every wire-captured span is an LLM call today; the
+    /// column is forward-looking for wire-visible tool spans. Tail field to
+    /// match the `spans` table column order (and the DuckDB layout).
+    pub kind: String,
 }
 
 impl From<LlmCall> for CallRow {
@@ -101,6 +105,7 @@ impl From<LlmCall> for CallRow {
             process_pid: c.process.as_ref().map(|p| p.pid),
             process_comm: c.process.as_ref().map(|p| p.comm.clone()),
             process_exe: c.process.as_ref().and_then(|p| p.exe.clone()),
+            kind: "llm".into(),
         }
     }
 }
@@ -265,7 +270,8 @@ pub(crate) struct TurnRow {
     pub user_call_id: Option<String>,
     pub final_answer_preview: Option<String>,
     pub final_call_id: Option<String>,
-    pub call_ids: String,
+    // Maps to the `span_ids` column (RowBinary insert names columns by field).
+    pub span_ids: String,
     pub metadata: Option<String>,
     pub tool_surfaces_json: Option<String>,
     pub tool_call_total: u32,
@@ -274,15 +280,15 @@ pub(crate) struct TurnRow {
     pub _version: u64,
 }
 
-impl From<AgentTurn> for TurnRow {
-    fn from(t: AgentTurn) -> Self {
+impl From<Trace> for TurnRow {
+    fn from(t: Trace) -> Self {
         let tool_surfaces_json = {
             let strings: Vec<String> = t.tool_surfaces.iter().map(|s| s.to_string()).collect();
             serde_json::to_string(&strings).unwrap_or_else(|_| "[]".to_string())
         };
         let suspicious_skills_json =
             serde_json::to_string(&t.suspicious_skills).unwrap_or_else(|_| "[]".to_string());
-        // Initial finalize version = end_time (micros). `update_turn_metadata`
+        // Initial finalize version = end_time (micros). `update_trace_metadata`
         // re-inserts with a strictly-greater wall-clock-micros version so the
         // ReplacingMergeTree keeps the latest metadata.
         let version = t.end_time_us.max(0) as u64;
@@ -311,7 +317,7 @@ impl From<AgentTurn> for TurnRow {
             user_call_id: t.user_call_id,
             final_answer_preview: t.final_answer_preview,
             final_call_id: t.final_call_id,
-            call_ids: serde_json::to_string(&t.call_ids).unwrap_or_default(),
+            span_ids: serde_json::to_string(&t.span_ids).unwrap_or_default(),
             metadata: Some(t.metadata.to_string()),
             tool_surfaces_json: Some(tool_surfaces_json),
             tool_call_total: t.tool_call_total,

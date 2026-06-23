@@ -69,7 +69,7 @@ impl TestCall {
 /// agent client (e.g. `claude-cli`, `codex-cli`).
 pub trait AgentProfile: Send + Sync {
     /// Short stable name (e.g. `"claude-cli"`). Persisted to storage as
-    /// `AgentTurn.agent_kind`.
+    /// `Trace.agent_kind`.
     fn name(&self) -> &'static str;
 
     /// Return true iff this profile handles the given call.

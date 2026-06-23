@@ -82,9 +82,9 @@ See [docs/design/04-turn.md](docs/design/04-turn.md) for Turn (agent interaction
 
 ## Storage
 
-Three entities: `agent_turns` (agent turn), `llm_calls` (per-call detail + full body), `llm_metrics` (pre-aggregated time-series). Relation: `agent_turns 1─N llm_calls`. Pluggable backends:
+Three entities: `traces` (agent turn), `spans` (per-call detail + full body), `llm_metrics` (pre-aggregated time-series). Relation: `traces 1─N spans`. Pluggable backends:
 
-**Query rule — no JOIN.** Read-path SQL MUST NOT use any `JOIN`. Cross-entity reads are split into multiple point lookups: e.g. fetch `call_ids` from `agent_turns` by PK, then `SELECT ... FROM llm_calls WHERE id IN (?, ?, ...)`. See `query_turn_calls` in `h-storage-duckdb/src/turns.rs` for the canonical pattern. This keeps queries uniformly cheap across DuckDB/PG/ClickHouse and avoids planner surprises at scale.
+**Query rule — no JOIN.** Read-path SQL MUST NOT use any `JOIN`. Cross-entity reads are split into multiple point lookups: e.g. fetch `span_ids` from `traces` by PK, then `SELECT ... FROM spans WHERE id IN (?, ?, ...)`. See `query_trace_spans` in `h-storage-duckdb/src/turns.rs` for the canonical pattern. This keeps queries uniformly cheap across DuckDB/PG/ClickHouse and avoids planner surprises at scale.
 
 | Backend | Use case |
 |---------|----------|

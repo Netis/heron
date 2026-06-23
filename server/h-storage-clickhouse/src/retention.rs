@@ -72,14 +72,14 @@ impl ClickHouseBackend {
         // Tables touched this sweep — used to drive the optional OPTIMIZE FINAL.
         let mut swept: Vec<&'static str> = Vec::new();
 
-        // llm_calls — keyed on request_time.
-        if let Some(cutoff) = policy.calls_before {
+        // spans — keyed on request_time.
+        if let Some(cutoff) = policy.spans_before {
             let us = cutoff_micros(cutoff)?;
             let predicate = format!("request_time < fromUnixTimestamp64Micro({us})");
-            report.calls_deleted = self.count_where("llm_calls", &predicate).await?;
-            self.exec(&format!("DELETE FROM llm_calls WHERE {predicate}"))
+            report.spans_deleted = self.count_where("spans", &predicate).await?;
+            self.exec(&format!("DELETE FROM spans WHERE {predicate}"))
                 .await?;
-            swept.push("llm_calls");
+            swept.push("spans");
         }
 
         // http_exchanges — keyed on request_time.
@@ -92,14 +92,14 @@ impl ClickHouseBackend {
             swept.push("http_exchanges");
         }
 
-        // agent_turns — keyed on end_time.
-        if let Some(cutoff) = policy.turns_before {
+        // traces — keyed on end_time.
+        if let Some(cutoff) = policy.traces_before {
             let us = cutoff_micros(cutoff)?;
             let predicate = format!("end_time < fromUnixTimestamp64Micro({us})");
-            report.turns_deleted = self.count_where("agent_turns", &predicate).await?;
-            self.exec(&format!("DELETE FROM agent_turns WHERE {predicate}"))
+            report.traces_deleted = self.count_where("traces", &predicate).await?;
+            self.exec(&format!("DELETE FROM traces WHERE {predicate}"))
                 .await?;
-            swept.push("agent_turns");
+            swept.push("traces");
         }
 
         // Per-granularity metrics sweep. For each (label, cutoff) pair, delete

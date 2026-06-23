@@ -184,7 +184,7 @@ pub struct AgentActivityPoint {
 }
 
 #[derive(Debug, Clone)]
-pub struct CallsQuery {
+pub struct SpansQuery {
     pub time_range: TimeRange,
     pub filter: DimensionFilter,
     pub status_codes: Vec<u16>,
@@ -283,7 +283,7 @@ pub struct MetricsModelRow {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct CallListItem {
+pub struct SpanListItem {
     pub id: String,
     pub source_id: String,
     pub request_time: i64,
@@ -316,9 +316,9 @@ pub struct CallListItem {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct CallsPage {
+pub struct SpansPage {
     pub total: u64,
-    pub items: Vec<CallListItem>,
+    pub items: Vec<SpanListItem>,
 }
 
 #[derive(Debug, Clone)]
@@ -371,15 +371,15 @@ pub struct HttpExchangesPage {
 }
 
 #[derive(Debug, Clone)]
-pub struct TurnsQuery {
+pub struct TracesQuery {
     pub time_range: TimeRange,
     pub filter: DimensionFilter,
     /// Per-call client IP filter. `DimensionFilter` only carries `server_ips`
     /// (the metrics-pre-aggregated dimension); client IP lives outside the
-    /// filter, parallel to `CallsQuery.client_ips`.
+    /// filter, parallel to `SpansQuery.client_ips`.
     pub client_ips: Vec<String>,
     /// Per-call server port filter. `agent_turns` doesn't carry `server_port`
-    /// — we resolve it through the turn's first `call_ids` entry against
+    /// — we resolve it through the turn's first `span_ids` entry against
     /// `llm_calls`, same shortcut the topology query uses.
     pub server_ports: Vec<u16>,
     pub statuses: Vec<String>,
@@ -397,7 +397,7 @@ pub struct TurnsQuery {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TurnListItem {
+pub struct TraceListItem {
     pub turn_id: String,
     pub source_id: String,
     pub session_id: String,
@@ -447,18 +447,18 @@ pub struct TurnListItem {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TurnsPage {
+pub struct TracesPage {
     pub total: u64,
-    pub items: Vec<TurnListItem>,
+    pub items: Vec<TraceListItem>,
 }
 
 /// One turn row returned by the session-turns endpoint. Identical to
-/// `TurnListItem` except `user_input_preview` / `final_answer_preview` are
+/// `TraceListItem` except `user_input_preview` / `final_answer_preview` are
 /// replaced by full-text `user_input` / `final_answer` (server-side
 /// reconstructed from the referenced call bodies, see
-/// `query_session_turns` in `duckdb.rs`).
+/// `query_session_traces` in `duckdb.rs`).
 #[derive(Debug, Clone, Serialize)]
-pub struct SessionTurnItem {
+pub struct SessionTraceItem {
     pub turn_id: String,
     pub source_id: String,
     pub session_id: String,
@@ -487,15 +487,15 @@ pub struct SessionTurnItem {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct SessionTurnsPage {
-    pub items: Vec<SessionTurnItem>,
+pub struct SessionTracesPage {
+    pub items: Vec<SessionTraceItem>,
     /// Opaque cursor for the next page. `None` when the current page is the
     /// last one (fewer than `page_size` rows were returned).
     pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TurnDetail {
+pub struct TraceDetail {
     pub turn_id: String,
     pub source_id: String,
     pub session_id: String,
@@ -520,7 +520,7 @@ pub struct TurnDetail {
     pub user_input: Option<String>,
     pub final_call_id: Option<String>,
     pub final_answer: Option<String>,
-    pub call_ids: Vec<String>,
+    pub span_ids: Vec<String>,
     pub metadata: Option<serde_json::Value>,
     /// Distinct tool surfaces seen across the turn's calls.
     pub tool_surfaces: Vec<String>,
@@ -533,7 +533,7 @@ pub struct TurnDetail {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TurnCallItem {
+pub struct TraceSpanItem {
     pub id: String,
     pub sequence: u32,
     pub request_time: i64,
@@ -549,7 +549,7 @@ pub struct TurnCallItem {
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
     /// True when the row's tokens came from the fallback estimator. Mirrors
-    /// `CallListItem.tokens_estimated`.
+    /// `SpanListItem.tokens_estimated`.
     #[serde(default)]
     pub tokens_estimated: bool,
     pub request_path: String,
@@ -746,12 +746,12 @@ fn hex_digit(b: u8) -> Option<u8> {
 /// side, so comparison `(start_time, turn_id) < (?, ?)` steps through pages
 /// without duplicates even when two turns share a microsecond.
 #[derive(Debug, Clone)]
-pub struct SessionTurnsCursor {
+pub struct SessionTracesCursor {
     pub start_time_us: i64,
     pub turn_id: String,
 }
 
-pub fn encode_session_turns_cursor(c: &SessionTurnsCursor) -> String {
+pub fn encode_session_turns_cursor(c: &SessionTracesCursor) -> String {
     let json = serde_json::json!({ "t": c.start_time_us, "k": c.turn_id }).to_string();
     let mut out = String::with_capacity(json.len() * 2);
     for b in json.as_bytes() {
@@ -761,7 +761,7 @@ pub fn encode_session_turns_cursor(c: &SessionTurnsCursor) -> String {
     out
 }
 
-pub fn decode_session_turns_cursor(s: &str) -> Option<SessionTurnsCursor> {
+pub fn decode_session_turns_cursor(s: &str) -> Option<SessionTracesCursor> {
     if s.len() % 2 != 0 {
         return None;
     }
@@ -775,17 +775,17 @@ pub fn decode_session_turns_cursor(s: &str) -> Option<SessionTurnsCursor> {
     let v: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
     let start_time_us = v.get("t")?.as_i64()?;
     let turn_id = v.get("k")?.as_str()?.to_string();
-    Some(SessionTurnsCursor {
+    Some(SessionTracesCursor {
         start_time_us,
         turn_id,
     })
 }
 
 #[derive(Debug, Clone)]
-pub struct SessionTurnsQuery {
+pub struct SessionTracesQuery {
     pub source_id: String,
     pub session_id: String,
-    pub cursor: Option<SessionTurnsCursor>,
+    pub cursor: Option<SessionTracesCursor>,
     pub page_size: u32,
 }
 
@@ -888,7 +888,7 @@ pub struct ProxyViewResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct CallDetail {
+pub struct SpanDetail {
     pub id: String,
     pub source_id: String,
     pub request_time: i64,
@@ -905,7 +905,7 @@ pub struct CallDetail {
     pub output_tokens: Option<u32>,
     pub total_tokens: Option<u32>,
     /// True when the row's tokens came from the fallback estimator. See
-    /// `CallListItem.tokens_estimated`.
+    /// `SpanListItem.tokens_estimated`.
     #[serde(default)]
     pub tokens_estimated: bool,
     pub ttft_ms: Option<f64>,
@@ -935,7 +935,7 @@ mod session_turns_cursor_tests {
 
     #[test]
     fn session_turns_cursor_roundtrip() {
-        let c = SessionTurnsCursor {
+        let c = SessionTracesCursor {
             start_time_us: 1_729_000_000_000_000,
             turn_id: "abc-123".to_string(),
         };

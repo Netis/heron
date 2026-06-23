@@ -13,7 +13,7 @@ use h_common::internal_metrics::{Metric, MetricsSystem};
 use h_llm::wire_apis as wa;
 use h_protocol::{spawn_flow_dispatcher, spawn_http_joiner_stage, spawn_protocol_stage};
 use h_turn::tracker::TrackerConfig;
-use h_turn::TurnStatus;
+use h_turn::TraceStatus;
 
 fn fixture(name: &str) -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -31,7 +31,7 @@ async fn run_pcap_full_sharded(
     flow_shards: usize,
     turn_shards: usize,
     metrics_shards: usize,
-) -> Option<Vec<h_turn::AgentTurn>> {
+) -> Option<Vec<h_turn::Trace>> {
     let path = fixture(name)?;
     let mut metrics_sys = MetricsSystem::new();
 
@@ -86,7 +86,7 @@ async fn run_pcap_full_sharded(
     }
 
     let (calls_tx, mut calls_rx) = mpsc::channel::<Arc<h_llm::model::LlmCall>>(queue_size);
-    let (turns_tx, mut turns_rx) = mpsc::channel::<h_turn::AgentTurn>(queue_size);
+    let (turns_tx, mut turns_rx) = mpsc::channel::<h_turn::Trace>(queue_size);
     let (m_out_tx, mut m_out_rx) = mpsc::channel::<h_metrics::model::LlmMetricsBatch>(queue_size);
 
     spawn_flow_dispatcher(raw_rx, parsed_txs, "dispatcher", &mut metrics_sys);
@@ -137,7 +137,7 @@ async fn run_pcap_full_sharded(
     let calls_drain = tokio::spawn(async move { while calls_rx.recv().await.is_some() {} });
     let metrics_drain = tokio::spawn(async move { while m_out_rx.recv().await.is_some() {} });
 
-    let mut finalized: Vec<h_turn::AgentTurn> = Vec::new();
+    let mut finalized: Vec<h_turn::Trace> = Vec::new();
     while let Some(turn) = turns_rx.recv().await {
         finalized.push(turn);
     }
@@ -152,11 +152,11 @@ async fn run_pcap_sharded(
     name: &str,
     turn_shards: usize,
     metrics_shards: usize,
-) -> Option<Vec<h_turn::AgentTurn>> {
+) -> Option<Vec<h_turn::Trace>> {
     run_pcap_full_sharded(name, 1, turn_shards, metrics_shards).await
 }
 
-async fn run_pcap(name: &str) -> Option<Vec<h_turn::AgentTurn>> {
+async fn run_pcap(name: &str) -> Option<Vec<h_turn::Trace>> {
     run_pcap_sharded(name, 1, 1).await
 }
 
@@ -166,7 +166,7 @@ async fn run_pcap(name: &str) -> Option<Vec<h_turn::AgentTurn>> {
 /// accumulation).
 async fn run_pcap_collecting_calls(
     name: &str,
-) -> Option<(Vec<h_turn::AgentTurn>, Vec<Arc<h_llm::model::LlmCall>>)> {
+) -> Option<(Vec<h_turn::Trace>, Vec<Arc<h_llm::model::LlmCall>>)> {
     let path = fixture(name)?;
     let mut metrics_sys = MetricsSystem::new();
 
@@ -219,7 +219,7 @@ async fn run_pcap_collecting_calls(
     }
 
     let (calls_tx, mut calls_rx) = mpsc::channel::<Arc<h_llm::model::LlmCall>>(queue_size);
-    let (turns_tx, mut turns_rx) = mpsc::channel::<h_turn::AgentTurn>(queue_size);
+    let (turns_tx, mut turns_rx) = mpsc::channel::<h_turn::Trace>(queue_size);
     let (m_out_tx, mut m_out_rx) = mpsc::channel::<h_metrics::model::LlmMetricsBatch>(queue_size);
 
     spawn_flow_dispatcher(raw_rx, parsed_txs, "dispatcher", &mut metrics_sys);
@@ -274,7 +274,7 @@ async fn run_pcap_collecting_calls(
     });
     let metrics_drain = tokio::spawn(async move { while m_out_rx.recv().await.is_some() {} });
 
-    let mut finalized: Vec<h_turn::AgentTurn> = Vec::new();
+    let mut finalized: Vec<h_turn::Trace> = Vec::new();
     while let Some(turn) = turns_rx.recv().await {
         finalized.push(turn);
     }
@@ -308,7 +308,7 @@ async fn claude_cli_messages_expects_one_complete_turn() {
         "expected 1 turn; got {}",
         anthropic.len()
     );
-    assert_eq!(anthropic[0].status, TurnStatus::Complete);
+    assert_eq!(anthropic[0].status, TraceStatus::Complete);
     assert_eq!(anthropic[0].agent_kind, "claude-cli");
 }
 
@@ -384,7 +384,7 @@ async fn codex_cli_messages_multi_expects_two_turns() {
     // flush_all. Without the fix, both would be Incomplete (closed only at EOF).
     let complete_count = openai
         .iter()
-        .filter(|t| t.status == TurnStatus::Complete)
+        .filter(|t| t.status == TraceStatus::Complete)
         .count();
     assert!(
         complete_count >= 1,
@@ -551,7 +551,7 @@ async fn openclaw_multi_sessions_expects_two_sessions_four_turns() {
     assert_eq!(chat.len(), 4, "expected 4 turns; got {}", chat.len());
     assert!(chat.iter().all(|t| t.agent_kind == "openclaw"));
     assert!(
-        chat.iter().all(|t| t.status == TurnStatus::Complete),
+        chat.iter().all(|t| t.status == TraceStatus::Complete),
         "all turns expected Complete"
     );
     let sessions: std::collections::BTreeSet<_> =
@@ -639,7 +639,7 @@ async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
     );
     assert!(anthropic.iter().all(|t| t.agent_kind == "openclaw"));
     assert!(
-        anthropic.iter().all(|t| t.status == TurnStatus::Complete),
+        anthropic.iter().all(|t| t.status == TraceStatus::Complete),
         "all turns expected Complete"
     );
     let sessions: std::collections::BTreeSet<_> =
@@ -744,7 +744,7 @@ async fn hermes_openai_expects_hermes_main_only() {
     }
     assert_eq!(chat.len(), 1, "expected 1 turn; got {}", chat.len());
     assert!(
-        chat.iter().all(|t| t.status == TurnStatus::Complete),
+        chat.iter().all(|t| t.status == TraceStatus::Complete),
         "main turn expected Complete",
     );
 
@@ -798,7 +798,7 @@ async fn hermes_openai_pcap_shard_parity() {
 }
 
 /// End-to-end unit test: two `LlmCall` records (no claude-cli UA) run through
-/// `build_agent_call_info` + `TurnTracker` produce a single `AgentTurn` with
+/// `build_agent_call_info` + `TurnTracker` produce a single `Trace` with
 /// `agent_kind == "generic"` and `session_id == "toolu_pcap"`. The Anthropic
 /// wire-api shape exercises the generic profile's `wa::ANTHROPIC` branch.
 /// No pcap fixture — calls are constructed directly for speed and determinism.
@@ -813,7 +813,7 @@ async fn generic_profile_anthropic_two_call_session() {
     use h_llm::build_agent_call_info;
     use h_llm::model::{AgentCall, ApiType, LlmCall};
     use h_turn::tracker::{TrackerConfig, TurnTracker};
-    use h_turn::{TurnEvent, TurnStatus};
+    use h_turn::{TurnEvent, TraceStatus};
 
     fn make_call(req: &str, resp: &str, ts_us: i64, finish: Option<&str>) -> LlmCall {
         LlmCall {
@@ -982,7 +982,7 @@ async fn generic_profile_anthropic_two_call_session() {
         "final_answer_preview"
     );
     assert!(
-        matches!(t.status, TurnStatus::Complete),
+        matches!(t.status, TraceStatus::Complete),
         "status must be Complete, got {:?}",
         t.status
     );

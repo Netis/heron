@@ -874,7 +874,7 @@ impl DuckDbBackend {
                 server_port,
                 CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR     AS paths_json,
                 CAST(list_distinct(array_agg(finish_reason))[1:32] AS JSON)::VARCHAR    AS finish_reasons_json
-             FROM llm_calls
+             FROM spans
              WHERE request_time >= ? AND request_time < ?
              GROUP BY server_ip, server_port";
 
@@ -932,7 +932,7 @@ impl DuckDbBackend {
                            PARTITION BY server_ip, server_port
                            ORDER BY request_time DESC
                        ) AS rn
-                FROM llm_calls
+                FROM spans
                 WHERE request_time >= ? AND request_time < ?
              ) WHERE rn <= 5";
 
@@ -1008,7 +1008,7 @@ impl DuckDbBackend {
         Ok(out)
     }
 
-    /// "Services" view — aggregate `llm_calls` by `(server_ip,
+    /// "Services" view — aggregate `spans` by `(server_ip,
     /// server_port)`. See `StorageBackend::query_services` for the
     /// motivation (port is not on `llm_metrics`).
     pub(crate) async fn query_services(&self, query: &ServicesQuery) -> Result<Vec<ServiceRow>> {
@@ -1063,7 +1063,7 @@ impl DuckDbBackend {
             // List-of-VARCHAR columns come back as JSON strings (DuckDB's
             // rust binding has no `FromSql` for `Vec<String>`). We cast
             // to JSON in SQL and then `parse_json_string_list` them on
-            // the Rust side — same pattern used by `agent_turns.models_used`.
+            // the Rust side — same pattern used by `traces.models_used`.
             //
             // For app classification we sample one `request_headers` /
             // `response_headers` blob per group. `arg_min(col,
@@ -1099,7 +1099,7 @@ impl DuckDbBackend {
                     quantile_cont(e2e_latency_ms, 0.95)       AS e2e_p95_ms,
                     epoch_ms(MIN(request_time))               AS first_seen_ms,
                     epoch_ms(MAX(request_time))               AS last_seen_ms
-                 FROM llm_calls
+                 FROM spans
                  WHERE request_time >= ? AND request_time < ?
                  GROUP BY server_ip, server_port
                  ORDER BY {sort_by} {sort_order}
@@ -1221,14 +1221,14 @@ impl DuckDbBackend {
     ///     `query_services`, just the columns we need). Models / app
     ///     come along so the UI can label and color nodes the same
     ///     way the Table view does, no second fetch.
-    ///   * Proxy edges — `agent_turns` carries
+    ///   * Proxy edges — `traces` carries
     ///     `metadata.proxy.pair_id` from the pair sweeper. For every
     ///     `proxy_in` turn we look up the sibling `proxy_out` turn(s)
     ///     by `pair_id`. The `proxy_in.server_endpoint →
     ///     proxy_out.server_endpoint` pair becomes one edge, counted
-    ///     by number of paired turns. `agent_turns` has no
+    ///     by number of paired turns. `traces` has no
     ///     `server_port`, so we look it up via the turn's first
-    ///     `call_ids` entry against `llm_calls`.
+    ///     `span_ids` entry against `spans`.
     ///   * Client edges — any service that has a non-`proxy_out` turn
     ///     in the window gets a virtual edge from `__clients__`. So
     ///     entry-point services (no inbound proxy hop) still appear
@@ -1261,7 +1261,7 @@ impl DuckDbBackend {
                     CAST(list_distinct(array_agg(model))[1:32] AS JSON)::VARCHAR    AS models_json,
                     CAST(list_distinct(array_agg(request_path))[1:16] AS JSON)::VARCHAR AS paths_json,
                     COUNT(*)                                  AS call_count
-                 FROM llm_calls
+                 FROM spans
                  WHERE request_time >= ? AND request_time < ?
                  GROUP BY server_ip, server_port";
 
@@ -1333,7 +1333,7 @@ impl DuckDbBackend {
 
             // --- Proxy edges: pair the turn's endpoint with its
             // sibling's. We resolve (server_ip, server_port) for each
-            // turn via its first call_id; `agent_turns.server_ip`
+            // turn via its first call_id; `traces.server_ip`
             // alone isn't enough since the table doesn't carry
             // server_port. Filtering by `proxy.role` is done after
             // the join because some turns have NULL metadata.
@@ -1350,9 +1350,9 @@ impl DuckDbBackend {
                         c.server_port,
                         json_extract_string(t.metadata, '$.proxy.role')    AS proxy_role,
                         json_extract_string(t.metadata, '$.proxy.pair_id') AS pair_id
-                    FROM agent_turns t
-                    JOIN llm_calls c
-                      ON c.id = json_extract_string(t.call_ids, '$[0]')
+                    FROM traces t
+                    JOIN spans c
+                      ON c.id = json_extract_string(t.span_ids, '$[0]')
                     WHERE t.start_time >= ? AND t.start_time < ?
                 )
                 SELECT
@@ -1430,9 +1430,9 @@ impl DuckDbBackend {
                         c.server_ip   AS to_ip,
                         c.server_port AS to_port,
                         COALESCE(json_extract_string(t.metadata, '$.proxy.role'), '') AS proxy_role
-                    FROM agent_turns t
-                    JOIN llm_calls c
-                      ON c.id = json_extract_string(t.call_ids, '$[0]')
+                    FROM traces t
+                    JOIN spans c
+                      ON c.id = json_extract_string(t.span_ids, '$[0]')
                     WHERE t.start_time >= ? AND t.start_time < ?
                 )
                 SELECT caller_ip, to_ip, to_port, COUNT(*) AS turn_count
@@ -1655,7 +1655,7 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    /// Aggregate agent_turns by agent_kind over the window — drives
+    /// Aggregate traces by agent_kind over the window — drives
     /// the Overview distribution horizontal-bar chart.
     pub(crate) async fn query_agent_summary(
         &self,
@@ -1673,7 +1673,7 @@ impl DuckDbBackend {
                     COALESCE(SUM(total_output_tokens), 0)::UBIGINT AS total_output_tokens,
                     AVG(duration_ms)                          AS avg_duration_ms,
                     epoch_ms(MAX(start_time))                 AS last_seen_ms
-                 FROM agent_turns
+                 FROM traces
                  WHERE start_time >= ? AND start_time < ?
                  GROUP BY agent_kind
                  ORDER BY turn_count DESC";
@@ -1747,7 +1747,7 @@ impl DuckDbBackend {
                     epoch_ms(time_bucket(INTERVAL {bucket} SECOND, start_time)) AS ts,
                     agent_kind,
                     COUNT(*) AS turn_count
-                 FROM agent_turns
+                 FROM traces
                  WHERE start_time >= ? AND start_time < ?
                  GROUP BY ts, agent_kind
                  ORDER BY ts ASC, agent_kind ASC"

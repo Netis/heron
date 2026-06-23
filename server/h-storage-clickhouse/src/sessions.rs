@@ -1,19 +1,19 @@
-//! Session-scoped queries. Sessions are a view over `agent_turns` grouped by
+//! Session-scoped queries. Sessions are a view over `traces` grouped by
 //! `(source_id, session_id)` — no schema of their own. Ported from the DuckDB
 //! backend (`h-storage-duckdb/src/sessions.rs`); aggregates, windowing, and
 //! cursor semantics match it column-for-column.
 //!
-//! `agent_turns` is a `ReplacingMergeTree(_version)`, so every read here uses
-//! `FROM agent_turns FINAL` to ensure only the latest version per `turn_id`
-//! participates in the aggregates (otherwise stale pre-`update_turn_metadata`
+//! `traces` is a `ReplacingMergeTree(_version)`, so every read here uses
+//! `FROM traces FINAL` to ensure only the latest version per `turn_id`
+//! participates in the aggregates (otherwise stale pre-`update_trace_metadata`
 //! rows would double-count tokens / costs and skew MIN/MAX).
 //!
-//! Divergence from DuckDB — `query_session_turns` user_input / final_answer:
+//! Divergence from DuckDB — `query_session_traces` user_input / final_answer:
 //! the DuckDB backend reconstructs the FULL user_input / final_answer by
 //! re-running each agent profile's body extractor over the referenced call
 //! bodies (`extract_full_text_batch`, which needs a duckdb `Connection` and is
 //! not available here). For shape parity this backend populates
-//! `SessionTurnItem.user_input` / `final_answer` best-effort from the turn's
+//! `SessionTraceItem.user_input` / `final_answer` best-effort from the turn's
 //! stored `user_input_preview` / `final_answer_preview` columns instead. These
 //! may be truncated (preview strings end with `…`) where the DuckDB backend
 //! would return the full text. See the per-row comment below.
@@ -58,7 +58,7 @@ struct SessionAggRow {
     first_call_id: Option<String>,
 }
 
-/// One page row for `query_session_turns`. Mirrors the DuckDB SELECT column
+/// One page row for `query_session_traces`. Mirrors the DuckDB SELECT column
 /// list; preview/call-id columns are carried so we can populate
 /// `user_input` / `final_answer` best-effort (see module divergence note).
 #[derive(Row, Deserialize)]
@@ -131,7 +131,7 @@ impl ClickHouseBackend {
         let step1_sql = format!(
             "SELECT source_id, session_id, \
                     toUnixTimestamp64Milli(max(end_time)) AS last_ms \
-             FROM agent_turns FINAL \
+             FROM traces FINAL \
              WHERE {where_sql} \
              GROUP BY source_id, session_id{having_sql} \
              ORDER BY max(end_time) DESC, source_id DESC, session_id DESC \
@@ -186,7 +186,7 @@ impl ClickHouseBackend {
                        total_cache_read_input_tokens, total_cache_creation_input_tokens, \
                        total_cost_usd, agent_kind, user_input_preview, user_call_id, \
                        row_number() OVER (PARTITION BY source_id, session_id ORDER BY start_time) AS rn \
-                FROM agent_turns FINAL \
+                FROM traces FINAL \
                 WHERE (source_id, session_id) IN ({pairs_sql}) \
              ) t \
              GROUP BY source_id, session_id"
@@ -276,7 +276,7 @@ impl ClickHouseBackend {
                        total_cache_read_input_tokens, total_cache_creation_input_tokens, \
                        total_cost_usd, agent_kind, user_input_preview, user_call_id, \
                        row_number() OVER (PARTITION BY source_id, session_id ORDER BY start_time) AS rn \
-                FROM agent_turns FINAL \
+                FROM traces FINAL \
                 WHERE source_id = '{}' AND session_id = '{}' \
              ) t \
              GROUP BY source_id, session_id \
@@ -314,10 +314,10 @@ impl ClickHouseBackend {
         }))
     }
 
-    pub(crate) async fn query_session_turns(
+    pub(crate) async fn query_session_traces(
         &self,
-        query: &SessionTurnsQuery,
-    ) -> Result<SessionTurnsPage> {
+        query: &SessionTracesQuery,
+    ) -> Result<SessionTracesPage> {
         let page_size = query.page_size.max(1);
         let limit = (page_size as u64) + 1;
 
@@ -336,7 +336,7 @@ impl ClickHouseBackend {
         };
 
         // FINAL so only the latest version per turn is returned (matters after
-        // the pair sweeper's update_turn_metadata re-inserts).
+        // the pair sweeper's update_trace_metadata re-inserts).
         let sql = format!(
             "SELECT turn_id, source_id, session_id, \
                     toUnixTimestamp64Milli(start_time) AS start_ms, \
@@ -347,7 +347,7 @@ impl ClickHouseBackend {
                     status, final_finish_reason, \
                     user_input_preview, final_answer_preview, \
                     tool_surfaces_json, tool_call_total, agent_topology, suspicious_skills_json \
-             FROM agent_turns FINAL \
+             FROM traces FINAL \
              WHERE source_id = '{}' AND session_id = '{}'{cursor_sql} \
              ORDER BY start_time DESC, turn_id DESC \
              LIMIT {limit}",
@@ -360,7 +360,7 @@ impl ClickHouseBackend {
             .query(&sql)
             .fetch_all::<SessionTurnRow>()
             .await
-            .map_err(|e| ch_err("query_session_turns", e))?;
+            .map_err(|e| ch_err("query_session_traces", e))?;
 
         // Fetch+1 pattern: if we got page_size + 1 rows, there's a next page.
         let has_more = rows.len() as u64 > page_size as u64;
@@ -368,7 +368,7 @@ impl ClickHouseBackend {
             rows.truncate(page_size as usize);
         }
 
-        let items: Vec<SessionTurnItem> = rows
+        let items: Vec<SessionTraceItem> = rows
             .into_iter()
             .map(|r| {
                 let models_used = parse_json_string_list(r.models_used.as_deref());
@@ -386,7 +386,7 @@ impl ClickHouseBackend {
                 // available here). We populate these best-effort from the stored
                 // preview columns; values may be truncated where DuckDB would
                 // return full text.
-                SessionTurnItem {
+                SessionTraceItem {
                     turn_id: r.turn_id,
                     source_id: r.source_id,
                     session_id: r.session_id,
@@ -414,7 +414,7 @@ impl ClickHouseBackend {
 
         let next_cursor = if has_more {
             items.last().map(|last| {
-                encode_session_turns_cursor(&SessionTurnsCursor {
+                encode_session_turns_cursor(&SessionTracesCursor {
                     start_time_us: last.start_time.saturating_mul(1000),
                     turn_id: last.turn_id.clone(),
                 })
@@ -423,6 +423,6 @@ impl ClickHouseBackend {
             None
         };
 
-        Ok(SessionTurnsPage { items, next_cursor })
+        Ok(SessionTracesPage { items, next_cursor })
     }
 }

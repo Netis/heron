@@ -1,4 +1,4 @@
-//! Session-scoped queries. Sessions are a view over `agent_turns`
+//! Session-scoped queries. Sessions are a view over `traces`
 //! grouped by `(source_id, session_id)` — no schema of their own.
 
 use h_common::error::{AppError, Result};
@@ -56,7 +56,7 @@ impl DuckDbBackend {
 
             let step1_sql = format!(
                 "SELECT source_id, session_id, epoch_ms(MAX(end_time)) AS last_ms \
-                 FROM agent_turns \
+                 FROM traces \
                  WHERE {where_sql} \
                  GROUP BY source_id, session_id{having_sql} \
                  ORDER BY MAX(end_time) DESC, source_id DESC, session_id DESC \
@@ -141,7 +141,7 @@ impl DuckDbBackend {
                            total_cache_read_input_tokens, total_cache_creation_input_tokens, \
                            total_cost_usd, agent_kind, user_input_preview, user_call_id, \
                            ROW_NUMBER() OVER (PARTITION BY source_id, session_id ORDER BY start_time) AS rn \
-                    FROM agent_turns \
+                    FROM traces \
                     WHERE (source_id, session_id) IN ({pairs_sql}) \
                  ) t \
                  GROUP BY source_id, session_id"
@@ -268,7 +268,7 @@ impl DuckDbBackend {
                                  total_cache_read_input_tokens, total_cache_creation_input_tokens, \
                                  total_cost_usd, agent_kind, user_input_preview, user_call_id, \
                                  ROW_NUMBER() OVER (PARTITION BY source_id, session_id ORDER BY start_time) AS rn \
-                          FROM agent_turns \
+                          FROM traces \
                           WHERE source_id = ? AND session_id = ? \
                        ) t \
                        GROUP BY source_id, session_id";
@@ -340,10 +340,10 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    pub(crate) async fn query_session_turns(
+    pub(crate) async fn query_session_traces(
         &self,
-        query: &SessionTurnsQuery,
-    ) -> Result<SessionTurnsPage> {
+        query: &SessionTracesQuery,
+    ) -> Result<SessionTracesPage> {
         let conn = self.read_pool.acquire().await?;
         let query = query.clone();
 
@@ -362,7 +362,7 @@ impl DuckDbBackend {
                 (String::new(), None)
             };
 
-            // Paging query. SELECT returns SessionTurnItem columns + preview +
+            // Paging query. SELECT returns SessionTraceItem columns + preview +
             // call_id for each side so we know whether to run full-text
             // extraction below.
             let sql = format!(
@@ -376,7 +376,7 @@ impl DuckDbBackend {
                         user_input_preview, user_call_id, \
                         final_answer_preview, final_call_id, \
                         tool_surfaces_json, tool_call_total, agent_topology, suspicious_skills_json \
-                 FROM agent_turns \
+                 FROM traces \
                  WHERE source_id = ? AND session_id = ?{cursor_sql} \
                  ORDER BY start_time DESC, turn_id DESC \
                  LIMIT {limit}"
@@ -504,7 +504,7 @@ impl DuckDbBackend {
             let user_map = extract_full_text_batch(&conn, ExtractKind::User, &need_user);
             let asst_map = extract_full_text_batch(&conn, ExtractKind::Assistant, &need_assistant);
 
-            let mut items: Vec<SessionTurnItem> = Vec::with_capacity(fetched.len());
+            let mut items: Vec<SessionTraceItem> = Vec::with_capacity(fetched.len());
             for t in fetched {
                 let (
                     turn_id,
@@ -551,7 +551,7 @@ impl DuckDbBackend {
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or_default();
 
-                items.push(SessionTurnItem {
+                items.push(SessionTraceItem {
                     turn_id,
                     source_id,
                     session_id,
@@ -578,7 +578,7 @@ impl DuckDbBackend {
 
             let next_cursor = if has_more {
                 items.last().map(|last| {
-                    encode_session_turns_cursor(&SessionTurnsCursor {
+                    encode_session_turns_cursor(&SessionTracesCursor {
                         start_time_us: last.start_time.saturating_mul(1000),
                         turn_id: last.turn_id.clone(),
                     })
@@ -587,7 +587,7 @@ impl DuckDbBackend {
                 None
             };
 
-            Ok(SessionTurnsPage { items, next_cursor })
+            Ok(SessionTracesPage { items, next_cursor })
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
@@ -600,7 +600,7 @@ mod tests {
     use h_llm::wire_apis as wa;
     use h_storage::query::{SessionListQuery, TimeRange};
     use h_storage::StorageBackend;
-    use h_turn::{AgentTurn, TurnStatus};
+    use h_turn::{Trace, TraceStatus};
 
     fn in_memory() -> DuckDbBackend {
         DuckDbBackend::open(":memory:").unwrap()
@@ -611,8 +611,8 @@ mod tests {
         session_id: &str,
         agent_kind: &str,
         start_us: i64,
-    ) -> AgentTurn {
-        AgentTurn {
+    ) -> Trace {
+        Trace {
             source_id: String::new(),
             turn_id: turn_id.into(),
             session_id: session_id.into(),
@@ -631,13 +631,13 @@ mod tests {
             total_cache_read_input_tokens: 0,
             total_cache_creation_input_tokens: 0,
             total_cost_usd: None,
-            status: TurnStatus::Complete,
+            status: TraceStatus::Complete,
             final_finish_reason: Some("complete".into()),
             user_input_preview: Some("hello".into()),
             user_call_id: None,
             final_answer_preview: Some("world".into()),
             final_call_id: None,
-            call_ids: vec!["call-1".into()],
+            span_ids: vec!["call-1".into()],
             metadata: serde_json::json!({}),
             tool_surfaces: vec![],
             tool_call_total: 0,
@@ -658,7 +658,7 @@ mod tests {
 
         // Create 4 sessions with different agent_kinds
         backend
-            .write_turns(vec![
+            .write_traces(vec![
                 // Session 1: claude-cli
                 sample_turn("t1", "s1", "claude-cli", base + 1_000_000),
                 // Session 2: codex-cli

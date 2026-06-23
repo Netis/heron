@@ -75,10 +75,10 @@ macro_rules! require_backend {
 }
 
 const ALL_TABLES: &[&str] = &[
-    "llm_calls",
+    "spans",
     "llm_metrics",
     "llm_finish_metrics",
-    "agent_turns",
+    "traces",
     "http_exchanges",
 ];
 
@@ -108,7 +108,7 @@ pub(crate) mod fixtures {
     use h_protocol::model::{HttpRequestData, HttpResponseData};
     use h_protocol::net::FlowKey;
     use h_protocol::HttpExchange;
-    use h_turn::{AgentTurn, TurnStatus};
+    use h_turn::{Trace, TraceStatus};
 
     pub(crate) fn sample_call(id: &str, request_time_us: i64) -> LlmCall {
         LlmCall {
@@ -250,9 +250,9 @@ pub(crate) mod fixtures {
         turn_id: &str,
         session_id: &str,
         start_us: i64,
-        call_ids: Vec<&str>,
-    ) -> AgentTurn {
-        AgentTurn {
+        span_ids: Vec<&str>,
+    ) -> Trace {
+        Trace {
             source_id: "src-0".into(),
             turn_id: turn_id.into(),
             session_id: session_id.into(),
@@ -263,7 +263,7 @@ pub(crate) mod fixtures {
             start_time_us: start_us,
             end_time_us: start_us + 5_000_000,
             duration_ms: 5_000,
-            call_count: call_ids.len() as u32,
+            call_count: span_ids.len() as u32,
             models_used: vec!["gpt-4".into()],
             subagents_used: vec![],
             total_input_tokens: 100,
@@ -271,13 +271,13 @@ pub(crate) mod fixtures {
             total_cache_read_input_tokens: 0,
             total_cache_creation_input_tokens: 0,
             total_cost_usd: None,
-            status: TurnStatus::Complete,
+            status: TraceStatus::Complete,
             final_finish_reason: Some("stop".into()),
             user_input_preview: Some("hello".into()),
-            user_call_id: call_ids.first().map(|s| s.to_string()),
+            user_call_id: span_ids.first().map(|s| s.to_string()),
             final_answer_preview: Some("world".into()),
-            final_call_id: call_ids.last().map(|s| s.to_string()),
-            call_ids: call_ids.into_iter().map(String::from).collect(),
+            final_call_id: span_ids.last().map(|s| s.to_string()),
+            span_ids: span_ids.into_iter().map(String::from).collect(),
             metadata: serde_json::json!({}),
             tool_surfaces: vec![],
             tool_call_total: 0,
@@ -337,9 +337,9 @@ async fn write_paths_round_trip_all_tables() {
     let ts = 1_700_000_000_000_000_i64;
 
     backend
-        .write_calls(vec![fixtures::sample_call("call-1", ts)])
+        .write_spans(vec![fixtures::sample_call("call-1", ts)])
         .await
-        .expect("write_calls");
+        .expect("write_spans");
     backend
         .write_metrics(vec![fixtures::sample_metric("1m", ts)])
         .await
@@ -349,9 +349,9 @@ async fn write_paths_round_trip_all_tables() {
         .await
         .expect("write_finish_metrics");
     backend
-        .write_turns(vec![fixtures::sample_turn("turn-1", "sess-1", ts, vec!["call-1"])])
+        .write_traces(vec![fixtures::sample_turn("turn-1", "sess-1", ts, vec!["call-1"])])
         .await
-        .expect("write_turns");
+        .expect("write_traces");
     backend
         .write_exchanges(vec![fixtures::sample_exchange("xchg-1", ts)])
         .await
@@ -367,7 +367,7 @@ async fn write_paths_round_trip_all_tables() {
         .client
         .query(
             "SELECT id, model, input_tokens, toUnixTimestamp64Micro(request_time) AS request_time_us \
-             FROM llm_calls WHERE id = 'call-1'",
+             FROM spans WHERE id = 'call-1'",
         )
         .fetch_one::<RtCall>()
         .await
@@ -379,18 +379,18 @@ async fn write_paths_round_trip_all_tables() {
 }
 
 #[tokio::test]
-async fn query_calls_paginates_filters_and_by_id() {
+async fn query_spans_paginates_filters_and_by_id() {
     let backend = require_backend!("heron_it_calls");
     let ts = 1_700_000_000_000_000_i64;
     backend
-        .write_calls(vec![
+        .write_spans(vec![
             fixtures::sample_call("c1", ts),
             fixtures::sample_call("c2", ts + 60_000_000),
         ])
         .await
         .unwrap();
 
-    let base = CallsQuery {
+    let base = SpansQuery {
         time_range: TimeRange { start_us: ts - 1, end_us: ts + 120_000_000 },
         filter: DimensionFilter::default(),
         status_codes: vec![],
@@ -404,42 +404,42 @@ async fn query_calls_paginates_filters_and_by_id() {
         page: 1,
         page_size: 10,
     };
-    let page = backend.query_calls(&base).await.unwrap();
+    let page = backend.query_spans(&base).await.unwrap();
     assert_eq!(page.total, 2);
     assert_eq!(page.items.len(), 2);
     assert_eq!(page.items[0].id, "c2", "DESC by request_time");
     assert_eq!(page.items[0].request_time, (ts + 60_000_000) / 1000);
 
     // Filter narrows to one row.
-    let filtered = CallsQuery {
+    let filtered = SpansQuery {
         server_ports: vec![8080],
         request_path_contains: Some("chat/completions".into()),
         ..base.clone()
     };
-    assert_eq!(backend.query_calls(&filtered).await.unwrap().total, 2);
-    let none = CallsQuery { server_ports: vec![9999], ..base.clone() };
-    assert_eq!(backend.query_calls(&none).await.unwrap().total, 0);
+    assert_eq!(backend.query_spans(&filtered).await.unwrap().total, 2);
+    let none = SpansQuery { server_ports: vec![9999], ..base.clone() };
+    assert_eq!(backend.query_spans(&none).await.unwrap().total, 0);
 
-    let detail = backend.query_call_by_id("c1").await.unwrap().expect("c1");
+    let detail = backend.query_span_by_id("c1").await.unwrap().expect("c1");
     assert_eq!(detail.model, "gpt-4");
     assert_eq!(detail.total_tokens, Some(150));
     assert_eq!(detail.request_time, ts / 1000);
-    assert!(backend.query_call_by_id("missing").await.unwrap().is_none());
+    assert!(backend.query_span_by_id("missing").await.unwrap().is_none());
 }
 
 #[tokio::test]
-async fn query_turn_calls_no_join_two_step() {
+async fn query_trace_spans_no_join_two_step() {
     let backend = require_backend!("heron_it_turncalls");
     let ts = 1_700_000_000_000_000_i64;
     backend
-        .write_calls(vec![
+        .write_spans(vec![
             fixtures::sample_call("tc1", ts),
             fixtures::sample_call("tc2", ts + 1_000_000),
         ])
         .await
         .unwrap();
     backend
-        .write_turns(vec![fixtures::sample_turn(
+        .write_traces(vec![fixtures::sample_turn(
             "turn-x",
             "sess-x",
             ts,
@@ -448,18 +448,18 @@ async fn query_turn_calls_no_join_two_step() {
         .await
         .unwrap();
 
-    let full = backend.query_turn_calls("turn-x", true).await.unwrap();
+    let full = backend.query_trace_spans("turn-x", true).await.unwrap();
     assert_eq!(full.len(), 2);
     assert_eq!(full[0].id, "tc1", "ordered by request_time ASC");
     assert_eq!(full[0].sequence, 1);
     assert!(full[0].request_body.is_some(), "bodies included");
 
-    let lite = backend.query_turn_calls("turn-x", false).await.unwrap();
+    let lite = backend.query_trace_spans("turn-x", false).await.unwrap();
     assert_eq!(lite.len(), 2);
     assert!(lite[0].request_body.is_none(), "lite drops bodies");
 
     let by_ids = backend
-        .query_calls_by_ids(&["tc2".to_string()], true)
+        .query_spans_by_ids(&["tc2".to_string()], true)
         .await
         .unwrap();
     assert_eq!(by_ids.len(), 1);
@@ -550,15 +550,15 @@ async fn metrics_reads_smoke() {
 async fn agent_and_turns_reads_smoke() {
     let backend = require_backend!("heron_it_turns");
     backend
-        .write_calls(vec![fixtures::sample_call("ac1", TS)])
+        .write_spans(vec![fixtures::sample_call("ac1", TS)])
         .await
         .unwrap();
     backend
-        .write_turns(vec![fixtures::sample_turn("t1", "s1", TS, vec!["ac1"])])
+        .write_traces(vec![fixtures::sample_turn("t1", "s1", TS, vec!["ac1"])])
         .await
         .unwrap();
 
-    // agent summary/activity (over agent_turns FINAL).
+    // agent summary/activity (over traces FINAL).
     let summ = backend
         .query_agent_summary(&AgentSummaryQuery { time_range: full_range() })
         .await
@@ -575,9 +575,9 @@ async fn agent_and_turns_reads_smoke() {
         .unwrap();
     assert_eq!(act.len(), 1);
 
-    // query_turns + by_id.
+    // query_traces + by_id.
     let page = backend
-        .query_turns(&TurnsQuery {
+        .query_traces(&TracesQuery {
             time_range: full_range(),
             filter: DimensionFilter::default(),
             client_ips: vec![],
@@ -596,32 +596,32 @@ async fn agent_and_turns_reads_smoke() {
     assert_eq!(page.items[0].turn_id, "t1");
     assert_eq!(page.items[0].primary_model.as_deref(), Some("gpt-4"));
 
-    let detail = backend.query_turn_by_id("t1").await.unwrap().expect("t1");
-    assert_eq!(detail.call_ids, vec!["ac1".to_string()]);
+    let detail = backend.query_trace_by_id("t1").await.unwrap().expect("t1");
+    assert_eq!(detail.span_ids, vec!["ac1".to_string()]);
 
     // pair candidates: the un-proxied turn shows up.
     let cands = backend.query_pair_candidates(TS - 1, TS + 3_600_000_000).await.unwrap();
     assert_eq!(cands.len(), 1);
     assert_eq!(cands[0].turn_id, "t1");
 
-    // update_turn_metadata: merge a proxy role, then it's excluded from
+    // update_trace_metadata: merge a proxy role, then it's excluded from
     // candidates and visible in the detail metadata — and the row count stays 1
     // (ReplacingMergeTree FINAL dedup).
     backend
-        .update_turn_metadata("t1", serde_json::json!({"proxy": {"role": "proxy_in"}}))
+        .update_trace_metadata("t1", serde_json::json!({"proxy": {"role": "proxy_in"}}))
         .await
         .unwrap();
-    assert_eq!(count(&backend, "agent_turns FINAL").await, 1);
-    let after = backend.query_turn_by_id("t1").await.unwrap().expect("t1");
+    assert_eq!(count(&backend, "traces FINAL").await, 1);
+    let after = backend.query_trace_by_id("t1").await.unwrap().expect("t1");
     assert_eq!(
         after.metadata.as_ref().and_then(|m| m.pointer("/proxy/role")).and_then(|v| v.as_str()),
         Some("proxy_in")
     );
     let cands2 = backend.query_pair_candidates(TS - 1, TS + 3_600_000_000).await.unwrap();
     assert_eq!(cands2.len(), 0, "proxy-tagged turn excluded from candidates");
-    // update_turn_metadata on a missing turn is a silent no-op.
+    // update_trace_metadata on a missing turn is a silent no-op.
     backend
-        .update_turn_metadata("nope", serde_json::json!({"x": 1}))
+        .update_trace_metadata("nope", serde_json::json!({"x": 1}))
         .await
         .unwrap();
 }
@@ -630,7 +630,7 @@ async fn agent_and_turns_reads_smoke() {
 async fn sessions_reads_smoke() {
     let backend = require_backend!("heron_it_sessions");
     backend
-        .write_turns(vec![
+        .write_traces(vec![
             fixtures::sample_turn("st1", "sess-A", TS, vec!["c1"]),
             fixtures::sample_turn("st2", "sess-A", TS + 10_000_000, vec!["c2"]),
         ])
@@ -659,7 +659,7 @@ async fn sessions_reads_smoke() {
     assert_eq!(detail.turn_count, 2);
 
     let turns = backend
-        .query_session_turns(&SessionTurnsQuery {
+        .query_session_traces(&SessionTracesQuery {
             source_id: "src-0".into(),
             session_id: "sess-A".into(),
             cursor: None,
@@ -719,7 +719,7 @@ async fn distincts_reads_smoke() {
         .await
         .unwrap();
     backend
-        .write_turns(vec![fixtures::sample_turn("dt1", "ds1", TS, vec!["dc1"])])
+        .write_traces(vec![fixtures::sample_turn("dt1", "ds1", TS, vec!["dc1"])])
         .await
         .unwrap();
 
@@ -743,7 +743,7 @@ async fn distincts_reads_smoke() {
 async fn services_reads_smoke() {
     let backend = require_backend!("heron_it_services");
     backend
-        .write_calls(vec![
+        .write_spans(vec![
             fixtures::sample_call("sc1", TS),
             fixtures::sample_call("sc2", TS + 1_000_000),
         ])
@@ -776,29 +776,29 @@ async fn retention_deletes_old_rows() {
     use std::time::SystemTime;
     let backend = require_backend!("heron_it_retention");
     backend
-        .write_calls(vec![fixtures::sample_call("rc1", TS)])
+        .write_spans(vec![fixtures::sample_call("rc1", TS)])
         .await
         .unwrap();
     backend
-        .write_turns(vec![fixtures::sample_turn("rt1", "rs1", TS, vec!["rc1"])])
+        .write_traces(vec![fixtures::sample_turn("rt1", "rs1", TS, vec!["rc1"])])
         .await
         .unwrap();
     backend
         .write_metrics(vec![fixtures::sample_metric("1m", TS)])
         .await
         .unwrap();
-    assert_eq!(count(&backend, "llm_calls").await, 1);
+    assert_eq!(count(&backend, "spans").await, 1);
 
     // Cutoff = now → everything older than now (the 2023 fixtures) is deleted.
     let policy = RetentionPolicy {
-        calls_before: Some(SystemTime::now()),
-        turns_before: Some(SystemTime::now()),
+        spans_before: Some(SystemTime::now()),
+        traces_before: Some(SystemTime::now()),
         http_exchanges_before: None,
         metrics_before: vec![("1m".to_string(), SystemTime::now())],
     };
     let report = backend.apply_retention(policy).await.unwrap();
-    assert_eq!(report.calls_deleted, 1);
-    assert_eq!(report.turns_deleted, 1);
+    assert_eq!(report.spans_deleted, 1);
+    assert_eq!(report.traces_deleted, 1);
     assert_eq!(report.metrics_deleted.get("1m").copied(), Some(1));
-    assert_eq!(count(&backend, "llm_calls").await, 0, "old calls swept");
+    assert_eq!(count(&backend, "spans").await, 0, "old calls swept");
 }

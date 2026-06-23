@@ -28,7 +28,7 @@ use tempfile::TempDir;
 
 use h_common::process::ProcessInfo;
 use h_llm::model::{ApiType, LlmCall};
-use h_storage::query::{DimensionFilter, TimeRange, TurnsQuery};
+use h_storage::query::{DimensionFilter, TimeRange, TracesQuery};
 use h_storage::StorageBackend;
 use h_storage_duckdb::DuckDbBackend;
 
@@ -292,14 +292,15 @@ async fn phase5_adds_nullable_agent_columns_to_llm_calls_on_legacy_db() {
     backend.init().await.expect("init must reconcile legacy schema");
 
     let conn = Connection::open(&path).unwrap();
-    let cols = column_names(&conn, "llm_calls");
+    // Post-init the table has been renamed `llm_calls` -> `spans` (Phase 8).
+    let cols = column_names(&conn, "spans");
     // The three nullable Phase-5 columns can always be added via
     // `ALTER ADD COLUMN IF NOT EXISTS`. See FIXME below for the NOT NULL
     // columns DuckDB refuses to add to a populated/aged table.
     for expected in ["tool_surface", "agent_topology", "tool_names_json"] {
         assert!(
             cols.iter().any(|c| c == expected),
-            "post-migration llm_calls must contain {expected}, got: {cols:?}"
+            "post-migration spans must contain {expected}, got: {cols:?}"
         );
     }
 }
@@ -323,11 +324,11 @@ async fn phase5_adds_agent_not_null_columns_to_llm_calls_on_legacy_db() {
     backend.init().await.expect("init must reconcile legacy schema");
 
     let conn = Connection::open(&path).unwrap();
-    let cols = column_names(&conn, "llm_calls");
+    let cols = column_names(&conn, "spans");
     for expected in ["is_agent_request", "tool_call_count"] {
         assert!(
             cols.iter().any(|c| c == expected),
-            "post-migration llm_calls must contain {expected}, got: {cols:?}"
+            "post-migration spans must contain {expected}, got: {cols:?}"
         );
     }
 }
@@ -364,10 +365,10 @@ async fn phase6_adds_body_bytes_dropped_and_appender_stays_aligned_on_legacy_db(
     // Column landed.
     {
         let conn = Connection::open(&path).unwrap();
-        let cols = column_names(&conn, "llm_calls");
+        let cols = column_names(&conn, "spans");
         assert!(
             cols.iter().any(|c| c == "body_bytes_dropped"),
-            "post-migration llm_calls must contain body_bytes_dropped, got: {cols:?}"
+            "post-migration spans must contain body_bytes_dropped, got: {cols:?}"
         );
     }
 
@@ -375,9 +376,9 @@ async fn phase6_adds_body_bytes_dropped_and_appender_stays_aligned_on_legacy_db(
     // read both trailing columns back. Distinct sentinels (7 vs 4242) catch a
     // positional swap.
     backend
-        .write_calls(vec![sample_call("call-phase6", 7, 4242)])
+        .write_spans(vec![sample_call("call-phase6", 7, 4242)])
         .await
-        .expect("write_calls must succeed against a migrated table");
+        .expect("write_spans must succeed against a migrated table");
 
     // Close the backend (checkpoints DuckDB to the file) before reading via a
     // fresh connection — a second live connection sees the pre-write snapshot.
@@ -386,11 +387,11 @@ async fn phase6_adds_body_bytes_dropped_and_appender_stays_aligned_on_legacy_db(
     let conn = Connection::open(&path).unwrap();
     let (tool_call_count, body_bytes_dropped): (u32, u64) = conn
         .query_row(
-            "SELECT tool_call_count, body_bytes_dropped FROM llm_calls WHERE id = 'call-phase6'",
+            "SELECT tool_call_count, body_bytes_dropped FROM spans WHERE id = 'call-phase6'",
             [],
             |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u64>(1)?)),
         )
-        .expect("row must be present after write_calls");
+        .expect("row must be present after write_spans");
     assert_eq!(
         tool_call_count, 7,
         "tool_call_count must round-trip (appender column alignment)"
@@ -431,11 +432,11 @@ async fn phase7_adds_process_columns_and_appender_stays_aligned_on_legacy_db() {
     // Columns landed.
     {
         let conn = Connection::open(&path).unwrap();
-        let cols = column_names(&conn, "llm_calls");
+        let cols = column_names(&conn, "spans");
         for col in ["process_pid", "process_comm", "process_exe"] {
             assert!(
                 cols.iter().any(|c| c == col),
-                "post-migration llm_calls must contain {col}, got: {cols:?}"
+                "post-migration spans must contain {col}, got: {cols:?}"
             );
         }
     }
@@ -450,9 +451,9 @@ async fn phase7_adds_process_columns_and_appender_stays_aligned_on_legacy_db() {
         exe: Some("/usr/bin/python3.12".into()),
     });
     backend
-        .write_calls(vec![call])
+        .write_spans(vec![call])
         .await
-        .expect("write_calls must succeed against a migrated table");
+        .expect("write_spans must succeed against a migrated table");
 
     drop(backend);
 
@@ -460,7 +461,7 @@ async fn phase7_adds_process_columns_and_appender_stays_aligned_on_legacy_db() {
     let (pid, comm, exe, body_bytes_dropped): (Option<u32>, Option<String>, Option<String>, u64) =
         conn.query_row(
             "SELECT process_pid, process_comm, process_exe, body_bytes_dropped \
-             FROM llm_calls WHERE id = 'call-phase7'",
+             FROM spans WHERE id = 'call-phase7'",
             [],
             |r| {
                 Ok((
@@ -471,7 +472,7 @@ async fn phase7_adds_process_columns_and_appender_stays_aligned_on_legacy_db() {
                 ))
             },
         )
-        .expect("row must be present after write_calls");
+        .expect("row must be present after write_spans");
     assert_eq!(pid, Some(31337), "process_pid must round-trip");
     assert_eq!(comm.as_deref(), Some("python3"), "process_comm must round-trip");
     assert_eq!(
@@ -557,7 +558,7 @@ async fn phase3_rewrites_legacy_agent_turn_status_values() {
     // Inspect the raw status column post-migration.
     let conn = Connection::open(&path).unwrap();
     let mut stmt = conn
-        .prepare("SELECT turn_id, status FROM agent_turns ORDER BY turn_id")
+        .prepare("SELECT turn_id, status FROM traces ORDER BY turn_id")
         .unwrap();
     let rows: Vec<(String, String)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -602,23 +603,23 @@ async fn init_is_idempotent_against_canonical_schema() {
 
     let cols_before = {
         let conn = Connection::open(&path).unwrap();
-        column_names(&conn, "llm_calls")
+        column_names(&conn, "spans")
     };
 
     backend.init().await.expect("re-init must succeed");
 
     let cols_after = {
         let conn = Connection::open(&path).unwrap();
-        column_names(&conn, "llm_calls")
+        column_names(&conn, "spans")
     };
     assert_eq!(
         cols_before, cols_after,
-        "second init() must not drift the llm_calls column set"
+        "second init() must not drift the spans column set"
     );
 
     // And the read path must still work.
     let _ = backend
-        .query_turns(&TurnsQuery {
+        .query_traces(&TracesQuery {
             time_range: TimeRange {
                 start_us: 0,
                 end_us: i64::MAX,
@@ -635,5 +636,100 @@ async fn init_is_idempotent_against_canonical_schema() {
             include_proxy_hops: false,
         })
         .await
-        .expect("query_turns must work after double-init");
+        .expect("query_traces must work after double-init");
+}
+
+/// Phase-8 OTel rename: a complete pre-rename database (legacy `llm_calls`
+/// plus `agent_turns` carrying `call_ids`) must migrate in place to `spans`
+/// and `traces` with `span_ids`, the new `kind` column backfilled to 'llm'
+/// on existing rows, and zero row loss. This is the core guard for the
+/// rename — a same-name-only check would miss content/row-loss regressions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn phase8_otel_rename_migrates_tables_columns_and_backfills_kind() {
+    let tmp = TempDir::new().unwrap();
+    let path = synth_db(
+        &tmp,
+        &[LEGACY_LLM_CALLS_PRE_PHASE7, LEGACY_AGENT_TURNS_WITH_OLD_STATUS],
+    );
+
+    // Seed one row in each legacy table. The turn carries a known span list so
+    // we can assert the JSON survives the column rename byte-for-byte.
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO llm_calls \
+             (id, client_ip, client_port, server_ip, server_port, request_time, \
+              wire_api, model, api_type, is_stream, request_path) VALUES \
+             ('call-1', '1.1.1.1', 1, '2.2.2.2', 443, NOW(), \
+              'openai-chat', 'gpt-test', 'chat', false, '/v1/chat/completions');",
+        )
+        .expect("seed legacy llm_calls row");
+        conn.execute_batch(
+            "INSERT INTO agent_turns \
+             (turn_id, session_id, wire_api, agent_kind, client_ip, server_ip, \
+              start_time, end_time, duration_ms, call_count, \
+              total_input_tokens, total_output_tokens, \
+              total_cache_read_input_tokens, total_cache_creation_input_tokens, \
+              status, call_ids) VALUES \
+             ('turn-1', 's', 'openai-chat', 'test', '1.1.1.1', '2.2.2.2', \
+              NOW(), NOW(), 0, 1, 0, 0, 0, 0, 'complete', '[\"call-1\",\"call-2\"]');",
+        )
+        .expect("seed legacy agent_turns row");
+    }
+
+    let backend = Arc::new(
+        DuckDbBackend::open_with_pool(path.to_str().unwrap(), 2).expect("open backend"),
+    );
+    backend
+        .init()
+        .await
+        .expect("init must reconcile + rename legacy schema");
+    drop(backend);
+
+    let conn = Connection::open(&path).unwrap();
+
+    // (1) Tables renamed: new names present, old names gone.
+    let tables: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT table_name FROM duckdb_tables() ORDER BY table_name")
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    };
+    assert!(tables.iter().any(|t| t == "spans"), "spans table must exist, got: {tables:?}");
+    assert!(tables.iter().any(|t| t == "traces"), "traces table must exist, got: {tables:?}");
+    assert!(!tables.iter().any(|t| t == "llm_calls"), "old llm_calls must be gone, got: {tables:?}");
+    assert!(!tables.iter().any(|t| t == "agent_turns"), "old agent_turns must be gone, got: {tables:?}");
+
+    // (2) Column renamed call_ids -> span_ids, content preserved byte-for-byte.
+    let trace_cols = column_names(&conn, "traces");
+    assert!(trace_cols.iter().any(|c| c == "span_ids"), "traces must have span_ids, got: {trace_cols:?}");
+    assert!(!trace_cols.iter().any(|c| c == "call_ids"), "traces must not have call_ids, got: {trace_cols:?}");
+    let span_ids: String = conn
+        .query_row("SELECT span_ids FROM traces WHERE turn_id = 'turn-1'", [], |r| r.get(0))
+        .expect("migrated turn row must be present");
+    assert_eq!(
+        span_ids, "[\"call-1\",\"call-2\"]",
+        "span_ids JSON must survive the rename byte-for-byte"
+    );
+
+    // (3) `kind` column added and backfilled to 'llm' on the pre-existing row.
+    let span_cols = column_names(&conn, "spans");
+    assert!(span_cols.iter().any(|c| c == "kind"), "spans must have kind, got: {span_cols:?}");
+    let kind: String = conn
+        .query_row("SELECT kind FROM spans WHERE id = 'call-1'", [], |r| r.get(0))
+        .expect("migrated span row must be present");
+    assert_eq!(kind, "llm", "kind must backfill to 'llm' on existing rows");
+
+    // (4) No row loss across the rename.
+    let span_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM spans", [], |r| r.get(0))
+        .unwrap();
+    let trace_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM traces", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(span_rows, 1, "the seeded span row must survive the rename");
+    assert_eq!(trace_rows, 1, "the seeded trace row must survive the rename");
 }

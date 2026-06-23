@@ -1,4 +1,4 @@
-//! "Services" view reads — aggregate `llm_calls` by `(server_ip, server_port)`
+//! "Services" view reads — aggregate `spans` by `(server_ip, server_port)`
 //! plus the service-topology graph. Ports of the DuckDB `query_services` /
 //! `query_services_topology` (see `h-storage-duckdb/src/metrics.rs`); same
 //! aggregation, percentiles, app classification, and `__clients__` super-node
@@ -19,8 +19,8 @@
 //!     the whole window: a cheap inner subquery picks the recent ids per
 //!     endpoint (`LIMIT N BY`, no body columns) and the outer fetches bodies for
 //!     just those ids (`id IN (...)`). See `fetch_app_samples`.
-//!   * No JOINs (project rule). The DuckDB topology JOINs `agent_turns` to
-//!     `llm_calls` on the turn's first `call_ids` entry; we reimplement that as
+//!   * No JOINs (project rule). The DuckDB topology JOINs `traces` to
+//!     `spans` on the turn's first `span_ids` entry; we reimplement that as
 //!     a no-JOIN two-step: read the turns + first call_id, fetch those calls,
 //!     then map back in Rust. See `query_services_topology`.
 
@@ -124,15 +124,15 @@ struct NodeAggRow {
     call_count: u64,
 }
 
-/// One turn's proxy metadata + its first call_id, read from `agent_turns`.
-/// `call_ids` is the raw JSON-array String column; `first_call_id` is the first
+/// One turn's proxy metadata + its first call_id, read from `traces`.
+/// `span_ids` is the raw JSON-array String column; `first_call_id` is the first
 /// element, extracted server-side (`JSONExtractArrayRaw` + `arrayElement`) but
 /// re-cleaned in Rust to strip the JSON quoting.
 #[derive(Row, Deserialize)]
 struct TurnEndpointRow {
     proxy_role: String,
     pair_id: String,
-    call_ids: String,
+    span_ids: String,
 }
 
 /// `(server_ip, server_port, client_ip)` for one llm_call, used to resolve a
@@ -146,7 +146,7 @@ struct CallEndpointRow {
 }
 
 impl ClickHouseBackend {
-    /// "Services" view — aggregate `llm_calls` by `(server_ip, server_port)`.
+    /// "Services" view — aggregate `spans` by `(server_ip, server_port)`.
     /// Port of the DuckDB `query_services`; see that fn + `StorageBackend::
     /// query_services` for motivation (port is not on `llm_metrics`).
     pub(crate) async fn query_services(&self, query: &ServicesQuery) -> Result<Vec<ServiceRow>> {
@@ -197,7 +197,7 @@ impl ClickHouseBackend {
                 toNullable(toFloat64(quantileTDigest(0.95)(e2e_latency_ms))) AS e2e_p95_ms,
                 toUnixTimestamp64Milli(min(request_time))                  AS first_seen_ms,
                 toUnixTimestamp64Milli(max(request_time))                  AS last_seen_ms
-             FROM llm_calls
+             FROM spans
              WHERE {where_sql}
              GROUP BY server_ip, server_port
              ORDER BY {} {sort_order}
@@ -298,7 +298,7 @@ impl ClickHouseBackend {
                 server_port,
                 groupUniqArray(16)(request_path)  AS request_paths,
                 groupUniqArray(32)(finish_reason) AS finish_reasons
-             FROM llm_calls
+             FROM spans
              WHERE {sample_where}
              GROUP BY server_ip, server_port"
         );
@@ -333,9 +333,9 @@ impl ClickHouseBackend {
                     toNullable(response_headers) AS response_headers,
                     toNullable(request_headers)  AS request_headers,
                     request_body, response_body
-             FROM llm_calls
+             FROM spans
              WHERE id IN (
-                SELECT id FROM llm_calls
+                SELECT id FROM spans
                 WHERE {sample_where}
                 ORDER BY request_time DESC
                 LIMIT 5 BY server_ip, server_port
@@ -387,8 +387,8 @@ impl ClickHouseBackend {
     /// Build the service-topology graph for the Path view. Port of the DuckDB
     /// `query_services_topology` — same node set, proxy / inferred / client
     /// edges, and `__clients__` super-node. The DuckDB original resolves a
-    /// turn's `(server_ip, server_port)` via a JOIN from `agent_turns` to
-    /// `llm_calls` on the turn's first `call_ids` entry; the project's no-JOIN
+    /// turn's `(server_ip, server_port)` via a JOIN from `traces` to
+    /// `spans` on the turn's first `span_ids` entry; the project's no-JOIN
     /// rule means we instead read the turns + their first call_id, fetch those
     /// calls in one `IN (...)` lookup, and map back in Rust (see below).
     pub(crate) async fn query_services_topology(
@@ -412,7 +412,7 @@ impl ClickHouseBackend {
                 groupUniqArray(32)(model)        AS models,
                 groupUniqArray(16)(request_path) AS request_paths,
                 count()                                                     AS call_count
-             FROM llm_calls
+             FROM spans
              WHERE {nodes_where}
              GROUP BY server_ip, server_port"
         );
@@ -459,29 +459,29 @@ impl ClickHouseBackend {
         }
 
         // --- Resolve each turn's endpoint via its first call_id. The DuckDB
-        // query JOINs agent_turns → llm_calls on the first call_ids entry; the
+        // query JOINs traces → spans on the first span_ids entry; the
         // no-JOIN rule means we do this as a two-step:
         //   1. read every turn in the window with its proxy role / pair_id and
-        //      its first call_id (parsed from the call_ids JSON in Rust),
+        //      its first call_id (parsed from the span_ids JSON in Rust),
         //   2. fetch those calls in one IN (...) lookup, build an
         //      id → (server_ip, server_port, client_ip) map,
         //   3. join the two in Rust.
         // DIVERGENCE FROM DUCKDB: the original used an in-SQL JOIN /
-        // correlated extract; we materialize the first call_ids set and do a
+        // correlated extract; we materialize the first span_ids set and do a
         // point-lookup batch instead. The resulting (turn, endpoint) pairs are
         // identical.
         //
-        // agent_turns is ReplacingMergeTree → FINAL so the latest row wins.
+        // traces is ReplacingMergeTree → FINAL so the latest row wins.
         // Time filter on start_time matches the DuckDB predicate. We pull the
-        // first call id server-side via arrayElement(JSONExtract(call_ids,
+        // first call id server-side via arrayElement(JSONExtract(span_ids,
         // 'Array(String)'), 1); parsing in Rust as a fallback for robustness.
         let turns_where = time_where("start_time", start_us, end_us);
         let turns_sql = format!(
             "SELECT
                 JSONExtractString(coalesce(metadata, ''), 'proxy', 'role')    AS proxy_role,
                 JSONExtractString(coalesce(metadata, ''), 'proxy', 'pair_id') AS pair_id,
-                call_ids                                                       AS call_ids
-             FROM agent_turns FINAL
+                span_ids                                                       AS span_ids
+             FROM traces FINAL
              WHERE {turns_where}"
         );
         let turn_rows = self
@@ -500,7 +500,7 @@ impl ClickHouseBackend {
         let mut turn_infos: Vec<TurnInfo> = Vec::with_capacity(turn_rows.len());
         let mut wanted_ids: HashSet<String> = HashSet::new();
         for t in turn_rows {
-            let ids = parse_json_string_list(Some(&t.call_ids));
+            let ids = parse_json_string_list(Some(&t.span_ids));
             if let Some(first) = ids.into_iter().next() {
                 if first.is_empty() {
                     continue;
@@ -514,14 +514,14 @@ impl ClickHouseBackend {
             }
         }
 
-        // Fetch the endpoints for those first call_ids in one batch.
+        // Fetch the endpoints for those first span_ids in one batch.
         let mut endpoint_by_id: HashMap<String, (String, u16, String)> = HashMap::new();
         if !wanted_ids.is_empty() {
             let id_list: Vec<String> = wanted_ids.into_iter().collect();
             let in_list = crate::sql::sql_in_list(&id_list);
             let calls_sql = format!(
                 "SELECT id, server_ip, server_port, client_ip \
-                 FROM llm_calls WHERE id IN ({in_list})"
+                 FROM spans WHERE id IN ({in_list})"
             );
             let call_rows = self
                 .client

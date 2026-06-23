@@ -8,26 +8,26 @@ use crate::DuckDbBackend;
 
 impl DuckDbBackend {
     pub(crate) async fn apply_retention(&self, policy: RetentionPolicy) -> Result<RetentionReport> {
-        let calls_conn = self.write_calls_conn.clone();
-        let turns_conn = self.write_turns_conn.clone();
+        let calls_conn = self.write_spans_conn.clone();
+        let turns_conn = self.write_traces_conn.clone();
         let metrics_conn = self.write_metrics_conn.clone();
         let exchanges_conn = self.write_exchanges_conn.clone();
 
         tokio::task::spawn_blocking(move || {
             let mut report = RetentionReport::default();
 
-            if let Some(cutoff) = policy.calls_before {
+            if let Some(cutoff) = policy.spans_before {
                 let ts = timestamp_value(cutoff)?;
                 let conn = calls_conn
                     .lock()
                     .map_err(|e| AppError::Storage(format!("failed to lock calls writer: {e}")))?;
                 let n = conn
                     .execute(
-                        "DELETE FROM llm_calls WHERE request_time < ?1",
+                        "DELETE FROM spans WHERE request_time < ?1",
                         duckdb::params![ts],
                     )
-                    .map_err(|e| AppError::Storage(format!("failed to delete llm_calls: {e}")))?;
-                report.calls_deleted = n as u64;
+                    .map_err(|e| AppError::Storage(format!("failed to delete spans: {e}")))?;
+                report.spans_deleted = n as u64;
             }
 
             if let Some(cutoff) = policy.http_exchanges_before {
@@ -46,18 +46,18 @@ impl DuckDbBackend {
                 report.http_exchanges_deleted = n as u64;
             }
 
-            if let Some(cutoff) = policy.turns_before {
+            if let Some(cutoff) = policy.traces_before {
                 let ts = timestamp_value(cutoff)?;
                 let conn = turns_conn
                     .lock()
                     .map_err(|e| AppError::Storage(format!("failed to lock turns writer: {e}")))?;
                 let n = conn
                     .execute(
-                        "DELETE FROM agent_turns WHERE end_time < ?1",
+                        "DELETE FROM traces WHERE end_time < ?1",
                         duckdb::params![ts],
                     )
-                    .map_err(|e| AppError::Storage(format!("failed to delete agent_turns: {e}")))?;
-                report.turns_deleted = n as u64;
+                    .map_err(|e| AppError::Storage(format!("failed to delete traces: {e}")))?;
+                report.traces_deleted = n as u64;
             }
 
             for (label, cutoff) in &policy.metrics_before {
@@ -113,7 +113,7 @@ mod tests {
     use h_metrics::model::{LlmFinishMetric, LlmMetric};
     use h_storage::retention::RetentionPolicy;
     use h_storage::StorageBackend;
-    use h_turn::{AgentTurn, TurnStatus};
+    use h_turn::{Trace, TraceStatus};
 
     fn mk_call(id: &str, request_time_us: i64) -> LlmCall {
         LlmCall {
@@ -155,8 +155,8 @@ mod tests {
         }
     }
 
-    fn mk_turn(id: &str, start_us: i64, duration_ms: u64) -> AgentTurn {
-        AgentTurn {
+    fn mk_turn(id: &str, start_us: i64, duration_ms: u64) -> Trace {
+        Trace {
             source_id: String::new(),
             turn_id: id.into(),
             session_id: "s".into(),
@@ -175,13 +175,13 @@ mod tests {
             total_cache_read_input_tokens: 0,
             total_cache_creation_input_tokens: 0,
             total_cost_usd: None,
-            status: TurnStatus::Complete,
+            status: TraceStatus::Complete,
             final_finish_reason: None,
             user_input_preview: None,
             user_call_id: None,
             final_answer_preview: None,
             final_call_id: None,
-            call_ids: vec![id.into()],
+            span_ids: vec![id.into()],
             metadata: serde_json::json!({}),
             tool_surfaces: vec![],
             tool_call_total: 0,
@@ -275,7 +275,7 @@ mod tests {
 
         // Calls: 1 old (30d), 1 new (1h).
         backend
-            .write_calls(vec![
+            .write_spans(vec![
                 mk_call("c-old", now_us - 30 * day_us),
                 mk_call("c-new", now_us - 3600 * 1_000_000),
             ])
@@ -284,7 +284,7 @@ mod tests {
 
         // Turns: 1 old (end_time 31d ago), 1 new (today).
         backend
-            .write_turns(vec![
+            .write_traces(vec![
                 mk_turn("t-old", now_us - 31 * day_us, 1000),
                 mk_turn("t-new", now_us - 3600 * 1_000_000, 1000),
             ])
@@ -325,8 +325,8 @@ mod tests {
             .unwrap();
 
         let policy = RetentionPolicy {
-            calls_before: Some(now - Duration::from_secs(7 * 86_400)),
-            turns_before: Some(now - Duration::from_secs(14 * 86_400)),
+            spans_before: Some(now - Duration::from_secs(7 * 86_400)),
+            traces_before: Some(now - Duration::from_secs(14 * 86_400)),
             http_exchanges_before: None,
             metrics_before: vec![
                 ("10s".to_string(), now - Duration::from_secs(86_400)),
@@ -337,8 +337,8 @@ mod tests {
         };
 
         let report = backend.apply_retention(policy).await.unwrap();
-        assert_eq!(report.calls_deleted, 1);
-        assert_eq!(report.turns_deleted, 1);
+        assert_eq!(report.spans_deleted, 1);
+        assert_eq!(report.traces_deleted, 1);
         assert_eq!(report.metrics_deleted.get("10s"), Some(&1));
         assert_eq!(report.metrics_deleted.get("1m"), Some(&1));
         assert_eq!(report.metrics_deleted.get("5m"), Some(&1));
@@ -346,10 +346,10 @@ mod tests {
 
         let conn = backend.test_conn().lock().unwrap();
         let calls_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM llm_calls", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM spans", [], |r| r.get(0))
             .unwrap();
         let turns_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM agent_turns", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM traces", [], |r| r.get(0))
             .unwrap();
         let total_metrics: i64 = conn
             .query_row("SELECT COUNT(*) FROM llm_metrics", [], |r| r.get(0))

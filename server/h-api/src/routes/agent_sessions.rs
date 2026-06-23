@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use h_storage::query::{
-    decode_session_cursor, decode_session_turns_cursor, SessionListQuery, SessionTurnsQuery,
+    decode_session_cursor, decode_session_turns_cursor, SessionListQuery, SessionTracesQuery,
 };
 use h_storage::StorageBackend;
 
@@ -93,12 +93,12 @@ pub async fn turns(
         _ => None,
     };
 
-    let query = SessionTurnsQuery {
+    let query = SessionTracesQuery {
         source_id,
         session_id,
         cursor,
         page_size: params.page_size.clamp(1, 200),
     };
-    let page = storage.query_session_turns(&query).await?;
+    let page = storage.query_session_traces(&query).await?;
     Ok(ApiResponse::ok(page))
 }

@@ -4,7 +4,7 @@
 //! llm → turn → **metrics** — with N sources fan-in through a
 //! [`RoutingSender`] that routes by `hash(source_id) % D` to D dispatcher
 //! channels (default D=1). Flow keys, HTTP reassembly state,
-//! `LlmCall`/`AgentTurn` state, and the metrics aggregator's event-time
+//! `LlmCall`/`Trace` state, and the metrics aggregator's event-time
 //! watermark never leak between pipelines. Only the storage sink is shared
 //! across pipelines so every record lands in the same DB tables.
 //!
@@ -56,7 +56,7 @@ use h_protocol::{
 };
 use h_storage::StorageBackend;
 use h_turn::tracker::TrackerConfig;
-use h_turn::AgentTurn;
+use h_turn::Trace;
 
 /// Every task spawned by the pipeline is labeled so panic logs name the
 /// specific worker that died. Cheap strings — formatting happens only at
@@ -127,7 +127,7 @@ impl Pipeline {
         storage: Arc<dyn StorageBackend>,
         per_pipeline_metrics: &mut [MetricsSystem],
         shared_metrics: &mut MetricsSystem,
-        active_turns: h_turn::ActiveTurnRegistry,
+        active_turns: h_turn::ActiveTraceRegistry,
         classifier_cfg: ClassifierConfig,
         body_cap: h_common::config::BodyCapConfig,
     ) -> Self {
@@ -148,7 +148,7 @@ impl Pipeline {
         let exchanges_cap = max_q(|q| q.storage_exchanges);
 
         let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(calls_cap);
-        let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(turns_cap);
+        let (turns_tx, turns_rx) = mpsc::channel::<Trace>(turns_cap);
         let (metrics_out_tx, metrics_out_rx) = mpsc::channel::<LlmMetricsBatch>(metrics_cap);
         let (http_exchanges_tx, http_exchanges_rx) = mpsc::channel::<HttpExchange>(exchanges_cap);
 

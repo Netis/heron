@@ -531,7 +531,7 @@ async fn run_pipeline(cli: Cli) {
         // turn-tracker shard (writers) and the API's /api/agent-turns
         // handler (reader) so the console sees in-progress turns alongside
         // finalized ones without DB write amplification.
-        let active_turns = h_turn::new_active_turn_registry();
+        let active_turns = h_turn::new_active_trace_registry();
 
         // Process-wide gauge for the dashboard "Active Agent Turns" chart:
         // size of the in-progress turn registry at sample time. Registered on
@@ -898,7 +898,7 @@ async fn run_pipeline(cli: Cli) {
                     // the registry stays empty for the lifetime of this
                     // process. Construct a fresh empty one so the API still
                     // serves /api/agent-turns (returning DB rows only).
-                    let api_active_turns = h_turn::new_active_turn_registry();
+                    let api_active_turns = h_turn::new_active_trace_registry();
                     Some(tokio::spawn(async move {
                         let router = h_api::router(
                             api_storage,

@@ -96,7 +96,7 @@ pub fn run(args: &BackfillTokensArgs) -> i32 {
     };
     let select_sql = format!(
         "SELECT id, wire_api, status_code, request_body, response_body \
-         FROM llm_calls \
+         FROM spans \
          WHERE COALESCE(input_tokens, 0) = 0 \
            AND COALESCE(output_tokens, 0) = 0 \
            AND response_body IS NOT NULL \
@@ -140,7 +140,7 @@ pub fn run(args: &BackfillTokensArgs) -> i32 {
     let mut skipped_unknown_wire: u64 = 0;
 
     let mut update_stmt = match conn.prepare(
-        "UPDATE llm_calls SET input_tokens = ?, output_tokens = ?, total_tokens = ? WHERE id = ?",
+        "UPDATE spans SET input_tokens = ?, output_tokens = ?, total_tokens = ? WHERE id = ?",
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -273,14 +273,14 @@ mod tests {
     use duckdb::Connection;
     use tempfile::tempdir;
 
-    /// Bootstrap a temp DuckDB matching the production llm_calls schema
+    /// Bootstrap a temp DuckDB matching the production spans schema
     /// (only the columns we actually read/write — minimal but matching
     /// types). Returns (path, conn).
     fn make_temp_db(dir: &std::path::Path) -> (PathBuf, Connection) {
         let db = dir.join("test.duckdb");
         let c = Connection::open(&db).expect("open");
         c.execute_batch(
-            "CREATE TABLE llm_calls (
+            "CREATE TABLE spans (
                 id VARCHAR PRIMARY KEY,
                 source_id VARCHAR DEFAULT '',
                 client_ip VARCHAR DEFAULT '',
@@ -316,7 +316,7 @@ mod tests {
         out_t: Option<u32>,
     ) {
         c.execute(
-            "INSERT INTO llm_calls (id, wire_api, status_code, request_body, response_body, input_tokens, output_tokens) \
+            "INSERT INTO spans (id, wire_api, status_code, request_body, response_body, input_tokens, output_tokens) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
             duckdb::params![id, wire_api, status, req, resp, in_t, out_t],
         )
@@ -325,7 +325,7 @@ mod tests {
 
     fn token_pair(c: &Connection, id: &str) -> (Option<u32>, Option<u32>) {
         c.query_row(
-            "SELECT input_tokens, output_tokens FROM llm_calls WHERE id = ?",
+            "SELECT input_tokens, output_tokens FROM spans WHERE id = ?",
             duckdb::params![id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )

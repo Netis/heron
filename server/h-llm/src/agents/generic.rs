@@ -1,5 +1,5 @@
 //! Generic agent profile — synthesizes a session id from request / response
-//! payload tool-call anchors, so Heron can still produce `AgentTurn`s for
+//! payload tool-call anchors, so Heron can still produce `Trace`s for
 //! header-less tool-using LLM traffic across supported wire APIs.
 //!
 //! `agent_kind == "generic"` is wire-api-agnostic; downstream consumers read

@@ -34,7 +34,7 @@ export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agent
       status, agentKind, clientIp, serverPort, includeProxyHops,
     }],
     queryFn: () =>
-      apiFetch<AgentTurnsPage>("/api/agent-turns", {
+      apiFetch<AgentTurnsPage>("/api/traces", {
         start,
         end,
         page,
@@ -55,7 +55,7 @@ export function useAgentTurns({ page, pageSize, sortBy, sortOrder, status, agent
 export function useAgentTurnDetail(id: string | null) {
   return useQuery({
     queryKey: ["agent-turn-detail", id],
-    queryFn: () => apiFetch<AgentTurnDetail>(`/api/agent-turns/${id}`),
+    queryFn: () => apiFetch<AgentTurnDetail>(`/api/traces/${id}`),
     enabled: id != null,
   })
 }
@@ -75,7 +75,7 @@ export function useAgentTurnCalls(id: string | null, lite = false) {
   return useQuery({
     queryKey: ["agent-turn-calls", id, lite],
     queryFn: () =>
-      apiFetch<AgentTurnCallItem[]>(`/api/agent-turns/${id}/calls`, lite ? { lite: 1 } : {}),
+      apiFetch<AgentTurnCallItem[]>(`/api/traces/${id}/spans`, lite ? { lite: 1 } : {}),
     enabled: id != null,
   })
 }
@@ -87,7 +87,7 @@ export function useAgentTurnCalls(id: string | null, lite = false) {
 export function useAgentTurnProxyView(id: string | null, enabled = true) {
   return useQuery({
     queryKey: ["agent-turn-proxy-view", id],
-    queryFn: () => apiFetch<ProxyViewResponse>(`/api/agent-turns/${id}/proxy-view`),
+    queryFn: () => apiFetch<ProxyViewResponse>(`/api/traces/${id}/proxy-view`),
     enabled: id != null && enabled,
   })
 }

@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use h_llm::model::LlmCall;
 use h_metrics::model::{LlmFinishMetric, LlmMetric, LlmMetricsBatch};
 use h_protocol::HttpExchange;
-use h_turn::AgentTurn;
+use h_turn::Trace;
 
 use h_common::internal_metrics::{Metric, MetricsWorker};
 
@@ -38,7 +38,7 @@ impl Default for StorageSinkConfig {
 pub fn spawn_storage_sink_stage(
     config: StorageSinkConfig,
     calls_rx: mpsc::Receiver<Arc<LlmCall>>,
-    turns_rx: mpsc::Receiver<AgentTurn>,
+    turns_rx: mpsc::Receiver<Trace>,
     metrics_rx: mpsc::Receiver<LlmMetricsBatch>,
     http_exchanges_rx: mpsc::Receiver<HttpExchange>,
     backend: Arc<dyn StorageBackend>,
@@ -119,7 +119,7 @@ pub fn spawn_storage_sink_stage(
         calls_buffer
             .run(move |batch| {
                 let b = calls_storage.clone();
-                async move { b.write_calls(batch).await }
+                async move { b.write_spans(batch).await }
             })
             .await;
     });
@@ -136,7 +136,7 @@ pub fn spawn_storage_sink_stage(
         turns_buffer
             .run(move |batch| {
                 let b = turns_storage.clone();
-                async move { b.write_turns(batch).await }
+                async move { b.write_traces(batch).await }
             })
             .await;
     });
@@ -211,13 +211,13 @@ pub fn spawn_storage_sink_stage(
 mod tests {
     use super::*;
     use crate::query::{
-        AgentActivityPoint, AgentActivityQuery, AgentKindSummary, AgentSummaryQuery, CallDetail,
-        CallsPage, CallsQuery, DistinctAgentKindsQuery, DistinctFinishReason,
+        AgentActivityPoint, AgentActivityQuery, AgentKindSummary, AgentSummaryQuery, SpanDetail,
+        SpansPage, SpansQuery, DistinctAgentKindsQuery, DistinctFinishReason,
         FinishReasonTimeseries, FinishReasonsQuery, HttpExchangeDetail, HttpExchangesPage,
         HttpExchangesQuery, MetricsModelRow, MetricsModelsQuery, MetricsSummaryQuery,
         MetricsSummaryRow, MetricsTimeseriesQuery, MetricsTimeseriesRow, ServiceRow, ServicesQuery,
-        ServicesTopology, ServicesTopologyQuery, SessionDetail, SessionListQuery, SessionTurnsPage,
-        SessionTurnsQuery, SessionsPage, TurnCallItem, TurnDetail, TurnsPage, TurnsQuery,
+        ServicesTopology, ServicesTopologyQuery, SessionDetail, SessionListQuery, SessionTracesPage,
+        SessionTracesQuery, SessionsPage, TraceSpanItem, TraceDetail, TracesPage, TracesQuery,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -237,11 +237,11 @@ mod tests {
         async fn init(&self) -> Result<()> {
             Ok(())
         }
-        async fn write_calls(&self, batch: Vec<LlmCall>) -> Result<()> {
+        async fn write_spans(&self, batch: Vec<LlmCall>) -> Result<()> {
             self.calls.fetch_add(batch.len(), Ordering::SeqCst);
             Ok(())
         }
-        async fn write_turns(&self, batch: Vec<AgentTurn>) -> Result<()> {
+        async fn write_traces(&self, batch: Vec<Trace>) -> Result<()> {
             self.turns.fetch_add(batch.len(), Ordering::SeqCst);
             Ok(())
         }
@@ -330,36 +330,36 @@ mod tests {
         ) -> Result<Vec<FinishReasonTimeseries>> {
             Ok(vec![])
         }
-        async fn query_calls(&self, _query: &CallsQuery) -> Result<CallsPage> {
-            Ok(CallsPage {
+        async fn query_spans(&self, _query: &SpansQuery) -> Result<SpansPage> {
+            Ok(SpansPage {
                 total: 0,
                 items: vec![],
             })
         }
-        async fn query_call_by_id(&self, _id: &str) -> Result<Option<CallDetail>> {
+        async fn query_span_by_id(&self, _id: &str) -> Result<Option<SpanDetail>> {
             Ok(None)
         }
-        async fn query_turns(&self, _query: &TurnsQuery) -> Result<TurnsPage> {
-            Ok(TurnsPage {
+        async fn query_traces(&self, _query: &TracesQuery) -> Result<TracesPage> {
+            Ok(TracesPage {
                 total: 0,
                 items: vec![],
             })
         }
-        async fn query_turn_by_id(&self, _turn_id: &str) -> Result<Option<TurnDetail>> {
+        async fn query_trace_by_id(&self, _turn_id: &str) -> Result<Option<TraceDetail>> {
             Ok(None)
         }
-        async fn query_turn_calls(
+        async fn query_trace_spans(
             &self,
             _turn_id: &str,
             _include_bodies: bool,
-        ) -> Result<Vec<TurnCallItem>> {
+        ) -> Result<Vec<TraceSpanItem>> {
             Ok(vec![])
         }
-        async fn query_calls_by_ids(
+        async fn query_spans_by_ids(
             &self,
-            _call_ids: &[String],
+            _span_ids: &[String],
             _include_bodies: bool,
-        ) -> Result<Vec<TurnCallItem>> {
+        ) -> Result<Vec<TraceSpanItem>> {
             Ok(vec![])
         }
         async fn query_sessions(&self, _query: &SessionListQuery) -> Result<SessionsPage> {
@@ -375,11 +375,11 @@ mod tests {
         ) -> Result<Option<SessionDetail>> {
             Ok(None)
         }
-        async fn query_session_turns(
+        async fn query_session_traces(
             &self,
-            _query: &SessionTurnsQuery,
-        ) -> Result<SessionTurnsPage> {
-            Ok(SessionTurnsPage {
+            _query: &SessionTracesQuery,
+        ) -> Result<SessionTracesPage> {
+            Ok(SessionTracesPage {
                 items: vec![],
                 next_cursor: None,
             })
@@ -427,7 +427,7 @@ mod tests {
         let backend: Arc<dyn StorageBackend> = Arc::new(counts);
 
         let (calls_tx, calls_rx) = mpsc::channel::<Arc<LlmCall>>(16);
-        let (turns_tx, turns_rx) = mpsc::channel::<AgentTurn>(16);
+        let (turns_tx, turns_rx) = mpsc::channel::<Trace>(16);
         let (metrics_tx, metrics_rx) = mpsc::channel::<LlmMetricsBatch>(16);
         let (exch_tx, exch_rx) = mpsc::channel::<HttpExchange>(16);
 
@@ -563,8 +563,8 @@ mod tests {
         }
     }
 
-    fn dummy_turn(i: usize) -> AgentTurn {
-        AgentTurn {
+    fn dummy_turn(i: usize) -> Trace {
+        Trace {
             source_id: String::new(),
             turn_id: format!("t-{i}"),
             session_id: "s".into(),
@@ -583,13 +583,13 @@ mod tests {
             total_cache_read_input_tokens: 0,
             total_cache_creation_input_tokens: 0,
             total_cost_usd: None,
-            status: h_turn::TurnStatus::Complete,
+            status: h_turn::TraceStatus::Complete,
             final_finish_reason: None,
             user_input_preview: None,
             user_call_id: None,
             final_answer_preview: None,
             final_call_id: None,
-            call_ids: vec![format!("c-{i}")],
+            span_ids: vec![format!("c-{i}")],
             metadata: serde_json::json!({}),
             tool_surfaces: vec![],
             tool_call_total: 0,

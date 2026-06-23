@@ -25,7 +25,7 @@ use h_llm::wire_apis as wa;
 use h_metrics::model::LlmMetric;
 use h_storage::query::*;
 use h_storage::StorageBackend;
-use h_turn::{AgentTurn, TurnStatus};
+use h_turn::{Trace, TraceStatus};
 use heron::create_backend;
 
 #[derive(Parser, Debug)]
@@ -114,9 +114,9 @@ fn make_call(i: usize, body: &str) -> LlmCall {
     }
 }
 
-fn make_turn(i: usize) -> AgentTurn {
+fn make_turn(i: usize) -> Trace {
     let ts = BASE_US + (i as i64 * WINDOW_US / 20_000).min(WINDOW_US);
-    AgentTurn {
+    Trace {
         source_id: "bench".into(),
         turn_id: format!("turn-{i:012}"),
         session_id: format!("sess-{}", i % 2000),
@@ -135,13 +135,13 @@ fn make_turn(i: usize) -> AgentTurn {
         total_cache_read_input_tokens: 0,
         total_cache_creation_input_tokens: 0,
         total_cost_usd: Some(0.05),
-        status: TurnStatus::Complete,
+        status: TraceStatus::Complete,
         final_finish_reason: Some("stop".into()),
         user_input_preview: Some("hello".into()),
         user_call_id: Some(format!("call-{:012}", i * 3)),
         final_answer_preview: Some("done".into()),
         final_call_id: Some(format!("call-{:012}", i * 3 + 2)),
-        call_ids: vec![format!("call-{:012}", i * 3)],
+        span_ids: vec![format!("call-{:012}", i * 3)],
         metadata: serde_json::json!({}),
         tool_surfaces: vec![],
         tool_call_total: 0,
@@ -247,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for chunk_start in (0..args.calls).step_by(args.batch) {
         let end = (chunk_start + args.batch).min(args.calls);
         let batch: Vec<LlmCall> = (chunk_start..end).map(|i| make_call(i, &body)).collect();
-        backend.write_calls(batch).await?;
+        backend.write_spans(batch).await?;
     }
     let calls_secs = t.elapsed().as_secs_f64();
     let calls_per_sec = args.calls as f64 / calls_secs;
@@ -263,8 +263,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t = Instant::now();
     for chunk_start in (0..args.turns).step_by(args.batch) {
         let end = (chunk_start + args.batch).min(args.turns);
-        let batch: Vec<AgentTurn> = (chunk_start..end).map(make_turn).collect();
-        backend.write_turns(batch).await?;
+        let batch: Vec<Trace> = (chunk_start..end).map(make_turn).collect();
+        backend.write_traces(batch).await?;
     }
     let turns_per_sec = args.turns as f64 / t.elapsed().as_secs_f64();
 
@@ -276,7 +276,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let r = range.clone();
         async move {
             let _ = b
-                .query_calls(&CallsQuery {
+                .query_spans(&SpansQuery {
                     time_range: r,
                     filter: DimensionFilter::default(),
                     status_codes: vec![],
@@ -334,7 +334,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let r = range.clone();
         async move {
             let _ = b
-                .query_turns(&TurnsQuery {
+                .query_traces(&TracesQuery {
                     time_range: r,
                     filter: DimensionFilter::default(),
                     client_ips: vec![],
@@ -382,10 +382,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "turns": turns_per_sec.round(),
         },
         "query_ms": {
-            "query_calls":      { "p50": qc_p50, "p95": qc_p95, "mean": qc_mean },
+            "query_spans":      { "p50": qc_p50, "p95": qc_p95, "mean": qc_mean },
             "query_summary":    { "p50": qs_p50, "p95": qs_p95, "mean": qs_mean },
             "query_timeseries": { "p50": qt_p50, "p95": qt_p95, "mean": qt_mean },
-            "query_turns":      { "p50": qn_p50, "p95": qn_p95, "mean": qn_mean },
+            "query_traces":      { "p50": qn_p50, "p95": qn_p95, "mean": qn_mean },
             "query_services":   { "p50": qv_p50, "p95": qv_p95, "mean": qv_mean },
         },
     });

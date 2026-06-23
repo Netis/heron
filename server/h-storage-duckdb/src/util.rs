@@ -87,7 +87,7 @@ pub(crate) fn render_body_for_detail(bytes: Option<Vec<u8>>) -> Option<String> {
     }
 }
 
-/// Load the request_body / response_body of `call_id` from llm_calls and run
+/// Load the request_body / response_body of `call_id` from spans and run
 /// it through the `agent_kind`-matched profile to produce the full user_input
 /// or final_answer text. Returns `None` if the call row is missing, the
 /// profile is not registered, or the extractor declines.
@@ -102,8 +102,8 @@ pub(crate) fn extract_full_text(
     let profile = registry.find_by_name(agent_kind)?;
 
     let sql = match kind {
-        ExtractKind::User => "SELECT request_body, wire_api FROM llm_calls WHERE id = ?",
-        ExtractKind::Assistant => "SELECT response_body, wire_api FROM llm_calls WHERE id = ?",
+        ExtractKind::User => "SELECT request_body, wire_api FROM spans WHERE id = ?",
+        ExtractKind::Assistant => "SELECT response_body, wire_api FROM spans WHERE id = ?",
     };
     let (body, wire_api_stored): (Option<String>, String) = conn
         .query_row(sql, duckdb::params![call_id], |row| {
@@ -168,7 +168,7 @@ pub(crate) fn extract_full_text(
 
 /// Batch version of `extract_full_text`. Given `(agent_kind, call_id)` pairs
 /// and an `ExtractKind` selecting which body column to read, issues a single
-/// `SELECT ... WHERE id IN (...)` against `llm_calls` and runs each profile's
+/// `SELECT ... WHERE id IN (...)` against `spans` and runs each profile's
 /// extractor to produce the final text. Returns a map keyed by `call_id`.
 ///
 /// - Missing call rows, unknown `wire_api`s, or extractors that decline are
@@ -186,19 +186,19 @@ pub(crate) fn extract_full_text_batch(
     }
 
     // Build agent_kind lookup keyed by call_id (last-writer-wins if a call id
-    // appears twice — extremely unlikely given AgentTurn invariants).
+    // appears twice — extremely unlikely given Trace invariants).
     let mut agent_by_call: HashMap<&str, &str> = HashMap::new();
     for (ak, cid) in requests {
         agent_by_call.insert(cid.as_str(), ak.as_str());
     }
-    let call_ids: Vec<&str> = agent_by_call.keys().copied().collect();
+    let span_ids: Vec<&str> = agent_by_call.keys().copied().collect();
 
     let col = match kind {
         ExtractKind::User => "request_body",
         ExtractKind::Assistant => "response_body",
     };
-    let placeholders = vec!["?"; call_ids.len()].join(",");
-    let sql = format!("SELECT id, wire_api, {col} FROM llm_calls WHERE id IN ({placeholders})");
+    let placeholders = vec!["?"; span_ids.len()].join(",");
+    let sql = format!("SELECT id, wire_api, {col} FROM spans WHERE id IN ({placeholders})");
 
     let registry = build_default_registry();
 
@@ -206,7 +206,7 @@ pub(crate) fn extract_full_text_batch(
         return out;
     };
     let params: Vec<&dyn duckdb::ToSql> =
-        call_ids.iter().map(|s| s as &dyn duckdb::ToSql).collect();
+        span_ids.iter().map(|s| s as &dyn duckdb::ToSql).collect();
     let Ok(mut rows) = stmt.query(duckdb::params_from_iter(params.iter().copied())) else {
         return out;
     };

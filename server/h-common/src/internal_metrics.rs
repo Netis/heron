@@ -220,7 +220,7 @@ define_metrics! {
     TurnHeartbeatsDropped    => { kind: Counter, group: Turn, short: "turn_heartbeats_dropped"       },
     TurnActive               => { kind: Gauge,   group: Turn, short: "turn_calls_buffered"           },
     // Process-wide registry of in-progress agent turns (size of
-    // ActiveTurnRegistry). Distinct from `turn_calls_buffered`, which sums
+    // ActiveTraceRegistry). Distinct from `turn_calls_buffered`, which sums
     // pending LLM calls inside per-session turn buffers — that gauge counts
     // calls, not conversations. `agent_turns_open` is the truthful
     // "concurrent in-flight agent turns" signal and is what the dashboard

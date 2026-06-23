@@ -1,5 +1,4 @@
 pub mod agent_sessions;
-pub mod agent_turns;
 pub mod capture_interfaces;
 pub mod capture_sources;
 pub mod export;
@@ -7,8 +6,9 @@ pub mod filters;
 pub mod health;
 pub mod http_exchanges;
 pub mod internal_metrics;
-pub mod llm_calls;
 pub mod metrics;
 pub mod pcap_extract;
 pub mod runtime_config;
 pub mod services;
+pub mod spans;
+pub mod traces;

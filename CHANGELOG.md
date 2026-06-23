@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **OpenTelemetry-aligned rename of the storage entities and HTTP API.** The
+  `agent_turns` table is now `traces`, `llm_calls` is now `spans`, and
+  `traces.call_ids` is now `span_ids`; a new forward-looking `spans.kind`
+  column (always `'llm'` today) leaves room for wire-visible tool spans. The
+  Rust domain/query types (`AgentTurn`→`Trace`, `Turn*`/`Call*` DTOs →
+  `Trace*`/`Span*`) and `StorageBackend` methods (`write_calls`→`write_spans`,
+  `query_turns`→`query_traces`, …) follow suit. New canonical routes
+  `/api/traces*` and `/api/spans*`; the pre-rename `/api/agent-turns*` and
+  `/api/llm-calls*` keep working as deprecated aliases (RFC 8594 `Deprecation`
+  header). Retention config keys `calls`/`turns` are accepted as serde aliases
+  for `spans`/`traces`. Existing DuckDB/ClickHouse databases auto-migrate in
+  place on init() with no data loss (idempotent detect-then-rename).
+
 ## [0.6.0] — 2026-06-16
 
 ### Changed

@@ -18,7 +18,7 @@ use h_llm::agents;
 use h_llm::model::{AgentCall, ApiType, LlmCall};
 use h_llm::wire_apis as wa;
 use h_turn::tracker::{TrackerConfig, TurnEvent, TurnTracker};
-use h_turn::{AgentTurn, TurnStatus};
+use h_turn::{Trace, TraceStatus};
 
 // -------- helpers --------
 
@@ -154,7 +154,7 @@ fn agent_call(call: LlmCall) -> AgentCall {
 }
 
 /// Drain finalized turns from a slice of TurnEvents.
-fn collect_turns(events: Vec<TurnEvent>) -> Vec<AgentTurn> {
+fn collect_turns(events: Vec<TurnEvent>) -> Vec<Trace> {
     events
         .into_iter()
         .map(|TurnEvent::Completed(t)| t)
@@ -164,7 +164,7 @@ fn collect_turns(events: Vec<TurnEvent>) -> Vec<AgentTurn> {
 /// Drive a sequence of calls through the tracker in the given arrival order,
 /// then flush. Identity is built per-call via the production pipeline (see
 /// [`agent_call`]). Returns every Completed turn the tracker produced.
-fn run_in_order(t: &mut TurnTracker, sequence: Vec<LlmCall>) -> Vec<AgentTurn> {
+fn run_in_order(t: &mut TurnTracker, sequence: Vec<LlmCall>) -> Vec<Trace> {
     let mut events = Vec::new();
     for c in sequence {
         events.extend(t.ingest(agent_call(c)));
@@ -200,9 +200,9 @@ fn bug_a_late_user_start_splits_turn() {
         turns.len()
     );
     let turn = &turns[0];
-    assert_eq!(turn.status, TurnStatus::Complete);
+    assert_eq!(turn.status, TraceStatus::Complete);
     assert_eq!(turn.call_count, 2);
-    assert_eq!(turn.call_ids, vec![c1.id.clone(), c2.id.clone()]);
+    assert_eq!(turn.span_ids, vec![c1.id.clone(), c2.id.clone()]);
 }
 
 // -------- B: 3-call reorder with the terminal in the middle --------
@@ -239,10 +239,10 @@ fn bug_b_state_corruption_when_terminal_arrives_before_predecessors() {
         "deeply reordered same-session calls must collapse into one turn"
     );
     let turn = &turns[0];
-    assert_eq!(turn.status, TurnStatus::Complete);
+    assert_eq!(turn.status, TraceStatus::Complete);
     assert_eq!(turn.call_count, 3);
     assert_eq!(
-        turn.call_ids,
+        turn.span_ids,
         vec![c1.id.clone(), c2.id.clone(), c3.id.clone()]
     );
 }
@@ -352,8 +352,8 @@ fn bug_d_late_call_after_finalize_is_orphan_not_phantom() {
         "late call older than the finalized high-water must be dropped, not start a phantom turn"
     );
     let turn = &turns[0];
-    assert_eq!(turn.status, TurnStatus::Complete);
-    assert_eq!(turn.call_ids, vec![c1.id.clone(), c2.id.clone()]);
+    assert_eq!(turn.status, TraceStatus::Complete);
+    assert_eq!(turn.span_ids, vec![c1.id.clone(), c2.id.clone()]);
 }
 
 // -------- E: a partition with no user_turn_start is discarded -----------
@@ -429,8 +429,8 @@ fn bug_f_heartbeat_advance_does_not_open_phantom_for_late_call() {
         "heartbeat-advanced clock plus a late call must not create a phantom turn"
     );
     let turn = &turns[0];
-    assert_eq!(turn.status, TurnStatus::Complete);
-    assert_eq!(turn.call_ids, vec![c1.id.clone(), c2.id.clone()]);
+    assert_eq!(turn.status, TraceStatus::Complete);
+    assert_eq!(turn.span_ids, vec![c1.id.clone(), c2.id.clone()]);
 }
 
 // -------- watermark isolation regressions (F1/F2/F3) --------------------
@@ -542,7 +542,7 @@ fn f1_intra_source_hb_does_not_orphan_same_session_laggard() {
         turns[0].call_count, 2,
         "terminal + laggard expected — orphaned implies grace was event-time fast-forwarded"
     );
-    let mut ids = turns[0].call_ids.clone();
+    let mut ids = turns[0].span_ids.clone();
     ids.sort();
     let mut want = vec![terminal.id.clone(), laggard.id.clone()];
     want.sort();

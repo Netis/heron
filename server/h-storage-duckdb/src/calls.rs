@@ -1,4 +1,4 @@
-//! `llm_calls` table I/O — write, query (paginated / by-id / by-id-list).
+//! `spans` table I/O — write, query (paginated / by-id / by-id-list).
 
 use duckdb::types::{TimeUnit, Value};
 use duckdb::Connection;
@@ -122,22 +122,22 @@ fn read_process(
     }))
 }
 
-/// Shared "fetch calls by id list" — used by both `query_turn_calls`
-/// (which derives the ids from the persisted `agent_turns.call_ids`)
-/// and `query_calls_by_ids` (which receives the ids directly from the
-/// API for in-progress turns whose call_ids live in the in-memory
+/// Shared "fetch calls by id list" — used by both `query_trace_spans`
+/// (which derives the ids from the persisted `traces.span_ids`)
+/// and `query_spans_by_ids` (which receives the ids directly from the
+/// API for in-progress turns whose span_ids live in the in-memory
 /// active-turn registry). Calls not yet flushed from `WriteBuffer` to
-/// `llm_calls` simply don't return — caller treats that as "show
+/// `spans` simply don't return — caller treats that as "show
 /// fewer rows on this refresh, more on the next one."
 fn read_calls_by_ids_sync(
     conn: &Connection,
-    call_ids: &[String],
+    span_ids: &[String],
     include_bodies: bool,
-) -> Result<Vec<TurnCallItem>> {
-    if call_ids.is_empty() {
+) -> Result<Vec<TraceSpanItem>> {
+    if span_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = std::iter::repeat_n("?", call_ids.len())
+    let placeholders = std::iter::repeat_n("?", span_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
     // Lite mode (`include_bodies = false`) selects `NULL` for the four
@@ -145,7 +145,7 @@ fn read_calls_by_ids_sync(
     // pages off disk and the rows never need to be transferred to
     // Rust as Strings. The downstream `tokens_estimated` derivation
     // falls back to `false` when response_body is missing — documented
-    // on `StorageBackend::query_turn_calls`.
+    // on `StorageBackend::query_trace_spans`.
     let body_columns: &str = if include_bodies {
         "request_body, response_body, request_headers, response_headers"
     } else {
@@ -166,7 +166,7 @@ fn read_calls_by_ids_sync(
             request_path, client_ip, client_port,
             server_ip, server_port,
             {body_columns}
-        FROM llm_calls
+        FROM spans
         WHERE id IN ({placeholders})
         ORDER BY request_time ASC, complete_time ASC"
     );
@@ -175,7 +175,7 @@ fn read_calls_by_ids_sync(
         .prepare(&sql)
         .map_err(|e| AppError::Storage(format!("failed to prepare turn_calls step2: {e}")))?;
     let mut rows = stmt
-        .query(duckdb::params_from_iter(call_ids.iter()))
+        .query(duckdb::params_from_iter(span_ids.iter()))
         .map_err(|e| AppError::Storage(format!("failed to execute turn_calls step2: {e}")))?;
 
     let mut items = Vec::new();
@@ -185,7 +185,7 @@ fn read_calls_by_ids_sync(
         .map_err(|e| AppError::Storage(format!("row error: {e}")))?
     {
         seq += 1;
-        items.push(TurnCallItem {
+        items.push(TraceSpanItem {
             id: row
                 .get(0)
                 .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
@@ -272,7 +272,7 @@ fn read_calls_by_ids_sync(
 }
 
 impl DuckDbBackend {
-    pub(crate) async fn write_calls(&self, calls: Vec<LlmCall>) -> Result<()> {
+    pub(crate) async fn write_spans(&self, calls: Vec<LlmCall>) -> Result<()> {
         if calls.is_empty() {
             return Ok(());
         }
@@ -286,7 +286,7 @@ impl DuckDbBackend {
                 return Err(crate::fault_injection::disk_full_error());
             }
         }
-        let conn = self.write_calls_conn.clone();
+        let conn = self.write_spans_conn.clone();
         tokio::task::spawn_blocking(move || {
             // Serialize/format outside the writer Mutex so the lock is held
             // only for the append + flush.
@@ -296,7 +296,7 @@ impl DuckDbBackend {
                 .lock()
                 .map_err(|e| AppError::Storage(format!("failed to lock writer: {e}")))?;
             let mut appender = conn
-                .appender("llm_calls")
+                .appender("spans")
                 .map_err(|e| AppError::Storage(format!("failed to create appender: {e}")))?;
             for p in &prepared {
                 appender
@@ -338,6 +338,10 @@ impl DuckDbBackend {
                         p.process_pid,
                         p.process_comm,
                         p.process_exe,
+                        // `kind` (tail column). Every wire-captured span is an
+                        // LLM call today; written as a literal so the domain
+                        // model stays free of a field that has one value.
+                        "llm",
                     ])
                     .map_err(|e| AppError::Storage(format!("failed to append call: {e}")))?;
             }
@@ -350,7 +354,7 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    pub(crate) async fn query_calls(&self, query: &CallsQuery) -> Result<CallsPage> {
+    pub(crate) async fn query_spans(&self, query: &SpansQuery) -> Result<SpansPage> {
         const VALID_SORT_FIELDS: &[&str] = &[
             "request_time",
             "status_code",
@@ -459,7 +463,7 @@ impl DuckDbBackend {
             let sort_by = &query.sort_by;
 
             // COUNT query
-            let count_sql = format!("SELECT COUNT(*) FROM llm_calls WHERE {where_sql}");
+            let count_sql = format!("SELECT COUNT(*) FROM spans WHERE {where_sql}");
             let mut count_stmt = conn
                 .prepare(&count_sql)
                 .map_err(|e| AppError::Storage(format!("failed to prepare count query: {e}")))?;
@@ -476,7 +480,7 @@ impl DuckDbBackend {
                  client_ip, server_ip, server_port, request_path, response_body, \
                  is_agent_request, tool_surface, agent_topology, tool_call_count, tool_names_json, \
                  process_pid, process_comm, process_exe \
-                 FROM llm_calls WHERE {where_sql} \
+                 FROM spans WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
             );
@@ -514,7 +518,7 @@ impl DuckDbBackend {
                     .unwrap_or_default();
                 let process = read_process(row, 22, 23, 24)
                     .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
-                items.push(CallListItem {
+                items.push(SpanListItem {
                     id: row
                         .get(0)
                         .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
@@ -579,13 +583,13 @@ impl DuckDbBackend {
                 });
             }
 
-            Ok(CallsPage { total, items })
+            Ok(SpansPage { total, items })
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    pub(crate) async fn query_call_by_id(&self, id: &str) -> Result<Option<CallDetail>> {
+    pub(crate) async fn query_span_by_id(&self, id: &str) -> Result<Option<SpanDetail>> {
         let conn = self.read_pool.acquire().await?;
         let id = id.to_string();
 
@@ -607,7 +611,7 @@ impl DuckDbBackend {
                     is_agent_request, tool_surface, agent_topology,
                     tool_call_count, tool_names_json,
                     process_pid, process_comm, process_exe
-                FROM llm_calls
+                FROM spans
                 WHERE id = ?
                 LIMIT 1
             ";
@@ -627,7 +631,7 @@ impl DuckDbBackend {
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or_default();
-                Ok(CallDetail {
+                Ok(SpanDetail {
                     id: row.get(0)?,
                     source_id: row.get(1)?,
                     request_time: row.get(2)?,
@@ -676,20 +680,20 @@ impl DuckDbBackend {
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    pub(crate) async fn query_turn_calls(
+    pub(crate) async fn query_trace_spans(
         &self,
         turn_id: &str,
         include_bodies: bool,
-    ) -> Result<Vec<TurnCallItem>> {
+    ) -> Result<Vec<TraceSpanItem>> {
         let conn = self.read_pool.acquire().await?;
         let turn_id = turn_id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            // Step 1: fetch the turn's call_ids by PK. JSON-array column is
-            // parsed with the same helper as query_turn_by_id.
-            let call_ids_raw: Option<String> = {
+            // Step 1: fetch the turn's span_ids by PK. JSON-array column is
+            // parsed with the same helper as query_trace_by_id.
+            let span_ids_raw: Option<String> = {
                 let mut stmt = conn
-                    .prepare("SELECT call_ids FROM agent_turns WHERE turn_id = ?")
+                    .prepare("SELECT span_ids FROM traces WHERE turn_id = ?")
                     .map_err(|e| {
                         AppError::Storage(format!("failed to prepare turn_calls step1: {e}"))
                     })?;
@@ -706,28 +710,28 @@ impl DuckDbBackend {
                 }
             };
 
-            let call_ids = parse_json_string_list(call_ids_raw.as_deref());
-            // Step 2 lives in a shared helper so `query_calls_by_ids` (used
-            // by the API for in-progress turns whose call_ids come from
+            let span_ids = parse_json_string_list(span_ids_raw.as_deref());
+            // Step 2 lives in a shared helper so `query_spans_by_ids` (used
+            // by the API for in-progress turns whose span_ids come from
             // the in-memory registry) can reuse the exact same projection.
-            read_calls_by_ids_sync(&conn, &call_ids, include_bodies)
+            read_calls_by_ids_sync(&conn, &span_ids, include_bodies)
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
     }
 
-    pub(crate) async fn query_calls_by_ids(
+    pub(crate) async fn query_spans_by_ids(
         &self,
-        call_ids: &[String],
+        span_ids: &[String],
         include_bodies: bool,
-    ) -> Result<Vec<TurnCallItem>> {
-        if call_ids.is_empty() {
+    ) -> Result<Vec<TraceSpanItem>> {
+        if span_ids.is_empty() {
             return Ok(Vec::new());
         }
         let conn = self.read_pool.acquire().await?;
-        let call_ids: Vec<String> = call_ids.to_vec();
+        let span_ids: Vec<String> = span_ids.to_vec();
         tokio::task::spawn_blocking(move || {
-            read_calls_by_ids_sync(&conn, &call_ids, include_bodies)
+            read_calls_by_ids_sync(&conn, &span_ids, include_bodies)
         })
         .await
         .map_err(|e| AppError::Storage(format!("spawn_blocking failed: {e}")))?
@@ -794,16 +798,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_calls_single() {
+    async fn test_write_spans_single() {
         let backend = in_memory();
         backend.init().await.unwrap();
 
         let call = sample_call();
-        backend.write_calls(vec![call]).await.unwrap();
+        backend.write_spans(vec![call]).await.unwrap();
 
         let conn = backend.test_conn().lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, model, is_stream, input_tokens FROM llm_calls")
+            .prepare("SELECT id, model, is_stream, input_tokens FROM spans")
             .unwrap();
         let row = stmt
             .query_row([], |row| {
@@ -822,16 +826,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_calls_new_fields() {
+    async fn test_write_spans_new_fields() {
         let backend = in_memory();
         backend.init().await.unwrap();
 
         let call = sample_call();
-        backend.write_calls(vec![call]).await.unwrap();
+        backend.write_spans(vec![call]).await.unwrap();
 
         let conn = backend.test_conn().lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT response_id, request_headers, response_headers FROM llm_calls")
+            .prepare("SELECT response_id, request_headers, response_headers FROM spans")
             .unwrap();
         let (resp_id, req_hdr, resp_hdr) = stmt
             .query_row([], |row| {
@@ -854,36 +858,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_calls_id_present() {
+    async fn test_write_spans_id_present() {
         let backend = in_memory();
         backend.init().await.unwrap();
 
         let call = sample_call();
-        backend.write_calls(vec![call]).await.unwrap();
+        backend.write_spans(vec![call]).await.unwrap();
 
         let conn = backend.test_conn().lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id FROM llm_calls").unwrap();
+        let mut stmt = conn.prepare("SELECT id FROM spans").unwrap();
         let id: String = stmt.query_row([], |row| row.get(0)).unwrap();
         assert_eq!(id, "01912345-6789-7abc-def0-123456789abc");
     }
 
     #[tokio::test]
-    async fn test_write_calls_empty_batch() {
+    async fn test_write_spans_empty_batch() {
         let backend = in_memory();
         backend.init().await.unwrap();
-        backend.write_calls(vec![]).await.unwrap();
+        backend.write_spans(vec![]).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_query_calls_basic() {
+    async fn test_query_spans_basic() {
         let backend = in_memory();
         backend.init().await.unwrap();
 
         let call = sample_call();
         let call_time = call.request_time;
-        backend.write_calls(vec![call]).await.unwrap();
+        backend.write_spans(vec![call]).await.unwrap();
 
-        let query = CallsQuery {
+        let query = SpansQuery {
             time_range: TimeRange {
                 start_us: call_time - 1,
                 end_us: call_time + 1_000_000,
@@ -901,7 +905,7 @@ mod tests {
             page_size: 10,
         };
 
-        let page = backend.query_calls(&query).await.unwrap();
+        let page = backend.query_spans(&query).await.unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].id, "01912345-6789-7abc-def0-123456789abc");
@@ -912,7 +916,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_calls_filter_status_code() {
+    async fn test_query_spans_filter_status_code() {
         let backend = in_memory();
         backend.init().await.unwrap();
 
@@ -925,9 +929,9 @@ mod tests {
         call_429.status_code = Some(429);
 
         let call_time = call_200.request_time;
-        backend.write_calls(vec![call_200, call_429]).await.unwrap();
+        backend.write_spans(vec![call_200, call_429]).await.unwrap();
 
-        let query = CallsQuery {
+        let query = SpansQuery {
             time_range: TimeRange {
                 start_us: call_time - 1,
                 end_us: call_time + 1_000_000,
@@ -945,7 +949,7 @@ mod tests {
             page_size: 10,
         };
 
-        let page = backend.query_calls(&query).await.unwrap();
+        let page = backend.query_spans(&query).await.unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].id, "call-429");
@@ -953,16 +957,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_call_by_id() {
+    async fn test_query_span_by_id() {
         let backend = in_memory();
         backend.init().await.unwrap();
 
         let call = sample_call();
-        backend.write_calls(vec![call]).await.unwrap();
+        backend.write_spans(vec![call]).await.unwrap();
 
         // Query by existing id
         let detail = backend
-            .query_call_by_id("01912345-6789-7abc-def0-123456789abc")
+            .query_span_by_id("01912345-6789-7abc-def0-123456789abc")
             .await
             .unwrap();
         assert!(detail.is_some());
@@ -980,7 +984,7 @@ mod tests {
         assert!(detail.response_headers.is_some());
 
         // Query nonexistent id
-        let not_found = backend.query_call_by_id("does-not-exist").await.unwrap();
+        let not_found = backend.query_span_by_id("does-not-exist").await.unwrap();
         assert!(not_found.is_none());
     }
 }

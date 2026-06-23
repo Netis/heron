@@ -488,7 +488,7 @@ pub struct QueueConfig {
     /// llm stage → shared storage sink (LlmCall records)
     #[serde(default = "default_queue_capacity")]
     pub storage_calls: usize,
-    /// turn stage → shared storage sink (AgentTurn records)
+    /// turn stage → shared storage sink (Trace records)
     #[serde(default = "default_queue_capacity")]
     pub storage_turns: usize,
     /// metrics stage → shared storage sink (LlmMetric records)
@@ -599,12 +599,14 @@ pub struct RetentionConfig {
     pub enabled: bool,
     #[serde(default = "default_retention_check_interval_secs")]
     pub check_interval_secs: u64,
-    /// Max age in days for `llm_calls`. `0` = never expire.
-    #[serde(default = "default_calls_retention_days")]
-    pub calls: u32,
-    /// Max age in days for `agent_turns`. `0` = never expire.
-    #[serde(default = "default_turns_retention_days")]
-    pub turns: u32,
+    /// Max age in days for `spans` (formerly `calls`). `0` = never expire.
+    /// The legacy `calls` key is still accepted via serde alias.
+    #[serde(default = "default_spans_retention_days", alias = "calls")]
+    pub spans: u32,
+    /// Max age in days for `traces` (formerly `turns`). `0` = never expire.
+    /// The legacy `turns` key is still accepted via serde alias.
+    #[serde(default = "default_traces_retention_days", alias = "turns")]
+    pub traces: u32,
     /// Max age in days for `http_exchanges`. `0` = never expire. Raw headers +
     /// bodies make this the bulkiest table, so a short forensics window keeps
     /// storage bounded.
@@ -631,8 +633,8 @@ impl Default for RetentionConfig {
         Self {
             enabled: default_retention_enabled(),
             check_interval_secs: default_retention_check_interval_secs(),
-            calls: default_calls_retention_days(),
-            turns: default_turns_retention_days(),
+            spans: default_spans_retention_days(),
+            traces: default_traces_retention_days(),
             http_exchanges: default_http_exchanges_retention_days(),
             metrics: HashMap::new(),
             unknown_granularities: Vec::new(),
@@ -644,13 +646,13 @@ fn default_retention_enabled() -> bool {
     true
 }
 
-fn default_calls_retention_days() -> u32 {
+fn default_spans_retention_days() -> u32 {
     30
 }
 
-fn default_turns_retention_days() -> u32 {
-    // Must satisfy turns <= calls (see ConfigIssue::TurnsRetentionExceedsCalls).
-    // Kept equal to calls so the default deploy is consistent without forcing
+fn default_traces_retention_days() -> u32 {
+    // Must satisfy traces <= spans (see ConfigIssue::TracesRetentionExceedsSpans).
+    // Kept equal to spans so the default deploy is consistent without forcing
     // operators to think about the dependency.
     30
 }
@@ -1033,14 +1035,14 @@ pub enum ConfigIssue {
     /// Fail validation hard so the operator sees the problem before deploy.
     UnsafePcapDumpPipelineName { pipeline: String },
     /// `agent_turns` retention outlives `llm_calls` retention, so the
-    /// no-JOIN turn-detail read (`agent_turns.call_ids` → `llm_calls`
+    /// no-JOIN turn-detail read (`agent_turns.span_ids` → `llm_calls`
     /// IN-lookup) returns empty/partial calls for surviving turns once the
-    /// calls sweep crosses their `request_time`. `turns_days = 0` is the
+    /// calls sweep crosses their `request_time`. `traces_days = 0` is the
     /// sentinel for "never expire" (which always violates a finite
-    /// `calls_days`); finite-vs-finite triggers when `turns_days > calls_days`.
-    /// Only emitted when `calls_days > 0` — infinite calls retention can
+    /// `spans_days`); finite-vs-finite triggers when `traces_days > spans_days`.
+    /// Only emitted when `spans_days > 0` — infinite calls retention can
     /// satisfy any turns retention.
-    TurnsRetentionExceedsCalls { turns_days: u32, calls_days: u32 },
+    TracesRetentionExceedsSpans { traces_days: u32, spans_days: u32 },
 }
 
 impl ConfigIssue {
@@ -1058,7 +1060,7 @@ impl ConfigIssue {
             | Self::StoragePathParentUnwritable { .. }
             | Self::UnknownRetentionGranularity(_)
             | Self::UnsafePcapDumpPipelineName { .. }
-            | Self::TurnsRetentionExceedsCalls { .. } => IssueSeverity::Error,
+            | Self::TracesRetentionExceedsSpans { .. } => IssueSeverity::Error,
         }
     }
 }
@@ -1125,21 +1127,21 @@ impl std::fmt::Display for ConfigIssue {
                  sanitization, or '.' / '..'); the runtime cannot build a \
                  dump directory path"
             ),
-            Self::TurnsRetentionExceedsCalls {
-                turns_days,
-                calls_days,
+            Self::TracesRetentionExceedsSpans {
+                traces_days,
+                spans_days,
             } => {
-                let turns_str = if *turns_days == 0 {
+                let turns_str = if *traces_days == 0 {
                     "never expire".to_string()
                 } else {
-                    format!("{turns_days}d")
+                    format!("{traces_days}d")
                 };
                 write!(
                     f,
-                    "storage.retention.turns ({turns_str}) outlives \
-                     storage.retention.calls ({calls_days}d): turns whose \
-                     llm_calls have been pruned will show empty/partial call \
-                     lists. Set turns <= calls (or set calls = 0 for infinite)."
+                    "storage.retention.traces ({turns_str}) outlives \
+                     storage.retention.spans ({spans_days}d): traces whose \
+                     spans have been pruned will show empty/partial span \
+                     lists. Set traces <= spans (or set spans = 0 for infinite)."
                 )
             }
         }
@@ -1266,17 +1268,17 @@ impl AppConfig {
             issues.push(ConfigIssue::UnknownRetentionGranularity(unknown.clone()));
         }
 
-        // agent_turns references llm_calls via JSON call_ids; the no-JOIN
+        // agent_turns references llm_calls via JSON span_ids; the no-JOIN
         // turn-detail read trusts that referenced calls still exist. If turns
         // outlive calls, surviving turns end up pointing at deleted call ids
         // and the detail view shows empty/partial results. 0 = never expire,
-        // so finite calls_days with any larger (or 0) turns_days is broken.
-        let calls_days = self.storage.retention.calls;
-        let turns_days = self.storage.retention.turns;
-        if calls_days > 0 && (turns_days == 0 || turns_days > calls_days) {
-            issues.push(ConfigIssue::TurnsRetentionExceedsCalls {
-                turns_days,
-                calls_days,
+        // so finite spans_days with any larger (or 0) traces_days is broken.
+        let spans_days = self.storage.retention.spans;
+        let traces_days = self.storage.retention.traces;
+        if spans_days > 0 && (traces_days == 0 || traces_days > spans_days) {
+            issues.push(ConfigIssue::TracesRetentionExceedsSpans {
+                traces_days,
+                spans_days,
             });
         }
 
@@ -1339,9 +1341,9 @@ mod phase2_tests {
         let cfg = RetentionConfig::default();
         assert!(cfg.enabled);
         assert_eq!(cfg.check_interval_secs, 3600);
-        assert_eq!(cfg.calls, 30);
-        // turns must not exceed calls — see ConfigIssue::TurnsRetentionExceedsCalls.
-        assert_eq!(cfg.turns, 30);
+        assert_eq!(cfg.spans, 30);
+        // turns must not exceed calls — see ConfigIssue::TracesRetentionExceedsSpans.
+        assert_eq!(cfg.traces, 30);
         assert_eq!(cfg.http_exchanges, 7);
         // metrics map stays empty — per-granularity defaults are merged at
         // policy-build time in h-storage so users can override one label
@@ -1353,9 +1355,9 @@ mod phase2_tests {
     fn storage_config_embeds_retention_defaults() {
         let cfg = StorageConfig::default();
         assert!(cfg.retention.enabled);
-        assert_eq!(cfg.retention.calls, 30);
-        // turns must not exceed calls — see ConfigIssue::TurnsRetentionExceedsCalls.
-        assert_eq!(cfg.retention.turns, 30);
+        assert_eq!(cfg.retention.spans, 30);
+        // turns must not exceed calls — see ConfigIssue::TracesRetentionExceedsSpans.
+        assert_eq!(cfg.retention.traces, 30);
     }
 
     #[test]
@@ -1378,8 +1380,8 @@ mod phase2_tests {
             .expect("deserialize retention");
         assert!(cfg.enabled);
         assert_eq!(cfg.check_interval_secs, 60);
-        assert_eq!(cfg.calls, 7);
-        assert_eq!(cfg.turns, 30);
+        assert_eq!(cfg.spans, 7);
+        assert_eq!(cfg.traces, 30);
         assert_eq!(cfg.metrics.get("10s"), Some(&1));
         assert_eq!(cfg.metrics.get("1m"), Some(&7));
         assert_eq!(cfg.metrics.get("1h"), Some(&365));
@@ -1720,19 +1722,19 @@ mod phase2_tests {
         assert!(
             issues.iter().any(|i| matches!(
                 i,
-                ConfigIssue::TurnsRetentionExceedsCalls {
-                    turns_days: 30,
-                    calls_days: 7
+                ConfigIssue::TracesRetentionExceedsSpans {
+                    traces_days: 30,
+                    spans_days: 7
                 }
             )),
-            "expected TurnsRetentionExceedsCalls(30, 7), got {issues:?}"
+            "expected TracesRetentionExceedsSpans(30, 7), got {issues:?}"
         );
     }
 
     #[test]
     fn validate_turns_infinite_with_calls_finite_is_error() {
         // turns = 0 (never expire) and calls > 0 → turns outlive every call.
-        // Detected as the same issue (sentinel turns_days = 0).
+        // Detected as the same issue (sentinel traces_days = 0).
         let toml = r#"
             [[pipeline]]
             name = "p"
@@ -1749,12 +1751,12 @@ mod phase2_tests {
         assert!(
             issues.iter().any(|i| matches!(
                 i,
-                ConfigIssue::TurnsRetentionExceedsCalls {
-                    turns_days: 0,
-                    calls_days: 7
+                ConfigIssue::TracesRetentionExceedsSpans {
+                    traces_days: 0,
+                    spans_days: 7
                 }
             )),
-            "expected TurnsRetentionExceedsCalls(0, 7), got {issues:?}"
+            "expected TracesRetentionExceedsSpans(0, 7), got {issues:?}"
         );
     }
 
@@ -1777,8 +1779,8 @@ mod phase2_tests {
         assert!(
             !issues
                 .iter()
-                .any(|i| matches!(i, ConfigIssue::TurnsRetentionExceedsCalls { .. })),
-            "expected no TurnsRetentionExceedsCalls, got {issues:?}"
+                .any(|i| matches!(i, ConfigIssue::TracesRetentionExceedsSpans { .. })),
+            "expected no TracesRetentionExceedsSpans, got {issues:?}"
         );
     }
 
@@ -1800,8 +1802,8 @@ mod phase2_tests {
         assert!(
             !issues
                 .iter()
-                .any(|i| matches!(i, ConfigIssue::TurnsRetentionExceedsCalls { .. })),
-            "expected no TurnsRetentionExceedsCalls, got {issues:?}"
+                .any(|i| matches!(i, ConfigIssue::TracesRetentionExceedsSpans { .. })),
+            "expected no TracesRetentionExceedsSpans, got {issues:?}"
         );
     }
 
@@ -1821,7 +1823,7 @@ mod phase2_tests {
         assert!(
             !issues
                 .iter()
-                .any(|i| matches!(i, ConfigIssue::TurnsRetentionExceedsCalls { .. })),
+                .any(|i| matches!(i, ConfigIssue::TracesRetentionExceedsSpans { .. })),
             "default config raised retention constraint: {issues:?}"
         );
     }

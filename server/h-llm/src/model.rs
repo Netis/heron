@@ -96,7 +96,7 @@ pub struct LlmCall {
 pub struct AgentCallInfo {
     /// Short stable agent name (e.g. `"claude-cli"`). Doubles as the profile
     /// selector (look up via `AgentProfileRegistry::find_by_name`) and the
-    /// persisted `AgentTurn.agent_kind` storage value.
+    /// persisted `Trace.agent_kind` storage value.
     pub agent_kind: &'static str,
     pub session_id: String,
     /// `Some(name)` if this call belongs to a sub-agent (e.g. `"task"` for

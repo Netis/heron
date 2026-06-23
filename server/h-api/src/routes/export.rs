@@ -20,7 +20,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Response, StatusCode};
-use h_storage::query::{TurnDetail, TurnsQuery};
+use h_storage::query::{TraceDetail, TracesQuery};
 use h_storage::StorageBackend;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -46,7 +46,7 @@ pub struct ExportTrajectoryParams {
     pub session_id: Option<String>,
 }
 
-/// Mirrors `agent_turns::TurnsParams` (the list filters) so a batch export
+/// Mirrors `traces::TracesParams` (the list filters) so a batch export
 /// covers exactly the turns the user is looking at.
 #[derive(Debug, Deserialize)]
 pub struct ExportBatchParams {
@@ -86,7 +86,7 @@ pub async fn single(
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| ApiError::InvalidParam("turn scope requires turn_id".into()))?;
             let detail = storage
-                .query_turn_by_id(turn_id)
+                .query_trace_by_id(turn_id)
                 .await?
                 .ok_or_else(|| ApiError::NotFound(format!("turn not found: {turn_id}")))?;
             (detail, "turn", format!("trajectory-{turn_id}.jsonl"))
@@ -130,7 +130,7 @@ pub async fn batch(
         .collect::<Result<Vec<_>, _>>()?;
 
     let page_size = p.limit.unwrap_or(1000).clamp(1, MAX_BATCH_TURNS);
-    let query = TurnsQuery {
+    let query = TracesQuery {
         time_range: to_time_range(p.start, p.end)?,
         filter: to_dimension_filter(&p.wire_api, &p.model, &p.server_ip, &None),
         client_ips: parse_csv(&p.client_ip),
@@ -144,12 +144,12 @@ pub async fn batch(
         include_proxy_hops: p.include_proxy_hops,
     };
 
-    let page = storage.query_turns(&query).await?;
+    let page = storage.query_traces(&query).await?;
     let total = page.items.len();
     let mut lines: Vec<String> = Vec::new();
     for item in &page.items {
-        // TurnListItem lacks final_call_id; resolve the full detail per turn.
-        let Some(detail) = storage.query_turn_by_id(&item.turn_id).await? else {
+        // TraceListItem lacks final_call_id; resolve the full detail per turn.
+        let Some(detail) = storage.query_trace_by_id(&item.turn_id).await? else {
             continue;
         };
         match line_from_turn_detail(&storage, &detail, "turn").await {
@@ -174,9 +174,9 @@ async fn resolve_session_last_turn(
     storage: &Arc<dyn StorageBackend>,
     source_id: &str,
     session_id: &str,
-) -> Result<Option<TurnDetail>, ApiError> {
+) -> Result<Option<TraceDetail>, ApiError> {
     let page = storage
-        .query_session_turns(&h_storage::query::SessionTurnsQuery {
+        .query_session_traces(&h_storage::query::SessionTracesQuery {
             source_id: source_id.to_string(),
             session_id: session_id.to_string(),
             cursor: None,
@@ -186,10 +186,10 @@ async fn resolve_session_last_turn(
     let Some(last) = page.items.first() else {
         return Ok(None);
     };
-    Ok(storage.query_turn_by_id(&last.turn_id).await?)
+    Ok(storage.query_trace_by_id(&last.turn_id).await?)
 }
 
-/// Reconstruct one trajectory line from a resolved `TurnDetail`.
+/// Reconstruct one trajectory line from a resolved `TraceDetail`.
 ///
 /// Outer `Result` = a genuine storage/internal failure (500 on the single path;
 /// counted as skipped on the batch path). Inner `Result` = `Ok(line)` or
@@ -197,14 +197,14 @@ async fn resolve_session_last_turn(
 /// truncated/missing body) the caller turns into a 400 (single) or a skip (batch).
 async fn line_from_turn_detail(
     storage: &Arc<dyn StorageBackend>,
-    detail: &TurnDetail,
+    detail: &TraceDetail,
     scope_label: &str,
 ) -> Result<Result<String, String>, ApiError> {
     let Some(final_call_id) = detail.final_call_id.clone() else {
         return Ok(Err("turn has no terminal call".to_string()));
     };
     let calls = storage
-        .query_calls_by_ids(&[final_call_id.clone()], true)
+        .query_spans_by_ids(&[final_call_id.clone()], true)
         .await?;
     let Some(call) = calls.into_iter().next() else {
         return Ok(Err("terminal call body unavailable".to_string()));

@@ -36,7 +36,7 @@ use h_common::error::Result;
 use h_llm::model::LlmCall;
 use h_metrics::model::{LlmFinishMetric, LlmMetric};
 use h_protocol::HttpExchange;
-use h_turn::{AgentTurn, PairCandidate};
+use h_turn::{Trace, PairCandidate};
 
 use h_storage::query::*;
 use h_storage::retention::{RetentionPolicy, RetentionReport};
@@ -87,8 +87,8 @@ impl StorageBackend for ClickHouseBackend {
         schema::init(self).await
     }
 
-    async fn write_calls(&self, calls: Vec<LlmCall>) -> Result<()> {
-        ClickHouseBackend::write_calls(self, calls).await
+    async fn write_spans(&self, calls: Vec<LlmCall>) -> Result<()> {
+        ClickHouseBackend::write_spans(self, calls).await
     }
 
     async fn write_metrics(&self, metrics: Vec<LlmMetric>) -> Result<()> {
@@ -99,8 +99,8 @@ impl StorageBackend for ClickHouseBackend {
         ClickHouseBackend::write_finish_metrics(self, metrics).await
     }
 
-    async fn write_turns(&self, turns: Vec<AgentTurn>) -> Result<()> {
-        ClickHouseBackend::write_turns(self, turns).await
+    async fn write_traces(&self, turns: Vec<Trace>) -> Result<()> {
+        ClickHouseBackend::write_traces(self, turns).await
     }
 
     async fn write_exchanges(&self, exchanges: Vec<HttpExchange>) -> Result<()> {
@@ -171,36 +171,36 @@ impl StorageBackend for ClickHouseBackend {
         ClickHouseBackend::query_finish_reasons(self, query).await
     }
 
-    async fn query_calls(&self, query: &CallsQuery) -> Result<CallsPage> {
-        ClickHouseBackend::query_calls(self, query).await
+    async fn query_spans(&self, query: &SpansQuery) -> Result<SpansPage> {
+        ClickHouseBackend::query_spans(self, query).await
     }
 
-    async fn query_call_by_id(&self, id: &str) -> Result<Option<CallDetail>> {
-        ClickHouseBackend::query_call_by_id(self, id).await
+    async fn query_span_by_id(&self, id: &str) -> Result<Option<SpanDetail>> {
+        ClickHouseBackend::query_span_by_id(self, id).await
     }
 
-    async fn query_turns(&self, query: &TurnsQuery) -> Result<TurnsPage> {
-        ClickHouseBackend::query_turns(self, query).await
+    async fn query_traces(&self, query: &TracesQuery) -> Result<TracesPage> {
+        ClickHouseBackend::query_traces(self, query).await
     }
 
-    async fn query_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnDetail>> {
-        ClickHouseBackend::query_turn_by_id(self, turn_id).await
+    async fn query_trace_by_id(&self, turn_id: &str) -> Result<Option<TraceDetail>> {
+        ClickHouseBackend::query_trace_by_id(self, turn_id).await
     }
 
-    async fn query_turn_calls(
+    async fn query_trace_spans(
         &self,
         turn_id: &str,
         include_bodies: bool,
-    ) -> Result<Vec<TurnCallItem>> {
-        ClickHouseBackend::query_turn_calls(self, turn_id, include_bodies).await
+    ) -> Result<Vec<TraceSpanItem>> {
+        ClickHouseBackend::query_trace_spans(self, turn_id, include_bodies).await
     }
 
-    async fn query_calls_by_ids(
+    async fn query_spans_by_ids(
         &self,
-        call_ids: &[String],
+        span_ids: &[String],
         include_bodies: bool,
-    ) -> Result<Vec<TurnCallItem>> {
-        ClickHouseBackend::query_calls_by_ids(self, call_ids, include_bodies).await
+    ) -> Result<Vec<TraceSpanItem>> {
+        ClickHouseBackend::query_spans_by_ids(self, span_ids, include_bodies).await
     }
 
     async fn query_sessions(&self, query: &SessionListQuery) -> Result<SessionsPage> {
@@ -215,11 +215,11 @@ impl StorageBackend for ClickHouseBackend {
         ClickHouseBackend::query_session_by_id(self, source_id, session_id).await
     }
 
-    async fn query_session_turns(
+    async fn query_session_traces(
         &self,
-        query: &SessionTurnsQuery,
-    ) -> Result<SessionTurnsPage> {
-        ClickHouseBackend::query_session_turns(self, query).await
+        query: &SessionTracesQuery,
+    ) -> Result<SessionTracesPage> {
+        ClickHouseBackend::query_session_traces(self, query).await
     }
 
     async fn query_distinct_wire_apis(&self) -> Result<Vec<String>> {
@@ -257,11 +257,11 @@ impl StorageBackend for ClickHouseBackend {
         ClickHouseBackend::query_pair_candidates(self, start_us, end_us).await
     }
 
-    async fn update_turn_metadata(&self, turn_id: &str, patch: serde_json::Value) -> Result<()> {
-        ClickHouseBackend::update_turn_metadata(self, turn_id, patch).await
+    async fn update_trace_metadata(&self, turn_id: &str, patch: serde_json::Value) -> Result<()> {
+        ClickHouseBackend::update_trace_metadata(self, turn_id, patch).await
     }
 
-    // checkpoint_turns_writer / reopen_all_connections use the trait's default
+    // checkpoint_traces_writer / reopen_all_connections use the trait's default
     // no-op impls: the clickhouse `Client` is a cheap HTTP pool with no
     // in-process MVCC/index state to compact or reopen.
 }

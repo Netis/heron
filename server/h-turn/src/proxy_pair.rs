@@ -1,4 +1,4 @@
-//! Passive llmproxy pair detection — folds 2+ `AgentTurn` records that
+//! Passive llmproxy pair detection — folds 2+ `Trace` records that
 //! represent the same logical LLM call observed at different network
 //! vantage points.
 //!
@@ -6,7 +6,7 @@
 //!
 //! 1. **Real proxy hops** — e.g. an external client → haproxy_glm5 container
 //!    → sglang container. Both legs cross interfaces Heron captures
-//!    so each becomes its own `AgentTurn`. The proxy_in leg strictly
+//!    so each becomes its own `Trace`. The proxy_in leg strictly
 //!    contains the proxy_out leg in event time.
 //!
 //! 2. **Multi-interface double-capture** — libpcap on `any` interface
@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::model::AgentTurn;
+use crate::model::Trace;
 
 /// Role of a turn inside its group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +101,7 @@ pub const MAX_REQ_TIME_GAP_US: i64 = 100_000;
 /// (start_gap 2ms, end_gap 1ms) still classifies as strict-nesting.
 pub const MIRROR_TIME_TOLERANCE_US: i64 = 500;
 
-/// Light fingerprint of an `AgentTurn` carrying just the fields the
+/// Light fingerprint of an `Trace` carrying just the fields the
 /// pairing rule needs. Pulled from DB via a narrow projection so the
 /// sweeper doesn't materialize every column.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,10 +356,10 @@ pub fn group_all(set: &[PairCandidate]) -> Vec<ProxyGroup> {
     groups
 }
 
-/// Build a `PairCandidate` from an `AgentTurn`, used by callers that have
+/// Build a `PairCandidate` from an `Trace`, used by callers that have
 /// the full turn in memory (e.g. unit tests). Production callers build
 /// candidates directly from a DB projection.
-pub fn candidate_from_turn(t: &AgentTurn) -> PairCandidate {
+pub fn candidate_from_turn(t: &Trace) -> PairCandidate {
     PairCandidate {
         turn_id: t.turn_id.clone(),
         session_id: t.session_id.clone(),

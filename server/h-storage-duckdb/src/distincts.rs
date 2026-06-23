@@ -120,7 +120,7 @@ impl DuckDbBackend {
             }
 
             let sql = format!(
-                "SELECT DISTINCT agent_kind FROM agent_turns WHERE {} ORDER BY agent_kind",
+                "SELECT DISTINCT agent_kind FROM traces WHERE {} ORDER BY agent_kind",
                 where_parts.join(" AND ")
             );
             let mut stmt = conn.prepare(&sql).map_err(|e| {
@@ -153,7 +153,7 @@ mod tests {
     use h_metrics::model::LlmMetric;
     use h_storage::query::{DimensionFilter, DistinctAgentKindsQuery, TimeRange};
     use h_storage::StorageBackend;
-    use h_turn::{AgentTurn, TurnStatus};
+    use h_turn::{Trace, TraceStatus};
 
     fn in_memory() -> DuckDbBackend {
         DuckDbBackend::open(":memory:").unwrap()
@@ -220,8 +220,8 @@ mod tests {
         server_ip: &str,
         start_us: i64,
         metadata: serde_json::Value,
-    ) -> AgentTurn {
-        AgentTurn {
+    ) -> Trace {
+        Trace {
             source_id: String::new(),
             turn_id: turn_id.into(),
             session_id: "s1".into(),
@@ -240,13 +240,13 @@ mod tests {
             total_cache_read_input_tokens: 0,
             total_cache_creation_input_tokens: 0,
             total_cost_usd: None,
-            status: TurnStatus::Complete,
+            status: TraceStatus::Complete,
             final_finish_reason: Some("complete".into()),
             user_input_preview: Some("hello".into()),
             user_call_id: None,
             final_answer_preview: Some("world".into()),
             final_call_id: None,
-            call_ids: vec!["call-1".into()],
+            span_ids: vec!["call-1".into()],
             metadata,
             tool_surfaces: vec![],
             tool_call_total: 0,
@@ -341,7 +341,7 @@ mod tests {
 
         let base = 1_700_000_000_000_000_i64;
         backend
-            .write_turns(vec![
+            .write_traces(vec![
                 sample_turn(
                     "t-openclaw",
                     "openclaw",
