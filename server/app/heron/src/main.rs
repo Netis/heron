@@ -361,6 +361,25 @@ async fn run_pipeline(cli: Cli) {
         config.internal_metrics.interval_secs
     );
 
+    // eBPF on-host TLS capture is experimental and opt-in. There is no `--ebpf`
+    // runtime flag — it's enabled via the `ebpf` cargo feature + a `type =
+    // "ebpf"` capture source. When no such source is active, surface a one-line
+    // advisory so the capability is discoverable. eBPF is Linux-only, so we only
+    // nudge there (advising it on macOS would be noise); the `cfg!` runtime check
+    // keeps the block type-checked on every platform.
+    let ebpf_active = effective_pipelines
+        .iter()
+        .flat_map(|def| def.sources.iter())
+        .any(|src| matches!(src, CaptureSourceConfig::Ebpf { .. }));
+    if cfg!(target_os = "linux") && !ebpf_active {
+        tracing::info!(
+            "eBPF on-host TLS capture is experimental and not active in this run — to read \
+             TLS-encrypted traffic at the in-process SSL_read/SSL_write boundary \
+             (per-process attributed, no proxy), build with `--features ebpf` and add a \
+             capture source with `type = \"ebpf\"`. See docs/design/02-capture.md"
+        );
+    }
+
     // Shared cancellation token: capture sources and the retention sweeper
     // both drop out when this fires (Ctrl+C, pipeline failure, etc.).
     let cancel = CancellationToken::new();
