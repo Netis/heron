@@ -56,6 +56,9 @@ struct CallListRow {
     process_pid: Option<u32>,
     process_comm: Option<String>,
     process_exe: Option<String>,
+    attribution_label: Option<String>,
+    attribution_source: String,
+    attribution_confidence: String,
 }
 
 #[derive(Row, Deserialize)]
@@ -94,6 +97,9 @@ struct SpanDetailRow {
     process_pid: Option<u32>,
     process_comm: Option<String>,
     process_exe: Option<String>,
+    attribution_label: Option<String>,
+    attribution_source: String,
+    attribution_confidence: String,
 }
 
 #[derive(Row, Deserialize)]
@@ -120,6 +126,9 @@ struct TurnCallRow {
     response_body: Option<String>,
     request_headers: Option<String>,
     response_headers: Option<String>,
+    attribution_label: Option<String>,
+    attribution_source: String,
+    attribution_confidence: String,
 }
 
 impl ClickHouseBackend {
@@ -145,19 +154,31 @@ impl ClickHouseBackend {
         // Time-range + filter WHERE. Timestamps and numeric ports are
         // interpolated (values we control); user string lists go through
         // `sql_in_list`'s single-quote escaping, valid in ClickHouse.
-        let mut where_parts =
-            vec![time_where("request_time", query.time_range.start_us, query.time_range.end_us)];
+        let mut where_parts = vec![time_where(
+            "request_time",
+            query.time_range.start_us,
+            query.time_range.end_us,
+        )];
         if !query.filter.wire_apis.is_empty() {
-            where_parts.push(format!("wire_api IN ({})", sql_in_list(&query.filter.wire_apis)));
+            where_parts.push(format!(
+                "wire_api IN ({})",
+                sql_in_list(&query.filter.wire_apis)
+            ));
         }
         if !query.filter.models.is_empty() {
             where_parts.push(format!("model IN ({})", sql_in_list(&query.filter.models)));
         }
         if !query.filter.server_ips.is_empty() {
-            where_parts.push(format!("server_ip IN ({})", sql_in_list(&query.filter.server_ips)));
+            where_parts.push(format!(
+                "server_ip IN ({})",
+                sql_in_list(&query.filter.server_ips)
+            ));
         }
         if !query.status_codes.is_empty() {
-            where_parts.push(format!("status_code IN ({})", join_nums(&query.status_codes)));
+            where_parts.push(format!(
+                "status_code IN ({})",
+                join_nums(&query.status_codes)
+            ));
         }
         if !query.finish_reasons.is_empty() {
             where_parts.push(format!(
@@ -169,7 +190,10 @@ impl ClickHouseBackend {
             where_parts.push(format!("client_ip IN ({})", sql_in_list(&query.client_ips)));
         }
         if !query.server_ports.is_empty() {
-            where_parts.push(format!("server_port IN ({})", join_nums(&query.server_ports)));
+            where_parts.push(format!(
+                "server_port IN ({})",
+                join_nums(&query.server_ports)
+            ));
         }
         if let Some(substr) = query
             .request_path_contains
@@ -198,7 +222,8 @@ impl ClickHouseBackend {
              wire_api, model, status_code, is_stream, finish_reason, ttft_ms, e2e_latency_ms, \
              input_tokens, output_tokens, client_ip, server_ip, server_port, request_path, \
              response_body, is_agent_request, tool_surface, agent_topology, tool_call_count, \
-             tool_names_json, process_pid, process_comm, process_exe \
+             tool_names_json, process_pid, process_comm, process_exe, \
+             attribution_label, attribution_source, attribution_confidence \
              FROM spans WHERE {where_sql} \
              ORDER BY {} {sort_order} LIMIT {} OFFSET {offset}",
             query.sort_by, query.page_size,
@@ -224,7 +249,8 @@ impl ClickHouseBackend {
              input_tokens, output_tokens, total_tokens, ttft_ms, e2e_latency_ms, response_id, \
              client_ip, client_port, server_ip, server_port, request_body, response_body, \
              request_headers, response_headers, is_agent_request, tool_surface, agent_topology, \
-             tool_call_count, tool_names_json, process_pid, process_comm, process_exe \
+             tool_call_count, tool_names_json, process_pid, process_comm, process_exe, \
+             attribution_label, attribution_source, attribution_confidence \
              FROM spans WHERE id = '{}' LIMIT 1",
             escape_str(id)
         );
@@ -314,7 +340,7 @@ impl ClickHouseBackend {
              toUnixTimestamp64Milli(complete_time) AS complete_time_ms, \
              wire_api, model, status_code, is_stream, finish_reason, ttft_ms, e2e_latency_ms, \
              input_tokens, output_tokens, request_path, client_ip, client_port, server_ip, \
-             server_port, {body_columns} \
+             server_port, {body_columns}, attribution_label, attribution_source, attribution_confidence \
              FROM spans WHERE id IN ({}) \
              ORDER BY request_time ASC, complete_time ASC",
             sql_in_list(span_ids),
@@ -360,6 +386,9 @@ impl ClickHouseBackend {
                     response_body: r.response_body,
                     request_headers: r.request_headers,
                     response_headers: r.response_headers,
+                    attribution_label: r.attribution_label,
+                    attribution_source: r.attribution_source,
+                    attribution_confidence: r.attribution_confidence,
                 }
             })
             .collect();
@@ -415,6 +444,9 @@ fn call_list_item(r: CallListRow) -> SpanListItem {
         tool_call_count: r.tool_call_count,
         tool_names,
         process,
+        attribution_label: r.attribution_label,
+        attribution_source: r.attribution_source,
+        attribution_confidence: r.attribution_confidence,
     }
 }
 
@@ -457,5 +489,8 @@ fn call_detail(r: SpanDetailRow) -> SpanDetail {
         tool_call_count: r.tool_call_count,
         tool_names,
         process,
+        attribution_label: r.attribution_label,
+        attribution_source: r.attribution_source,
+        attribution_confidence: r.attribution_confidence,
     }
 }

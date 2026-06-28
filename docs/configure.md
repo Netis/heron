@@ -187,6 +187,43 @@ Keys mirror the `pipeline-health` page's queue cell labels (drop the
 the others are per-pipeline. Bump the queue named by the first cell that
 reddens; lower them if memory is tight.
 
+## `[attribution]` — explicit identity labels
+
+Heron records an attribution label and confidence on every reconstructed
+span:
+
+- `high` — the label came from an eBPF process attribution or from a
+  configured trusted request header.
+- `ambiguous` — Heron reconstructed the call, but the capture point did
+  not expose a reliable identity label.
+
+eBPF process attribution wins when present. For passive packet capture,
+gateway capture, or cloud-probe traffic where Heron cannot see the local
+process, you can ask Heron to trust one or more HTTP request headers as
+the attribution label:
+
+```toml
+[attribution]
+request_headers = ["x-agent-id", "x-workspace-id"]
+```
+
+Header matching is case-insensitive and order-preserving; the first
+configured header with a non-empty value becomes the span's label. For an
+mTLS gateway, configure the gateway to expose the client identity/SAN as a
+header first — Heron can only promote identity that is visible in the
+captured HTTP metadata.
+
+SFT export can use this field to avoid training on ambiguous-source
+records:
+
+```bash
+curl "http://localhost:3000/api/export/trajectories?start=0&end=9999999999999&min_attribution_confidence=high"
+```
+
+Accepted filter values are `high`, `medium`, and `ambiguous`. Today Heron
+emits `high` and `ambiguous`; `medium` is reserved for future
+source-specific correlation strategies.
+
 ## `[storage]` — backend selection
 
 ```toml

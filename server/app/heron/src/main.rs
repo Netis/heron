@@ -9,10 +9,6 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::fmt::time::UtcTime;
 use tracing_subscriber::FmtSubscriber;
 
-use heron::create_backend;
-use heron::Pipeline;
-use tokio::task::JoinSet;
-use tokio_util::sync::CancellationToken;
 use h_common::config::{
     config_search_paths, discover_config_path, AppConfig, CaptureSourceConfig, PipelineDef,
 };
@@ -20,6 +16,10 @@ use h_common::internal_metrics::{
     AggregateHistory, HistoryRecorder, Metric, MetricsReporter, MetricsSystem,
 };
 use h_llm::agent_classifier::ClassifierConfig;
+use heron::create_backend;
+use heron::Pipeline;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 mod cmd;
 
@@ -298,16 +298,15 @@ async fn run_pipeline(cli: Cli) {
         config.pipelines.clone()
     };
 
-    let pcap_extract_roots: std::sync::Arc<Vec<h_pcap_extract::PipelineRoot>> =
-        std::sync::Arc::new(
-            effective_pipelines
-                .iter()
-                .map(|def| h_pcap_extract::PipelineRoot {
-                    name: def.name.clone(),
-                    dump_dir: std::path::PathBuf::from(&def.pcap_dump.dir),
-                })
-                .collect(),
-        );
+    let pcap_extract_roots: std::sync::Arc<Vec<h_pcap_extract::PipelineRoot>> = std::sync::Arc::new(
+        effective_pipelines
+            .iter()
+            .map(|def| h_pcap_extract::PipelineRoot {
+                name: def.name.clone(),
+                dump_dir: std::path::PathBuf::from(&def.pcap_dump.dir),
+            })
+            .collect(),
+    );
 
     // Validate no duplicate source_ids across all pipeline sources.
     {
@@ -335,6 +334,7 @@ async fn run_pipeline(cli: Cli) {
             internal_metrics: config.internal_metrics.clone(),
             api: config.api.clone(),
             agent_classifier: config.agent_classifier.clone(),
+            attribution: config.attribution.clone(),
             body_cap: config.body_cap,
         }),
         config_path: config_path
@@ -583,6 +583,7 @@ async fn run_pipeline(cli: Cli) {
             active_turns.clone(),
             classifier_cfg,
             config.body_cap,
+            config.attribution.clone(),
         );
 
         // Start each per-pipeline MetricsSystem and, if enabled, one

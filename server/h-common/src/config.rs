@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use config::Config;
 use serde::{Deserialize, Serialize};
 
+use crate::attribution::AttributionConfig;
 use crate::error::AppError;
 
 /// The ordered list of paths searched for a configuration file when the user
@@ -125,6 +126,8 @@ pub struct AppConfig {
     pub api: ApiConfig,
     #[serde(default)]
     pub agent_classifier: ClassifierConfigToml,
+    /// Explicit attribution controls for passive/gateway capture.
+    pub attribution: AttributionConfig,
     /// Stored-body size cap. See [`BodyCapConfig`].
     pub body_cap: BodyCapConfig,
 }
@@ -191,6 +194,8 @@ struct RawAppConfig {
     #[serde(default)]
     agent_classifier: ClassifierConfigToml,
     #[serde(default)]
+    attribution: AttributionConfig,
+    #[serde(default)]
     body_cap: BodyCapConfig,
 }
 
@@ -245,6 +250,7 @@ impl RawAppConfig {
             internal_metrics: self.internal_metrics,
             api: self.api,
             agent_classifier: self.agent_classifier,
+            attribution: self.attribution,
             body_cap: self.body_cap,
         }
     }
