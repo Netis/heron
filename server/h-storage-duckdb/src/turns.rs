@@ -782,12 +782,12 @@ impl DuckDbBackend {
 #[cfg(test)]
 mod tests {
     use crate::DuckDbBackend;
-    use std::net::IpAddr;
     use h_llm::model::{ApiType, LlmCall};
     use h_llm::wire_apis as wa;
     use h_storage::query::*;
     use h_storage::StorageBackend;
     use h_turn::{Trace, TraceStatus};
+    use std::net::IpAddr;
 
     fn sample_turn(
         turn_id: &str,
@@ -870,6 +870,7 @@ mod tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            attribution: h_common::attribution::AttributionInfo::ambiguous(),
             process: None,
         }
     }

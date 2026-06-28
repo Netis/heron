@@ -44,6 +44,7 @@ pub fn empty_llm_call() -> LlmCall {
         tool_call_count: 0,
         tool_names: vec![],
         body_bytes_dropped: 0,
+        attribution: h_common::attribution::AttributionInfo::ambiguous(),
         process: None,
     }
 }

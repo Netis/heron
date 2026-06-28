@@ -195,6 +195,17 @@ mcp_tool_prefixes       = ["mcp__"]
 known_tool_registry     = []
 
 # ---------------------------------------------------------------------------
+# Attribution — optional trusted identity labels for passive/gateway capture.
+# The first configured request header with a non-empty value becomes the span's
+# attribution label with high confidence. For mTLS, configure the gateway to
+# expose the client identity/SAN as a header first; Heron can only read identity
+# that is visible in captured HTTP metadata.
+# ---------------------------------------------------------------------------
+[attribution]
+# request_headers = ["x-agent-id", "x-workspace-id"]
+request_headers = []
+
+# ---------------------------------------------------------------------------
 # Stored-body cap — bounds the size of request/response bodies kept for
 # display and re-classification. Usage / model / agent classification are
 # always extracted from the FULL body upstream, so this never reduces metric

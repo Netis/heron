@@ -53,6 +53,9 @@ struct PreparedCall {
     process_pid: Option<u32>,
     process_comm: Option<String>,
     process_exe: Option<String>,
+    attribution_label: Option<String>,
+    attribution_source: String,
+    attribution_confidence: String,
 }
 
 fn prepare_call(call: LlmCall) -> PreparedCall {
@@ -99,6 +102,9 @@ fn prepare_call(call: LlmCall) -> PreparedCall {
         process_pid: call.process.as_ref().map(|p| p.pid),
         process_comm: call.process.as_ref().map(|p| p.comm.clone()),
         process_exe: call.process.as_ref().and_then(|p| p.exe.clone()),
+        attribution_label: call.attribution.label,
+        attribution_source: call.attribution.source,
+        attribution_confidence: call.attribution.confidence.to_string(),
     }
 }
 
@@ -165,7 +171,10 @@ fn read_calls_by_ids_sync(
             input_tokens, output_tokens,
             request_path, client_ip, client_port,
             server_ip, server_port,
-            {body_columns}
+            {body_columns},
+            attribution_label,
+            attribution_source,
+            attribution_confidence
         FROM spans
         WHERE id IN ({placeholders})
         ORDER BY request_time ASC, complete_time ASC"
@@ -260,6 +269,17 @@ fn read_calls_by_ids_sync(
             response_headers: row
                 .get::<_, Option<String>>(21)
                 .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            attribution_label: row
+                .get::<_, Option<String>>(22)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?,
+            attribution_source: row
+                .get::<_, Option<String>>(23)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?
+                .unwrap_or_else(|| "unknown".to_string()),
+            attribution_confidence: row
+                .get::<_, Option<String>>(24)
+                .map_err(|e| AppError::Storage(format!("read error: {e}")))?
+                .unwrap_or_else(|| "ambiguous".to_string()),
         });
         let last = items.last_mut().expect("just pushed");
         last.tokens_estimated = derive_tokens_estimated(
@@ -342,6 +362,9 @@ impl DuckDbBackend {
                         // LLM call today; written as a literal so the domain
                         // model stays free of a field that has one value.
                         "llm",
+                        p.attribution_label,
+                        p.attribution_source,
+                        p.attribution_confidence,
                     ])
                     .map_err(|e| AppError::Storage(format!("failed to append call: {e}")))?;
             }
@@ -479,7 +502,8 @@ impl DuckDbBackend {
                  finish_reason, ttft_ms, e2e_latency_ms, input_tokens, output_tokens, \
                  client_ip, server_ip, server_port, request_path, response_body, \
                  is_agent_request, tool_surface, agent_topology, tool_call_count, tool_names_json, \
-                 process_pid, process_comm, process_exe \
+                 process_pid, process_comm, process_exe, \
+                 attribution_label, attribution_source, attribution_confidence \
                  FROM spans WHERE {where_sql} \
                  ORDER BY {sort_by} {sort_order} \
                  LIMIT {limit} OFFSET {offset}"
@@ -517,6 +541,15 @@ impl DuckDbBackend {
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or_default();
                 let process = read_process(row, 22, 23, 24)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let attribution_label: Option<String> = row
+                    .get(25)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let attribution_source: Option<String> = row
+                    .get(26)
+                    .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
+                let attribution_confidence: Option<String> = row
+                    .get(27)
                     .map_err(|e| AppError::Storage(format!("read error: {e}")))?;
                 items.push(SpanListItem {
                     id: row
@@ -580,6 +613,10 @@ impl DuckDbBackend {
                         .unwrap_or(0),
                     tool_names,
                     process,
+                    attribution_label,
+                    attribution_source: attribution_source.unwrap_or_else(|| "unknown".to_string()),
+                    attribution_confidence: attribution_confidence
+                        .unwrap_or_else(|| "ambiguous".to_string()),
                 });
             }
 
@@ -610,7 +647,8 @@ impl DuckDbBackend {
                     request_headers, response_headers,
                     is_agent_request, tool_surface, agent_topology,
                     tool_call_count, tool_names_json,
-                    process_pid, process_comm, process_exe
+                    process_pid, process_comm, process_exe,
+                    attribution_label, attribution_source, attribution_confidence
                 FROM spans
                 WHERE id = ?
                 LIMIT 1
@@ -631,6 +669,8 @@ impl DuckDbBackend {
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or_default();
+                let attribution_source: Option<String> = row.get(35)?;
+                let attribution_confidence: Option<String> = row.get(36)?;
                 Ok(SpanDetail {
                     id: row.get(0)?,
                     source_id: row.get(1)?,
@@ -665,6 +705,10 @@ impl DuckDbBackend {
                     tool_call_count: row.get::<_, Option<u32>>(29)?.unwrap_or(0),
                     tool_names,
                     process: read_process(row, 31, 32, 33)?,
+                    attribution_label: row.get(34)?,
+                    attribution_source: attribution_source.unwrap_or_else(|| "unknown".to_string()),
+                    attribution_confidence: attribution_confidence
+                        .unwrap_or_else(|| "ambiguous".to_string()),
                 })
             });
 
@@ -741,11 +785,11 @@ impl DuckDbBackend {
 #[cfg(test)]
 mod tests {
     use crate::DuckDbBackend;
-    use std::net::IpAddr;
     use h_llm::model::{ApiType, LlmCall};
     use h_llm::wire_apis as wa;
     use h_storage::query::*;
     use h_storage::StorageBackend;
+    use std::net::IpAddr;
 
     fn in_memory() -> DuckDbBackend {
         DuckDbBackend::open(":memory:").unwrap()
@@ -793,6 +837,7 @@ mod tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            attribution: h_common::attribution::AttributionInfo::ambiguous(),
             process: None,
         }
     }

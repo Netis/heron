@@ -67,7 +67,10 @@ CREATE TABLE IF NOT EXISTS spans (
     process_pid       Nullable(UInt32),
     process_comm      Nullable(String),
     process_exe       Nullable(String),
-    kind              String DEFAULT 'llm'
+    kind              String DEFAULT 'llm',
+    attribution_label Nullable(String),
+    attribution_source String DEFAULT 'unknown',
+    attribution_confidence String DEFAULT 'ambiguous'
 ) ENGINE = MergeTree ORDER BY (request_time, id)
 ";
 
@@ -249,6 +252,15 @@ pub(crate) async fn init(backend: &ClickHouseBackend) -> Result<()> {
     if table_exists(backend, "spans").await? {
         backend
             .exec("ALTER TABLE spans ADD COLUMN IF NOT EXISTS kind String DEFAULT 'llm'")
+            .await?;
+        backend
+            .exec("ALTER TABLE spans ADD COLUMN IF NOT EXISTS attribution_label Nullable(String)")
+            .await?;
+        backend
+            .exec("ALTER TABLE spans ADD COLUMN IF NOT EXISTS attribution_source String DEFAULT 'unknown'")
+            .await?;
+        backend
+            .exec("ALTER TABLE spans ADD COLUMN IF NOT EXISTS attribution_confidence String DEFAULT 'ambiguous'")
             .await?;
     }
 
