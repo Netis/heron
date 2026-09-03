@@ -6,6 +6,43 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The aglake storage backend now targets aglake 0.3 and is named for it.**
+  The log platform Heron writes to renamed itself from sglog to Netis Aglake,
+  and made the rename a breaking boundary rather than an alias layer — the REST
+  namespace Heron managed index retention through answers `410 Gone`. Both
+  management calls move to the native `/api/v1/admin/indexes`, which is a
+  capability gain as much as a port: the Splunk-compatible face they used
+  before is mounted only when the daemon is started with vendored frontend
+  assets, so an ingest-only deployment could not be told about retention at all
+  (a released 0.3 tarball reports `splunk_face: false`). The crate, config
+  table and backend value are renamed to match. **Older daemons are no longer
+  supported** — retention pushes against one fail with a 404 that says so.
+
+  Existing config files keep working: `backend = "sglake"` is normalized at
+  load, `[storage.sglake]` is accepted as an alias (covering the matching
+  `TS_STORAGE__SGLAKE__*` overrides), and `heron aglake-props` still answers to
+  `sglake-props`. Loading an old spelling raises a warning, not an error.
+
+### Added
+
+- **Session authentication for aglake's `/api/v1/*` faces.** aglake 0.3 put a
+  local user catalog in front of search as well as administration; with one
+  configured, an unauthenticated Heron gets `401` on every read.
+  `storage.aglake.username`/`password` are exchanged for a session at first
+  use, and `session_token` presents one directly. `hec_token` does not cover
+  this — it authenticates ingest only, which is the mistake the new error
+  messages are written to catch. Sessions are held in the daemon's memory with
+  a 12-hour TTL and are lost when it restarts, so a `401` is an expected event:
+  Heron logs in again and retries once, which absorbs an expired session while
+  still reporting credentials that are simply wrong.
+
+  Configuring credentials also lifts the non-loopback warning on
+  `storage.aglake.url` — that warning exists because the port was the only
+  thing standing in front of stored request and response bodies, which is no
+  longer true once the daemon checks who is asking.
+
 ## [0.7.3] — 2026-08-17
 
 ### Fixed
