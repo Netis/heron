@@ -32,7 +32,7 @@ use h_storage::query::*;
 use crate::client::Row;
 use crate::rows::{ST_SPAN, ST_TRACE};
 use crate::spl::{self, Search};
-use crate::SglakeBackend;
+use crate::AglakeBackend;
 
 const VALID_SORT_FIELDS: &[&str] = &[
     "call_count",
@@ -84,7 +84,7 @@ struct Endpoint {
     last_seen_ms: i64,
 }
 
-impl SglakeBackend {
+impl AglakeBackend {
     /// Per-endpoint aggregate over the spans index. Shared by the table view
     /// and the topology nodes.
     async fn service_endpoints(&self, range: &TimeRange) -> Result<Vec<Endpoint>> {
@@ -418,9 +418,9 @@ impl SglakeBackend {
         let truncated = rows.len() > MAX_TOPOLOGY_TURNS;
         if truncated {
             tracing::warn!(
-                target: "sglake::topology",
+                target: "aglake::topology",
                 cap = MAX_TOPOLOGY_TURNS,
-                "sglake: more turns in this window than the topology graph will \
+                "aglake: more turns in this window than the topology graph will \
                  consider; the returned graph is truncated. Narrow the time range \
                  for a complete picture."
             );

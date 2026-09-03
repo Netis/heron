@@ -191,8 +191,8 @@ mod tests {
         true
     }
 
-    /// What the sglake side selects: the tier, then the value filters.
-    fn sglake_selects(f: &DimensionFilter, r: &Row) -> bool {
+    /// What the aglake side selects: the tier, then the value filters.
+    fn aglake_selects(f: &DimensionFilter, r: &Row) -> bool {
         let want = tier_for(
             !f.wire_apis.is_empty(),
             !f.models.is_empty(),
@@ -250,11 +250,11 @@ mod tests {
         for f in &cases {
             let sql = build_dimension_where(f, escape_standard);
             let mut from_sql: Vec<&Row> = rows.iter().filter(|r| sql_selects(&sql, r)).collect();
-            let mut from_sglake: Vec<&Row> = rows.iter().filter(|r| sglake_selects(f, r)).collect();
+            let mut from_aglake: Vec<&Row> = rows.iter().filter(|r| aglake_selects(f, r)).collect();
             from_sql.sort();
-            from_sglake.sort();
+            from_aglake.sort();
             assert_eq!(
-                from_sql, from_sglake,
+                from_sql, from_aglake,
                 "tier selection diverged for filter {f:?}\n  sql: {sql}"
             );
             assert!(
@@ -278,7 +278,7 @@ mod tests {
         ] {
             let tiers: std::collections::BTreeSet<&str> = rows
                 .iter()
-                .filter(|r| sglake_selects(&f, r))
+                .filter(|r| aglake_selects(&f, r))
                 .map(|r| tier_of_row(&r.wire_api, &r.model, &r.server_ip))
                 .collect();
             assert_eq!(tiers.len(), 1, "filter {f:?} spans tiers {tiers:?}");

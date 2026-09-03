@@ -1,17 +1,17 @@
-//! Live-server integration tests, gated on `SGLAKE_TEST_URL`.
+//! Live-server integration tests, gated on `AGLAKE_TEST_URL`.
 //!
-//! sglake has no in-process mode, so these need a real sglogd. When
-//! `SGLAKE_TEST_URL` is unset every test self-skips, keeping
+//! aglake has no in-process mode, so these need a real aglaked. When
+//! `AGLAKE_TEST_URL` is unset every test self-skips, keeping
 //! `cargo test --workspace` green without a server. To run them:
 //!
 //! ```bash
-//! D=$(mktemp -d) && sglogd --data-dir "$D" --listen 127.0.0.1:5970 \
+//! D=$(mktemp -d) && aglaked --data-dir "$D" --listen 127.0.0.1:5970 \
 //!     --hec-token heron-it --no-self-trace --max-hot-raw-mib 2048 &
-//! SGLAKE_TEST_URL=http://127.0.0.1:5970 SGLAKE_TEST_TOKEN=heron-it \
-//!     cargo test -p h-storage-sglake
+//! AGLAKE_TEST_URL=http://127.0.0.1:5970 AGLAKE_TEST_TOKEN=heron-it \
+//!     cargo test -p h-storage-aglake
 //! ```
 //!
-//! **Isolation is per index prefix, not per database.** sglake has no
+//! **Isolation is per index prefix, not per database.** aglake has no
 //! `DROP DATABASE` and no DDL at all — an index exists because something wrote
 //! to it. Each test therefore gets a unique `index_prefix` and simply never
 //! looks at anyone else's indexes. Nothing is cleaned up; the test data-dir is
@@ -31,7 +31,7 @@ use bytes::Bytes;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use h_common::config::SglakeConfig;
+use h_common::config::AglakeConfig;
 use h_metrics::model::LlmFinishMetric;
 use h_protocol::model::{HttpRequestData, HttpResponseData};
 use h_protocol::net::FlowKey;
@@ -40,7 +40,7 @@ use h_storage::query::*;
 use h_storage::StorageBackend;
 
 use crate::rows::fixtures;
-use crate::SglakeBackend;
+use crate::AglakeBackend;
 
 /// How long a write may take to become searchable before a test gives up.
 const VISIBLE_WITHIN: Duration = Duration::from_secs(20);
@@ -48,20 +48,20 @@ const VISIBLE_WITHIN: Duration = Duration::from_secs(20);
 static PREFIX_SEQ: AtomicU32 = AtomicU32::new(0);
 
 /// Build a backend against a fresh, unused index prefix. Returns `None` (test
-/// self-skips) when `SGLAKE_TEST_URL` is unset.
-async fn fresh_backend() -> Option<SglakeBackend> {
-    let url = std::env::var("SGLAKE_TEST_URL").ok()?;
+/// self-skips) when `AGLAKE_TEST_URL` is unset.
+async fn fresh_backend() -> Option<AglakeBackend> {
+    let url = std::env::var("AGLAKE_TEST_URL").ok()?;
     // Unique per process *and* per test, so a re-run against a persistent
     // data-dir never reads a previous run's events.
     let nonce = uuid::Uuid::now_v7().simple().to_string();
     let seq = PREFIX_SEQ.fetch_add(1, Ordering::Relaxed);
-    let cfg = SglakeConfig {
+    let cfg = AglakeConfig {
         url,
-        hec_token: std::env::var("SGLAKE_TEST_TOKEN").unwrap_or_default(),
+        hec_token: std::env::var("AGLAKE_TEST_TOKEN").unwrap_or_default(),
         index_prefix: format!("it{seq}{}", &nonce[..12]),
         ..Default::default()
     };
-    let backend = SglakeBackend::new(&cfg).expect("build backend");
+    let backend = AglakeBackend::new(&cfg).expect("build backend");
     backend.init().await.expect("init");
     Some(backend)
 }
@@ -71,7 +71,7 @@ macro_rules! require_backend {
         match crate::it::fresh_backend().await {
             Some(b) => b,
             None => {
-                eprintln!("skip: SGLAKE_TEST_URL unset");
+                eprintln!("skip: AGLAKE_TEST_URL unset");
                 return;
             }
         }
@@ -974,7 +974,7 @@ async fn session_filters_apply_before_aggregation() {
 /// Write metric rows on all four rollup tiers, the way the aggregator does.
 /// The rollup rows carry the literal `'*'` sentinel, which is the value a
 /// naive translation would read as a wildcard.
-async fn seed_tiers(backend: &SglakeBackend, base_us: i64) {
+async fn seed_tiers(backend: &AglakeBackend, base_us: i64) {
     let mut rows = Vec::new();
     let mut mk = |wire: &str, model: &str, server: &str, calls: u64, ttft: f64| {
         let mut m = fixtures::sample_metric();
@@ -1499,17 +1499,17 @@ async fn distincts_and_agent_rollups() {
 // Phase 4: retention, acks, metrics dedup
 // ---------------------------------------------------------------------------
 
-/// Retention has to reach sglake as a real per-index TTL, or the whole design
+/// Retention has to reach aglake as a real per-index TTL, or the whole design
 /// is a no-op that logs cheerfully. This asserts it round-trips: push the
-/// policy, then read the value back out of sglake's own index catalogue.
+/// policy, then read the value back out of aglake's own index catalogue.
 ///
 /// Skips — rather than fails — when the management API is not mounted, since
-/// that depends on how the sglogd under test was started, not on this code.
+/// that depends on how the aglaked under test was started, not on this code.
 #[tokio::test]
-async fn retention_reaches_sglake_as_a_per_index_ttl() {
+async fn retention_reaches_aglake_as_a_per_index_ttl() {
     let backend = require_backend!();
     if backend.management.list_indexes().await.is_err() {
-        eprintln!("skip: sglogd has no index management API (needs --splunk-web-dir)");
+        eprintln!("skip: aglaked has no index management API (needs --splunk-web-dir)");
         return;
     }
 
@@ -1549,7 +1549,7 @@ async fn retention_reaches_sglake_as_a_per_index_ttl() {
     assert_eq!(
         report.total(),
         0,
-        "sglake declares TTLs rather than deleting rows, so it must not \
+        "aglake declares TTLs rather than deleting rows, so it must not \
          invent a deletion count"
     );
 
@@ -1586,26 +1586,26 @@ async fn retention_reaches_sglake_as_a_per_index_ttl() {
     assert_eq!(spans.frozen_after_secs, Some(7 * 86_400));
 }
 
-/// `manage_retention = false` hands retention to whoever runs sglogd. It has
+/// `manage_retention = false` hands retention to whoever runs aglaked. It has
 /// to mean *nothing is sent*, not "sent, but quietly".
 #[tokio::test]
 async fn manage_retention_off_sends_nothing() {
-    let Ok(url) = std::env::var("SGLAKE_TEST_URL") else {
-        eprintln!("skip: SGLAKE_TEST_URL unset");
+    let Ok(url) = std::env::var("AGLAKE_TEST_URL") else {
+        eprintln!("skip: AGLAKE_TEST_URL unset");
         return;
     };
     let nonce = uuid::Uuid::now_v7().simple().to_string();
-    let cfg = SglakeConfig {
+    let cfg = AglakeConfig {
         url,
-        hec_token: std::env::var("SGLAKE_TEST_TOKEN").unwrap_or_default(),
+        hec_token: std::env::var("AGLAKE_TEST_TOKEN").unwrap_or_default(),
         index_prefix: format!("itnoret{}", &nonce[..12]),
         manage_retention: false,
         ..Default::default()
     };
-    let backend = SglakeBackend::new(&cfg).unwrap();
+    let backend = AglakeBackend::new(&cfg).unwrap();
     backend.init().await.unwrap();
     if backend.management.list_indexes().await.is_err() {
-        eprintln!("skip: sglogd has no index management API");
+        eprintln!("skip: aglaked has no index management API");
         return;
     }
 
@@ -1625,7 +1625,7 @@ async fn manage_retention_off_sends_nothing() {
     .await;
 
     // Compare against a baseline rather than against `None`: the catalogue
-    // reports the *effective* TTL, so a sglogd started with a server-wide
+    // reports the *effective* TTL, so a aglaked started with a server-wide
     // --retention-days shows a value here that nobody pushed. "Sends nothing"
     // is therefore "nothing changed", not "nothing is set".
     let before = backend
@@ -1663,7 +1663,7 @@ async fn manage_retention_off_sends_nothing() {
     assert_ne!(
         after,
         Some(7 * 86_400),
-        "the policy's TTL reached sglake despite manage_retention = false"
+        "the policy's TTL reached aglake despite manage_retention = false"
     );
 }
 
@@ -1702,15 +1702,15 @@ async fn writes_carry_an_ack_channel_and_the_answer_is_usable() {
 /// must not double.
 #[tokio::test]
 async fn metrics_dedup_collapses_a_duplicated_write() {
-    let Ok(url) = std::env::var("SGLAKE_TEST_URL") else {
-        eprintln!("skip: SGLAKE_TEST_URL unset");
+    let Ok(url) = std::env::var("AGLAKE_TEST_URL") else {
+        eprintln!("skip: AGLAKE_TEST_URL unset");
         return;
     };
-    let token = std::env::var("SGLAKE_TEST_TOKEN").unwrap_or_default();
+    let token = std::env::var("AGLAKE_TEST_TOKEN").unwrap_or_default();
     let nonce = uuid::Uuid::now_v7().simple().to_string();
     let prefix = format!("itdedup{}", &nonce[..12]);
 
-    let plain = SglakeBackend::new(&SglakeConfig {
+    let plain = AglakeBackend::new(&AglakeConfig {
         url: url.clone(),
         hec_token: token.clone(),
         index_prefix: prefix.clone(),
@@ -1735,7 +1735,7 @@ async fn metrics_dedup_collapses_a_duplicated_write() {
         end_us: base + 60_000_000,
     };
 
-    async fn summary_of(b: &SglakeBackend, range: &TimeRange) -> MetricsSummaryRow {
+    async fn summary_of(b: &AglakeBackend, range: &TimeRange) -> MetricsSummaryRow {
         b.query_metrics_summary(&MetricsSummaryQuery {
             time_range: range.clone(),
             filter: DimensionFilter::default(),
@@ -1778,7 +1778,7 @@ async fn metrics_dedup_collapses_a_duplicated_write() {
         "precondition: without dedup, duplicates really do inflate the sum"
     );
 
-    let deduped = SglakeBackend::new(&SglakeConfig {
+    let deduped = AglakeBackend::new(&AglakeConfig {
         url,
         hec_token: token,
         index_prefix: prefix,
@@ -1796,21 +1796,21 @@ async fn metrics_dedup_collapses_a_duplicated_write() {
 }
 
 // ---------------------------------------------------------------------------
-// Fault injection: sglogd goes away mid-write
+// Fault injection: aglaked goes away mid-write
 // ---------------------------------------------------------------------------
 //
 // The DuckDB backend has a `--features fault-injection` suite that kills the
 // database underneath a write and asserts the write either commits or returns
 // `Err` — never silently vanishes. Nothing there transfers to an HTTP client,
-// so this is its counterpart: it starts a private sglogd, kills it by its exact
+// so this is its counterpart: it starts a private aglaked, kills it by its exact
 // pid mid-stream, and checks what Heron does about it.
 //
-// Opt-in through `SGLAKE_SGLOGD_BIN`, because unlike the rest of the suite it
-// spawns and kills processes. `SGLAKE_SPLUNK_WEB_DIR` additionally enables the
+// Opt-in through `AGLAKE_AGLAKED_BIN`, because unlike the rest of the suite it
+// spawns and kills processes. `AGLAKE_SPLUNK_WEB_DIR` additionally enables the
 // management API so the retention degradation can be checked too.
 
-/// A sglogd this test owns, on its own port and data directory.
-struct OwnedSglogd {
+/// A aglaked this test owns, on its own port and data directory.
+struct OwnedAglaked {
     bin: String,
     web_dir: Option<String>,
     dir: std::path::PathBuf,
@@ -1818,7 +1818,7 @@ struct OwnedSglogd {
     child: Option<std::process::Child>,
 }
 
-impl OwnedSglogd {
+impl OwnedAglaked {
     fn spawn(&mut self) {
         let mut cmd = std::process::Command::new(&self.bin);
         cmd.arg("--data-dir")
@@ -1835,7 +1835,7 @@ impl OwnedSglogd {
         if let Some(w) = &self.web_dir {
             cmd.arg("--splunk-web-dir").arg(w);
         }
-        self.child = Some(cmd.spawn().expect("spawn sglogd"));
+        self.child = Some(cmd.spawn().expect("spawn aglaked"));
     }
 
     fn url(&self) -> String {
@@ -1851,7 +1851,7 @@ impl OwnedSglogd {
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        panic!("sglogd never became ready on port {}", self.port);
+        panic!("aglaked never became ready on port {}", self.port);
     }
 
     async fn wait_down(&self) {
@@ -1863,7 +1863,7 @@ impl OwnedSglogd {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!("sglogd on port {} refused to go down", self.port);
+        panic!("aglaked on port {} refused to go down", self.port);
     }
 
     /// SIGKILL, by this child's exact pid and nothing else. Abrupt on purpose:
@@ -1878,7 +1878,7 @@ impl OwnedSglogd {
     }
 }
 
-impl Drop for OwnedSglogd {
+impl Drop for OwnedAglaked {
     fn drop(&mut self) {
         if let Some(mut c) = self.child.take() {
             let _ = c.kill();
@@ -1907,20 +1907,20 @@ fn span_batch(base_us: i64, tag: &str, n: usize) -> Vec<h_llm::model::LlmCall> {
         .collect()
 }
 
-/// Killing sglogd mid-stream must produce an error, not a panic and not a
+/// Killing aglaked mid-stream must produce an error, not a panic and not a
 /// silent drop — and writes must resume once it is back, with everything that
 /// was acknowledged before the kill still there.
 #[tokio::test]
-async fn a_write_against_a_dead_sglogd_errors_and_recovers() {
-    let Ok(bin) = std::env::var("SGLAKE_SGLOGD_BIN") else {
-        eprintln!("skip: SGLAKE_SGLOGD_BIN unset");
+async fn a_write_against_a_dead_aglaked_errors_and_recovers() {
+    let Ok(bin) = std::env::var("AGLAKE_AGLAKED_BIN") else {
+        eprintln!("skip: AGLAKE_AGLAKED_BIN unset");
         return;
     };
     let nonce = uuid::Uuid::now_v7().simple().to_string();
-    let mut sg = OwnedSglogd {
+    let mut sg = OwnedAglaked {
         bin,
-        web_dir: std::env::var("SGLAKE_SPLUNK_WEB_DIR").ok(),
-        dir: std::env::temp_dir().join(format!("sglake-fault-{}", &nonce[..12])),
+        web_dir: std::env::var("AGLAKE_SPLUNK_WEB_DIR").ok(),
+        dir: std::env::temp_dir().join(format!("aglake-fault-{}", &nonce[..12])),
         // A port nobody else in this suite uses. Derived from the nonce so
         // two concurrent runs do not collide.
         port: 20000 + (u16::from_str_radix(&nonce[..4], 16).unwrap_or(0) % 20000),
@@ -1930,7 +1930,7 @@ async fn a_write_against_a_dead_sglogd_errors_and_recovers() {
     sg.spawn();
     sg.wait_ready().await;
 
-    let cfg = SglakeConfig {
+    let cfg = AglakeConfig {
         url: sg.url(),
         hec_token: "heron-fault".into(),
         index_prefix: format!("flt{}", &nonce[..12]),
@@ -1942,7 +1942,7 @@ async fn a_write_against_a_dead_sglogd_errors_and_recovers() {
         search_timeout_secs: 10,
         ..Default::default()
     };
-    let backend = SglakeBackend::new(&cfg).unwrap();
+    let backend = AglakeBackend::new(&cfg).unwrap();
     backend.init().await.unwrap();
 
     let base = 1_770_000_000_000_000i64;
@@ -1971,7 +1971,7 @@ async fn a_write_against_a_dead_sglogd_errors_and_recovers() {
         .expect_err("a write to a dead server must not report success");
     let msg = err.to_string();
     assert!(
-        msg.contains("sglake"),
+        msg.contains("aglake"),
         "the error must name the backend that failed: {msg}"
     );
 
@@ -2014,33 +2014,33 @@ async fn a_write_against_a_dead_sglogd_errors_and_recovers() {
     }
 }
 
-/// Stored bodies must still be readable when sglogd has a props.toml.
+/// Stored bodies must still be readable when aglaked has a props.toml.
 ///
-/// Every other test in this file runs against a sglogd with **no props.toml**,
-/// which is not a configuration anyone deploys — `docs/design/10-sglake.md` and
-/// `heron sglake-props` both tell the operator to install one. That gap hid a
+/// Every other test in this file runs against a aglaked with **no props.toml**,
+/// which is not a configuration anyone deploys — `docs/design/10-aglake.md` and
+/// `heron aglake-props` both tell the operator to install one. That gap hid a
 /// total failure of the body read path: the body indexes are written as
 /// pre-serialized JSON strings with `auto_json = false`, so they have no
 /// extracted fields, and the lookups asked for `span_id="…"`. Without props
-/// that still matched (sglake fell back to matching the raw event); with props
+/// that still matched (aglake fell back to matching the raw event); with props
 /// loaded it matched nothing, so every Request/Response body in the console was
 /// empty — and slow, because a miss sends `fetch_raw_by_id` into its unbounded
 /// retry across the whole retention window.
 ///
-/// So this test owns its sglogd specifically to write props.toml into the data
-/// directory before starting it. Gated on `SGLAKE_SGLOGD_BIN` like the fault
+/// So this test owns its aglaked specifically to write props.toml into the data
+/// directory before starting it. Gated on `AGLAKE_AGLAKED_BIN` like the fault
 /// injection above, for the same reason: it spawns a process.
 #[tokio::test]
-async fn bodies_are_readable_when_sglogd_has_props() {
-    let Ok(bin) = std::env::var("SGLAKE_SGLOGD_BIN") else {
-        eprintln!("skip: SGLAKE_SGLOGD_BIN unset");
+async fn bodies_are_readable_when_aglaked_has_props() {
+    let Ok(bin) = std::env::var("AGLAKE_AGLAKED_BIN") else {
+        eprintln!("skip: AGLAKE_AGLAKED_BIN unset");
         return;
     };
     let nonce = uuid::Uuid::now_v7().simple().to_string();
-    let mut sg = OwnedSglogd {
+    let mut sg = OwnedAglaked {
         bin,
         web_dir: None,
-        dir: std::env::temp_dir().join(format!("sglake-props-{}", &nonce[..12])),
+        dir: std::env::temp_dir().join(format!("aglake-props-{}", &nonce[..12])),
         port: 40000 + (u16::from_str_radix(&nonce[..4], 16).unwrap_or(0) % 20000),
         child: None,
     };
@@ -2051,7 +2051,7 @@ async fn bodies_are_readable_when_sglogd_has_props() {
     sg.spawn();
     sg.wait_ready().await;
 
-    let cfg = SglakeConfig {
+    let cfg = AglakeConfig {
         url: sg.url(),
         hec_token: "heron-fault".into(),
         index_prefix: format!("prp{}", &nonce[..12]),
@@ -2059,7 +2059,7 @@ async fn bodies_are_readable_when_sglogd_has_props() {
         search_timeout_secs: 30,
         ..Default::default()
     };
-    let backend = SglakeBackend::new(&cfg).unwrap();
+    let backend = AglakeBackend::new(&cfg).unwrap();
     backend.init().await.unwrap();
 
     let base = 1_770_000_000_000_000i64;
@@ -2105,10 +2105,7 @@ async fn bodies_are_readable_when_sglogd_has_props() {
         Some(r#"{"model":"gpt-4"}"#),
         "the exchange's request body came back empty"
     );
-    assert_eq!(
-        exchange.response_body.as_deref(),
-        Some(r#"{"choices":[]}"#)
-    );
+    assert_eq!(exchange.response_body.as_deref(), Some(r#"{"choices":[]}"#));
 
     // A trace whose spans are spread over more than one lookup window must
     // come back with ALL of its bodies. This is the failure mode a windowed
@@ -2130,10 +2127,7 @@ async fn bodies_are_readable_when_sglogd_has_props() {
     backend.write_spans(spread).await.unwrap();
 
     let all = eventually("every span in the spread set", || async {
-        let got = backend
-            .query_spans_by_ids(&spread_ids, true)
-            .await
-            .unwrap();
+        let got = backend.query_spans_by_ids(&spread_ids, true).await.unwrap();
         (got.len() == spread_ids.len()).then_some(got)
     })
     .await;

@@ -2,7 +2,7 @@
 //! [`ManagementClient`] for per-index retention.
 //!
 //! Each wraps one `reqwest::Client` (internally an `Arc`'d connection pool).
-//! We deliberately do not reuse sglog's own `sglog-agent` HEC client: it opens
+//! We deliberately do not reuse aglake's own `aglake-agent` HEC client: it opens
 //! a fresh TCP connection per request, cannot do TLS or gzip, and discards the
 //! response body — but the response body is exactly what the retry state
 //! machine needs, since a partial-success 400 carries the index of the first
@@ -11,12 +11,12 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use h_common::config::SglakeConfig;
+use h_common::config::AglakeConfig;
 use h_common::error::{AppError, Result};
 use serde::Deserialize;
 
 fn err<E: std::fmt::Display>(ctx: &str, e: E) -> AppError {
-    AppError::Storage(format!("sglake {ctx}: {e}"))
+    AppError::Storage(format!("aglake {ctx}: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ fn err<E: std::fmt::Display>(ctx: &str, e: E) -> AppError {
 /// # Retry semantics — at-least-once
 ///
 /// [`h_storage::WriteBuffer`] discards a batch whose flush returns `Err`, so
-/// all retrying has to happen here. The rules follow what sglogd actually
+/// all retrying has to happen here. The rules follow what aglaked actually
 /// does:
 ///
 /// * **200** — events are already fsynced. Never resend.
@@ -44,22 +44,22 @@ fn err<E: std::fmt::Display>(ctx: &str, e: E) -> AppError {
 ///   landed. With acks enabled, ask before resending; otherwise resend and
 ///   accept a possible duplicate.
 ///
-/// The gap this leaves is a sglogd restart mid-flight: ack ids are
+/// The gap this leaves is a aglaked restart mid-flight: ack ids are
 /// process-local and reset, so a resend can duplicate. Duplicates are visible
 /// (two rows with one id) and harmless for everything except metric sums,
 /// which is what `metrics_dedup` is for.
 ///
 /// # How the ack is actually used
 ///
-/// sglake issues an ack id **in the same response that reports success** — so
+/// aglake issues an ack id **in the same response that reports success** — so
 /// there is no id to ask about when the response is the thing that got lost.
 /// The way through is to send every request on a **freshly minted channel**:
-/// sglake's per-channel counter starts at zero, so the only id that request
+/// aglake's per-channel counter starts at zero, so the only id that request
 /// could ever be given is `0`, and `POST /services/collector/ack` with
 /// `{"acks":[0]}` becomes a direct question — *did this request commit?*
-/// Measured against sglogd: `false` before the write, `true` after.
+/// Measured against aglaked: `false` before the write, `true` after.
 ///
-/// The answer degrades safely in every direction. sglake's channel table is
+/// The answer degrades safely in every direction. aglake's channel table is
 /// in-memory and LRU-capped, so a restart or heavy churn answers `false` and
 /// we resend — exactly what would have happened with acks off. A 400 never
 /// issues an ack id, but that path is already deterministic through
@@ -79,7 +79,7 @@ pub(crate) struct HecClient {
     backoff: Duration,
 }
 
-/// What sglogd said about one HEC request.
+/// What aglaked said about one HEC request.
 enum HecOutcome {
     Ok,
     /// Valid prefix committed; event at this 0-based index is malformed.
@@ -109,7 +109,7 @@ struct AckResponse {
 }
 
 impl HecClient {
-    pub(crate) fn new(config: &SglakeConfig) -> Result<Self> {
+    pub(crate) fn new(config: &AglakeConfig) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.request_timeout_secs))
             .build()
@@ -130,7 +130,7 @@ impl HecClient {
     }
 
     /// Send pre-serialized HEC envelopes (one JSON object per element, no
-    /// trailing newline needed — sglogd parses a concatenated stream).
+    /// trailing newline needed — aglaked parses a concatenated stream).
     pub(crate) async fn send(&self, events: Vec<String>) -> Result<()> {
         if events.is_empty() {
             return Ok(());
@@ -144,7 +144,7 @@ impl HecClient {
 
     /// Drop any single event that exceeds the configured ceiling.
     ///
-    /// An event past sglake's 16 MiB WAL frame limit is treated as corruption
+    /// An event past aglake's 16 MiB WAL frame limit is treated as corruption
     /// during crash replay and silently discarded — the worst possible failure
     /// mode. Refusing to send it trades one lost event for a loud log line and
     /// a store that stays replayable. `[body_cap]` normally keeps events three
@@ -164,10 +164,10 @@ impl HecClient {
             .collect();
         if oversized > 0 {
             tracing::error!(
-                target: "sglake::write",
+                target: "aglake::write",
                 dropped = oversized,
                 max_event_bytes = self.max_event_bytes,
-                "sglake: dropped oversized event(s); they would be discarded as \
+                "aglake: dropped oversized event(s); they would be discarded as \
                  corruption on crash replay. Enable [body_cap] or lower it."
             );
         }
@@ -200,16 +200,16 @@ impl HecClient {
                 HecOutcome::Ok => return Ok(()),
                 HecOutcome::PartialUpTo(k) => {
                     tracing::warn!(
-                        target: "sglake::write",
+                        target: "aglake::write",
                         index = start + k,
-                        "sglake rejected an event; the batch prefix before it is \
+                        "aglake rejected an event; the batch prefix before it is \
                          committed. Skipping it and continuing."
                     );
                     start += k + 1;
                 }
                 HecOutcome::TooLarge => {
                     // Re-split this range with a smaller ceiling. One level is
-                    // enough: max_body_bytes is already well under sglogd's
+                    // enough: max_body_bytes is already well under aglaked's
                     // default and events are individually capped.
                     let half = (chunk.len() - start).div_ceil(2).max(1);
                     if half == chunk.len() - start {
@@ -308,9 +308,9 @@ impl HecClient {
         };
         if self.ack_committed(ch).await == Some(true) {
             tracing::info!(
-                target: "sglake::write",
+                target: "aglake::write",
                 reason = %msg,
-                "sglake: request failed after the batch was committed; \
+                "aglake: request failed after the batch was committed; \
                  acknowledged, so not resending"
             );
             return HecOutcome::Ok;
@@ -318,7 +318,7 @@ impl HecClient {
         HecOutcome::Transient(msg)
     }
 
-    /// `Some(true)` when sglake confirms the batch on `channel` reached disk,
+    /// `Some(true)` when aglake confirms the batch on `channel` reached disk,
     /// `Some(false)` when it says otherwise, `None` when the question itself
     /// could not be answered. Only `Some(true)` suppresses a resend — the
     /// other two both mean "we do not know it landed", which is a resend.
@@ -348,7 +348,7 @@ fn truncate(s: &str) -> String {
 // Reads
 // ---------------------------------------------------------------------------
 
-/// One row of a search result. Values are whatever JSON sglake emitted.
+/// One row of a search result. Values are whatever JSON aglake emitted.
 pub(crate) type Row = serde_json::Map<String, serde_json::Value>;
 
 #[derive(Deserialize, Default)]
@@ -385,7 +385,7 @@ impl SearchResult {
 
 /// SPL reader over `/api/v1/search`.
 ///
-/// ⚠️ These endpoints are unauthenticated in sglogd — there is no token to
+/// ⚠️ These endpoints are unauthenticated in aglaked — there is no token to
 /// present, unlike HEC. Access control has to come from the network.
 pub(crate) struct SearchClient {
     http: reqwest::Client,
@@ -394,7 +394,7 @@ pub(crate) struct SearchClient {
 }
 
 impl SearchClient {
-    pub(crate) fn new(config: &SglakeConfig) -> Result<Self> {
+    pub(crate) fn new(config: &AglakeConfig) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.search_timeout_secs))
             .build()
@@ -459,14 +459,14 @@ impl SearchClient {
 // Index management (retention)
 // ---------------------------------------------------------------------------
 
-/// Per-index settings, over sglake's Splunk-compatible management REST face.
+/// Per-index settings, over aglake's Splunk-compatible management REST face.
 ///
 /// # This API is not always there
 ///
 /// The whole `/en-US/splunkd/__raw` namespace — this endpoint included — is
-/// mounted **only when sglogd finds vendored Splunk frontend assets** at
+/// mounted **only when aglaked finds vendored Splunk frontend assets** at
 /// `--splunk-web-dir`. Started without them, every route here answers 404 with
-/// an empty body. A deployment that runs sglogd purely as an ingest/search
+/// an empty body. A deployment that runs aglaked purely as an ingest/search
 /// engine therefore cannot be told about retention at all, and Heron has to
 /// notice that rather than log a stream of failures. That is what
 /// [`Self::list_indexes`] is for: one cheap call that answers both "is this
@@ -474,14 +474,14 @@ impl SearchClient {
 ///
 /// # And it is session-authenticated
 ///
-/// When sglogd runs with auth enabled, writes here need a login session cookie
+/// When aglaked runs with auth enabled, writes here need a login session cookie
 /// plus a CSRF form key — a browser flow, not something a server-side client
 /// holds. The HEC token does **not** work. So retention management is
-/// supported for the deployment Heron actually documents (sglogd bound to
+/// supported for the deployment Heron actually documents (aglaked bound to
 /// loopback, auth off); anything else gets one clear warning and a no-op.
 pub(crate) struct ManagementClient {
     http: reqwest::Client,
-    /// `…/services/sglog/settings/indexes`
+    /// `…/services/aglake/settings/indexes`
     settings_url: String,
     /// `…/services/data/indexes`
     list_url: String,
@@ -509,7 +509,7 @@ struct IndexEntry {
 }
 
 impl ManagementClient {
-    pub(crate) fn new(config: &SglakeConfig) -> Result<Self> {
+    pub(crate) fn new(config: &AglakeConfig) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.request_timeout_secs))
             .build()
@@ -517,12 +517,12 @@ impl ManagementClient {
         let base = format!("{}/en-US/splunkd/__raw", config.url.trim_end_matches('/'));
         Ok(Self {
             http,
-            settings_url: format!("{base}/services/sglog/settings/indexes"),
+            settings_url: format!("{base}/services/aglake/settings/indexes"),
             list_url: format!("{base}/services/data/indexes"),
         })
     }
 
-    /// Every index sglake currently knows about, with its retention.
+    /// Every index aglake currently knows about, with its retention.
     ///
     /// Doubles as the availability probe — see the type docs. Also the only
     /// way to avoid guessing at 404s: pushing settings to an index that has
@@ -559,7 +559,7 @@ impl ManagementClient {
     }
 
     /// Set one index's retention. `secs` is a TTL from event time, not a
-    /// cutoff — sglake freezes a bucket once its newest event is that old.
+    /// cutoff — aglake freezes a bucket once its newest event is that old.
     pub(crate) async fn set_retention(&self, index: &str, secs: u64) -> Result<()> {
         let resp = self
             .http
@@ -584,8 +584,8 @@ impl ManagementClient {
 mod tests {
     use super::*;
 
-    fn cfg() -> SglakeConfig {
-        SglakeConfig {
+    fn cfg() -> AglakeConfig {
+        AglakeConfig {
             max_body_bytes: 100,
             max_event_bytes: 20,
             ..Default::default()
@@ -678,7 +678,7 @@ mod retry_tests {
     /// The retry rules are the durability contract — `WriteBuffer` discards a
     /// batch whose flush returns `Err`, so a wrong branch here is a silently
     /// lost write or a duplicated one. They are also the part of this backend
-    /// least reachable from a live server: getting sglogd to emit a 413, or to
+    /// least reachable from a live server: getting aglaked to emit a 413, or to
     /// accept a request and then vanish, is not something a test can ask it
     /// for. Scripting the responses is the only way to walk every branch.
     struct MockHec {
@@ -782,7 +782,7 @@ mod retry_tests {
     }
 
     fn client(mock: &MockHec, retries: u32) -> HecClient {
-        HecClient::new(&SglakeConfig {
+        HecClient::new(&AglakeConfig {
             url: format!("http://{}", mock.addr),
             hec_token: "t".into(),
             write_retries: retries,
@@ -954,7 +954,7 @@ mod retry_tests {
     #[tokio::test]
     async fn an_unacknowledged_batch_is_resent() {
         let mock = MockHec::start(vec![Reply::Status(503, "unavailable")]);
-        let c = HecClient::new(&SglakeConfig {
+        let c = HecClient::new(&AglakeConfig {
             url: format!("http://{}", mock.addr),
             write_retries: 1,
             retry_backoff_ms: 1,

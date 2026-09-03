@@ -13,9 +13,9 @@ use std::sync::Arc;
 use h_common::config::StorageConfig;
 use h_common::error::{AppError, Result};
 use h_storage::StorageBackend;
+use h_storage_aglake::AglakeBackend;
 use h_storage_clickhouse::ClickHouseBackend;
 use h_storage_duckdb::DuckDbBackend;
-use h_storage_sglake::SglakeBackend;
 
 /// Dispatch on `config.backend` and instantiate the matching storage
 /// backend. Lives in the assembly layer so adding `h-storage-postgres`
@@ -25,7 +25,13 @@ pub fn create_backend(config: &StorageConfig) -> Result<Arc<dyn StorageBackend>>
     match config.backend.as_str() {
         "duckdb" => Ok(Arc::new(DuckDbBackend::open(&config.duckdb.path)?)),
         "clickhouse" => Ok(Arc::new(ClickHouseBackend::new(&config.clickhouse)?)),
-        "sglake" => Ok(Arc::new(SglakeBackend::new(&config.sglake)?)),
+        // Only the current spelling needs an arm: `AppConfig::load` normalizes
+        // the pre-0.3 `"sglake"` before anything reaches here. A config built
+        // in code can still carry it, so it is matched too rather than
+        // reported as an unknown backend.
+        h_common::config::AGLAKE_BACKEND | h_common::config::LEGACY_AGLAKE_BACKEND => {
+            Ok(Arc::new(AglakeBackend::new(&config.aglake)?))
+        }
         other => Err(AppError::Config(format!(
             "unknown storage backend: {other}"
         ))),

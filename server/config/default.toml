@@ -112,7 +112,7 @@
 [storage]
 # Pluggable storage backend: "duckdb" (default, embedded single-node / edge),
 # "clickhouse" (dedicated server for large-scale, high-throughput analytics),
-# or "sglake" (Splunk-compatible log platform; full-text searchable bodies).
+# or "aglake" (Splunk-compatible log platform; full-text searchable bodies).
 backend = "duckdb"
 
 [storage.duckdb]
@@ -129,29 +129,29 @@ path = "data/heron.duckdb"
 # password          = ""
 # optimize_on_sweep = false   # OPTIMIZE TABLE ... FINAL after each retention sweep
 
-# sglake / sglog backend (used only when backend = "sglake"). Writes go over
+# aglake / aglake backend (used only when backend = "aglake"). Writes go over
 # the HTTP Event Collector, reads are SPL. Indexes are created on first write —
 # there is nothing to provision. Unlike the SQL backends, stored bodies are
 # full-text searchable (`search index=heron_bodies "SELECT * FROM users"`).
 #
-# Three things about the sglogd side that Heron cannot set for you:
-#   * Start sglogd with --max-hot-raw-mib 2048 (or more). The 64 MiB default
+# Three things about the aglaked side that Heron cannot set for you:
+#   * Start aglaked with --max-hot-raw-mib 2048 (or more). The 64 MiB default
 #     produces one bucket per few hundred spans, and search cost scales with
 #     bucket count.
-#   * `heron sglake-props` prints the props.toml stanzas that make aggregate
+#   * `heron aglake-props` prints the props.toml stanzas that make aggregate
 #     queries read columns instead of decompressing bodies. Queries stay
 #     correct without them, just far slower. Index-time settings do not apply
 #     retroactively, so merge them before ingesting in earnest.
-#   * Retention (`manage_retention` below) is pushed through sglake's index
-#     management REST API, which sglogd mounts ONLY when started with
+#   * Retention (`manage_retention` below) is pushed through aglake's index
+#     management REST API, which aglaked mounts ONLY when started with
 #     --splunk-web-dir pointing at its vendored frontend assets, and which
-#     needs a browser session when sglogd auth is on. Without both, Heron logs
-#     one warning and leaves retention alone — give sglogd its own
+#     needs a browser session when aglaked auth is on. Without both, Heron logs
+#     one warning and leaves retention alone — give aglaked its own
 #     --retention-days and set manage_retention = false.
 #
-# The /api/v1/* endpoints are unauthenticated in sglogd — bind it to loopback
+# The /api/v1/* endpoints are unauthenticated in aglaked — bind it to loopback
 # or otherwise restrict it at the network layer.
-# [storage.sglake]
+# [storage.aglake]
 # url                    = "http://127.0.0.1:5959"
 # hec_token              = ""        # matched as `Authorization: Splunk <token>`
 # index_prefix           = "heron"   # owns <prefix>_spans, _bodies, _traces, ...
@@ -160,7 +160,7 @@ path = "data/heron.duckdb"
 #                                    #     (bodies <- spans, http_bodies <- http_exchanges)
 # manage_retention       = true      # push per-index TTLs on the shared schedule
 # max_body_bytes         = 33554432  # per HEC request, pre-compression
-# max_event_bytes        = 8388608   # per event; must stay under sglake's 16 MiB WAL frame
+# max_event_bytes        = 8388608   # per event; must stay under aglake's 16 MiB WAL frame
 # gzip                   = true
 # use_ack                = true      # ask before resending a request that failed in flight
 # write_retries          = 3

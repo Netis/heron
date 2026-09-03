@@ -1,11 +1,11 @@
 //! The recommended `props.toml`, generated from the event structs.
 //!
-//! `indexed` in sglake's props.toml is what decides whether an aggregate reads
+//! `indexed` in aglake's props.toml is what decides whether an aggregate reads
 //! a column or decompresses a body. Measured on 124k real spans: with these
 //! stanzas in place, every representative Heron query — the metrics rollups,
 //! the Services page, the filter dropdowns — ran entirely off columns and
 //! postings, with zero fallbacks to the row path. Without them the queries stay
-//! *correct*, because sglake extracts fields at search time either way; they
+//! *correct*, because aglake extracts fields at search time either way; they
 //! just do it by decompressing bodies, which is one to two orders of magnitude
 //! more work.
 //!
@@ -22,15 +22,15 @@
 //!
 //! # Two limits an operator has to know
 //!
-//! `indexed` is read once, when sglogd starts, and **is never applied
+//! `indexed` is read once, when aglaked starts, and **is never applied
 //! retroactively**. Buckets written before the change keep whatever extraction
 //! they had, so a query spanning the change point is fast on one side and slow
 //! on the other, with nothing in the logs to say why. Plan a props change like
-//! a schema migration even though sglake has no schema.
+//! a schema migration even though aglake has no schema.
 //!
-//! And Heron never writes this file. It belongs to whoever operates sglogd,
+//! And Heron never writes this file. It belongs to whoever operates aglaked,
 //! sits in *their* data directory beside indexes this backend does not own,
-//! and merging into it is their call — `heron sglake-props` prints, and stops
+//! and merging into it is their call — `heron aglake-props` prints, and stops
 //! there.
 
 use serde::de::{DeserializeOwned, Error as _};
@@ -191,10 +191,10 @@ fn stanzas() -> Vec<Stanza> {
 pub fn render() -> String {
     let mut out = String::new();
     out.push_str(
-        "# Heron — recommended sglake index-time extraction.\n\
+        "# Heron — recommended aglake index-time extraction.\n\
          #\n\
-         # Merge these stanzas into sglogd's <data-dir>/props.toml and restart\n\
-         # sglogd. Everything here is a performance setting: queries return the\n\
+         # Merge these stanzas into aglaked's <data-dir>/props.toml and restart\n\
+         # aglaked. Everything here is a performance setting: queries return the\n\
          # same answers without it, but aggregates fall back to decompressing\n\
          # event bodies instead of reading columns and postings.\n\
          #\n\

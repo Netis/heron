@@ -41,7 +41,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the store is append-only. `heron sglake-props` prints the index-time
   extraction stanzas that keep aggregates on the columnar path; they are
   generated from the event structs themselves, so they cannot drift from the
-  schema. See [docs/design/10-sglake.md](docs/design/10-sglake.md), which also
+  schema. See [docs/design/10-aglake.md](docs/design/10-aglake.md), which also
   documents the known divergences — proxy pairing does not annotate traces on an
   append-only store.
 

@@ -78,7 +78,7 @@ h-metrics = { path = "h-metrics" }
 h-storage = { path = "h-storage" }
 h-storage-duckdb = { path = "h-storage-duckdb" }
 h-storage-clickhouse = { path = "h-storage-clickhouse" }
-h-storage-sglake = { path = "h-storage-sglake" }
+h-storage-aglake = { path = "h-storage-aglake" }
 h-pcap-extract = { path = "h-pcap-extract" }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
@@ -92,7 +92,7 @@ duckdb = { version = "1", features = ["bundled", "json"] }
 # ClickHouse backend client — HTTP interface, serde RowBinary, async/Tokio.
 # lz4 is the crate's default compression; kept explicit for clarity.
 clickhouse = { version = "0.15", features = ["lz4"] }
-# sglake backend client — HEC writes + /api/v1/search (SPL) reads, both plain
+# aglake backend client — HEC writes + /api/v1/search (SPL) reads, both plain
 # HTTP. rustls-tls rather than native-tls so the single static binary keeps
 # building offline (same reason flate2 uses miniz_oxide). We need the response
 # body parsed, not just the status: the HEC partial-success 400 carries

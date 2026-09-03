@@ -2,7 +2,7 @@
 //! capture pipeline and lives in `main.rs`; everything here is for
 //! diagnostic / pre-flight subcommands that exit before any pipeline spawn.
 
+pub mod aglake_props;
 pub mod backfill_tokens;
 pub mod doctor;
-pub mod sglake_props;
 pub mod validate;

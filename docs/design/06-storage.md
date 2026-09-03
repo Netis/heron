@@ -28,10 +28,10 @@ LlmMetric ──┘
 | DuckDB | Default, single-node, dev, edge | `duckdb-rs` |
 | PostgreSQL | Mid-scale production | `sqlx` (postgres feature) |
 | ClickHouse | Large-scale, high-throughput analytics | `clickhouse-rs` |
-| sglake (sglog) | Observability data joins an existing log platform | `reqwest` (HEC + SPL over HTTP) |
+| Aglake | Observability data joins an existing log platform | `reqwest` (HEC + SPL over HTTP) |
 
 See [schema.md](07-schema.md) for data schema and backend adaptation notes,
-and [sglake.md](10-sglake.md) for the one backend that is not a SQL database.
+and [aglake.md](10-aglake.md) for the one backend that is not a SQL database.
 
 ## File Structure
 
@@ -52,10 +52,10 @@ h-storage/                 # backend-neutral trait + shared logic
 
 h-storage-duckdb/          # DuckDB backend (embedded, single-node / edge)
 h-storage-clickhouse/      # ClickHouse backend (server, high-throughput analytics)
-h-storage-sglake/          # sglake backend (Splunk-compatible log platform)
+h-storage-aglake/          # aglake backend (Splunk-compatible log platform)
                            #   PostgreSQL: future
 ```
 
 ## Retention
 
-`StorageBackend::apply_retention(policy)` is a dialect-neutral trait method that each backend implements with its own DELETE / partition-drop / TTL strategy. sglake is the one that cannot delete rows at all: it declares a per-index TTL and lets the log daemon expire whole buckets on its own timer, so its report is honestly zero rather than a fabricated count — see [sglake.md](10-sglake.md#retention). A background task (`spawn_retention_task`) drives it on a fixed interval when enabled. Calls, turns, and metrics have independent TTLs; metrics are keyed per-granularity (`10s`/`1m`/`5m`/`1h`). See [schema.md § Data Lifecycle](07-schema.md#data-lifecycle) for the config shape.
+`StorageBackend::apply_retention(policy)` is a dialect-neutral trait method that each backend implements with its own DELETE / partition-drop / TTL strategy. aglake is the one that cannot delete rows at all: it declares a per-index TTL and lets the log daemon expire whole buckets on its own timer, so its report is honestly zero rather than a fabricated count — see [aglake.md](10-aglake.md#retention). A background task (`spawn_retention_task`) drives it on a fixed interval when enabled. Calls, turns, and metrics have independent TTLs; metrics are keyed per-granularity (`10s`/`1m`/`5m`/`1h`). See [schema.md § Data Lifecycle](07-schema.md#data-lifecycle) for the config shape.

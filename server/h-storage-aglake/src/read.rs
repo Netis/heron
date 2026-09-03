@@ -21,9 +21,9 @@ use h_storage::query::TimeRange;
 
 use crate::client::Row;
 use crate::spl::{self, raw_query, Search};
-use crate::SglakeBackend;
+use crate::AglakeBackend;
 
-impl SglakeBackend {
+impl AglakeBackend {
     /// Run a `| table _raw` query and decode each row into `T`.
     ///
     /// A row that fails to decode is skipped and logged rather than failing
@@ -101,8 +101,8 @@ impl SglakeBackend {
         // request that quietly takes minutes.
         if offset > self.max_page_offset {
             return Err(h_common::error::AppError::Storage(format!(
-                "sglake backend: page offset {offset} exceeds \
-                 storage.sglake.max_page_offset ({}); narrow the time range or \
+                "aglake backend: page offset {offset} exceeds \
+                 storage.aglake.max_page_offset ({}); narrow the time range or \
                  filters instead of paging this deep",
                 self.max_page_offset
             )));
@@ -132,7 +132,7 @@ impl SglakeBackend {
 }
 
 /// Decode `_raw` out of each row, skipping (and reporting) any that will not
-/// parse. See [`SglakeBackend::fetch_raw`] for why `_raw` and not the fields.
+/// parse. See [`AglakeBackend::fetch_raw`] for why `_raw` and not the fields.
 pub(crate) fn decode_rows<T: DeserializeOwned>(what: &'static str, rows: Vec<Row>) -> Vec<T> {
     let mut out = Vec::with_capacity(rows.len());
     let mut undecodable = 0usize;
@@ -147,10 +147,10 @@ pub(crate) fn decode_rows<T: DeserializeOwned>(what: &'static str, rows: Vec<Row
     }
     if undecodable > 0 {
         tracing::warn!(
-            target: "sglake::read",
+            target: "aglake::read",
             query = what,
             skipped = undecodable,
-            "sglake: skipped event(s) that could not be decoded"
+            "aglake: skipped event(s) that could not be decoded"
         );
     }
     out

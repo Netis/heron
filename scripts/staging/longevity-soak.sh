@@ -132,25 +132,25 @@ fi
 
 # Sample RSS + on-disk store size + metrics over the window.
 #
-# `SGLAKE_DATA_DIR` switches the disk measurement to a sglake deployment's
+# `AGLAKE_DATA_DIR` switches the disk measurement to a aglake deployment's
 # index tree and adds a bucket count. Unset (the default) measures the DuckDB
 # file, and the bucket invariant simply does not appear in the verdict — see
 # longevity_check.py for why an absent invariant beats a vacuous passing one.
-SGLAKE_DATA_DIR="${SGLAKE_DATA_DIR:-}"
+AGLAKE_DATA_DIR="${AGLAKE_DATA_DIR:-}"
 : > "$SAMPLES"
 t_end=$(( $(date +%s) + DURATION ))
 while [ "$(date +%s)" -lt "$t_end" ]; do
   kill -0 "$PID" 2>/dev/null || { echo "longevity-soak: heron died mid-run" >&2; break; }
   rss_kb="$(awk '/^VmRSS:/{print $2}' "/proc/$PID/status" 2>/dev/null || echo 0)"
-  if [ -n "$SGLAKE_DATA_DIR" ]; then
+  if [ -n "$AGLAKE_DATA_DIR" ]; then
     # A log store is a tree of bucket directories, not one file. Two numbers
     # matter and only one of them is bytes: search cost scales with how many
     # buckets a query has to open, so a store that accumulates buckets faster
     # than it accumulates data gets slower to read while its footprint still
     # looks linear. The knob behind that (`--max-hot-raw-mib`) belongs to the
     # log daemon, so all Heron can do is watch it.
-    db_bytes="$(du -sb "$SGLAKE_DATA_DIR/indexes" 2>/dev/null | cut -f1 || echo 0)"
-    buckets="$(find "$SGLAKE_DATA_DIR/indexes" -mindepth 3 -maxdepth 3 -type d \
+    db_bytes="$(du -sb "$AGLAKE_DATA_DIR/indexes" 2>/dev/null | cut -f1 || echo 0)"
+    buckets="$(find "$AGLAKE_DATA_DIR/indexes" -mindepth 3 -maxdepth 3 -type d \
                  -name 'db_*' 2>/dev/null | wc -l || echo 0)"
     bucket_field=",\"buckets\":${buckets:-0}"
   else

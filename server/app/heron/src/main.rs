@@ -138,10 +138,11 @@ enum Command {
     /// filling in input_tokens / output_tokens / total_tokens via cl100k.
     /// Stop the live heron daemon first — DuckDB takes an exclusive lock.
     BackfillTokens(cmd::backfill_tokens::BackfillTokensArgs),
-    /// Print the props.toml stanzas the sglake storage backend recommends,
-    /// for merging into sglogd's <data-dir>/props.toml. Performance only —
+    /// Print the props.toml stanzas the aglake storage backend recommends,
+    /// for merging into aglaked's <data-dir>/props.toml. Performance only —
     /// queries are correct without them, just far slower.
-    SglakeProps(cmd::sglake_props::SglakePropsArgs),
+    #[command(alias = "sglake-props")]
+    AglakeProps(cmd::aglake_props::AglakePropsArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -215,8 +216,8 @@ async fn main() {
             let code = cmd::backfill_tokens::run(&args);
             std::process::exit(code);
         }
-        Some(Command::SglakeProps(args)) => {
-            let code = cmd::sglake_props::run(cli.config.as_deref(), &args);
+        Some(Command::AglakeProps(args)) => {
+            let code = cmd::aglake_props::run(cli.config.as_deref(), &args);
             std::process::exit(code);
         }
         None => {

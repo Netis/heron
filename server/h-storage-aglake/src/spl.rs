@@ -5,7 +5,7 @@
 //! **Injection.** Every value that reaches a query is attacker-influenced in
 //! principle (model names and request paths come off the wire). SPL's
 //! double-quoted string understands exactly two escapes, `\"` and `\\`, and
-//! keeps unknown ones verbatim (`sglog-spl/src/cursor.rs:130`), so [`quote`]
+//! keeps unknown ones verbatim (`aglake-spl/src/cursor.rs:130`), so [`quote`]
 //! escapes those two and nothing else.
 //!
 //! **`*` is a wildcard with no escape.** `search field="*"` matches *every*
@@ -14,7 +14,7 @@
 //! to `wildcard_match`, which has no `\*` branch. A value that happens to
 //! contain `*` therefore silently becomes a pattern. [`match_term`] detects
 //! this and falls back to `| where field == "..."`, which compares literally
-//! (`sglog-eval/src/compile.rs` `BinOp::Eq`). That costs index pushdown, so it
+//! (`aglake-eval/src/compile.rs` `BinOp::Eq`). That costs index pushdown, so it
 //! only kicks in for the values that actually need it.
 
 /// Quote a value as an SPL double-quoted string literal.
@@ -52,7 +52,7 @@ pub(crate) fn match_term(field: &str, value: &str) -> Option<String> {
 ///
 /// The body indexes are the one place a field predicate does not work. Their
 /// events are delivered as pre-serialized JSON *strings* with `auto_json =
-/// false`, so sglake extracts no fields from them at all — `span_id="…"`
+/// false`, so aglake extracts no fields from them at all — `span_id="…"`
 /// compares against a field that does not exist and matches nothing, silently,
 /// while still paying for the scan. (Whether it matches also depends on whether
 /// a props.toml is loaded, which is why this survived a test suite that ran
@@ -97,7 +97,7 @@ pub(crate) fn in_list(field: &str, values: &[String]) -> Option<String> {
 }
 
 /// A literal `==` comparison for the `| where` stage. Use when the value may
-/// contain `*`, or when comparing against sglake's own rollup sentinels.
+/// contain `*`, or when comparing against aglake's own rollup sentinels.
 pub(crate) fn where_eq(field: &str, value: &str) -> String {
     format!("{field} == {}", quote(value))
 }
@@ -240,11 +240,11 @@ fn glob_body(s: &str) -> String {
 /// query can do here, so they should always be set. `"0"` means unbounded and
 /// forces a full scan.
 ///
-/// Negative instants are clamped to the epoch, because sglake's time parser
+/// Negative instants are clamped to the epoch, because aglake's time parser
 /// rejects them outright — `bad time "-86400.000000"` — and a rejected query is
 /// an HTTP 500 on a page that had a perfectly answerable question. The reads
 /// that widen their window backwards to catch a turn that started before it
-/// (see [`crate::SglakeBackend::window`]) produce exactly this when the caller
+/// (see [`crate::AglakeBackend::window`]) produce exactly this when the caller
 /// asks from `start=0`, which the API allows and which pcap replay reaches in
 /// ordinary use. Clamping loses nothing: no event predates 1970, so the epoch
 /// and "unbounded" select the same rows.
@@ -267,8 +267,8 @@ pub(crate) const ID_CHUNK: usize = 512;
 /// bounded top-k path (O(2N) memory) instead of materializing the window, and
 /// the trailing `| table` switches the response into "results" mode, which is
 /// **not** subject to `max_events`. The sort limit is always written
-/// explicitly — a bare `| sort f` means `sort 10000 f` in current sglog
-/// (`sglog-spl/src/commands.rs`), and older builds do not apply that cap at
+/// explicitly — a bare `| sort f` means `sort 10000 f` in current aglake
+/// (`aglake-spl/src/commands.rs`), and older builds do not apply that cap at
 /// all, so relying on either behaviour would be version-dependent.
 ///
 /// The window itself is cut with `streamstats` + `where` on the row number
@@ -397,7 +397,10 @@ mod tests {
     fn body_terms_ors_the_chunk_and_refuses_an_empty_one() {
         assert_eq!(body_terms(&[]), None);
         let one = body_terms(&["a".to_string()]).unwrap();
-        assert!(!one.starts_with('('), "a single id needs no OR group: {one}");
+        assert!(
+            !one.starts_with('('),
+            "a single id needs no OR group: {one}"
+        );
         let two = body_terms(&["a".to_string(), "b".to_string()]).unwrap();
         assert!(two.starts_with('(') && two.contains(" OR "), "{two}");
     }
@@ -469,7 +472,7 @@ mod tests {
         );
     }
 
-    /// sglake's time parser rejects a negative instant, so a query whose
+    /// aglake's time parser rejects a negative instant, so a query whose
     /// window was widened backwards past 1970 must not produce one — it would
     /// surface as a 500 on a question that had an answer.
     #[test]
@@ -486,7 +489,7 @@ mod tests {
         assert_eq!(epoch_secs(1_000_000), "1.000000");
         assert_eq!(epoch_secs(0), "0.000000");
         // This used to assert `-1` rendered as the well-formed `"-1.999999"`.
-        // Well-formed was the wrong bar: sglake rejects the value regardless of
+        // Well-formed was the wrong bar: aglake rejects the value regardless of
         // how it is spelled. See `epoch_secs_clamps_below_the_epoch`.
     }
 

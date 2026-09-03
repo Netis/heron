@@ -1,12 +1,12 @@
-//! Retention, pushed to sglake as per-index TTLs.
+//! Retention, pushed to aglake as per-index TTLs.
 //!
-//! Every other backend implements `apply_retention` as a DELETE. sglake has no
+//! Every other backend implements `apply_retention` as a DELETE. aglake has no
 //! DELETE: data leaves through bucket freezing, driven by a per-index
-//! `frozen_after_secs` and a sweep timer inside sglogd. So this module does not
-//! *delete* anything — it tells sglake what each index's TTL should be and lets
-//! sglogd enforce it. The layout was chosen for exactly this: one index per
+//! `frozen_after_secs` and a sweep timer inside aglaked. So this module does not
+//! *delete* anything — it tells aglake what each index's TTL should be and lets
+//! aglaked enforce it. The layout was chosen for exactly this: one index per
 //! entity and per metrics granularity means Heron's per-table, per-granularity
-//! retention maps one-to-one onto sglake's per-index knob, with nothing to
+//! retention maps one-to-one onto aglake's per-index knob, with nothing to
 //! emulate.
 //!
 //! # Two consequences worth stating plainly
@@ -26,12 +26,12 @@
 //!
 //! # When the API is not reachable
 //!
-//! sglake only mounts its management REST face when started with vendored
+//! aglake only mounts its management REST face when started with vendored
 //! Splunk frontend assets, and gates writes to it behind a browser session when
 //! auth is on (see [`crate::client::ManagementClient`]). Neither is something
 //! Heron can fix from here, so the failure is reported **once**, with the three
 //! things an operator can actually do about it, and every sweep after that is a
-//! silent no-op — while still retrying, because a sglogd restart can make the
+//! silent no-op — while still retrying, because a aglaked restart can make the
 //! API appear.
 
 use std::sync::atomic::Ordering;
@@ -41,14 +41,14 @@ use h_common::error::Result;
 use h_storage::retention::{RetentionPolicy, RetentionReport};
 
 use crate::schema::Indexes;
-use crate::SglakeBackend;
+use crate::AglakeBackend;
 
 /// One index and the TTL it should be given, in seconds.
 type Target = (String, u64);
 
 /// Translate a policy into per-index TTLs.
 ///
-/// Cutoffs come in as absolute instants; sglake wants a duration. The two are
+/// Cutoffs come in as absolute instants; aglake wants a duration. The two are
 /// the same statement made from opposite ends, so this is `now - cutoff` —
 /// with the sign guarded, because a cutoff that is somehow in the future would
 /// otherwise compute a TTL of zero, and zero means *freeze everything now*.
@@ -102,13 +102,13 @@ fn plan(
     out
 }
 
-impl SglakeBackend {
+impl AglakeBackend {
     pub(crate) async fn apply_retention(&self, policy: RetentionPolicy) -> Result<RetentionReport> {
         let report = RetentionReport::default();
         if !self.manage_retention {
             tracing::debug!(
-                target: "sglake::retention",
-                "sglake: storage.sglake.manage_retention is off; leaving retention to sglogd"
+                target: "aglake::retention",
+                "aglake: storage.aglake.manage_retention is off; leaving retention to aglaked"
             );
             return Ok(report);
         }
@@ -144,11 +144,11 @@ impl SglakeBackend {
                 absent += 1;
                 continue;
             };
-            // Re-declaring an unchanged TTL is a write on sglake's side, and
+            // Re-declaring an unchanged TTL is a write on aglake's side, and
             // the sweep runs on a timer forever. Skip the ones already right.
             //
             // What the catalogue reports is the *effective* TTL, which may be
-            // sglogd's server-wide `--retention-days` rather than a per-index
+            // aglaked's server-wide `--retention-days` rather than a per-index
             // setting anybody pushed — the two are indistinguishable from
             // here. So this can decline to persist an explicit setting whose
             // value the server default happens to match. That leaves the
@@ -163,25 +163,25 @@ impl SglakeBackend {
                 Ok(()) => {
                     applied += 1;
                     tracing::info!(
-                        target: "sglake::retention",
+                        target: "aglake::retention",
                         index = %index, frozen_after_secs = secs,
-                        "sglake: index retention updated"
+                        "aglake: index retention updated"
                     );
                 }
                 Err(e) => {
                     failed += 1;
                     tracing::warn!(
-                        target: "sglake::retention",
+                        target: "aglake::retention",
                         index = %index, error = %e,
-                        "sglake: could not set index retention"
+                        "aglake: could not set index retention"
                     );
                 }
             }
         }
         tracing::debug!(
-            target: "sglake::retention",
+            target: "aglake::retention",
             applied, absent, failed,
-            "sglake: retention sweep complete (TTLs declared; sglogd deletes on its own timer)"
+            "aglake: retention sweep complete (TTLs declared; aglaked deletes on its own timer)"
         );
         Ok(report)
     }
@@ -192,21 +192,21 @@ impl SglakeBackend {
     fn warn_retention_unavailable(&self, e: &h_common::error::AppError) {
         if self.retention_warned.swap(true, Ordering::Relaxed) {
             tracing::debug!(
-                target: "sglake::retention",
+                target: "aglake::retention",
                 error = %e,
-                "sglake: index management API still unreachable"
+                "aglake: index management API still unreachable"
             );
             return;
         }
         tracing::warn!(
-            target: "sglake::retention",
+            target: "aglake::retention",
             error = %e,
-            "sglake: cannot reach the index management API, so Heron's retention \
-             policy is not being applied — data will be kept until sglogd's own \
-             retention removes it. Either start sglogd with --splunk-web-dir \
+            "aglake: cannot reach the index management API, so Heron's retention \
+             policy is not being applied — data will be kept until aglaked's own \
+             retention removes it. Either start aglaked with --splunk-web-dir \
              pointing at the vendored frontend assets (the API is only mounted \
-             when they exist) and with auth off, or give sglogd a server-wide \
-             --retention-days and set storage.sglake.manage_retention = false \
+             when they exist) and with auth off, or give aglaked a server-wide \
+             --retention-days and set storage.aglake.manage_retention = false \
              to silence this."
         );
     }
@@ -285,7 +285,7 @@ mod tests {
         assert_eq!(ttl_of(&t, "heron_bodies"), None);
     }
 
-    /// sglake reads `frozen_after_secs = 0` as *freeze everything now*. A
+    /// aglake reads `frozen_after_secs = 0` as *freeze everything now*. A
     /// cutoff at or past the current instant must therefore drop the target
     /// rather than round down into a wipe.
     #[test]

@@ -125,19 +125,19 @@ jobs:
           CARGO_TERM_COLOR: always
         run: cargo test -p h-storage-duckdb --features fault-injection --quiet
 
-      - name: cargo test (sglake HEC retry state machine)
-        # The retry rules are the sglake backend's durability contract:
+      - name: cargo test (aglake HEC retry state machine)
+        # The retry rules are the aglake backend's durability contract:
         # `WriteBuffer` discards a batch whose flush returns `Err`, so a wrong
         # branch is a silently lost write or a duplicated one. They are also
-        # the part least reachable from a live server — sglogd cannot be asked
+        # the part least reachable from a live server — aglaked cannot be asked
         # for a 413, or to accept a request and then never answer — so these
         # drive a scripted mock over a real socket and need no server at all.
-        # The live half of the suite self-skips without SGLAKE_TEST_URL and is
+        # The live half of the suite self-skips without AGLAKE_TEST_URL and is
         # covered by the staging job instead.
         working-directory: server
         env:
           CARGO_TERM_COLOR: always
-        run: cargo test -p h-storage-sglake retry_tests --quiet
+        run: cargo test -p h-storage-aglake retry_tests --quiet
 
       - name: cargo test (schema-migration golden DBs)
         # Locks in the auto-migration code in h-storage-duckdb/src/schema.rs

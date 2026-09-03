@@ -91,7 +91,7 @@ Three entities: `traces` (agent turn), `spans` (per-call detail + full body), `l
 | DuckDB | Default, single-node, dev, edge (embedded, single-file) |
 | PostgreSQL | Mid-scale production (+ TimescaleDB optional) |
 | ClickHouse | Large-scale, high-throughput columnar analytics |
-| sglake (sglog) | Observability data joins an existing log platform; bodies become full-text searchable |
+| Aglake | Observability data joins an existing log platform; bodies become full-text searchable |
 
 **Pagination needs a total order.** Every paginated list query MUST end its
 `ORDER BY` / `sort` with the row's id. `LIMIT/OFFSET` runs one query per page,
@@ -101,7 +101,7 @@ the tie-breaks were added, walking pages of five over 26 spans that shared a
 `request_time` returned 18 distinct rows.
 
 See [docs/design/07-schema.md](docs/design/07-schema.md) for full schema design,
-and [docs/design/10-sglake.md](docs/design/10-sglake.md) for the backend that is
+and [docs/design/10-aglake.md](docs/design/10-aglake.md) for the backend that is
 not a SQL database — append-only, schema-on-read, and with a different failure
 model in every one of those directions.
 
