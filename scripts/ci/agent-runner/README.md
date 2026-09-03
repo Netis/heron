@@ -80,9 +80,10 @@ container traffic falls back to the default route and hangs. Two ways out:
   registers, reports online, and then never picks up a job. The cost is that the
   container shares the host's network namespace, so it can reach services bound
   to the host's loopback. On a host that also runs production, that includes
-  them — aglake's search API in particular is unauthenticated by design, with
-  the bind address as its only access control. Weigh that against what the jobs
-  are: same-repo PR branches built by an agent you configured.
+  them — aglake's search API in particular is open unless the daemon was given
+  a user catalog, leaving the bind address as its only access control. Weigh
+  that against what the jobs are: same-repo PR branches built by an agent you
+  configured.
 * **Route the bridge through the tailnet** and keep the container's own network
   namespace — a `MASQUERADE` for the bridge subnet out of `tailscale0` plus the
   matching `FORWARD` accepts, made persistent. Better isolation, at the price of
