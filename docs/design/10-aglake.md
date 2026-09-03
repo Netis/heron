@@ -1,9 +1,15 @@
-# aglake Storage Backend
+# Aglake Storage Backend
 
-The third `StorageBackend`, alongside DuckDB and ClickHouse. aglake (formerly
-aglake) is a Splunk-compatible log platform: writes go over its HTTP Event
-Collector, reads are SPL over `/api/v1/search`. Selected with
+The third `StorageBackend`, alongside DuckDB and ClickHouse. Aglake (released
+as sglog before its 0.3) is a Splunk-compatible log platform: writes go over its
+HTTP Event Collector, reads are SPL over `/api/v1/search`. Selected with
 `storage.backend = "aglake"`; the REST API and the console are unchanged.
+
+**Aglake 0.3 or newer.** Its rename was a deliberate breaking boundary rather
+than an alias layer — the pre-0.3 REST namespace answers `410 Gone` — so Heron
+speaks only the current API. Heron's own config keeps accepting the old
+`sglake` spelling, since a config file survives a Heron upgrade and a daemon
+does not.
 
 **Why it exists.** Where the SQL backends give Heron a private database, this
 one puts observation data into a log platform an organisation may already run —
@@ -113,7 +119,7 @@ doubling: every filter shape selects exactly one tier.
 
 ### Write-time precomputation
 
-aglake cannot push down `<`, `>`, `!=` or `NOT`. Anything a query would compare
+Aglake cannot push down `<`, `>`, `!=` or `NOT`. Anything a query would compare
 is turned into a categorical value at write time instead:
 
 | Field | Replaces |
@@ -225,7 +231,7 @@ never writes this file — it belongs to whoever runs aglaked.
 
 ## Retention
 
-aglake has no `DELETE`. `apply_retention` translates each cutoff into a per-index
+Aglake has no `DELETE`. `apply_retention` translates each cutoff into a per-index
 `frozen_after_secs` TTL and pushes it through the management API; the daemon
 expires whole buckets on its own timer. Two consequences stated plainly:
 
@@ -235,11 +241,13 @@ expires whole buckets on its own timer. Two consequences stated plainly:
 * **Deletion is coarser than the cutoff.** A bucket survives until its *newest*
   event ages out, so rows can outlive the policy by up to one bucket's span.
 
-The management API has two prerequisites Heron cannot satisfy: it is mounted
-**only** when aglaked starts with vendored Splunk frontend assets
-(`--splunk-web-dir`), and its writes need a browser login session when aglaked
-auth is on. Without both, Heron logs one warning naming the ways out and leaves
-retention alone.
+Retention goes through the native `/api/v1/admin/indexes` face, which is always
+mounted — unlike the Splunk-compatible one it replaced, which appeared only when
+aglaked was started with vendored frontend assets, so an ingest-only deployment
+could not be told about retention at all. What remains outside Heron's control
+is version and authorization: a 404 means the daemon predates 0.3, a 401 that no
+session is configured, a 403 that the account lacks the `admin` role. Each is
+reported once, naming its own fix, and the sweep is a no-op until it clears.
 
 ## Durability
 
@@ -255,7 +263,7 @@ cannot retry it, so every retry lives in the HEC client:
 * **5xx / timeout / connection error** — may or may not have landed; ask, then
   resend.
 
-That "ask" is the ack, and it works differently than it looks. aglake issues the
+That "ask" is the ack, and it works differently than it looks. Aglake issues the
 ack id **in the same response that reports success**, so there is no id to ask
 about when the response is what got lost. Every request therefore goes out on a
 **freshly minted channel**: the per-channel counter starts at zero, so the only
@@ -348,10 +356,13 @@ that for an index whose events are small. At 6 h, `heron_spans` seals four
 buckets a day — 120 over a 30-day retention, against the hundreds of thousands
 the bucket-count guidance is about.
 
-And one property to check: aglake's `/api/v1/*` search endpoints have **no
-authentication**. Where aglaked listens is the entire access-control story for
-every request and response body Heron stores there. `config validate` warns when
-`storage.aglake.url` is not loopback.
+And one property to check: `/api/v1/*` is open until aglaked has a user
+catalog. With no users — its default — where aglaked listens is the entire
+access-control story for every request and response body Heron stores there, so
+`config validate` warns when `storage.aglake.url` is not loopback. Configuring
+`username`/`password` (exchanged for a session, presented as a bearer token,
+re-established once on a 401) puts a real check in front of the data and lifts
+that warning. `hec_token` does **not**: it authenticates ingest only.
 
 ## Testing
 
@@ -359,6 +370,7 @@ every request and response body Heron stores there. `config validate` warns when
 |---|---|
 | unit | encoding round-trips, SPL quoting and injection, dimension-tier equivalence against the SQL builder's real output, props generation |
 | `retry_tests` (mock HTTP) | all six retry branches over a real socket — a live server cannot be asked for a 413, or to accept a request and then never answer. Runs in CI with no server. |
+| `auth_tests` (mock HTTP) | session handling and the admin API: expiry-then-retry, a fixed token never refreshed, credentials against a no-auth daemon, one shared login, and the request/response shapes. A session expiring is reached in production by running twelve hours and by nothing a test can ask a daemon for. |
 | `it.rs` (live) | 25 tests against a real aglaked, gated on `AGLAKE_TEST_URL`; self-skip without it. Includes a fault-injection test that SIGKILLs the daemon mid-write. |
 | `scripts/storage/backend-differential.py` | replays the pcap corpus through DuckDB and aglake and diffs every REST endpoint |
 

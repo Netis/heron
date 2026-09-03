@@ -776,9 +776,11 @@ fn default_clickhouse_user() -> String {
 /// queries never touch body bytes, and so bodies can expire earlier than the
 /// metadata that references them.
 ///
-/// ⚠️ Security: aglaked authenticates HEC with a token but leaves `/api/v1/*`
-/// **unauthenticated**, and serves no HTTPS of its own. Deploy it on a trusted
-/// network or behind a reverse proxy.
+/// ⚠️ Security: HEC and `/api/v1/*` authenticate **separately**. `hec_token`
+/// covers ingest only; the search and admin faces are open until aglaked has a
+/// user catalog, and then need a session (`username`/`password`, or
+/// `session_token`). aglaked serves no HTTPS of its own either way, so a
+/// non-loopback link belongs on a trusted network or behind a reverse proxy.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AglakeConfig {
     /// aglaked base URL, e.g. `http://127.0.0.1:5959`.
@@ -786,8 +788,32 @@ pub struct AglakeConfig {
     pub url: String,
     /// HEC token. Only needed when aglaked runs with `--hec-token`; the header
     /// is matched exactly as `Authorization: Splunk <token>`.
+    ///
+    /// This authenticates ingest only. It does **not** open `/api/v1/*` —
+    /// those need a session, from `username`/`password` or `session_token`.
     #[serde(default)]
     pub hec_token: String,
+    /// Username in aglake's local user catalog, exchanged for a session at
+    /// first use. Leave empty when aglaked runs with no users (its default),
+    /// where `/api/v1/*` is open and no credentials are sent.
+    ///
+    /// The account needs the `admin` role only if `manage_retention` is on —
+    /// pushing per-index TTLs goes through `/api/v1/admin/*`. A search-only
+    /// deployment can use an unprivileged account.
+    #[serde(default)]
+    pub username: String,
+    /// Password for [`AglakeConfig::username`].
+    #[serde(default)]
+    pub password: String,
+    /// An existing session token, presented as `Authorization: Bearer`,
+    /// instead of logging in. Takes precedence over `username`/`password`.
+    ///
+    /// Sessions live in the daemon's memory with a 12-hour TTL and are lost
+    /// when it restarts, and Heron cannot mint a new one from a token alone —
+    /// so this is for short-lived or externally-refreshed setups. Prefer
+    /// `username`/`password` for anything long-running.
+    #[serde(default)]
+    pub session_token: String,
     /// Prefix for every index this backend owns. Must avoid aglake's built-in
     /// names (`main` / `traces` / `metrics` / `summary` / `_internal` / `_audit`)
     /// — note `traces` in particular is already taken by OTLP spans.
@@ -868,6 +894,9 @@ impl Default for AglakeConfig {
         Self {
             url: default_aglake_url(),
             hec_token: String::new(),
+            username: String::new(),
+            password: String::new(),
+            session_token: String::new(),
             index_prefix: default_aglake_index_prefix(),
             store_bodies: true,
             body_retention_days: 0,
@@ -1406,12 +1435,13 @@ impl std::fmt::Display for ConfigIssue {
             ),
             Self::AglakeUrlNotLoopback { url, host } => write!(
                 f,
-                "storage.aglake.url points at '{host}' ({url}). aglake's \
-                 /api/v1/* search endpoints have no authentication of their \
-                 own — every stored request and response body is readable by \
-                 anyone who can reach that port, and Heron cannot restrict \
-                 it. Bind aglaked to 127.0.0.1, or put the link on a network \
-                 only Heron can use."
+                "storage.aglake.url points at '{host}' ({url}) with no \
+                 credentials configured, so nothing but the network stands in \
+                 front of the /api/v1/* search endpoints — every stored \
+                 request and response body is readable by anyone who can reach \
+                 that port, and Heron cannot restrict it. Give aglaked a user \
+                 catalog and set storage.aglake.username / password, bind it \
+                 to 127.0.0.1, or put the link on a network only Heron can use."
             ),
             Self::AglakeBodyRetentionExceedsParent {
                 body_days,
@@ -1636,17 +1666,24 @@ impl AppConfig {
                     index: format!("{prefix}_spans"),
                 });
             }
-            // The search API aglake exposes is unauthenticated, so where it
-            // listens is the entire access control story for the bodies Heron
-            // stores there. Heron does not start aglaked and cannot bind it, so
-            // this is the one place the risk can be named — and a non-loopback
-            // URL is the observable symptom of it.
-            if let Some(host) = aglake_url_host(&sg.url) {
-                if !is_loopback_host(&host) {
-                    issues.push(ConfigIssue::AglakeUrlNotLoopback {
-                        url: sg.url.clone(),
-                        host,
-                    });
+            // Until aglake 0.3 the search API had no authentication of its
+            // own, which made where it listens the entire access-control story
+            // for the bodies Heron stores there. Credentials change that: with
+            // a session configured, the daemon has a user catalog and the port
+            // is no longer the only thing standing in front of the data, so
+            // the warning would be noise. Without them, the reachable-port
+            // risk is exactly what it always was — Heron does not start
+            // aglaked and cannot bind it, so this stays the one place it can
+            // be named.
+            let has_session = !sg.username.is_empty() || !sg.session_token.is_empty();
+            if !has_session {
+                if let Some(host) = aglake_url_host(&sg.url) {
+                    if !is_loopback_host(&host) {
+                        issues.push(ConfigIssue::AglakeUrlNotLoopback {
+                            url: sg.url.clone(),
+                            host,
+                        });
+                    }
                 }
             }
             // A body at the cap plus its headers and JSON escaping has to fit
@@ -2554,8 +2591,8 @@ mod phase2_tests {
         assert_eq!(aglake_url_host("not a url"), None);
     }
 
-    /// The search API has no auth of its own, so where aglaked listens is the
-    /// only thing standing between stored request bodies and the network.
+    /// With no credentials configured, where aglaked listens is the only thing
+    /// standing between stored request bodies and the network.
     #[test]
     fn a_non_loopback_aglake_url_is_warned_about() {
         let cfg = AppConfig::from_toml(
@@ -2580,7 +2617,7 @@ mod phase2_tests {
             .expect("expected the loopback warning");
         assert_eq!(issue.severity(), IssueSeverity::Warn);
         assert!(
-            issue.to_string().contains("no authentication"),
+            issue.to_string().contains("no credentials configured"),
             "the message must say why: {issue}"
         );
 
@@ -2603,6 +2640,49 @@ mod phase2_tests {
             .validate()
             .iter()
             .any(|i| matches!(i, ConfigIssue::AglakeUrlNotLoopback { .. })));
+    }
+
+    /// Credentials answer what the loopback warning is about: with a session
+    /// configured, the port is no longer the only thing in front of the data,
+    /// so a remote aglake is a legitimate deployment rather than a finding.
+    #[test]
+    fn configured_credentials_lift_the_loopback_warning() {
+        let remote = |credentials: &str| {
+            AppConfig::from_toml(&format!(
+                r#"
+                [[pipeline]]
+                name = "p"
+                [[pipeline.sources]]
+                type = "pcap"
+                interface = "eth0"
+
+                [storage]
+                backend = "aglake"
+
+                [storage.aglake]
+                url = "http://10.0.0.5:5959"
+                {credentials}
+                "#
+            ))
+        };
+
+        for credentials in [
+            r#"username = "heron""#,
+            r#"session_token = "deadbeef""#,
+            // A password without a username is not a credential — nothing to
+            // log in as — so it must not silence the warning.
+            "",
+        ] {
+            let warned = remote(credentials)
+                .validate()
+                .iter()
+                .any(|i| matches!(i, ConfigIssue::AglakeUrlNotLoopback { .. }));
+            assert_eq!(
+                warned,
+                credentials.is_empty(),
+                "unexpected warning state for {credentials:?}"
+            );
+        }
     }
 
     /// Only when aglake is the active backend — an unused `[storage.aglake]`

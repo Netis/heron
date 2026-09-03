@@ -16,7 +16,7 @@ For cross-cutting terminology (TTFT/E2E/TPOT, wire_api, agent_kind, HttpExchange
 | 07 | [Schema](07-schema.md) | `ts-storage` | `agent_turns`, `llm_calls`, `llm_metrics` table definitions |
 | 08 | [Internal Metrics](08-internal-metrics.md) | `ts-common` | Operational self-monitoring (counters, gauges) |
 | 09 | [Body cap](09-body-cap.md) | `h-llm` / `h-common` | Stored-body head+tail sampling for 1M-token contexts |
-| 10 | [aglake backend](10-aglake.md) | `h-storage-aglake` | Append-only log-platform backend: index layout, wildcard tiers, retry/ack, measured costs |
+| 10 | [Aglake backend](10-aglake.md) | `h-storage-aglake` | Append-only log-platform backend: index layout, wildcard tiers, retry/ack, measured costs |
 
 ## Pipeline Flow
 

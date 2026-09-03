@@ -11,6 +11,10 @@
 //!     cargo test -p h-storage-aglake
 //! ```
 //!
+//! That daemon has no user catalog, so `/api/v1/*` is open. Against one that
+//! has users, add `AGLAKE_TEST_USER` / `AGLAKE_TEST_PASSWORD`; the retention
+//! tests additionally need that account to hold the `admin` role.
+//!
 //! **Isolation is per index prefix, not per database.** aglake has no
 //! `DROP DATABASE` and no DDL at all — an index exists because something wrote
 //! to it. Each test therefore gets a unique `index_prefix` and simply never
@@ -59,11 +63,22 @@ async fn fresh_backend() -> Option<AglakeBackend> {
         url,
         hec_token: std::env::var("AGLAKE_TEST_TOKEN").unwrap_or_default(),
         index_prefix: format!("it{seq}{}", &nonce[..12]),
-        ..Default::default()
+        ..test_credentials()
     };
     let backend = AglakeBackend::new(&cfg).expect("build backend");
     backend.init().await.expect("init");
     Some(backend)
+}
+
+/// Credentials for an aglaked started with a user catalog, as a partial
+/// config to spread over. Empty — the no-auth daemon these tests document —
+/// unless `AGLAKE_TEST_USER` is set.
+fn test_credentials() -> AglakeConfig {
+    AglakeConfig {
+        username: std::env::var("AGLAKE_TEST_USER").unwrap_or_default(),
+        password: std::env::var("AGLAKE_TEST_PASSWORD").unwrap_or_default(),
+        ..Default::default()
+    }
 }
 
 macro_rules! require_backend {
@@ -1503,13 +1518,14 @@ async fn distincts_and_agent_rollups() {
 /// is a no-op that logs cheerfully. This asserts it round-trips: push the
 /// policy, then read the value back out of aglake's own index catalogue.
 ///
-/// Skips — rather than fails — when the management API is not mounted, since
-/// that depends on how the aglaked under test was started, not on this code.
+/// Skips — rather than fails — when the admin API is unreachable, since that
+/// depends on the aglaked under test (its version, and whether it has a user
+/// catalog this run has credentials for), not on this code.
 #[tokio::test]
 async fn retention_reaches_aglake_as_a_per_index_ttl() {
     let backend = require_backend!();
     if backend.management.list_indexes().await.is_err() {
-        eprintln!("skip: aglaked has no index management API (needs --splunk-web-dir)");
+        eprintln!("skip: aglaked admin API unreachable (needs 0.3+, and admin credentials when it has users)");
         return;
     }
 
@@ -1600,12 +1616,12 @@ async fn manage_retention_off_sends_nothing() {
         hec_token: std::env::var("AGLAKE_TEST_TOKEN").unwrap_or_default(),
         index_prefix: format!("itnoret{}", &nonce[..12]),
         manage_retention: false,
-        ..Default::default()
+        ..test_credentials()
     };
     let backend = AglakeBackend::new(&cfg).unwrap();
     backend.init().await.unwrap();
     if backend.management.list_indexes().await.is_err() {
-        eprintln!("skip: aglaked has no index management API");
+        eprintln!("skip: aglaked admin API unreachable");
         return;
     }
 
@@ -1714,7 +1730,7 @@ async fn metrics_dedup_collapses_a_duplicated_write() {
         url: url.clone(),
         hec_token: token.clone(),
         index_prefix: prefix.clone(),
-        ..Default::default()
+        ..test_credentials()
     })
     .unwrap();
     plain.init().await.unwrap();
@@ -1783,7 +1799,7 @@ async fn metrics_dedup_collapses_a_duplicated_write() {
         hec_token: token,
         index_prefix: prefix,
         metrics_dedup: true,
-        ..Default::default()
+        ..test_credentials()
     })
     .unwrap();
     let s = summary_of(&deduped, &range).await;

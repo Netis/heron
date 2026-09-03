@@ -121,10 +121,14 @@ impl AglakeBackend {
                 config.index_prefix, clash
             )));
         }
+        // One session, shared by both `/api/v1/*` clients: a login is a
+        // round-trip and a server-side session slot, and there is no reason
+        // for search and management to hold two.
+        let auth = std::sync::Arc::new(client::AuthState::new(config)?);
         Ok(Self {
             hec: client::HecClient::new(config)?,
-            search: client::SearchClient::new(config)?,
-            management: client::ManagementClient::new(config)?,
+            search: client::SearchClient::new(config, auth.clone())?,
+            management: client::ManagementClient::new(config, auth)?,
             ix,
             store_bodies: config.store_bodies,
             max_page_offset: config.max_page_offset,

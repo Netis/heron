@@ -26,12 +26,14 @@
 //!
 //! # When the API is not reachable
 //!
-//! aglake only mounts its management REST face when started with vendored
-//! Splunk frontend assets, and gates writes to it behind a browser session when
-//! auth is on (see [`crate::client::ManagementClient`]). Neither is something
-//! Heron can fix from here, so the failure is reported **once**, with the three
-//! things an operator can actually do about it, and every sweep after that is a
-//! silent no-op — while still retrying, because a aglaked restart can make the
+//! The native admin face is always mounted on a supported aglaked, so the
+//! reachability question is now about version and credentials rather than how
+//! the daemon was started: a 404 means it predates 0.3, a 401 that no session
+//! was configured, a 403 that the account lacks the admin role (see
+//! [`crate::client::ManagementClient`]). None of those is something Heron can
+//! fix from here, so the failure is reported **once**, with what an operator
+//! can actually do about it, and every sweep after that is a silent no-op —
+//! while still retrying, because an aglaked restart or a re-login can make the
 //! API appear.
 
 use std::sync::atomic::Ordering;
@@ -203,9 +205,10 @@ impl AglakeBackend {
             error = %e,
             "aglake: cannot reach the index management API, so Heron's retention \
              policy is not being applied — data will be kept until aglaked's own \
-             retention removes it. Either start aglaked with --splunk-web-dir \
-             pointing at the vendored frontend assets (the API is only mounted \
-             when they exist) and with auth off, or give aglaked a server-wide \
+             retention removes it. The error above says which of the three it \
+             is: an aglaked too old to serve /api/v1/admin (404), no session \
+             (401 — set storage.aglake.username / password), or an account \
+             without the admin role (403). Or give aglaked a server-wide \
              --retention-days and set storage.aglake.manage_retention = false \
              to silence this."
         );
