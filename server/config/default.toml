@@ -112,7 +112,7 @@
 [storage]
 # Pluggable storage backend: "duckdb" (default, embedded single-node / edge),
 # "clickhouse" (dedicated server for large-scale, high-throughput analytics),
-# or "sglake" (Splunk-compatible log platform; full-text searchable bodies).
+# or "aglake" (Splunk-compatible log platform; full-text searchable bodies).
 backend = "duckdb"
 
 [storage.duckdb]
@@ -129,38 +129,54 @@ path = "data/heron.duckdb"
 # password          = ""
 # optimize_on_sweep = false   # OPTIMIZE TABLE ... FINAL after each retention sweep
 
-# sglake / sglog backend (used only when backend = "sglake"). Writes go over
-# the HTTP Event Collector, reads are SPL. Indexes are created on first write —
-# there is nothing to provision. Unlike the SQL backends, stored bodies are
+# Aglake backend (used only when backend = "aglake"). Writes go over the HTTP
+# Event Collector, reads are SPL. Indexes are created on first write — there is
+# nothing to provision. Unlike the SQL backends, stored bodies are
 # full-text searchable (`search index=heron_bodies "SELECT * FROM users"`).
 #
-# Three things about the sglogd side that Heron cannot set for you:
-#   * Start sglogd with --max-hot-raw-mib 2048 (or more). The 64 MiB default
+# Requires the admin API aglake added in 0.3: index management moved to the
+# native /api/v1/admin face, and the namespace it replaced was removed rather
+# than aliased. Upstream has since renumbered that line to 1.5, so any current
+# build qualifies. On an older daemon retention pushes fail with a 404 saying so.
+#
+# Note for aglaked 0.3.0.2653 and later, including 1.5: it starts dedicated
+# receivers on fixed 0.0.0.0 ports by default — HEC 8088, OTLP 4318/4317,
+# syslog 514, S2S 9997, ES-compat 9200 — and exits if one cannot bind (514 is
+# privileged). Heron needs none of them; it writes HEC over the --listen port.
+# Turn off what you do not want with --otlp-http-enabled false and friends, but
+# leave HEC enabled: --hec-http-enabled false also kills the HEC input on
+# --listen, which is the one Heron uses. Move it instead (--hec-http).
+#
+# Two things about the aglaked side that Heron cannot set for you:
+#   * Start aglaked with --max-hot-raw-mib 2048 (or more). The 64 MiB default
 #     produces one bucket per few hundred spans, and search cost scales with
 #     bucket count.
-#   * `heron sglake-props` prints the props.toml stanzas that make aggregate
+#   * `heron aglake-props` prints the props.toml stanzas that make aggregate
 #     queries read columns instead of decompressing bodies. Queries stay
 #     correct without them, just far slower. Index-time settings do not apply
 #     retroactively, so merge them before ingesting in earnest.
-#   * Retention (`manage_retention` below) is pushed through sglake's index
-#     management REST API, which sglogd mounts ONLY when started with
-#     --splunk-web-dir pointing at its vendored frontend assets, and which
-#     needs a browser session when sglogd auth is on. Without both, Heron logs
-#     one warning and leaves retention alone — give sglogd its own
-#     --retention-days and set manage_retention = false.
 #
-# The /api/v1/* endpoints are unauthenticated in sglogd — bind it to loopback
-# or otherwise restrict it at the network layer.
-# [storage.sglake]
+# Authentication comes in two independent halves. `hec_token` covers ingest
+# only. Everything under /api/v1/* — search included — is open while aglaked
+# has no user catalog, and needs a session once it has one: set username and
+# password (the account needs the `admin` role only if manage_retention is on).
+# With neither, aglaked is protected by nothing but where it listens, so bind
+# it to loopback or restrict it at the network layer.
+# [storage.aglake]
 # url                    = "http://127.0.0.1:5959"
-# hec_token              = ""        # matched as `Authorization: Splunk <token>`
+# hec_token              = ""        # matched as `Authorization: Splunk <token>`; ingest only
+# username               = ""        # aglake login; leave empty when it has no users
+# password               = ""
+# session_token          = ""        # presented as Bearer instead of logging in; wins over
+#                                    #   username/password, but cannot be renewed when it
+#                                    #   expires (sessions are 12h and die with the daemon)
 # index_prefix           = "heron"   # owns <prefix>_spans, _bodies, _traces, ...
 # store_bodies           = true      # false keeps metadata only (~2.7% of the footprint)
 # body_retention_days    = 0         # 0 = each body index inherits its own parent
 #                                    #     (bodies <- spans, http_bodies <- http_exchanges)
 # manage_retention       = true      # push per-index TTLs on the shared schedule
 # max_body_bytes         = 33554432  # per HEC request, pre-compression
-# max_event_bytes        = 8388608   # per event; must stay under sglake's 16 MiB WAL frame
+# max_event_bytes        = 8388608   # per event; must stay under aglake's 16 MiB WAL frame
 # gzip                   = true
 # use_ack                = true      # ask before resending a request that failed in flight
 # write_retries          = 3
@@ -169,7 +185,7 @@ path = "data/heron.duckdb"
 # search_timeout_secs    = 60
 # max_page_offset        = 100000    # deep paging errors out rather than running for minutes
 # max_sessions_scan      = 200000
-# max_concurrent_searches = 8
+# max_concurrent_searches = 8   # NOT YET IMPLEMENTED — accepted and ignored
 # trace_time_skew_hours  = 24        # widens end-time windows; a trace's _time is its start
 # metrics_dedup          = false     # only needed if duplicate metric rows are observed;
 #                                    #   costs a sort and the columnar fast path

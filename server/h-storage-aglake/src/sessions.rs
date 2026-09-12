@@ -33,7 +33,7 @@ use crate::calls::ms;
 use crate::read::{decode_rows, Sort};
 use crate::rows::{TraceEvent, ST_TRACE};
 use crate::spl::{self, Search};
-use crate::SglakeBackend;
+use crate::AglakeBackend;
 
 /// One `(source_id, session_id)` key with its windowed max end time.
 struct Key {
@@ -93,7 +93,7 @@ impl Agg {
 
 const SESSION_TRACE_SORT: &[(&str, &str)] = &[("start_time", "num(ts_us)")];
 
-impl SglakeBackend {
+impl AglakeBackend {
     pub(crate) async fn query_sessions(&self, query: &SessionListQuery) -> Result<SessionsPage> {
         let page_size = query.page_size.max(1) as usize;
 
@@ -124,8 +124,8 @@ impl SglakeBackend {
 
         if rows.len() as u64 >= scan_cap {
             return Err(h_common::error::AppError::Storage(format!(
-                "sglake backend: more than {scan_cap} sessions in this window \
-                 (storage.sglake.max_sessions_scan); narrow the time range"
+                "aglake backend: more than {scan_cap} sessions in this window \
+                 (storage.aglake.max_sessions_scan); narrow the time range"
             )));
         }
 
@@ -251,7 +251,7 @@ impl SglakeBackend {
     /// tens to thousands of turns, so the rows are cheap to pull, and folding
     /// them here means the previews come from the same pass as the sums
     /// instead of needing the `ROW_NUMBER()` window function the SQL backends
-    /// use — which sglake has no equivalent for.
+    /// use — which aglake has no equivalent for.
     async fn session_aggregates(
         &self,
         session_ids: &[String],

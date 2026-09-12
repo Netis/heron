@@ -19,7 +19,7 @@ use h_storage::query::{SpanDetail, SpanListItem, SpansPage, SpansQuery, TraceSpa
 use crate::read::Sort;
 use crate::rows::{span_events, BodyEvent, Envelope, SpanEvent, ST_BODY, ST_SPAN};
 use crate::spl::{self, in_list, match_term, Search, ID_CHUNK};
-use crate::SglakeBackend;
+use crate::AglakeBackend;
 
 /// Microseconds → milliseconds, the unit the detail and trace-span types use.
 /// (`HttpExchangeDetail` is the one exception and stays in microseconds.)
@@ -101,7 +101,7 @@ const SPAN_SORT: &[(&str, &str)] = &[
     ("output_tokens", "num(output_tokens)"),
 ];
 
-impl SglakeBackend {
+impl AglakeBackend {
     pub(crate) async fn write_spans(&self, calls: Vec<LlmCall>) -> Result<()> {
         if calls.is_empty() {
             return Ok(());
@@ -118,8 +118,8 @@ impl SglakeBackend {
                     // Encoding a span cannot normally fail; if it does, drop
                     // just this one rather than the whole batch.
                     tracing::error!(
-                        target: "sglake::write", id = %call.id, error = %e,
-                        "sglake: failed to encode span event; skipping it"
+                        target: "aglake::write", id = %call.id, error = %e,
+                        "aglake: failed to encode span event; skipping it"
                     );
                     continue;
                 }
@@ -128,8 +128,8 @@ impl SglakeBackend {
                 match crate::rows::raw_envelope(ts, &host, ST_BODY, &self.ix.bodies, &body) {
                     Ok(s) => events.push(s),
                     Err(e) => tracing::error!(
-                        target: "sglake::write", id = %call.id, error = %e,
-                        "sglake: failed to encode body event; span metadata still written"
+                        target: "aglake::write", id = %call.id, error = %e,
+                        "aglake: failed to encode body event; span metadata still written"
                     ),
                 }
             }
@@ -393,7 +393,7 @@ impl SglakeBackend {
             .rows();
         if rows.len() > PORT_FILTER_ID_CAP {
             return Err(h_common::error::AppError::Storage(format!(
-                "sglake backend: the server_port filter on traces matches more \
+                "aglake backend: the server_port filter on traces matches more \
                  than {PORT_FILTER_ID_CAP} calls in this window. A trace stores \
                  no port of its own, so the filter is resolved through its \
                  calls; narrow the time range or drop the port filter."

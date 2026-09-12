@@ -15,7 +15,7 @@
 //!
 //! This backend follows DuckDB — milliseconds everywhere — because DuckDB is
 //! the default and what the console renders against; emitting microseconds
-//! would date every request to the year 58000 in the UI. That makes sglake
+//! would date every request to the year 58000 in the UI. That makes aglake
 //! self-consistent and consistent with the default backend, and leaves
 //! ClickHouse's detail read as the outlier to fix separately.
 
@@ -29,7 +29,7 @@ use crate::calls::ms;
 use crate::read::Sort;
 use crate::rows::{http_events, Envelope, HttpBodyEvent, HttpEvent, ST_HTTP, ST_HTTP_BODY};
 use crate::spl::{self, match_term, Search};
-use crate::SglakeBackend;
+use crate::AglakeBackend;
 
 /// `duration_ms` is not stored — it is `done_us - ts_us`, computed by an
 /// `| eval` stage before the sort so it can be sorted on.
@@ -39,7 +39,7 @@ const EXCHANGE_SORT: &[(&str, &str)] = &[
     ("duration_ms", "num(dur_ms)"),
 ];
 
-impl SglakeBackend {
+impl AglakeBackend {
     pub(crate) async fn write_exchanges(&self, exchanges: Vec<HttpExchange>) -> Result<()> {
         if exchanges.is_empty() {
             return Ok(());
@@ -54,8 +54,8 @@ impl SglakeBackend {
                 Ok(s) => events.push(s),
                 Err(e) => {
                     tracing::error!(
-                        target: "sglake::write", id = %x.id, error = %e,
-                        "sglake: failed to encode http exchange; skipping it"
+                        target: "aglake::write", id = %x.id, error = %e,
+                        "aglake: failed to encode http exchange; skipping it"
                     );
                     continue;
                 }
@@ -70,8 +70,8 @@ impl SglakeBackend {
                 ) {
                     Ok(s) => events.push(s),
                     Err(e) => tracing::error!(
-                        target: "sglake::write", id = %x.id, error = %e,
-                        "sglake: failed to encode http body; metadata still written"
+                        target: "aglake::write", id = %x.id, error = %e,
+                        "aglake: failed to encode http body; metadata still written"
                     ),
                 }
             }

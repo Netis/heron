@@ -6,6 +6,67 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The aglake storage backend now targets aglake 0.3 and is named for it.**
+  The log platform Heron writes to renamed itself from sglog to Netis Aglake,
+  and made the rename a breaking boundary rather than an alias layer — the REST
+  namespace Heron managed index retention through answers `410 Gone`. Both
+  management calls move to the native `/api/v1/admin/indexes`, which is a
+  capability gain as much as a port: the Splunk-compatible face they used
+  before is mounted only when the daemon is started with vendored frontend
+  assets, so an ingest-only deployment could not be told about retention at all
+  (a released 0.3 tarball reports `splunk_face: false`). The crate, config
+  table and backend value are renamed to match. **Older daemons are no longer
+  supported** — retention pushes against one fail with a 404 that says so.
+  Upstream has since renumbered that release line to 1.5 without breaking the
+  API again; the backend's live suite passes against both a 0.3 and a 1.5
+  build.
+
+  Existing config files keep working: `backend = "sglake"` is normalized at
+  load, `[storage.sglake]` is accepted as an alias (covering the matching
+  `TS__STORAGE__SGLAKE__*` overrides — note the doubled separator after the
+  prefix), and `heron aglake-props` still answers to `sglake-props`. Loading an
+  old spelling raises a warning, not an error; having *both* table names in one
+  file is a `duplicate field` error rather than a silent precedence rule.
+
+  Two environment variables outside the repo keep their old names for the same
+  reason: `SGLAKE_DATA_DIR` (read by the staging longevity soak from a
+  hand-maintained environment file) and `SGLOGD_BIN` (the cross-backend
+  differential harness). Renaming those with no fallback would have silently
+  dropped an invariant rather than failed.
+
+### Added
+
+- **Session authentication for aglake's `/api/v1/*` faces.** aglake 0.3 put a
+  local user catalog in front of search as well as administration; with one
+  configured, an unauthenticated Heron gets `401` on every read.
+  `storage.aglake.username`/`password` are exchanged for a session at first
+  use, and `session_token` presents one directly. `hec_token` does not cover
+  this — it authenticates ingest only, which is the mistake the new error
+  messages are written to catch. Sessions are held in the daemon's memory with
+  a 12-hour TTL and are lost when it restarts, so a `401` is an expected event:
+  Heron logs in again and retries once, which absorbs an expired session while
+  still reporting credentials that are simply wrong.
+
+  Configuring credentials also lifts the non-loopback warning on
+  `storage.aglake.url` — that warning exists because the port was the only
+  thing standing in front of stored request and response bodies, which is no
+  longer true once the daemon checks who is asking.
+
+### Fixed
+
+- **The live suite's self-started aglaked could not start against a current
+  build.** From `0.3.0.2653` on, aglaked binds six dedicated receivers on fixed
+  `0.0.0.0` ports by default (HEC 8088, OTLP 4318/4317, syslog 514, S2S 9997,
+  ES-compat 9200) and exits if any cannot bind — 514 is privileged, and the
+  rest collide with anything else on the host. The two tests that own their
+  daemon now switch those off and move the dedicated HEC listener to loopback,
+  probing `--help` first so they still work against a build predating the
+  flags. Note `--hec-http-enabled false` is *not* the way to do it: it also
+  disables the HEC input on `--listen`, which is the one Heron writes
+  through.
+
 ## [0.7.3] — 2026-08-17
 
 ### Fixed
@@ -41,7 +102,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the store is append-only. `heron sglake-props` prints the index-time
   extraction stanzas that keep aggregates on the columnar path; they are
   generated from the event structs themselves, so they cannot drift from the
-  schema. See [docs/design/10-sglake.md](docs/design/10-sglake.md), which also
+  schema. See [docs/design/10-aglake.md](docs/design/10-aglake.md), which also
   documents the known divergences — proxy pairing does not annotate traces on an
   append-only store.
 

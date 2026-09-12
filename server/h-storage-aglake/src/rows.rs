@@ -17,7 +17,7 @@
 //! * **Bools are written twice**, as `true`/`false` and as a 0/1 twin
 //!   (`strm`, `err`, `sse`). The integer form makes `sum(strm)` work and gives
 //!   an exact posting to match on.
-//! * **Range predicates are precomputed.** sglake cannot push down `<`, `>`,
+//! * **Range predicates are precomputed.** aglake cannot push down `<`, `>`,
 //!   `!=` or `NOT`, so anything a query would need to compare is turned into a
 //!   categorical value at write time (`err_class`, `strm`, `dim_tier`).
 //! * **Arrays go in as JSON strings** (`*_json`), matching how the ClickHouse
@@ -27,20 +27,20 @@
 //!
 //! # Two rules that came out of measurement, not design
 //!
-//! **sglake re-serializes object events with keys sorted.** An event posted as
+//! **aglake re-serializes object events with keys sorted.** An event posted as
 //! `{"id":…,"source_id":…}` comes back out of search as
 //! `{"err":0,"err_class":…,"id":…}` — byte order, nested objects included.
 //! Declaration order therefore survives only for events posted as a
 //! **pre-serialized string**, which is what [`raw_envelope`] is for. Bodies go
 //! that way for two reasons: it keeps `span_id` at the front where an anchored
-//! regex can pull it out without scanning ~320 KiB, and it saves sglake a
+//! regex can pull it out without scanning ~320 KiB, and it saves aglake a
 //! parse-and-reserialize of that same payload on every write. Metadata events
 //! stay objects — reordering costs them nothing because they are read back
 //! through serde, which does not care about order, and being objects is what
 //! gives them free field extraction.
 //!
 //! **Every read struct tolerates missing fields** (`#[serde(default)]` on the
-//! container). sglake has no DDL and no backfill: events written last month
+//! container). aglake has no DDL and no backfill: events written last month
 //! keep whatever shape they had. Adding a field to one of these structs would
 //! otherwise make every older event fail to deserialize — turning a schema
 //! addition into silent data loss across the retention window. Defaulting
@@ -92,10 +92,10 @@ impl<T: Serialize> Envelope<T> {
 
 /// Encode an event whose byte layout must survive ingest verbatim.
 ///
-/// Posting the payload as a JSON **string** rather than an object makes sglake
+/// Posting the payload as a JSON **string** rather than an object makes aglake
 /// store exactly these bytes (verified: a string event round-trips unchanged,
 /// while an object event comes back with its keys sorted). Field lookups and
-/// full-text search both still work on it — sglake parses the raw JSON at
+/// full-text search both still work on it — aglake parses the raw JSON at
 /// search time — so this costs nothing on the read side.
 pub(crate) fn raw_envelope<T: Serialize>(
     ts_us: i64,
@@ -378,7 +378,7 @@ pub(crate) struct TraceEvent {
     pub proxy_peer_turn_ids_json: Option<String>,
     /// 1 when the pair sweeper folded this turn into a peer, i.e. the traces
     /// list hides it unless `include_proxy_hops` is set. Precomputed because
-    /// the predicate it replaces is a negation (`role NOT IN (…)`), and sglake
+    /// the predicate it replaces is a negation (`role NOT IN (…)`), and aglake
     /// cannot push those down — nor can it distinguish "role is absent" from
     /// "role is something else" without one.
     pub proxy_hidden: u8,
@@ -949,12 +949,12 @@ pub(crate) mod fixtures {
 mod tests {
     use super::*;
 
-    /// Emit real encoder output for the live round-trip check against sglake.
-    /// Writes only when `SGLAKE_EMIT` names a path, so a normal `cargo test`
+    /// Emit real encoder output for the live round-trip check against aglake.
+    /// Writes only when `AGLAKE_EMIT` names a path, so a normal `cargo test`
     /// run touches nothing.
     #[test]
     fn emit_sample_events() {
-        let Ok(path) = std::env::var("SGLAKE_EMIT") else {
+        let Ok(path) = std::env::var("AGLAKE_EMIT") else {
             return;
         };
         let mut out = String::new();
@@ -1081,7 +1081,7 @@ mod tests {
     }
 
     /// The shape that would break every read at once: a field added to the
-    /// struct after events were already on disk. sglake never backfills, so a
+    /// struct after events were already on disk. aglake never backfills, so a
     /// missing key has to decode as a default rather than fail the row.
     #[test]
     fn events_tolerate_missing_fields() {
@@ -1220,7 +1220,7 @@ mod tests {
     }
 
     /// A body event has to reach disk byte-for-byte, so it is posted as a
-    /// string rather than an object — sglake sorts object keys on ingest.
+    /// string rather than an object — aglake sorts object keys on ingest.
     #[test]
     fn raw_envelope_posts_the_payload_as_a_string() {
         let b = BodyEvent {

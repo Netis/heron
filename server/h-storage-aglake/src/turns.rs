@@ -15,7 +15,7 @@ use crate::calls::ms;
 use crate::read::Sort;
 use crate::rows::{trace_event, Envelope, TraceEvent, ST_TRACE};
 use crate::spl::{match_term, Search};
-use crate::SglakeBackend;
+use crate::AglakeBackend;
 
 const TRACE_SORT: &[(&str, &str)] = &[
     ("start_time", "num(ts_us)"),
@@ -26,7 +26,7 @@ const TRACE_SORT: &[(&str, &str)] = &[
     ("total_output_tokens", "num(total_output_tokens)"),
 ];
 
-impl SglakeBackend {
+impl AglakeBackend {
     pub(crate) async fn write_traces(&self, turns: Vec<Trace>) -> Result<()> {
         if turns.is_empty() {
             return Ok(());
@@ -39,8 +39,8 @@ impl SglakeBackend {
             {
                 Ok(s) => events.push(s),
                 Err(err) => tracing::error!(
-                    target: "sglake::write", turn_id = %t.turn_id, error = %err,
-                    "sglake: failed to encode trace event; skipping it"
+                    target: "aglake::write", turn_id = %t.turn_id, error = %err,
+                    "aglake: failed to encode trace event; skipping it"
                 ),
             }
         }
@@ -109,8 +109,8 @@ impl SglakeBackend {
             // A provider-supplied turn id containing `*` would become a glob
             // and could match a different turn. Refusing is the safe answer.
             tracing::warn!(
-                target: "sglake::read",
-                "sglake: turn id contains a wildcard character and cannot be \
+                target: "aglake::read",
+                "aglake: turn id contains a wildcard character and cannot be \
                  looked up as a search term; treating it as not found"
             );
             return Ok(None);

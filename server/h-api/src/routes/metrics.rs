@@ -63,12 +63,12 @@ fn granularity_secs(label: &str) -> i64 {
 /// fields × groups` — 30 days at 1m across 200 models and five fields is 43
 /// million values before anything is serialized. On the storage side the same
 /// request is a `buckets × cardinality` aggregation, measured at 283 s for 1.75
-/// million groups on sglake. Neither number is a bug; the request is simply
+/// million groups on aglake. Neither number is a bug; the request is simply
 /// asking for a chart that cannot be drawn.
 ///
 /// Refusing with a message that names a granularity that would fit is better
 /// than either answer available otherwise: minutes of work, or an
-/// out-of-memory. Same reasoning as `max_page_offset` in the sglake backend.
+/// out-of-memory. Same reasoning as `max_page_offset` in the aglake backend.
 const MAX_TIMESERIES_BUCKETS: i64 = 20_000;
 
 /// Reject a window/granularity pair that would produce an unusable number of

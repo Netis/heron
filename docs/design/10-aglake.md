@@ -1,9 +1,38 @@
-# sglake Storage Backend
+# Aglake Storage Backend
 
-The third `StorageBackend`, alongside DuckDB and ClickHouse. sglake (formerly
-sglog) is a Splunk-compatible log platform: writes go over its HTTP Event
-Collector, reads are SPL over `/api/v1/search`. Selected with
-`storage.backend = "sglake"`; the REST API and the console are unchanged.
+The third `StorageBackend`, alongside DuckDB and ClickHouse. Aglake (released
+as sglog before its 0.3) is a Splunk-compatible log platform: writes go over its
+HTTP Event Collector, reads are SPL over `/api/v1/search`. Selected with
+`storage.backend = "aglake"`; the REST API and the console are unchanged.
+
+**Needs the API Aglake added in 0.3.** Its rename was a deliberate breaking
+boundary rather than an alias layer — the pre-0.3 REST namespace answers
+`410 Gone` — so Heron speaks only the current API. Upstream has since
+renumbered that same line to **1.5** (a version-number unification, not a
+second break: the 1.5 nightly is a descendant of the 0.3 one), so any current
+build qualifies; both were verified against this backend's live suite. Heron's
+own config keeps accepting the old `sglake` spelling, since a config file
+survives a Heron upgrade and a daemon does not. Both spellings in one file is a
+`duplicate field` error rather than a precedence rule — an operator halfway
+through the edit is told, instead of finding out later which block was live.
+
+**Operational note on receiver ports.** From `0.3.0.2653` onward — 1.5
+included — aglaked starts dedicated receivers on fixed `0.0.0.0` ports by
+default (HEC 8088, OTLP 4318/4317, syslog 514, S2S 9997, ES-compat 9200) and
+**refuses to start if one cannot bind**; 514 is privileged, and 9200 collides
+with a real Elasticsearch. Heron connects to none of them: it writes HEC to the
+`--listen` port, which answers `/services/collector/*` as an alias of the
+dedicated input. So an aglaked dedicated to Heron should switch off every
+receiver it does not need — but the HEC one needs care, and the two knobs are
+not equivalent:
+
+* `--hec-http-enabled false` switches off the HEC **input as a whole**,
+  including the alias on `--listen`. That breaks Heron's write path.
+* `--hec-http <addr>` only relocates the **dedicated listener**. The alias
+  Heron uses is unaffected, so this is how to get off a contended 8088.
+
+`OwnedAglaked` in `it.rs` does the latter, probing `--help` first so it still
+works against a build predating the flags.
 
 **Why it exists.** Where the SQL backends give Heron a private database, this
 one puts observation data into a log platform an organisation may already run —
@@ -15,7 +44,7 @@ SQL backend can: **stored bodies are full-text searchable**.
 search index=heron_bodies "SELECT * FROM users"
 ```
 
-Because sglake tokenizes every raw byte it stores, that works with no schema
+Because aglake tokenizes every raw byte it stores, that works with no schema
 and no configuration — finding a prompt by its contents is a property of the
 store, not a feature that had to be built.
 
@@ -41,12 +70,12 @@ each.
 | Index | Contents | `_time` | Retention from |
 |---|---|---|---|
 | `<p>_spans` | LLM call metadata, no bodies | request time | `retention.spans` |
-| `<p>_bodies` | one event per span: bodies + headers | same | `sglake.body_retention_days`, else spans |
+| `<p>_bodies` | one event per span: bodies + headers | same | `aglake.body_retention_days`, else spans |
 | `<p>_traces` | agent turns | start time | `retention.traces` |
 | `<p>_metrics_{10s,1m,5m,1h}` | pre-aggregated wide rows | window start | `retention.metrics[label]` |
 | `<p>_finish_{10s,1m,5m,1h}` | finish-reason counts | window start | same |
 | `<p>_http` | HTTP exchange metadata | request time | `retention.http_exchanges` |
-| `<p>_http_bodies` | exchange bodies + headers | same | `sglake.body_retention_days`, else http |
+| `<p>_http_bodies` | exchange bodies + headers | same | `aglake.body_retention_days`, else http |
 
 Three decisions produced that shape:
 
@@ -58,7 +87,7 @@ also lets bodies expire on their own schedule. Measured: metadata-only is **2.7%
 of the full footprint, so a deployment that does not want bodies pays almost
 nothing.
 
-**Granularity is part of the index name.** sglake's retention is per-index and
+**Granularity is part of the index name.** aglake's retention is per-index and
 Heron's metrics retention is per-granularity, so encoding the label in the name
 makes `RetentionPolicy.metrics_before` a direct mapping instead of something to
 emulate — and turns the most common metrics filter into index-level pruning.
@@ -92,7 +121,7 @@ lower term repetition than structured logs, and the projection built on that
 intuition was wrong by a factor of twelve.
 
 Write throughput measured at **1,891 spans/s** with 16 concurrent clients, at
-which point sglogd was using 8.65 of 384 cores — nowhere near saturation. (A
+which point aglaked was using 8.65 of 384 cores — nowhere near saturation. (A
 single-threaded client measures ~100 spans/s and is measuring itself.)
 
 ## Read path
@@ -113,7 +142,7 @@ doubling: every filter shape selects exactly one tier.
 
 ### Write-time precomputation
 
-sglake cannot push down `<`, `>`, `!=` or `NOT`. Anything a query would compare
+Aglake cannot push down `<`, `>`, `!=` or `NOT`. Anything a query would compare
 is turned into a categorical value at write time instead:
 
 | Field | Replaces |
@@ -121,7 +150,7 @@ is turned into a categorical value at write time instead:
 | `err` (0/1), `err_class` (`ok`/`4xx`/`429`/`5xx`) | `status >= 400` and the four error buckets |
 | `strm` (0/1) | a boolean that `sum()` cannot add |
 | `dim_tier` | the wildcard tiers above |
-| `proxy_hidden` (0/1) | `role NOT IN ('proxy_out','mirror_secondary')` — a negation sglake cannot push down, and which cannot distinguish "role absent" from "role is something else" |
+| `proxy_hidden` (0/1) | `role NOT IN ('proxy_out','mirror_secondary')` — a negation aglake cannot push down, and which cannot distinguish "role absent" from "role is something else" |
 | `tokens_estimated` | a read-time derivation the two SQL backends disagree about |
 | `server_header`, `app_hint` | reading headers or bodies during a Services aggregation |
 | `first_span_id` | pulling back a `span_ids_json` that runs to tens of KiB |
@@ -164,11 +193,11 @@ it uses the trace's own `[start_us, end_us]`.
 
 Rules that came out of measurement rather than design:
 
-**sglake re-serializes object events with their keys sorted.** An event posted
+**aglake re-serializes object events with their keys sorted.** An event posted
 as `{"id":…,"source_id":…}` comes back as `{"err":0,"err_class":…,"id":…}`,
 nested objects included. Body events are therefore posted as **pre-serialized
-strings**, which sglake stores byte-for-byte. Three benefits: `span_id` stays at
-the front where an anchored regex can find it without scanning 320 KiB, sglake
+strings**, which aglake stores byte-for-byte. Three benefits: `span_id` stays at
+the front where an anchored regex can find it without scanning 320 KiB, aglake
 skips a parse-and-reserialize of that payload on every write, and schema-on-read
 field lookup still works on the string — so nothing is lost.
 
@@ -186,7 +215,7 @@ single-element multivalue to a scalar, either of which would corrupt an
 `Option<T>` or a `Vec<String>`. So reads always take `| table _raw` and
 deserialize with serde; extracted fields are for filtering and aggregation only.
 
-**Negative instants are clamped to the epoch.** sglake's time parser rejects
+**Negative instants are clamped to the epoch.** aglake's time parser rejects
 them outright (`bad time "-86400.000000"`), and the reads that widen their
 window backwards produce one whenever the caller starts from `0`.
 
@@ -196,7 +225,7 @@ There is a path that answers an aggregate entirely from `columns.sgv` and the
 postings, decoding only a 256-event sample to authenticate the result. It
 requires every filtered and projected field to be `indexed` at write time.
 
-`heron sglake-props` prints the stanzas. They are generated from the event
+`heron aglake-props` prints the stanzas. They are generated from the event
 structs themselves — serde's derive hands the full field list to
 `deserialize_struct`, so the list cannot drift from the schema — with `*_json`
 blobs and free-text previews excluded by rule. A new scalar field is indexed by
@@ -221,11 +250,11 @@ buckets measures as if it had no fast path at all.
 Two limits an operator has to know: `indexed` is read once at daemon startup and
 is **never applied retroactively**, so a query spanning a props change is fast on
 one side and slow on the other with nothing in the logs to say why; and Heron
-never writes this file — it belongs to whoever runs sglogd.
+never writes this file — it belongs to whoever runs aglaked.
 
 ## Retention
 
-sglake has no `DELETE`. `apply_retention` translates each cutoff into a per-index
+Aglake has no `DELETE`. `apply_retention` translates each cutoff into a per-index
 `frozen_after_secs` TTL and pushes it through the management API; the daemon
 expires whole buckets on its own timer. Two consequences stated plainly:
 
@@ -235,11 +264,13 @@ expires whole buckets on its own timer. Two consequences stated plainly:
 * **Deletion is coarser than the cutoff.** A bucket survives until its *newest*
   event ages out, so rows can outlive the policy by up to one bucket's span.
 
-The management API has two prerequisites Heron cannot satisfy: it is mounted
-**only** when sglogd starts with vendored Splunk frontend assets
-(`--splunk-web-dir`), and its writes need a browser login session when sglogd
-auth is on. Without both, Heron logs one warning naming the ways out and leaves
-retention alone.
+Retention goes through the native `/api/v1/admin/indexes` face, which is always
+mounted — unlike the Splunk-compatible one it replaced, which appeared only when
+aglaked was started with vendored frontend assets, so an ingest-only deployment
+could not be told about retention at all. What remains outside Heron's control
+is version and authorization: a 404 means the daemon predates 0.3, a 401 that no
+session is configured, a 403 that the account lacks the `admin` role. Each is
+reported once, naming its own fix, and the sweep is a no-op until it clears.
 
 ## Durability
 
@@ -255,7 +286,7 @@ cannot retry it, so every retry lives in the HEC client:
 * **5xx / timeout / connection error** — may or may not have landed; ask, then
   resend.
 
-That "ask" is the ack, and it works differently than it looks. sglake issues the
+That "ask" is the ack, and it works differently than it looks. Aglake issues the
 ack id **in the same response that reports success**, so there is no id to ask
 about when the response is what got lost. Every request therefore goes out on a
 **freshly minted channel**: the per-channel counter starts at zero, so the only
@@ -272,7 +303,7 @@ the query off the columnar fast path, and that is not a price to pay
 continuously against an event most deployments never see.
 
 A single event larger than `max_event_bytes` (default 8 MiB) is dropped with a
-loud log line rather than sent. Past sglake's 16 MiB WAL frame limit an event is
+loud log line rather than sent. Past aglake's 16 MiB WAL frame limit an event is
 treated as corruption during crash replay and silently discarded, which is the
 worst available failure mode; `[body_cap]` normally keeps events three orders of
 magnitude below this, and this guard is what stands in when it is disabled.
@@ -288,9 +319,9 @@ magnitude below this, and this guard is what stands in when it is disabled.
   empty, and topology loses its `proxy` edges (`client` and `inferred` edges
   remain). The other 29 methods are unaffected. `init()` says so at startup.
 * **App classification differs, and is better here.** The SQL backends sample a
-  few bodies per endpoint at read time; sglake classifies every span at write
+  few bodies per endpoint at read time; aglake classifies every span at write
   time and takes the majority per endpoint. Same classifier, more input — so
-  sglake may name an app where the others found nothing. It must never
+  aglake may name an app where the others found nothing. It must never
   contradict them, which the differential harness checks.
 * **`query_services_topology` is bounded** at 10,000 turns in the window,
   returning a truncated graph with a warning rather than issuing a thousand
@@ -317,7 +348,7 @@ Three daemon flags Heron cannot set:
 `--max-hot-raw-mib` is per daemon, and it decides when a *hot* bucket seals.
 An inverted index (`index.tsidx`), bloom filter and time index are written when
 that seal happens — a hot bucket has none of them, only `journal.sgj` and its
-WAL. To serve a search over a hot bucket, sglogd builds an index for it in
+WAL. To serve a search over a hot bucket, aglaked builds an index for it in
 memory, and Heron appends every `flush_interval_ms`, so that structure is
 invalidated about as fast as it is built.
 
@@ -348,10 +379,13 @@ that for an index whose events are small. At 6 h, `heron_spans` seals four
 buckets a day — 120 over a 30-day retention, against the hundreds of thousands
 the bucket-count guidance is about.
 
-And one property to check: sglake's `/api/v1/*` search endpoints have **no
-authentication**. Where sglogd listens is the entire access-control story for
-every request and response body Heron stores there. `config validate` warns when
-`storage.sglake.url` is not loopback.
+And one property to check: `/api/v1/*` is open until aglaked has a user
+catalog. With no users — its default — where aglaked listens is the entire
+access-control story for every request and response body Heron stores there, so
+`config validate` warns when `storage.aglake.url` is not loopback. Configuring
+`username`/`password` (exchanged for a session, presented as a bearer token,
+re-established once on a 401) puts a real check in front of the data and lifts
+that warning. `hec_token` does **not**: it authenticates ingest only.
 
 ## Testing
 
@@ -359,8 +393,9 @@ every request and response body Heron stores there. `config validate` warns when
 |---|---|
 | unit | encoding round-trips, SPL quoting and injection, dimension-tier equivalence against the SQL builder's real output, props generation |
 | `retry_tests` (mock HTTP) | all six retry branches over a real socket — a live server cannot be asked for a 413, or to accept a request and then never answer. Runs in CI with no server. |
-| `it.rs` (live) | 25 tests against a real sglogd, gated on `SGLAKE_TEST_URL`; self-skip without it. Includes a fault-injection test that SIGKILLs the daemon mid-write. |
-| `scripts/storage/backend-differential.py` | replays the pcap corpus through DuckDB and sglake and diffs every REST endpoint |
+| `auth_tests` (mock HTTP) | session handling and the admin API: expiry-then-retry, a fixed token never refreshed, credentials against a no-auth daemon, one shared login, and the request/response shapes. A session expiring is reached in production by running twelve hours and by nothing a test can ask a daemon for. |
+| `it.rs` (live) | The whole `StorageBackend` surface against a real aglaked, gated on `AGLAKE_TEST_URL`; self-skips without it. Includes two tests that own their daemon: one SIGKILLs it mid-write, one gives it a `props.toml`. Deliberately not stated as a count — the last one written here went stale within a release. |
+| `scripts/storage/backend-differential.py` | replays the pcap corpus through DuckDB and aglake and diffs every REST endpoint |
 
 The differential is the one that finds things the others cannot, because it is
 the only one where the input comes from the pipeline rather than from a fixture

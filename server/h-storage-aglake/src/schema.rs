@@ -1,6 +1,6 @@
 //! Index naming and `init()`.
 //!
-//! sglake has no DDL: an index springs into existence on first write, and
+//! aglake has no DDL: an index springs into existence on first write, and
 //! fields are extracted at search time. So "schema" here is two things —
 //! deciding which index each entity lands in, and checking at startup that the
 //! deployment is configured well enough to be fast.
@@ -14,7 +14,7 @@
 //! second query" rather than "project the column away". It also lets bodies
 //! expire on their own schedule.
 //!
-//! **Granularity is part of the index name, not a field.** Retention in sglake
+//! **Granularity is part of the index name, not a field.** Retention in aglake
 //! is per-index, while Heron's metrics retention is per-granularity (10s for a
 //! day, 1h for a year). Encoding the granularity in the name makes that a
 //! direct mapping instead of something the backend has to emulate, and turns
@@ -22,7 +22,7 @@
 //!
 //! **One sourcetype per index.** The columnar fast path requires every
 //! sourcetype in a bucket to have indexed the field being read
-//! (`bucket_fully_indexes`, `sglog-exec/src/run.rs`). Two sourcetypes with
+//! (`bucket_fully_indexes`, `aglake-exec/src/run.rs`). Two sourcetypes with
 //! different `indexed` sets in one index would knock every query in that
 //! bucket back onto the row path. That is why finish-metric rows get their own
 //! index rather than sharing with the wide metric rows.
@@ -30,7 +30,7 @@
 use h_common::config::DEFAULT_METRICS_RETENTION_DAYS;
 use h_common::error::Result;
 
-use crate::SglakeBackend;
+use crate::AglakeBackend;
 
 /// Resolved index names for one `index_prefix`.
 #[derive(Debug, Clone)]
@@ -96,9 +96,9 @@ impl Indexes {
     }
 }
 
-/// sglake's built-in index names. Colliding with one of these would mix Heron
+/// aglake's built-in index names. Colliding with one of these would mix Heron
 /// data into someone else's — `traces` in particular already holds OTLP spans,
-/// including the ones sglogd writes about its own searches.
+/// including the ones aglaked writes about its own searches.
 pub const RESERVED_INDEXES: &[&str] = &[
     "main",
     "summary",
@@ -110,7 +110,7 @@ pub const RESERVED_INDEXES: &[&str] = &[
     "_metrics",
 ];
 
-impl SglakeBackend {
+impl AglakeBackend {
     /// Best-effort check for whether write-time field extraction is in place.
     ///
     /// `tstats` reads postings only and can therefore only see fields listed
@@ -148,44 +148,44 @@ impl SglakeBackend {
 /// Startup check. There is nothing to create — indexes appear on first write —
 /// so this verifies reachability and reports anything that would make the
 /// deployment quietly slow.
-pub(crate) async fn init(backend: &SglakeBackend) -> Result<()> {
+pub(crate) async fn init(backend: &AglakeBackend) -> Result<()> {
     backend.search.ping().await?;
 
     // `indexed` is what keeps aggregates off the row path. It is loaded once
-    // at sglogd startup and never applied retroactively, so we can only report
+    // at aglaked startup and never applied retroactively, so we can only report
     // — rewriting someone else's props.toml from here would be both surprising
     // and useless for data already on disk.
     if !backend.probe_indexed_fields().await? {
         tracing::warn!(
-            target: "sglake::props",
-            "sglake: write-time field extraction does not appear to be configured. \
+            target: "aglake::props",
+            "aglake: write-time field extraction does not appear to be configured. \
              Queries stay correct but aggregates fall back to decompressing bodies. \
-             Merge the stanzas from `heron sglake-props` into sglogd's \
-             <data-dir>/props.toml and restart sglogd; note index-time config \
+             Merge the stanzas from `heron aglake-props` into aglaked's \
+             <data-dir>/props.toml and restart aglaked; note index-time config \
              only applies to newly ingested data."
         );
     }
 
     tracing::info!(
-        target: "sglake",
+        target: "aglake",
         indexes = backend.ix.all().len(),
         prefix_spans = %backend.ix.spans,
-        "sglake storage backend initialized"
+        "aglake storage backend initialized"
     );
 
     // Say this at startup rather than leaving an operator to discover an empty
     // proxy view and wonder which layer dropped it.
     if backend.enable_trace_patching {
         tracing::warn!(
-            target: "sglake",
-            "sglake: storage.sglake.enable_trace_patching is set but not \
+            target: "aglake",
+            "aglake: storage.aglake.enable_trace_patching is set but not \
              implemented on this backend, and is being ignored. Behaviour is \
              the same as leaving it off."
         );
     }
     tracing::info!(
-        target: "sglake",
-        "sglake: traces are append-only, so proxy pairing does not annotate \
+        target: "aglake",
+        "aglake: traces are append-only, so proxy pairing does not annotate \
          them — proxy_role / proxy_peer_turn_id stay unset and the topology \
          graph has no proxy edges. Emulating updates would put every traces \
          read behind a full-window sort, which is what the pagination design \
@@ -204,7 +204,7 @@ mod tests {
         for name in ix.all() {
             assert!(
                 !RESERVED_INDEXES.contains(&name),
-                "{name} collides with a sglake built-in index"
+                "{name} collides with a aglake built-in index"
             );
         }
     }

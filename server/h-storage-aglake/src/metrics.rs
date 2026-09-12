@@ -10,12 +10,12 @@
 //! 2. Each row carries a `row_id` minted **here**, before any retry, so the
 //!    same logical row keeps the same id no matter how many times it is sent.
 //!    That makes a duplicate detectable rather than invisible.
-//! 3. `storage.sglake.metrics_dedup` turns on read-side deduplication for
+//! 3. `storage.aglake.metrics_dedup` turns on read-side deduplication for
 //!    deployments that actually observe duplicates. It is off by default
 //!    because `dedup` requires a full sort, and that is not a price to pay
 //!    continuously against an event that may never happen.
 //!
-//! Granularity is part of the index name, not a field: sglake's retention is
+//! Granularity is part of the index name, not a field: aglake's retention is
 //! per-index and Heron's metrics retention is per-granularity, so the two line
 //! up exactly, and the most common filter becomes index-level pruning.
 //!
@@ -39,9 +39,9 @@ use crate::client::Row;
 use crate::dims;
 use crate::rows::{finish_event, metric_event, Envelope, ST_FINISH, ST_METRIC};
 use crate::spl::Search;
-use crate::SglakeBackend;
+use crate::AglakeBackend;
 
-impl SglakeBackend {
+impl AglakeBackend {
     /// Drop duplicate metric rows before they are summed, when configured to.
     ///
     /// This is the read half of the `row_id` scheme: writes are at-least-once,
@@ -76,8 +76,8 @@ impl SglakeBackend {
             match Envelope::new(m.timestamp_us, &m.source_id, ST_METRIC, index, e).encode() {
                 Ok(s) => events.push(s),
                 Err(err) => tracing::error!(
-                    target: "sglake::write", error = %err,
-                    "sglake: failed to encode metric event; skipping it"
+                    target: "aglake::write", error = %err,
+                    "aglake: failed to encode metric event; skipping it"
                 ),
             }
         }
@@ -100,8 +100,8 @@ impl SglakeBackend {
             match Envelope::new(m.timestamp_us, &m.source_id, ST_FINISH, index, e).encode() {
                 Ok(s) => events.push(s),
                 Err(err) => tracing::error!(
-                    target: "sglake::write", error = %err,
-                    "sglake: failed to encode finish-metric event; skipping it"
+                    target: "aglake::write", error = %err,
+                    "aglake: failed to encode finish-metric event; skipping it"
                 ),
             }
         }
@@ -622,10 +622,10 @@ fn as_str(v: &serde_json::Value) -> Option<String> {
 fn warn_unknown_granularity(count: usize, entity: &'static str) {
     if count > 0 {
         tracing::error!(
-            target: "sglake::write",
+            target: "aglake::write",
             entity,
             dropped = count,
-            "sglake: dropped metric row(s) whose granularity has no index. \
+            "aglake: dropped metric row(s) whose granularity has no index. \
              The aggregator is emitting a cadence this backend does not know."
         );
     }

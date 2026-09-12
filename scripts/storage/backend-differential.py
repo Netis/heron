@@ -4,7 +4,7 @@
 A backend test that builds its own fixtures can only check the backend against
 the author's idea of what the pipeline produces. This runs the actual pipeline
 — capture, parse, LLM extraction, turn tracking, aggregation — into DuckDB and
-then into sglake, and compares what the REST API says about the same packets.
+then into aglake, and compares what the REST API says about the same packets.
 That is the claim the pluggable-backend design makes, stated as something that
 can fail.
 
@@ -13,9 +13,9 @@ two aggregates reading the wrong column, a topology graph missing a node its
 own edges pointed at, a millisecond truncation in DuckDB, and paginated lists
 in both SQL backends that returned 26 rows as 18 distinct ones.
 
-    SGLOGD_BIN=/path/to/sglogd scripts/storage/backend-differential.py
+    AGLAKE_AGLAKED_BIN=/path/to/aglaked scripts/storage/backend-differential.py
 
-Without `SGLOGD_BIN` there is nothing to compare against and the run stops
+Without `AGLAKE_AGLAKED_BIN` there is nothing to compare against and the run stops
 after the DuckDB half. `HERON_BIN` defaults to the release build in-tree.
 
 Two things are deliberately not compared:
@@ -28,9 +28,9 @@ Two things are deliberately not compared:
   on the last ulp would only teach us to ignore the result.
 
 And one divergence is accepted rather than ignored: services/topology may
-disagree on `app` and `server_header`, because sglake classifies every span at
+disagree on `app` and `server_header`, because aglake classifies every span at
 write time while the SQL backends sample a few bodies at read time. The check
-for that is a real check — sglake may name an app where the others found
+for that is a real check — aglake may name an app where the others found
 nothing, but it must never contradict them, and nothing else may move.
 """
 import json, os, shutil, signal, subprocess, sys, tempfile, time, urllib.error, urllib.request
@@ -40,13 +40,15 @@ ROOT = os.environ.get(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
 )
 HERON = os.environ.get("HERON_BIN", f"{ROOT}/server/target/release/heron")
-# sglogd is not part of this repo; point at a build of it. Without this the
-# sglake half is skipped and the run only checks that DuckDB is self-consistent.
-SGLOGD = os.environ.get("SGLOGD_BIN", "")
-# sglogd mounts its index-management REST API only when it finds vendored
-# Splunk frontend assets, which this harness does not need but a retention
-# check would. Harmless to leave unset.
-ASSETS = os.environ.get("SGLOGD_WEB_DIR", "")
+# aglaked is not part of this repo; point at a build of it. Without this the
+# aglake half is skipped and the run only checks that DuckDB is self-consistent.
+# `SGLOGD_BIN` is the pre-rename name, still read so an existing shell profile
+# or note keeps working.
+AGLAKED = os.environ.get("AGLAKE_AGLAKED_BIN") or os.environ.get("SGLOGD_BIN", "")
+# Vendored Splunk frontend assets. No longer needed for the management API —
+# the native admin face is always mounted as of aglake 0.3 — so this is only
+# here for a daemon being run with the compatibility UI. Harmless to leave unset.
+ASSETS = os.environ.get("AGLAKE_SPLUNK_WEB_DIR") or os.environ.get("SGLOGD_WEB_DIR", "")
 CORPUS = os.environ.get("HERON_CORPUS", f"{ROOT}/testdata/pcaps/corpus")
 WORK = os.environ.get("HERON_WORK", tempfile.mkdtemp(prefix="heron-differential-"))
 
@@ -238,18 +240,18 @@ def run_backend(backend, extra=""):
     return snap, last
 
 
-def start_sglogd():
-    d = f"{WORK}/sglogd"
+def start_aglaked():
+    d = f"{WORK}/aglaked"
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d, exist_ok=True)
-    log = open(f"{d}/sglogd.log", "wb")
+    log = open(f"{d}/aglaked.log", "wb")
     p = subprocess.Popen(
-        [SGLOGD, "--data-dir", d, "--listen", f"127.0.0.1:{SG_PORT}",
+        [AGLAKED, "--data-dir", d, "--listen", f"127.0.0.1:{SG_PORT}",
          "--hec-token", "heron-e2e", "--no-self-trace", "--max-hot-raw-mib", "2048"]
         + (["--splunk-web-dir", ASSETS] if ASSETS else []),
         stdout=log, stderr=log)
     if not wait_http(f"http://127.0.0.1:{SG_PORT}/api/v1/indexes"):
-        p.kill(); raise SystemExit("sglogd never came up")
+        p.kill(); raise SystemExit("aglaked never came up")
     return p
 
 
@@ -284,8 +286,8 @@ def only_classification_differs(a, b):
     """Services/topology may disagree on `app` and `server_header`, nowhere else.
 
     The SQL backends sample a handful of bodies per endpoint at read time;
-    sglake classifies every span at write time and takes the majority. Same
-    classifier, more input — so sglake may name an app where the others found
+    aglake classifies every span at write time and takes the majority. Same
+    classifier, more input — so aglake may name an app where the others found
     nothing, but it must never contradict them, and nothing else may move.
     """
     rows_a = a["data"].get("services") or a["data"].get("nodes") or []
@@ -300,7 +302,7 @@ def only_classification_differs(a, b):
             if k not in ("app", "server_header"):
                 return False, f"{key(ra)} differs on {k}: {ra.get(k)!r} vs {rb.get(k)!r}"
             if ra.get(k) is not None and ra.get(k) != rb.get(k):
-                return False, (f"{key(ra)} {k}: sglake contradicts rather than "
+                return False, (f"{key(ra)} {k}: aglake contradicts rather than "
                                f"extends: {ra.get(k)!r} vs {rb.get(k)!r}")
     return True, "app/server_header only"
 
@@ -354,15 +356,15 @@ def main():
     print("== duckdb ==")
     duck, n_duck = run_backend("duckdb")
 
-    if not SGLOGD:
-        print("\nSGLOGD_BIN unset — nothing to compare against. Point it at a "
-              "sglogd build to run the differential.")
+    if not AGLAKED:
+        print("\nAGLAKE_AGLAKED_BIN unset — nothing to compare against. Point it "
+              "at an aglaked build to run the differential.")
         return 0
 
-    print("== sglake ==")
-    sg = start_sglogd()
+    print("== aglake ==")
+    sg = start_aglaked()
     try:
-        sglake, n_sg = run_backend("sglake", extra=f"""[storage.sglake]
+        aglake, n_sg = run_backend("aglake", extra=f"""[storage.aglake]
 url = "http://127.0.0.1:{SG_PORT}"
 hec_token = "heron-e2e"
 index_prefix = "e2e"
@@ -376,15 +378,15 @@ index_prefix = "e2e"
 
     with open(f"{WORK}/duckdb.json", "w") as f:
         json.dump(duck, f, indent=1, sort_keys=True)
-    with open(f"{WORK}/sglake.json", "w") as f:
-        json.dump(sglake, f, indent=1, sort_keys=True)
+    with open(f"{WORK}/aglake.json", "w") as f:
+        json.dump(aglake, f, indent=1, sort_keys=True)
 
-    print(f"\nspans: duckdb={n_duck} sglake={n_sg}")
+    print(f"\nspans: duckdb={n_duck} aglake={n_sg}")
     if n_duck != n_sg:
         print("FAIL: the two runs did not even ingest the same number of spans")
         return 1
 
-    hard, soft = diff(duck, sglake)
+    hard, soft = diff(duck, aglake)
     soft_names = {n for n, _ in soft}
     hard_names = {n for n, _ in hard}
     print(f"\n{'endpoint':22s} {'result':>10s}")
@@ -398,7 +400,7 @@ index_prefix = "e2e"
 
     print(f"\npaging (page_size=5, {n_duck} spans):")
     ok_pages = True
-    for label, snap in (("duckdb", duck), ("sglake", sglake)):
+    for label, snap in (("duckdb", duck), ("aglake", aglake)):
         got = PAGING.get(label)
         if got is None:
             continue
@@ -413,8 +415,8 @@ index_prefix = "e2e"
         for name, why in hard[:4]:
             print(f"\n--- {name}: {why} ---")
             da = json.dumps(duck.get(name), indent=1, sort_keys=True).splitlines()
-            db = json.dumps(sglake.get(name), indent=1, sort_keys=True).splitlines()
-            for line in list(difflib.unified_diff(da, db, "duckdb", "sglake", n=1))[:50]:
+            db = json.dumps(aglake.get(name), indent=1, sort_keys=True).splitlines()
+            for line in list(difflib.unified_diff(da, db, "duckdb", "aglake", n=1))[:50]:
                 print(line.rstrip())
         return 1
     print("\nRESULT: both backends agree on every endpoint, apart from the "

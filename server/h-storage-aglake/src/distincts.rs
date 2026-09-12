@@ -12,14 +12,14 @@ use h_storage::query::*;
 use crate::client::Row;
 use crate::rows::{ST_SPAN, ST_TRACE};
 use crate::spl::{self, Search};
-use crate::SglakeBackend;
+use crate::AglakeBackend;
 
 /// Ceiling on a dropdown's option count. A filter list past this is unusable
 /// in the UI anyway, and the cap keeps a runaway-cardinality field (a client
 /// inventing model names) from turning a dropdown into a full scan.
 const MAX_DISTINCT: usize = 10_000;
 
-impl SglakeBackend {
+impl AglakeBackend {
     /// `stats count by <field>` over one index, ascending, capped.
     async fn distinct_values(
         &self,
@@ -36,10 +36,10 @@ impl SglakeBackend {
         let rows = self.search.search_all_time(&spl_q).await?.rows();
         if rows.len() >= MAX_DISTINCT {
             tracing::warn!(
-                target: "sglake::read",
+                target: "aglake::read",
                 query = what,
                 cap = MAX_DISTINCT,
-                "sglake: distinct value list hit its cap and is truncated"
+                "aglake: distinct value list hit its cap and is truncated"
             );
         }
         Ok(rows
