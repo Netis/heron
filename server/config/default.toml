@@ -185,7 +185,7 @@ path = "data/heron.duckdb"
 # search_timeout_secs    = 60
 # max_page_offset        = 100000    # deep paging errors out rather than running for minutes
 # max_sessions_scan      = 200000
-# max_concurrent_searches = 8
+# max_concurrent_searches = 8   # NOT YET IMPLEMENTED — accepted and ignored
 # trace_time_skew_hours  = 24        # widens end-time windows; a trace's _time is its start
 # metrics_dedup          = false     # only needed if duplicate metric rows are observed;
 #                                    #   costs a sort and the columnar fast path

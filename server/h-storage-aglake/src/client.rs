@@ -378,6 +378,10 @@ pub(crate) struct AuthState {
     /// `None` when nothing is configured — the no-auth deployment, where
     /// requests go out bare.
     source: Option<TokenSource>,
+    /// Whether the configured URL is loopback. Only used to decide how loudly
+    /// to report a daemon that turns out to want no credentials: on a remote
+    /// link that discovery means the bodies are protected by nothing.
+    url_is_loopback: bool,
     /// What we know about the session so far.
     session: tokio::sync::RwLock<Session>,
 }
@@ -496,6 +500,11 @@ impl AuthState {
         };
         Ok(Self {
             http,
+            url_is_loopback: h_common::config::aglake_url_host(&config.url)
+                .map(|host| h_common::config::is_loopback_host(&host))
+                // An unparseable URL will fail at connect time with a better
+                // message; assume the safe reading here.
+                .unwrap_or(false),
             login_url: format!("{}/api/v1/auth/login", config.url.trim_end_matches('/')),
             source,
             session: tokio::sync::RwLock::new(Session::default()),
@@ -616,10 +625,27 @@ impl AuthState {
             .ok()
             .and_then(|v| v.get("auth_enabled").and_then(serde_json::Value::as_bool));
         match auth_enabled {
-            Some(false) => {
+            Some(false) if self.url_is_loopback => {
                 tracing::info!(
                     "aglake: storage.aglake.username is set but aglaked has no user \
                      catalog; continuing without credentials"
+                );
+                Ok(None)
+            }
+            Some(false) => {
+                // `config validate` suppresses its non-loopback warning as soon
+                // as credentials are configured, on the reasoning that the
+                // daemon now checks who is asking. This is where that reasoning
+                // turns out to be false, and it is only knowable at runtime —
+                // so the warning it stood down for has to be raised here.
+                tracing::warn!(
+                    "aglake: storage.aglake.username is configured but aglaked has \
+                     no user catalog, so every request — including the stored \
+                     request and response bodies — goes out unauthenticated over \
+                     a non-loopback link. The credentials are doing nothing. \
+                     Either give aglaked a user catalog \
+                     (--bootstrap-admin-password-file) or restrict the link at \
+                     the network layer."
                 );
                 Ok(None)
             }
@@ -1904,6 +1930,50 @@ mod auth_tests {
             .filter(|r| r.authorization.as_deref() == Some("Bearer session-2"))
             .collect();
         assert_eq!(retried.len(), 3, "all three retries use session-2");
+    }
+
+    /// Legs racing from a cold start, where the token they send is `None`.
+    ///
+    /// The single-flight comparison is between what a caller sent and what is
+    /// cached, and `None` is a legitimate value on both sides — a leg that
+    /// reached the wire before any session existed sent nothing. This covers
+    /// that path, which the expired-session test cannot: there, every leg
+    /// carries a real token.
+    #[tokio::test]
+    async fn legs_racing_from_a_cold_start_share_one_login() {
+        // Sessions are enforced but none is valid until a login happens, so the
+        // very first requests are answered 401 no matter how they interleave.
+        let mock = MockAglake::with_spec(MockSpec {
+            script: vec![(200, r#"{"indexes":[]}"#); 8],
+            login: LoginMode::Catalog,
+            enforce_sessions: true,
+            expire_first_session: true,
+            ..MockSpec::default()
+        });
+        let config = AglakeConfig {
+            username: "heron".into(),
+            password: "secret".into(),
+            ..mock.config()
+        };
+        let auth = Arc::new(AuthState::new(&config).unwrap());
+        let management = ManagementClient::new(&config, Arc::clone(&auth)).unwrap();
+        let search = SearchClient::new(&config, auth).unwrap();
+
+        // Two different clients over one AuthState, started together — neither
+        // has a session, so both enter acquire from `Unknown`.
+        let (a, b) = tokio::join!(management.list_indexes(), search.ping());
+        a.expect("management leg recovers");
+        b.expect("search leg recovers");
+
+        let logins = mock
+            .requests()
+            .iter()
+            .filter(|r| r.path == "/api/v1/auth/login")
+            .count();
+        assert_eq!(
+            logins, 2,
+            "one login to establish, one to replace the stale first session"
+        );
     }
 
     /// A `200` with no cookie and no `auth_enabled: false` must be an error,

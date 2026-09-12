@@ -733,7 +733,8 @@ pub struct ClickHouseConfig {
     pub database: String,
     #[serde(default = "default_clickhouse_user")]
     pub user: String,
-    #[serde(default)]
+    /// Never serialized — see the note on [`AglakeConfig::hec_token`].
+    #[serde(default, skip_serializing)]
     pub password: String,
     /// Run `OPTIMIZE TABLE ... FINAL` after each retention sweep to reclaim
     /// space eagerly. Off by default — TTL-driven background merges reclaim
@@ -792,7 +793,13 @@ pub struct AglakeConfig {
     ///
     /// This authenticates ingest only. It does **not** open `/api/v1/*` —
     /// those need a session, from `username`/`password` or `session_token`.
-    #[serde(default)]
+    ///
+    /// **Not serialized.** `AppConfig` is returned whole by
+    /// `GET /api/runtime-config` and printed by `heron config validate --json`,
+    /// so any credential left serializable is readable by everyone who can
+    /// reach the console. `skip_serializing` does not affect *loading* — the
+    /// value still comes in from TOML or the environment.
+    #[serde(default, skip_serializing)]
     pub hec_token: String,
     /// Username in aglake's local user catalog, exchanged for a session at
     /// first use. Leave empty when aglaked runs with no users (its default),
@@ -803,8 +810,9 @@ pub struct AglakeConfig {
     /// deployment can use an unprivileged account.
     #[serde(default)]
     pub username: String,
-    /// Password for [`AglakeConfig::username`].
-    #[serde(default)]
+    /// Password for [`AglakeConfig::username`]. Never serialized — see the
+    /// note on [`AglakeConfig::hec_token`].
+    #[serde(default, skip_serializing)]
     pub password: String,
     /// An existing session token, presented as `Authorization: Bearer`,
     /// instead of logging in. Takes precedence over `username`/`password`.
@@ -813,7 +821,9 @@ pub struct AglakeConfig {
     /// when it restarts, and Heron cannot mint a new one from a token alone —
     /// so this is for short-lived or externally-refreshed setups. Prefer
     /// `username`/`password` for anything long-running.
-    #[serde(default)]
+    ///
+    /// Never serialized — see the note on [`AglakeConfig::hec_token`].
+    #[serde(default, skip_serializing)]
     pub session_token: String,
     /// Prefix for every index this backend owns. Must avoid aglake's built-in
     /// names (`main` / `traces` / `metrics` / `summary` / `_internal` / `_audit`)
@@ -1504,7 +1514,7 @@ impl std::fmt::Display for ConfigIssue {
 /// shape a real parser would reject — would both be worse than saying nothing.
 /// An unparseable URL returns `None` and is left to fail at connect time with
 /// a message about the actual problem.
-fn aglake_url_host(url: &str) -> Option<String> {
+pub fn aglake_url_host(url: &str) -> Option<String> {
     let rest = url.split("://").nth(1)?;
     let authority = rest.split(['/', '?', '#']).next()?;
     // Strip userinfo, then the port — but not the colons inside a bracketed
@@ -1519,7 +1529,7 @@ fn aglake_url_host(url: &str) -> Option<String> {
 }
 
 /// Whether a host names this machine only.
-fn is_loopback_host(host: &str) -> bool {
+pub fn is_loopback_host(host: &str) -> bool {
     let bare = host.trim_start_matches('[').trim_end_matches(']');
     if bare == "localhost" {
         return true;
@@ -2837,6 +2847,64 @@ mod phase2_tests {
                 "unexpected warning state for {credentials:?}"
             );
         }
+    }
+
+    /// Credentials must never reach a serialized `AppConfig`.
+    ///
+    /// `GET /api/runtime-config` returns the whole config to the console, and
+    /// `heron config validate --json` prints it — so a credential that
+    /// round-trips through serde is readable by anyone who can reach either.
+    /// This asserts the absence rather than the redaction: a redacted
+    /// placeholder would still be a field someone could later "fix" into
+    /// carrying the real value.
+    #[test]
+    fn credentials_are_never_serialized() {
+        let cfg = AppConfig::from_toml(
+            r#"
+            [[pipeline]]
+            name = "p"
+            [[pipeline.sources]]
+            type = "pcap"
+            interface = "eth0"
+
+            [storage]
+            backend = "aglake"
+
+            [storage.aglake]
+            hec_token = "hec-should-not-appear"
+            username = "heron"
+            password = "password-should-not-appear"
+            session_token = "session-should-not-appear"
+
+            [storage.clickhouse]
+            password = "ch-should-not-appear"
+            "#,
+        );
+
+        // Loading is unaffected — the values are present in memory.
+        assert_eq!(cfg.storage.aglake.password, "password-should-not-appear");
+        assert_eq!(cfg.storage.aglake.hec_token, "hec-should-not-appear");
+        assert_eq!(
+            cfg.storage.aglake.session_token,
+            "session-should-not-appear"
+        );
+        assert_eq!(cfg.storage.clickhouse.password, "ch-should-not-appear");
+
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        for secret in [
+            "hec-should-not-appear",
+            "password-should-not-appear",
+            "session-should-not-appear",
+            "ch-should-not-appear",
+        ] {
+            assert!(
+                !json.contains(secret),
+                "{secret} reached the serialized config"
+            );
+        }
+        // The non-secret neighbours must survive, or this test would pass by
+        // serializing nothing at all.
+        assert!(json.contains("heron"), "username should still serialize");
     }
 
     /// A password with no username cannot become a session. Silence would make

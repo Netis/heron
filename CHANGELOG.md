@@ -32,7 +32,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   Two environment variables outside the repo keep their old names for the same
   reason: `SGLAKE_DATA_DIR` (read by the staging longevity soak from a
-  hand-maintained `/etc/longevity/env`) and `SGLOGD_BIN` (the cross-backend
+  hand-maintained environment file) and `SGLOGD_BIN` (the cross-backend
   differential harness). Renaming those with no fallback would have silently
   dropped an invariant rather than failed.
 
