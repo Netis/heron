@@ -114,8 +114,18 @@ jobs:
           version: 0.13.0
 
       - name: Install cargo-zigbuild
+        # 0.23.x or newer is required: rustc stable now passes
+        # `-Wl,--fix-cortex-a53-843419` for aarch64 targets, which zig's linker
+        # rejects outright ("unsupported linker arg"). cargo-zigbuild learned to
+        # filter it in 0.23.0 (rust-cross/cargo-zigbuild#452); 0.19.6 was
+        # released in 2024 and predates the flag, so the aarch64-musl leg of
+        # this matrix failed at link time on every release cut after rustc
+        # started emitting it.
+        #
+        # Zig stays on 0.13: zig 0.15+ needs clang 18+ for crates that use
+        # bindgen, which duckdb-sys does.
         run: |
-          pip install cargo-zigbuild==0.19.6
+          pip install cargo-zigbuild==0.23.4
 
       # libpcap is C, not pure Rust. Build it from source against the same
       # zig/musl target so cargo-zigbuild produces a fully static binary.
