@@ -109,13 +109,40 @@ jobs:
           workspaces: server -> target
           key: ${{ matrix.target }}
 
+      # Two zigs, two consumers — both needed, and both must agree on 0.13.
+      #
+      #   * this action puts a `zig` executable on PATH. The libpcap step below
+      #     builds C with `CC="zig cc -target …"`, so without it that configure
+      #     fails with "C compiler cannot create executables".
+      #   * pip pulls `ziglang` in as a hard dependency of cargo-zigbuild, and
+      #     *that* copy is what links the Rust side.
+      #
+      # They are separate installs, so a version pinned on one says nothing
+      # about the other.
       - uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.13.0
 
-      - name: Install cargo-zigbuild
+      - name: Install cargo-zigbuild + pin its zig
+        # cargo-zigbuild must be >= 0.23.0: rustc stable passes
+        # `-Wl,--fix-cortex-a53-843419` for aarch64 targets and zig's linker
+        # rejects unknown args outright, so the aarch64-musl leg failed at link
+        # time ("unsupported linker arg"). 0.23.0 added a filter for it
+        # (rust-cross/cargo-zigbuild#452). The old pin, 0.19.6, is from 2024 and
+        # predates the flag entirely.
+        #
+        # `ziglang` needs pinning for a different reason: the dependency is
+        # declared `ziglang>=0.9.0`, so pip resolves it to whatever is newest.
+        # It reached 0.16, where both Linux targets silently produced
+        # *dynamically linked* binaries and the static check below rejected
+        # them. Pinning it to 0.13.0 matches the action above.
+        #
+        # 0.13 rather than something newer is also deliberate: zig 0.15+ wants
+        # clang 18+ for crates that use bindgen, and duckdb-sys does.
         run: |
-          pip install cargo-zigbuild==0.19.6
+          pip install cargo-zigbuild==0.23.4 ziglang==0.13.0
+          echo "PATH zig:  $(zig version)"
+          echo "pip zig:   $(python -m ziglang version)"
 
       # libpcap is C, not pure Rust. Build it from source against the same
       # zig/musl target so cargo-zigbuild produces a fully static binary.

@@ -6,7 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.8.0] — 2026-09-12
+## [0.8.1] — 2026-09-12
+
+`v0.8.0` was tagged from this same content but never released: the
+`aarch64-unknown-linux-musl` leg of the release matrix failed to link, so no
+release was created and nothing shipped. 0.8.1 is that content plus the build
+fix — there is no released 0.8.0 to upgrade from.
 
 ### Changed
 
@@ -58,6 +63,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The aarch64 Linux release binary could not be linked.** rustc stable passes
+  `-Wl,--fix-cortex-a53-843419` for aarch64 targets and zig's linker rejects
+  unknown arguments outright, so that leg of the release matrix failed and, with
+  it, the whole release. `cargo-zigbuild` gained a filter for the flag in
+  0.23.0; the pin here was 0.19.6, from 2024. Nothing in Heron changed —
+  `rust-toolchain@stable` moved underneath a pinned build tool, which is what
+  broke `v0.8.0`.
 - **`/api/runtime-config` was handing out stored credentials.** It returns the
   whole `AppConfig` to the console, and `heron config validate --json` prints
   it, so `storage.aglake.hec_token` and `storage.clickhouse.password` were
