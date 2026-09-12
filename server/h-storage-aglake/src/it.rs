@@ -1853,6 +1853,13 @@ const RECEIVERS_TO_DISABLE: &[&str] = &[
 ];
 
 /// Which receiver flags this binary understands, read out of its `--help`.
+///
+/// The match has to be exact, not a substring: `--hec-http` is a prefix of
+/// `--hec-http-enabled`, so a plain `contains` would report the former as
+/// supported on a build that has only the latter, and passing `--hec-http
+/// <addr>` there is a hard parse error. clap prints one flag per line followed
+/// by a space (before its value placeholder) or a newline, so requiring that
+/// separator distinguishes the two.
 fn supported_flags(bin: &str) -> std::collections::HashSet<&'static str> {
     let help = std::process::Command::new(bin)
         .arg("--help")
@@ -1863,12 +1870,50 @@ fn supported_flags(bin: &str) -> std::collections::HashSet<&'static str> {
             text
         })
         .unwrap_or_default();
+    flags_in_help(&help)
+}
+
+/// The parsing half of [`supported_flags`], split out so the prefix rule can be
+/// tested without a binary to run.
+fn flags_in_help(help: &str) -> std::collections::HashSet<&'static str> {
     RECEIVERS_TO_DISABLE
         .iter()
         .copied()
         .chain(["--hec-http"])
-        .filter(|flag| help.contains(*flag))
+        .filter(|flag| {
+            help.lines().any(|line| {
+                line.split_whitespace()
+                    .any(|word| word.trim_end_matches(',') == *flag)
+            })
+        })
         .collect()
+}
+
+/// A flag must not be reported as supported just because a longer flag starts
+/// with its name — passing `--hec-http <addr>` to a build that has only
+/// `--hec-http-enabled` is a parse error, and the daemon never starts.
+#[test]
+fn flag_detection_does_not_confuse_a_prefix_for_the_flag() {
+    // `--hec-http` is a prefix of `--hec-http-enabled`, and only the former is
+    // ever passed a value. A build carrying just the longer flag must not be
+    // credited with the shorter one.
+    let only_enabled = "      --hec-http-enabled <HEC_HTTP_ENABLED>\n          Start it\n";
+    assert!(
+        !flags_in_help(only_enabled).contains("--hec-http"),
+        "--hec-http-enabled must not imply --hec-http"
+    );
+
+    // Both present, as on a current build.
+    let both = "      --hec-http <HEC_HTTP>\n      --hec-http-enabled <HEC_HTTP_ENABLED>\n";
+    assert!(flags_in_help(both).contains("--hec-http"));
+
+    // A receiver switch is detected on its own line, value placeholder and all.
+    let receiver = "      --es-http-enabled <ES_HTTP_ENABLED>\n          [default: true]\n";
+    assert!(flags_in_help(receiver).contains("--es-http-enabled"));
+
+    // A build predating all of them: nothing is passed, which is what keeps
+    // this working against a release from before the flags existed.
+    assert!(flags_in_help("      --listen <LISTEN>\n").is_empty());
 }
 
 /// A aglaked this test owns, on its own port and data directory.

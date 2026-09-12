@@ -25,7 +25,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   Existing config files keep working: `backend = "sglake"` is normalized at
   load, `[storage.sglake]` is accepted as an alias (covering the matching
-  `TS_STORAGE__SGLAKE__*` overrides), and `heron aglake-props` still answers to
+  `TS__STORAGE__SGLAKE__*` overrides), and `heron aglake-props` still answers to
   `sglake-props`. Loading an old spelling raises a warning, not an error.
 
 ### Added

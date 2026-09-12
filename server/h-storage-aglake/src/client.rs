@@ -391,6 +391,30 @@ enum TokenSource {
     Login { username: String, password: String },
 }
 
+/// When [`AuthState::acquire`] may hand back the token already cached instead
+/// of logging in.
+#[derive(Clone, Copy)]
+enum Replace<'a> {
+    /// First use: any cached token will do, and one is there only if another
+    /// caller won the race to the lock.
+    Never,
+    /// After a 401: reuse the cached token only if it is *not* the one that
+    /// just failed. That makes the re-login single-flight — see
+    /// [`AuthState::refresh`].
+    IfStillStale(Option<&'a str>),
+}
+
+impl Replace<'_> {
+    fn can_reuse(self, cached: &str) -> bool {
+        match self {
+            Self::Never => true,
+            // `None` means the caller sent no token at all, so anything cached
+            // is newer than what it used.
+            Self::IfStillStale(stale) => stale != Some(cached),
+        }
+    }
+}
+
 impl AuthState {
     pub(crate) fn new(config: &AglakeConfig) -> Result<Self> {
         let http = reqwest::Client::builder()
@@ -433,26 +457,38 @@ impl AuthState {
         if let Some(token) = self.token.read().await.clone() {
             return Ok(Some(token));
         }
-        self.acquire().await
+        self.acquire(Replace::Never).await
     }
 
-    /// Drop the session in hand and get another. Called after a 401, where
-    /// the token we hold has been shown not to work.
-    pub(crate) async fn refresh(&self) -> Result<Option<String>> {
+    /// Replace the session that just produced a 401, and return the new one.
+    ///
+    /// `stale` is the token the caller actually sent. That argument is what
+    /// makes this single-flight: concurrent reads share one `AuthState`, and
+    /// several of them hit the same expired session at once — two legs of a
+    /// `tokio::try_join!`, or a chunked point lookup running
+    /// `max_concurrent_searches` wide. Each gets its own 401. Whoever takes
+    /// the lock first logs in; everyone behind it finds a token that is no
+    /// longer the one they sent, and uses that instead of minting another.
+    ///
+    /// Comparing rather than unconditionally discarding is the whole point:
+    /// clearing the slot first would defeat the re-check below and put one
+    /// login on the wire per racing caller, against a session table the daemon
+    /// keeps in memory under an LRU cap.
+    pub(crate) async fn refresh(&self, stale: Option<&str>) -> Result<Option<String>> {
         if !self.can_refresh() {
             return Ok(None);
         }
-        self.token.write().await.take();
-        self.acquire().await
+        self.acquire(Replace::IfStillStale(stale)).await
     }
 
-    /// Log in and cache the result. Holds the write lock across the request so
-    /// a burst of concurrent reads produces one login, not one per caller.
-    async fn acquire(&self) -> Result<Option<String>> {
+    /// Log in and cache the result, holding the write lock across the request
+    /// so a burst of callers produces one login rather than one each.
+    async fn acquire(&self, replace: Replace<'_>) -> Result<Option<String>> {
         let mut slot = self.token.write().await;
-        // Someone may have logged in while we waited for the lock.
-        if let Some(token) = slot.clone() {
-            return Ok(Some(token));
+        if let Some(cached) = slot.as_deref() {
+            if replace.can_reuse(cached) {
+                return Ok(Some(cached.to_string()));
+            }
         }
         let token = match &self.source {
             None => None,
@@ -535,15 +571,17 @@ async fn send_authenticated<F>(auth: &AuthState, ctx: &str, build: F) -> Result<
 where
     F: Fn(Option<&str>) -> reqwest::RequestBuilder,
 {
-    let token = auth.token().await?;
-    let resp = build(token.as_deref())
+    let sent = auth.token().await?;
+    let resp = build(sent.as_deref())
         .send()
         .await
         .map_err(|e| err(ctx, e))?;
     if resp.status() != reqwest::StatusCode::UNAUTHORIZED || !auth.can_refresh() {
         return Ok(resp);
     }
-    let token = auth.refresh().await?;
+    // Pass the token that actually failed, so concurrent 401s on one expired
+    // session collapse into a single re-login.
+    let token = auth.refresh(sent.as_deref()).await?;
     build(token.as_deref())
         .send()
         .await
@@ -681,6 +719,14 @@ fn describe_search_failure(status: reqwest::StatusCode, url: &str, body: &str) -
         403 => format!(
             "{status} from {url}: the configured aglake user may not read \
              these indexes. {detail}"
+        ),
+        // Reached when storage.aglake.url points at something that is not an
+        // aglaked at all — a stray reverse proxy, or the wrong port. Worth
+        // naming, because the status alone reads like an empty result.
+        404 => format!(
+            "{status} from {url}: no search API at this address. Check \
+             storage.aglake.url — this path exists on every supported \
+             aglaked, so a 404 means the URL is not pointing at one. {detail}"
         ),
         _ => format!("{status} from {url}: {detail}"),
     }
@@ -1584,6 +1630,69 @@ mod auth_tests {
         for request in mock.api_requests() {
             assert_eq!(request.authorization.as_deref(), Some("Bearer session-1"));
         }
+    }
+
+    /// Concurrent 401s on one expired session must produce **one** re-login,
+    /// not one per caller.
+    ///
+    /// This is the shape the read path actually has: `read.rs` and
+    /// `services.rs` run two searches under `tokio::try_join!`, and point
+    /// lookups fan out `max_concurrent_searches` wide over a shared
+    /// `AuthState`. When the session expires, every leg in flight gets its own
+    /// 401 at the same moment. Logging in per leg would burn round-trips and
+    /// allocate a session slot each time, against a table the daemon keeps in
+    /// memory under an LRU cap.
+    #[tokio::test]
+    async fn concurrent_401s_collapse_into_a_single_relogin() {
+        // Three concurrent calls: each is answered 401 once, then 200 on its
+        // retry. The script is consumed in arrival order, which is all this
+        // test depends on.
+        let mock = MockAglake::start(
+            vec![
+                (401, r#"{"error":"authentication required"}"#),
+                (401, r#"{"error":"authentication required"}"#),
+                (401, r#"{"error":"authentication required"}"#),
+                (200, r#"{"indexes":[]}"#),
+                (200, r#"{"indexes":[]}"#),
+                (200, r#"{"indexes":[]}"#),
+            ],
+            true,
+        );
+        let config = AglakeConfig {
+            username: "heron".into(),
+            password: "secret".into(),
+            ..mock.config()
+        };
+        let client = management(&config);
+
+        let (a, b, c) = tokio::join!(
+            client.list_indexes(),
+            client.list_indexes(),
+            client.list_indexes()
+        );
+        for r in [a, b, c] {
+            r.expect("every leg should recover on its retry");
+        }
+
+        let logins = mock
+            .requests()
+            .iter()
+            .filter(|r| r.path == "/api/v1/auth/login")
+            .count();
+        assert_eq!(
+            logins, 2,
+            "expected one login to establish the session and exactly one to \
+             replace it; got {logins}"
+        );
+
+        // Every retry must carry the replacement, not a third or fourth
+        // session — that is what proves they shared one re-login.
+        let retried: Vec<_> = mock
+            .api_requests()
+            .into_iter()
+            .filter(|r| r.authorization.as_deref() == Some("Bearer session-2"))
+            .collect();
+        assert_eq!(retried.len(), 3, "all three retries use session-2");
     }
 
     /// The native admin shape, which is not the EAI envelope this used to

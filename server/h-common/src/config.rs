@@ -540,7 +540,8 @@ pub struct StorageConfig {
     #[serde(default)]
     pub clickhouse: ClickHouseConfig,
     /// The legacy `[storage.sglake]` table is still accepted via serde alias,
-    /// which also covers the `TS_STORAGE__SGLAKE__*` environment overrides.
+    /// which also covers the `TS__STORAGE__SGLAKE__*` environment overrides
+    /// (note the doubled separator after the prefix — see `AppConfig::load`).
     #[serde(default, alias = "sglake")]
     pub aglake: AglakeConfig,
     #[serde(default)]
@@ -1306,6 +1307,10 @@ pub enum ConfigIssue {
     /// unaffected — reported so the file gets updated before the alias is
     /// eventually dropped.
     LegacyBackendName { found: String, use_instead: String },
+    /// `storage.aglake.password` is set but `username` is empty, so there is
+    /// nothing to log in as and the password is dead config. Only emitted when
+    /// `storage.backend == "aglake"`.
+    AglakePasswordWithoutUsername,
 }
 
 impl ConfigIssue {
@@ -1324,6 +1329,10 @@ impl ConfigIssue {
             // The alias still resolves, so this deployment runs correctly; it
             // just names something that no longer exists upstream.
             | Self::LegacyBackendName { .. }
+            // Harmless against a daemon with no user catalog, fatal against one
+            // that has users — and Heron cannot tell which from here, so it
+            // warns rather than blocking `config validate`.
+            | Self::AglakePasswordWithoutUsername
             | Self::AglakeBodyRetentionExceedsParent { .. } => IssueSeverity::Warn,
             Self::DuplicatePipelineName(_)
             | Self::DuplicateSourceId { .. }
@@ -1456,6 +1465,15 @@ impl std::fmt::Display for ConfigIssue {
                  parent's id. Set body_retention_days <= {parent} (or 0 to \
                  inherit each body index's own parent)."
             ),
+            Self::AglakePasswordWithoutUsername => write!(
+                f,
+                "storage.aglake.password is set but storage.aglake.username is \
+                 empty, so there is no account to log in as and the password is \
+                 never used. Against an aglaked with a user catalog every read \
+                 will then fail with 401; against one without users it works, \
+                 but only because the credential is ignored. Set username, or \
+                 remove password."
+            ),
             Self::LegacyBackendName { found, use_instead } => write!(
                 f,
                 "'{found}' is what the storage backend was called before the \
@@ -1552,8 +1570,15 @@ fn is_writable_dir(dir: &Path) -> bool {
 impl AppConfig {
     /// Load configuration from a TOML file, with environment variable overrides.
     ///
-    /// Environment variables are prefixed with `TS_` and use `__` as separator.
-    /// For example: `TS_API__PORT=9090` overrides `api.port`.
+    /// Environment variables are prefixed with `TS` and use `__` both after the
+    /// prefix and between path segments: `TS__API__PORT=9090` overrides
+    /// `api.port`.
+    ///
+    /// The doubled separator after the prefix is not a typo, and it is easy to
+    /// get wrong: `config`'s `Environment` defaults `prefix_separator` to
+    /// whatever `separator` is, so a single-underscore `TS_API__PORT` matches
+    /// no prefix, is dropped, and the override silently does nothing. Asserted
+    /// by `environment_overrides_honour_the_legacy_table_alias`.
     pub fn load(path: &Path) -> crate::error::Result<Self> {
         let config = Config::builder()
             .add_source(config::File::from(path))
@@ -1675,6 +1700,11 @@ impl AppConfig {
             // risk is exactly what it always was — Heron does not start
             // aglaked and cannot bind it, so this stays the one place it can
             // be named.
+            // A password with no username cannot become a session — catch the
+            // typo rather than letting it look like configured auth.
+            if !sg.password.is_empty() && sg.username.is_empty() {
+                issues.push(ConfigIssue::AglakePasswordWithoutUsername);
+            }
             let has_session = !sg.username.is_empty() || !sg.session_token.is_empty();
             if !has_session {
                 if let Some(host) = aglake_url_host(&sg.url) {
@@ -2404,6 +2434,75 @@ mod phase2_tests {
         assert_eq!(legacy[0].severity(), IssueSeverity::Warn);
     }
 
+    /// The serde alias has to cover the environment overrides too, not just the
+    /// TOML table — an override in a deploy unit would otherwise become a
+    /// silent no-op on upgrade, leaving the backend on its default URL rather
+    /// than the configured one.
+    ///
+    /// It also pins the **prefix separator**, which is not what the `TS_`
+    /// wording suggests: `config`'s `Environment` defaults `prefix_separator`
+    /// to whatever `separator` is, so with `.separator("__")` the prefix is
+    /// `TS__` and a single-underscore `TS_STORAGE__…` is silently ignored.
+    /// Both facts are asserted here because both are invisible at the call
+    /// site and neither fails loudly.
+    ///
+    /// Uses `Environment::source` rather than real env vars so this cannot
+    /// perturb (or be perturbed by) any other test in the binary.
+    #[test]
+    fn environment_overrides_honour_the_legacy_table_alias() {
+        let env = |vars: &[(&str, &str)]| {
+            let map: std::collections::HashMap<String, String> = vars
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect();
+            let config = Config::builder()
+                .add_source(config::File::from_str(
+                    r#"
+                    [[pipeline]]
+                    name = "p"
+                    [[pipeline.sources]]
+                    type = "pcap"
+                    interface = "eth0"
+
+                    [storage]
+                    backend = "aglake"
+                    "#,
+                    config::FileFormat::Toml,
+                ))
+                .add_source(
+                    config::Environment::with_prefix("TS")
+                        .separator("__")
+                        .try_parsing(true)
+                        .source(Some(map)),
+                )
+                .build()
+                .expect("build config");
+            let raw: RawAppConfig = config.try_deserialize().expect("deserialize");
+            raw.resolve()
+        };
+
+        // The legacy table name, through the alias.
+        let legacy = env(&[
+            ("TS__STORAGE__SGLAKE__URL", "http://127.0.0.1:9999"),
+            ("TS__STORAGE__SGLAKE__INDEX_PREFIX", "viaenv"),
+        ]);
+        assert_eq!(legacy.storage.aglake.url, "http://127.0.0.1:9999");
+        assert_eq!(legacy.storage.aglake.index_prefix, "viaenv");
+
+        // The current name, so a broken alias cannot be mistaken for a broken
+        // Environment source.
+        let current = env(&[("TS__STORAGE__AGLAKE__URL", "http://127.0.0.1:8888")]);
+        assert_eq!(current.storage.aglake.url, "http://127.0.0.1:8888");
+
+        // And the trap: one underscore after the prefix does nothing at all.
+        let single = env(&[("TS_STORAGE__AGLAKE__URL", "http://127.0.0.1:7777")]);
+        assert_eq!(
+            single.storage.aglake.url,
+            default_aglake_url(),
+            "TS_ (one underscore) must be documented as ineffective, not silently assumed to work"
+        );
+    }
+
     /// The current spelling must not trip the deprecation notice.
     #[test]
     fn current_aglake_name_is_not_flagged_as_legacy() {
@@ -2681,6 +2780,49 @@ mod phase2_tests {
                 warned,
                 credentials.is_empty(),
                 "unexpected warning state for {credentials:?}"
+            );
+        }
+    }
+
+    /// A password with no username cannot become a session. Silence would make
+    /// it look like auth is configured when nothing is ever sent — which reads
+    /// as a working setup right up until the daemon gets a user catalog.
+    #[test]
+    fn a_password_without_a_username_is_reported() {
+        let cfg = |creds: &str| {
+            AppConfig::from_toml(&format!(
+                r#"
+                [[pipeline]]
+                name = "p"
+                [[pipeline.sources]]
+                type = "pcap"
+                interface = "eth0"
+
+                [storage]
+                backend = "aglake"
+
+                [storage.aglake]
+                {creds}
+                "#
+            ))
+        };
+
+        let issues = cfg(r#"password = "secret""#).validate();
+        let found: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i, ConfigIssue::AglakePasswordWithoutUsername))
+            .collect();
+        assert_eq!(found.len(), 1, "a dead password must be reported");
+        assert_eq!(found[0].severity(), IssueSeverity::Warn);
+
+        // A complete credential pair, and no credentials at all, are both fine.
+        for creds in ["username = \"heron\"\npassword = \"secret\"", ""] {
+            assert!(
+                !cfg(creds)
+                    .validate()
+                    .iter()
+                    .any(|i| matches!(i, ConfigIssue::AglakePasswordWithoutUsername)),
+                "unexpected finding for {creds:?}"
             );
         }
     }

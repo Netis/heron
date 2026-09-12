@@ -18,13 +18,19 @@ survives a Heron upgrade and a daemon does not.
 included — aglaked starts dedicated receivers on fixed `0.0.0.0` ports by
 default (HEC 8088, OTLP 4318/4317, syslog 514, S2S 9997, ES-compat 9200) and
 **refuses to start if one cannot bind**; 514 is privileged, and 9200 collides
-with a real Elasticsearch. Heron uses none of them — it writes HEC over the
-`--listen` port — so an aglaked dedicated to Heron should switch off the ones
-it does not need. One trap: `--hec-http-enabled false` turns off the HEC
-*input*, including the alias on `--listen` that Heron writes through. Move that
-listener (`--hec-http`) rather than disabling it. `OwnedAglaked` in `it.rs`
-does exactly this, probing `--help` so it still works against a build that
-predates the flags.
+with a real Elasticsearch. Heron connects to none of them: it writes HEC to the
+`--listen` port, which answers `/services/collector/*` as an alias of the
+dedicated input. So an aglaked dedicated to Heron should switch off every
+receiver it does not need — but the HEC one needs care, and the two knobs are
+not equivalent:
+
+* `--hec-http-enabled false` switches off the HEC **input as a whole**,
+  including the alias on `--listen`. That breaks Heron's write path.
+* `--hec-http <addr>` only relocates the **dedicated listener**. The alias
+  Heron uses is unaffected, so this is how to get off a contended 8088.
+
+`OwnedAglaked` in `it.rs` does the latter, probing `--help` first so it still
+works against a build predating the flags.
 
 **Why it exists.** Where the SQL backends give Heron a private database, this
 one puts observation data into a log platform an organisation may already run —
