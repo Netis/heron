@@ -1991,9 +1991,12 @@ impl OwnedAglaked {
                 .collect();
             assert!(
                 missing.is_empty(),
-                "aglaked has --hec-http but not {missing:?}; a receiver flag was \
-                 renamed upstream and this list needs updating, or the daemon \
-                 will not start"
+                "aglaked has --hec-http but not {missing:?}. Either the flag was \
+                 renamed (in which case this list needs the new spelling, or the \
+                 receiver stays on and the daemon cannot bind its port) or the \
+                 receiver was removed entirely (in which case drop it from the \
+                 list). Both need a human; degrading quietly would put back the \
+                 opaque 'never became ready' this check exists to prevent."
             );
         }
         for flag in RECEIVERS_TO_DISABLE {

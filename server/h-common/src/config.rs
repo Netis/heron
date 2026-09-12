@@ -1705,6 +1705,9 @@ impl AppConfig {
             if !sg.password.is_empty() && sg.username.is_empty() {
                 issues.push(ConfigIssue::AglakePasswordWithoutUsername);
             }
+            // Deliberately not `|| !password.is_empty()`: a password with no
+            // username establishes no session, so the loopback risk is
+            // unchanged and both findings are reported together on purpose.
             let has_session = !sg.username.is_empty() || !sg.session_token.is_empty();
             if !has_session {
                 if let Some(host) = aglake_url_host(&sg.url) {

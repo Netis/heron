@@ -439,7 +439,15 @@ enum Replace<'a> {
 
 impl Replace<'_> {
     /// `cached` is whatever the settled session presents — `None` for a daemon
-    /// known to want no credentials, which no 401 can improve on.
+    /// known to want no credentials.
+    ///
+    /// That `None` is load-bearing in a way worth stating: when a daemon gains
+    /// a user catalog *after* Heron cached `NotRequired`, requests start going
+    /// out bare and coming back 401. The caller then sent `None`, the cache
+    /// holds `None`, they compare equal, and the negative answer is correctly
+    /// treated as stale — so Heron logs in and recovers without a restart.
+    /// It works because "sent nothing" and "needs nothing" are the same value
+    /// here; keep them that way, or this recovery path goes quiet.
     fn can_reuse(self, cached: Option<&str>) -> bool {
         match self {
             Self::Never => true,
@@ -460,7 +468,9 @@ impl Replace<'_> {
 /// terrible one for the auth round-trip: login is a small, fixed-cost request,
 /// and blocking the read path for two minutes to discover it is unreachable is
 /// strictly worse than failing and letting the next request try again. So the
-/// login client takes the smaller of the two.
+/// login client takes the smaller of the two — `min`, not a floor: an operator
+/// who deliberately shortens `request_timeout_secs` wants everything to fail
+/// faster, and silently holding login to 30s would override that.
 const LOGIN_TIMEOUT_CEILING_SECS: u64 = 30;
 
 impl AuthState {
@@ -591,15 +601,39 @@ impl AuthState {
                 ),
             ));
         }
-        match session_cookie(&resp) {
-            Some(token) => Ok(Some(token)),
-            None => {
+        if let Some(token) = session_cookie(&resp) {
+            return Ok(Some(token));
+        }
+
+        // No cookie. Two very different situations answer 200 without one, and
+        // the daemon distinguishes them for us: a no-catalog daemon reports
+        // `auth_enabled: false`. Guessing instead of reading it would be the
+        // dangerous kind of wrong — classifying a protocol change (a renamed
+        // cookie, a token moved into the body) as "no credentials needed" makes
+        // Heron read unauthenticated from then on, silently.
+        let text = resp.text().await.unwrap_or_default();
+        let auth_enabled = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("auth_enabled").and_then(serde_json::Value::as_bool));
+        match auth_enabled {
+            Some(false) => {
                 tracing::info!(
                     "aglake: storage.aglake.username is set but aglaked has no user \
                      catalog; continuing without credentials"
                 );
                 Ok(None)
             }
+            _ => Err(err(
+                "login",
+                format!(
+                    "{status} from {} as {username}, but no `{SESSION_COOKIE}` cookie \
+                     and not auth_enabled=false. Heron cannot tell whether this \
+                     daemon wants credentials, and guessing would mean reading \
+                     unauthenticated. Response: {}",
+                    self.login_url,
+                    truncate(&text)
+                ),
+            )),
         }
     }
 }
@@ -1398,6 +1432,20 @@ mod auth_tests {
         body: String,
     }
 
+    /// How the mock answers `POST /api/v1/auth/login`.
+    #[derive(Clone, Copy, PartialEq)]
+    enum LoginMode {
+        /// Has a user catalog: mints `session-N` as a `Set-Cookie`.
+        Catalog,
+        /// No user catalog: `200` with `auth_enabled: false` and no cookie.
+        /// This is a definite answer, and Heron is expected to remember it.
+        NoCatalog,
+        /// `200` with neither a cookie nor `auth_enabled: false` — what a
+        /// renamed cookie or a token moved into the body would look like.
+        /// Heron must refuse to guess.
+        CookieMissing,
+    }
+
     /// A scripted aglaked.
     ///
     /// Sessions are what make this worth mocking: they expire on the server's
@@ -1408,23 +1456,66 @@ mod auth_tests {
     /// Login is handled internally rather than scripted, minting `session-1`,
     /// `session-2`, … in order — so an assertion on which token came back says
     /// unambiguously whether the client logged in again or reused what it had.
+    ///
+    /// With `enforce_sessions`, 401s stop coming from the script and start
+    /// coming from the *state*: a request is answered `401` unless it presents
+    /// the session the mock currently considers valid. That makes the
+    /// concurrent-expiry test independent of which leg reaches the socket
+    /// first, which a single global response sequence cannot be.
     struct MockAglake {
         addr: SocketAddr,
         seen: Arc<Mutex<Vec<Seen>>>,
     }
 
+    /// Everything about a mock daemon's behaviour, so adding a knob does not
+    /// churn every call site.
+    #[derive(Clone)]
+    struct MockSpec {
+        /// `(status, body)` for non-login requests, consumed in arrival order.
+        /// Ignored for requests that `enforce_sessions` rejects.
+        script: Vec<(u16, &'static str)>,
+        login: LoginMode,
+        /// Answer `401` to any request not presenting the currently valid
+        /// session, instead of taking the next scripted response.
+        enforce_sessions: bool,
+        /// Mint the first session but do not mark it valid — the state a client
+        /// is in when its session has aged out while it held the token.
+        expire_first_session: bool,
+    }
+
+    impl Default for MockSpec {
+        fn default() -> Self {
+            Self {
+                script: Vec::new(),
+                login: LoginMode::Catalog,
+                enforce_sessions: false,
+                expire_first_session: false,
+            }
+        }
+    }
+
     impl MockAglake {
-        /// `script` answers non-login requests in order as `(status, body)`,
-        /// falling back to an empty 200 once exhausted. `set_cookie` decides
-        /// whether login hands back a session at all — `false` is the daemon
-        /// with no user catalog.
-        fn start(script: Vec<(u16, &'static str)>, set_cookie: bool) -> Self {
+        fn start(script: Vec<(u16, &'static str)>, catalog: bool) -> Self {
+            Self::with_spec(MockSpec {
+                script,
+                login: if catalog {
+                    LoginMode::Catalog
+                } else {
+                    LoginMode::NoCatalog
+                },
+                ..MockSpec::default()
+            })
+        }
+
+        fn with_spec(spec: MockSpec) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
             let addr = listener.local_addr().unwrap();
             let seen = Arc::new(Mutex::new(Vec::new()));
             let seen_bg = Arc::clone(&seen);
             let next = Arc::new(AtomicUsize::new(0));
             let logins = Arc::new(AtomicUsize::new(0));
+            // The session the mock currently accepts, once one is valid.
+            let valid: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
@@ -1432,7 +1523,8 @@ mod auth_tests {
                     let seen_bg = Arc::clone(&seen_bg);
                     let next = Arc::clone(&next);
                     let logins = Arc::clone(&logins);
-                    let script = script.clone();
+                    let valid = Arc::clone(&valid);
+                    let spec = spec.clone();
                     std::thread::spawn(move || {
                         let mut reader = BufReader::new(stream.try_clone().unwrap());
                         let mut request_line = String::new();
@@ -1466,18 +1558,56 @@ mod auth_tests {
                         seen_bg.lock().unwrap().push(Seen {
                             method,
                             path: path.clone(),
-                            authorization,
+                            authorization: authorization.clone(),
                             body,
                         });
 
                         let (code, payload, cookie) = if path == "/api/v1/auth/login" {
                             let n = logins.fetch_add(1, Ordering::SeqCst) + 1;
-                            let cookie = set_cookie
-                                .then(|| format!("aglake_session=session-{n}; Path=/; HttpOnly"));
-                            (200, r#"{"authenticated":true}"#.to_string(), cookie)
+                            match spec.login {
+                                LoginMode::Catalog => {
+                                    let token = format!("session-{n}");
+                                    // The first session can be born already
+                                    // stale, which is how a client ends up
+                                    // holding a token the daemon rejects.
+                                    if !(spec.expire_first_session && n == 1) {
+                                        *valid.lock().unwrap() = Some(token.clone());
+                                    }
+                                    (
+                                        200,
+                                        r#"{"auth_enabled":true,"authenticated":true}"#.to_string(),
+                                        Some(format!("aglake_session={token}; Path=/; HttpOnly")),
+                                    )
+                                }
+                                LoginMode::NoCatalog => (
+                                    200,
+                                    r#"{"auth_enabled":false,"authenticated":true}"#.to_string(),
+                                    None,
+                                ),
+                                LoginMode::CookieMissing => {
+                                    (200, r#"{"authenticated":true}"#.to_string(), None)
+                                }
+                            }
+                        } else if spec.enforce_sessions
+                            && authorization
+                                != valid
+                                    .lock()
+                                    .unwrap()
+                                    .as_ref()
+                                    .map(|t| format!("Bearer {t}"))
+                        {
+                            // State, not script: whoever presents a session the
+                            // daemon no longer accepts gets a 401, regardless of
+                            // arrival order.
+                            (
+                                401,
+                                r#"{"error":"authentication required"}"#.to_string(),
+                                None,
+                            )
                         } else {
                             let i = next.fetch_add(1, Ordering::SeqCst);
-                            let (code, payload) = script.get(i).copied().unwrap_or((200, "{}"));
+                            let (code, payload) =
+                                spec.script.get(i).copied().unwrap_or((200, "{}"));
                             (code, payload.to_string(), None)
                         };
 
@@ -1723,22 +1853,22 @@ mod auth_tests {
     /// their own 401 at the same moment. Logging in per leg would burn
     /// round-trips and allocate a session slot each time, against a table the
     /// daemon keeps in memory under an LRU cap.
+    ///
+    /// The 401s come from the mock's *state*, not from a scripted sequence:
+    /// the first session is minted already stale, so any leg presenting it is
+    /// rejected no matter which order the legs reach the socket in. A global
+    /// response script could hand a retry the response meant for another leg's
+    /// first attempt, which would fail intermittently instead of on a
+    /// regression.
     #[tokio::test]
     async fn concurrent_401s_collapse_into_a_single_relogin() {
-        // Three concurrent calls: each is answered 401 once, then 200 on its
-        // retry. The script is consumed in arrival order, which is all this
-        // test depends on.
-        let mock = MockAglake::start(
-            vec![
-                (401, r#"{"error":"authentication required"}"#),
-                (401, r#"{"error":"authentication required"}"#),
-                (401, r#"{"error":"authentication required"}"#),
-                (200, r#"{"indexes":[]}"#),
-                (200, r#"{"indexes":[]}"#),
-                (200, r#"{"indexes":[]}"#),
-            ],
-            true,
-        );
+        let mock = MockAglake::with_spec(MockSpec {
+            script: vec![(200, r#"{"indexes":[]}"#); 6],
+            login: LoginMode::Catalog,
+            enforce_sessions: true,
+            expire_first_session: true,
+            ..MockSpec::default()
+        });
         let config = AglakeConfig {
             username: "heron".into(),
             password: "secret".into(),
@@ -1774,6 +1904,40 @@ mod auth_tests {
             .filter(|r| r.authorization.as_deref() == Some("Bearer session-2"))
             .collect();
         assert_eq!(retried.len(), 3, "all three retries use session-2");
+    }
+
+    /// A `200` with no cookie and no `auth_enabled: false` must be an error,
+    /// not a shrug.
+    ///
+    /// That response shape is what a renamed cookie or a token moved into the
+    /// body would look like. Treating it as "this daemon needs no credentials"
+    /// — which is what the absence of a cookie used to mean on its own — would
+    /// make Heron read unauthenticated from then on and cache that decision.
+    /// Silent unauthenticated reads are the one outcome worse than failing.
+    #[tokio::test]
+    async fn a_login_that_returns_neither_cookie_nor_auth_disabled_is_an_error() {
+        let mock = MockAglake::with_spec(MockSpec {
+            script: vec![(200, r#"{"indexes":[]}"#)],
+            login: LoginMode::CookieMissing,
+            ..MockSpec::default()
+        });
+        let config = AglakeConfig {
+            username: "heron".into(),
+            password: "secret".into(),
+            ..mock.config()
+        };
+
+        let e = management(&config)
+            .list_indexes()
+            .await
+            .expect_err("an unreadable login response must not be guessed at");
+        let message = e.to_string();
+        assert!(
+            message.contains(SESSION_COOKIE),
+            "the error should name the cookie it looked for: {message}"
+        );
+        // And it must not have gone on to make the request bare.
+        assert!(mock.api_requests().is_empty());
     }
 
     /// The native admin shape, which is not the EAI envelope this used to
