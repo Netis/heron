@@ -109,23 +109,30 @@ jobs:
           workspaces: server -> target
           key: ${{ matrix.target }}
 
-      - uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.13.0
-
-      - name: Install cargo-zigbuild
-        # 0.23.x or newer is required: rustc stable now passes
-        # `-Wl,--fix-cortex-a53-843419` for aarch64 targets, which zig's linker
-        # rejects outright ("unsupported linker arg"). cargo-zigbuild learned to
-        # filter it in 0.23.0 (rust-cross/cargo-zigbuild#452); 0.19.6 was
-        # released in 2024 and predates the flag, so the aarch64-musl leg of
-        # this matrix failed at link time on every release cut after rustc
-        # started emitting it.
+      - name: Install cargo-zigbuild + zig
+        # BOTH halves are pinned, and they have to be.
         #
-        # Zig stays on 0.13: zig 0.15+ needs clang 18+ for crates that use
-        # bindgen, which duckdb-sys does.
+        # cargo-zigbuild must be >= 0.23.0: rustc stable passes
+        # `-Wl,--fix-cortex-a53-843419` for aarch64 targets and zig's linker
+        # rejects unknown args outright, so the aarch64-musl leg failed at link
+        # time ("unsupported linker arg"). 0.23.0 added a filter for it
+        # (rust-cross/cargo-zigbuild#452). The old pin, 0.19.6, is from 2024 and
+        # predates the flag entirely.
+        #
+        # `ziglang` must be pinned too, and this is the subtle one: it is a hard
+        # dependency of the pip package with an open upper bound
+        # (`ziglang>=0.9.0`), and the zig it installs is the one that ends up on
+        # PATH — ahead of anything a setup-zig action provides. So the zig
+        # version was floating no matter what that action said, and when pip
+        # resolved it to 0.16 both Linux targets silently produced *dynamically
+        # linked* binaries, which the static check below then rejected. 0.13.0
+        # is the version this matrix has always actually built with.
+        #
+        # Staying on 0.13 is also deliberate: zig 0.15+ wants clang 18+ for
+        # crates that use bindgen, and duckdb-sys does.
         run: |
-          pip install cargo-zigbuild==0.23.4
+          pip install cargo-zigbuild==0.23.4 ziglang==0.13.0
+          zig version || python -m ziglang version
 
       # libpcap is C, not pure Rust. Build it from source against the same
       # zig/musl target so cargo-zigbuild produces a fully static binary.
