@@ -1919,6 +1919,12 @@ fn flag_detection_does_not_confuse_a_prefix_for_the_flag() {
 
 /// A aglaked this test owns, on its own ports and data directory.
 ///
+/// Every write in this suite goes to `/services/collector/*` on the
+/// **application** port, which the daemon serves as an alias of the dedicated
+/// HEC input ("for clients that were pointed at the application port first",
+/// per its own `--hec-http` help text). That alias is load-bearing: if it ever
+/// stops answering, writes do not degrade, they 404.
+///
 /// Both ports are passed in rather than derived here, because they must not
 /// collide with the *other* self-spawning test's: each caller owns a disjoint
 /// 10k band (see `PORT_BANDS`). Deriving the HEC port as `port + 1` was wrong
@@ -1972,6 +1978,24 @@ impl OwnedAglaked {
             .arg("2048")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
+        // A build new enough to have `--hec-http` is new enough to have all of
+        // these. If one is missing, the daemon has renamed a flag rather than
+        // dropped the feature — in which case the receiver stays at its default,
+        // fails to bind a port someone else owns, and the test reports only
+        // "never became ready". Say so instead.
+        if supported.contains("--hec-http") {
+            let missing: Vec<&str> = RECEIVERS_TO_DISABLE
+                .iter()
+                .copied()
+                .filter(|flag| !supported.contains(flag))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "aglaked has --hec-http but not {missing:?}; a receiver flag was \
+                 renamed upstream and this list needs updating, or the daemon \
+                 will not start"
+            );
+        }
         for flag in RECEIVERS_TO_DISABLE {
             if supported.contains(flag) {
                 cmd.arg(flag).arg("false");

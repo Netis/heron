@@ -2481,20 +2481,28 @@ mod phase2_tests {
             raw.resolve()
         };
 
-        // The legacy table name, through the alias.
-        let legacy = env(&[
+        // All three spellings registered in one map, so the discriminating one
+        // competes with the working ones rather than being tested in isolation:
+        // the single-underscore key targets the same field as the double, and
+        // if the prefix rule were the other way round it would win here.
+        let both = env(&[
             ("TS__STORAGE__SGLAKE__URL", "http://127.0.0.1:9999"),
             ("TS__STORAGE__SGLAKE__INDEX_PREFIX", "viaenv"),
+            ("TS_STORAGE__AGLAKE__URL", "http://127.0.0.1:7777"),
         ]);
-        assert_eq!(legacy.storage.aglake.url, "http://127.0.0.1:9999");
-        assert_eq!(legacy.storage.aglake.index_prefix, "viaenv");
+        assert_eq!(
+            both.storage.aglake.url, "http://127.0.0.1:9999",
+            "the legacy table alias must apply to env overrides"
+        );
+        assert_eq!(both.storage.aglake.index_prefix, "viaenv");
 
         // The current name, so a broken alias cannot be mistaken for a broken
         // Environment source.
         let current = env(&[("TS__STORAGE__AGLAKE__URL", "http://127.0.0.1:8888")]);
         assert_eq!(current.storage.aglake.url, "http://127.0.0.1:8888");
 
-        // And the trap: one underscore after the prefix does nothing at all.
+        // And the trap on its own: one underscore after the prefix matches no
+        // prefix, so the whole variable is dropped.
         let single = env(&[("TS_STORAGE__AGLAKE__URL", "http://127.0.0.1:7777")]);
         assert_eq!(
             single.storage.aglake.url,

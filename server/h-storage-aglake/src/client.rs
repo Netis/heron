@@ -378,9 +378,42 @@ pub(crate) struct AuthState {
     /// `None` when nothing is configured — the no-auth deployment, where
     /// requests go out bare.
     source: Option<TokenSource>,
-    /// The session in hand, once we have one. `None` before first use, and
-    /// after a refresh discards a stale one.
-    token: tokio::sync::RwLock<Option<String>>,
+    /// What we know about the session so far.
+    session: tokio::sync::RwLock<Session>,
+}
+
+/// What [`AuthState`] has learned about the daemon's session requirement.
+///
+/// The third state is the point: a daemon with no user catalog answers login
+/// with `200` and no cookie, which is a definite answer — *no credentials are
+/// needed here* — and not the same as "haven't asked yet". Collapsing the two
+/// into `Option<String>` meant every single request re-ran the login, because
+/// an empty slot always looks unasked.
+#[derive(Clone, Default, PartialEq)]
+enum Session {
+    /// Nothing acquired yet.
+    #[default]
+    Unknown,
+    /// A session token to present.
+    Active(String),
+    /// The daemon has no user catalog. Requests go out bare, and asking again
+    /// would get the same answer.
+    NotRequired,
+}
+
+impl Session {
+    fn token(&self) -> Option<&str> {
+        match self {
+            Self::Active(token) => Some(token),
+            Self::Unknown | Self::NotRequired => None,
+        }
+    }
+
+    /// Whether this is a settled answer, i.e. one worth returning without
+    /// going to the network.
+    fn is_settled(&self) -> bool {
+        !matches!(self, Self::Unknown)
+    }
 }
 
 enum TokenSource {
@@ -405,12 +438,15 @@ enum Replace<'a> {
 }
 
 impl Replace<'_> {
-    fn can_reuse(self, cached: &str) -> bool {
+    /// `cached` is whatever the settled session presents — `None` for a daemon
+    /// known to want no credentials, which no 401 can improve on.
+    fn can_reuse(self, cached: Option<&str>) -> bool {
         match self {
             Self::Never => true,
-            // `None` means the caller sent no token at all, so anything cached
-            // is newer than what it used.
-            Self::IfStillStale(stale) => stale != Some(cached),
+            // Equal means the caller sent exactly what is cached, so it really
+            // is stale and someone has to replace it. Anything else was already
+            // replaced by whoever got here first.
+            Self::IfStillStale(stale) => stale != cached,
         }
     }
 }
@@ -452,7 +488,7 @@ impl AuthState {
             http,
             login_url: format!("{}/api/v1/auth/login", config.url.trim_end_matches('/')),
             source,
-            token: tokio::sync::RwLock::new(None),
+            session: tokio::sync::RwLock::new(Session::default()),
         })
     }
 
@@ -474,8 +510,11 @@ impl AuthState {
         if self.source.is_none() {
             return Ok(None);
         }
-        if let Some(token) = self.token.read().await.clone() {
-            return Ok(Some(token));
+        {
+            let session = self.session.read().await;
+            if session.is_settled() {
+                return Ok(session.token().map(str::to_string));
+            }
         }
         self.acquire(Replace::Never).await
     }
@@ -484,11 +523,12 @@ impl AuthState {
     ///
     /// `stale` is the token the caller actually sent. That argument is what
     /// makes this single-flight: concurrent reads share one `AuthState`, and
-    /// several of them hit the same expired session at once — two legs of a
-    /// `tokio::try_join!`, or a chunked point lookup running
-    /// `max_concurrent_searches` wide. Each gets its own 401. Whoever takes
-    /// the lock first logs in; everyone behind it finds a token that is no
-    /// longer the one they sent, and uses that instead of minting another.
+    /// several of them hit the same expired session at once — every paginated
+    /// list runs its rows query and its count query together under
+    /// `tokio::try_join!` (`read.rs`), as does the service graph's two-leg
+    /// fetch (`services.rs`). Each leg gets its own 401. Whoever takes the
+    /// lock first logs in; everyone behind it finds a token that is no longer
+    /// the one they sent, and uses that instead of minting another.
     ///
     /// Comparing rather than unconditionally discarding is the whole point:
     /// clearing the slot first would defeat the re-check below and put one
@@ -504,20 +544,25 @@ impl AuthState {
     /// Log in and cache the result, holding the write lock across the request
     /// so a burst of callers produces one login rather than one each.
     async fn acquire(&self, replace: Replace<'_>) -> Result<Option<String>> {
-        let mut slot = self.token.write().await;
-        if let Some(cached) = slot.as_deref() {
-            if replace.can_reuse(cached) {
-                return Ok(Some(cached.to_string()));
-            }
+        let mut slot = self.session.write().await;
+        // Someone may have settled this while we waited for the lock.
+        if slot.is_settled() && replace.can_reuse(slot.token()) {
+            return Ok(slot.token().map(str::to_string));
         }
-        let token = match &self.source {
-            None => None,
-            Some(TokenSource::Fixed(token)) => Some(token.clone()),
+        let session = match &self.source {
+            None => Session::NotRequired,
+            Some(TokenSource::Fixed(token)) => Session::Active(token.clone()),
             Some(TokenSource::Login { username, password }) => {
-                self.login(username, password).await?
+                match self.login(username, password).await? {
+                    Some(token) => Session::Active(token),
+                    // A definite "this daemon wants no credentials" — remember
+                    // it, or every later request pays another login.
+                    None => Session::NotRequired,
+                }
             }
         };
-        slot.clone_from(&token);
+        let token = session.token().map(str::to_string);
+        *slot = session;
         Ok(token)
     }
 
@@ -1604,23 +1649,40 @@ mod auth_tests {
     /// Credentials configured against a daemon that has no user catalog: it
     /// answers login with 200 and no cookie. That is over-configuration, not a
     /// failure — the requests work bare — so it must proceed without a token.
+    ///
+    /// And it must only ask **once**. "No credentials needed" is a settled
+    /// answer, not an empty slot: treating the two alike put a login
+    /// round-trip in front of every single search for a deployment whose only
+    /// mistake was naming a user the daemon does not have.
     #[tokio::test]
-    async fn credentials_against_a_no_auth_daemon_proceed_without_a_token() {
-        let mock = MockAglake::start(vec![(200, r#"{"indexes":[]}"#)], false);
+    async fn a_no_auth_daemon_is_asked_once_and_then_left_alone() {
+        let mock = MockAglake::start(vec![(200, r#"{"indexes":[]}"#); 4], false);
         let config = AglakeConfig {
             username: "heron".into(),
             password: "secret".into(),
             ..mock.config()
         };
+        let client = management(&config);
 
-        management(&config)
-            .list_indexes()
-            .await
-            .expect("a cookie-less login must not fail the call");
+        for _ in 0..4 {
+            client
+                .list_indexes()
+                .await
+                .expect("a cookie-less login must not fail the call");
+        }
+
+        let logins = mock
+            .requests()
+            .iter()
+            .filter(|r| r.path == "/api/v1/auth/login")
+            .count();
+        assert_eq!(logins, 1, "the no-catalog answer must be remembered");
 
         let api = mock.api_requests();
-        assert_eq!(api.len(), 1);
-        assert_eq!(api[0].authorization, None);
+        assert_eq!(api.len(), 4);
+        for request in api {
+            assert_eq!(request.authorization, None);
+        }
     }
 
     /// One login serves every client and every subsequent call — a login is a
@@ -1656,12 +1718,11 @@ mod auth_tests {
     /// not one per caller.
     ///
     /// This is the shape the read path actually has: `read.rs` and
-    /// `services.rs` run two searches under `tokio::try_join!`, and point
-    /// lookups fan out `max_concurrent_searches` wide over a shared
-    /// `AuthState`. When the session expires, every leg in flight gets its own
-    /// 401 at the same moment. Logging in per leg would burn round-trips and
-    /// allocate a session slot each time, against a table the daemon keeps in
-    /// memory under an LRU cap.
+    /// `services.rs` each run two searches under `tokio::try_join!` over one
+    /// shared `AuthState`. When the session expires, both legs in flight get
+    /// their own 401 at the same moment. Logging in per leg would burn
+    /// round-trips and allocate a session slot each time, against a table the
+    /// daemon keeps in memory under an LRU cap.
     #[tokio::test]
     async fn concurrent_401s_collapse_into_a_single_relogin() {
         // Three concurrent calls: each is answered 401 once, then 200 on its
