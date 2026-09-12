@@ -91,7 +91,7 @@ Three entities: `traces` (agent turn), `spans` (per-call detail + full body), `l
 | DuckDB | Default, single-node, dev, edge (embedded, single-file) |
 | PostgreSQL | Mid-scale production (+ TimescaleDB optional) |
 | ClickHouse | Large-scale, high-throughput columnar analytics |
-| Aglake (0.3+) | Observability data joins an existing log platform; bodies become full-text searchable |
+| Aglake | Observability data joins an existing log platform; bodies become full-text searchable |
 
 **Pagination needs a total order.** Every paginated list query MUST end its
 `ORDER BY` / `sort` with the row's id. `LIMIT/OFFSET` runs one query per page,
@@ -105,14 +105,18 @@ and [docs/design/10-aglake.md](docs/design/10-aglake.md) for the backend that is
 not a SQL database — append-only, schema-on-read, and with a different failure
 model in every one of those directions.
 
-**Aglake is pinned to its 0.3+ API.** Upstream treated its rename as a breaking
-boundary rather than an alias layer, so the namespace the pre-0.3 code managed
-retention through answers `410 Gone` and there is nothing to fall back to.
-Heron's own config is the exception: it still accepts the old `sglake`
-spellings, because a config file survives an upgrade and a daemon does not.
-Ingest and reads authenticate **separately** — `hec_token` covers HEC only,
-while `/api/v1/*` (search included) needs a session once the daemon has a user
-catalog.
+**Aglake is pinned to the API it gained in 0.3.** Upstream treated its rename
+as a breaking boundary rather than an alias layer, so the namespace the pre-0.3
+code managed retention through answers `410 Gone` and there is nothing to fall
+back to. The release line has since been renumbered to **1.5** — a
+version-number unification, not a second break — so any current build
+qualifies. Heron's own config is the exception to the hard cut: it still accepts
+the old `sglake` spellings, because a config file survives an upgrade and a
+daemon does not. Ingest and reads authenticate **separately** — `hec_token`
+covers HEC only, while `/api/v1/*` (search included) needs a session once the
+daemon has a user catalog. Recent aglaked also binds six dedicated receiver
+ports on `0.0.0.0` by default and will not start if one is taken; Heron needs
+none of them (see the design doc before deploying one).
 
 ## Quality & release pipeline
 

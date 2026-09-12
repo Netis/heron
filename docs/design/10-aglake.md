@@ -5,11 +5,26 @@ as sglog before its 0.3) is a Splunk-compatible log platform: writes go over its
 HTTP Event Collector, reads are SPL over `/api/v1/search`. Selected with
 `storage.backend = "aglake"`; the REST API and the console are unchanged.
 
-**Aglake 0.3 or newer.** Its rename was a deliberate breaking boundary rather
-than an alias layer — the pre-0.3 REST namespace answers `410 Gone` — so Heron
-speaks only the current API. Heron's own config keeps accepting the old
-`sglake` spelling, since a config file survives a Heron upgrade and a daemon
-does not.
+**Needs the API Aglake added in 0.3.** Its rename was a deliberate breaking
+boundary rather than an alias layer — the pre-0.3 REST namespace answers
+`410 Gone` — so Heron speaks only the current API. Upstream has since
+renumbered that same line to **1.5** (a version-number unification, not a
+second break: the 1.5 nightly is a descendant of the 0.3 one), so any current
+build qualifies; both were verified against this backend's live suite. Heron's
+own config keeps accepting the old `sglake` spelling, since a config file
+survives a Heron upgrade and a daemon does not.
+
+**Operational note on receiver ports.** From `0.3.0.2653` onward — 1.5
+included — aglaked starts dedicated receivers on fixed `0.0.0.0` ports by
+default (HEC 8088, OTLP 4318/4317, syslog 514, S2S 9997, ES-compat 9200) and
+**refuses to start if one cannot bind**; 514 is privileged, and 9200 collides
+with a real Elasticsearch. Heron uses none of them — it writes HEC over the
+`--listen` port — so an aglaked dedicated to Heron should switch off the ones
+it does not need. One trap: `--hec-http-enabled false` turns off the HEC
+*input*, including the alias on `--listen` that Heron writes through. Move that
+listener (`--hec-http`) rather than disabling it. `OwnedAglaked` in `it.rs`
+does exactly this, probing `--help` so it still works against a build that
+predates the flags.
 
 **Why it exists.** Where the SQL backends give Heron a private database, this
 one puts observation data into a log platform an organisation may already run —

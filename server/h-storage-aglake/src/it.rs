@@ -1525,7 +1525,7 @@ async fn distincts_and_agent_rollups() {
 async fn retention_reaches_aglake_as_a_per_index_ttl() {
     let backend = require_backend!();
     if backend.management.list_indexes().await.is_err() {
-        eprintln!("skip: aglaked admin API unreachable (needs 0.3+, and admin credentials when it has users)");
+        eprintln!("skip: aglaked admin API unreachable (needs the 0.3-or-later admin face, and admin credentials when it has users)");
         return;
     }
 
@@ -1825,6 +1825,52 @@ async fn metrics_dedup_collapses_a_duplicated_write() {
 // spawns and kills processes. `AGLAKE_SPLUNK_WEB_DIR` additionally enables the
 // management API so the retention degradation can be checked too.
 
+/// Flags that switch off one dedicated receiver.
+///
+/// aglake 1.5 starts all of these **by default**, each bound to a fixed
+/// `0.0.0.0` port (OTLP 4318/4317, syslog 514, S2S 9997, ES-compat 9200). A
+/// test-owned daemon wants none of them: they collide with anything else on the
+/// host — another aglaked, someone's real Elasticsearch on 9200 — and syslog's
+/// 514 is privileged, which this process is not. Left at their defaults, the
+/// daemon exits before it ever listens and the test reports a timeout that says
+/// nothing about why.
+///
+/// None of them exist on 0.3, where `--listen` is the only thing bound, and an
+/// unrecognized flag is a hard parse error. So each is passed only when the
+/// binary's own `--help` lists it — the suite runs against whichever aglaked
+/// the operator points `AGLAKE_AGLAKED_BIN` at.
+///
+/// HEC is deliberately not in this list. `--hec-http-enabled false` switches
+/// off the HEC *input*, including the alias on `--listen` that every write in
+/// this suite goes through; its dedicated listener gets moved instead.
+const RECEIVERS_TO_DISABLE: &[&str] = &[
+    "--otlp-http-enabled",
+    "--otlp-grpc-enabled",
+    "--syslog-udp-enabled",
+    "--syslog-tcp-enabled",
+    "--s2s-tcp-enabled",
+    "--es-http-enabled",
+];
+
+/// Which receiver flags this binary understands, read out of its `--help`.
+fn supported_flags(bin: &str) -> std::collections::HashSet<&'static str> {
+    let help = std::process::Command::new(bin)
+        .arg("--help")
+        .output()
+        .map(|o| {
+            let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&o.stderr));
+            text
+        })
+        .unwrap_or_default();
+    RECEIVERS_TO_DISABLE
+        .iter()
+        .copied()
+        .chain(["--hec-http"])
+        .filter(|flag| help.contains(*flag))
+        .collect()
+}
+
 /// A aglaked this test owns, on its own port and data directory.
 struct OwnedAglaked {
     bin: String,
@@ -1836,6 +1882,7 @@ struct OwnedAglaked {
 
 impl OwnedAglaked {
     fn spawn(&mut self) {
+        let supported = supported_flags(&self.bin);
         let mut cmd = std::process::Command::new(&self.bin);
         cmd.arg("--data-dir")
             .arg(&self.dir)
@@ -1848,6 +1895,19 @@ impl OwnedAglaked {
             .arg("2048")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
+        for flag in RECEIVERS_TO_DISABLE {
+            if supported.contains(flag) {
+                cmd.arg(flag).arg("false");
+            }
+        }
+        if supported.contains("--hec-http") {
+            // Keep the input, move the listener: on loopback, and off the
+            // conventional 8088 so two test daemons — or a test daemon and
+            // whatever the developer is already running — do not fight for it.
+            // `port + 1` stays inside the caller's 20k-wide band.
+            cmd.arg("--hec-http")
+                .arg(format!("127.0.0.1:{}", self.port + 1));
+        }
         if let Some(w) = &self.web_dir {
             cmd.arg("--splunk-web-dir").arg(w);
         }

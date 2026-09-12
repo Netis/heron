@@ -19,6 +19,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (a released 0.3 tarball reports `splunk_face: false`). The crate, config
   table and backend value are renamed to match. **Older daemons are no longer
   supported** — retention pushes against one fail with a 404 that says so.
+  Upstream has since renumbered that release line to 1.5 without breaking the
+  API again; the backend's live suite passes against both a 0.3 and a 1.5
+  build.
 
   Existing config files keep working: `backend = "sglake"` is normalized at
   load, `[storage.sglake]` is accepted as an alias (covering the matching
@@ -42,6 +45,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `storage.aglake.url` — that warning exists because the port was the only
   thing standing in front of stored request and response bodies, which is no
   longer true once the daemon checks who is asking.
+
+### Fixed
+
+- **The live suite's self-started aglaked could not start against a current
+  build.** From `0.3.0.2653` on, aglaked binds six dedicated receivers on fixed
+  `0.0.0.0` ports by default (HEC 8088, OTLP 4318/4317, syslog 514, S2S 9997,
+  ES-compat 9200) and exits if any cannot bind — 514 is privileged, and the
+  rest collide with anything else on the host. The two tests that own their
+  daemon now switch those off and move the dedicated HEC listener to loopback,
+  probing `--help` first so they still work against a build predating the
+  flags. Note `--hec-http-enabled false` is *not* the way to do it: it also
+  disables the HEC input on `--listen`, which is the one Heron writes
+  through.
 
 ## [0.7.3] — 2026-08-17
 

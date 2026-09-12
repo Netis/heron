@@ -848,11 +848,13 @@ fn describe_admin_failure(status: reqwest::StatusCode, url: &str, body: &str) ->
              requires. {detail}"
         ),
         404 => format!(
-            "{status} from {url}: no native admin API here. Heron speaks \
-             aglake 0.3+, where this face is always mounted; the pre-0.3 \
-             management namespace it replaced was removed upstream. Upgrade \
-             aglaked, or set storage.aglake.manage_retention = false and give \
-             the daemon its own --retention-days. {detail}"
+            "{status} from {url}: no native admin API here. Heron needs the \
+             face aglake added in 0.3, where it is always mounted — upstream \
+             has since renumbered that line to 1.5, so any current build is \
+             new enough. The management namespace it replaced was removed, not \
+             aliased, so there is nothing to fall back to: upgrade aglaked, or \
+             set storage.aglake.manage_retention = false and give the daemon \
+             its own --retention-days. {detail}"
         ),
         _ => format!("{status} from {url}: {detail}"),
     }
@@ -1650,7 +1652,7 @@ mod auth_tests {
                 r#"{"error":"administrator role required"}"#,
                 "admin role",
             ),
-            (404, "", "0.3+"),
+            (404, "", "added in 0.3"),
         ] {
             let mock = MockAglake::start(vec![(status, body)], true);
             let e = management(&mock.config())

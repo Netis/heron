@@ -134,9 +134,18 @@ path = "data/heron.duckdb"
 # nothing to provision. Unlike the SQL backends, stored bodies are
 # full-text searchable (`search index=heron_bodies "SELECT * FROM users"`).
 #
-# Requires aglake 0.3 or newer: index management moved to the native
-# /api/v1/admin API, and the namespace it replaced was removed rather than
-# aliased. On an older daemon retention pushes fail with a 404 that says so.
+# Requires the admin API aglake added in 0.3: index management moved to the
+# native /api/v1/admin face, and the namespace it replaced was removed rather
+# than aliased. Upstream has since renumbered that line to 1.5, so any current
+# build qualifies. On an older daemon retention pushes fail with a 404 saying so.
+#
+# Note for aglaked 0.3.0.2653 and later, including 1.5: it starts dedicated
+# receivers on fixed 0.0.0.0 ports by default — HEC 8088, OTLP 4318/4317,
+# syslog 514, S2S 9997, ES-compat 9200 — and exits if one cannot bind (514 is
+# privileged). Heron needs none of them; it writes HEC over the --listen port.
+# Turn off what you do not want with --otlp-http-enabled false and friends, but
+# leave HEC enabled: --hec-http-enabled false also kills the HEC input on
+# --listen, which is the one Heron uses. Move it instead (--hec-http).
 #
 # Two things about the aglaked side that Heron cannot set for you:
 #   * Start aglaked with --max-hot-raw-mib 2048 (or more). The 64 MiB default
