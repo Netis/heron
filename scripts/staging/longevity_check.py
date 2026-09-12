@@ -14,7 +14,7 @@ checkpoint hit a "broken index" FATAL → SIGSEGV):
                           store may grow with ingestion, but it must grow
                           ~linearly with data, not super-linearly (the index /
                           checkpoint bloat that ran prod to 102 GB).
-  - bucket_growth_sane  : sglake only. Buckets-per-stored-call stays bounded.
+  - bucket_growth_sane  : aglake only. Buckets-per-stored-call stays bounded.
                           Search cost scales with how many buckets a query has
                           to open, so a store accumulating buckets faster than
                           data gets slower to read while looking fine on disk.
@@ -145,7 +145,7 @@ def evaluate(samples, fatals, *, max_rss_growth_pct, max_bytes_per_call_growth_p
         inv.append(("db_growth_sane", False,
                     "no db_bytes / calls_ingested samples to size the DB growth"))
 
-    # --- bucket growth: only meaningful on sglake ---
+    # --- bucket growth: only meaningful on aglake ---
     # A log store expires and compacts by whole buckets, so the failure that
     # matters over a long run is not total bytes but bucket *count*: every
     # search opens each candidate bucket to test its bloom and time index, so a

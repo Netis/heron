@@ -102,7 +102,7 @@ def _calls(samp):
 
 
 def bucketed(n=12, calls0=2000, bucket_bloat=1.0):
-    """A sglake-shaped series: same as healthy(), plus a bucket count that
+    """A aglake-shaped series: same as healthy(), plus a bucket count that
     grows with ingestion, scaled by `bucket_bloat` over the run."""
     out = healthy(n=n, calls0=calls0)
     for i, s in enumerate(out):

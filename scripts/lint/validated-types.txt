@@ -21,4 +21,4 @@
 # `TimeRange` validation lives in to_time_range() at server/h-api/src/params.rs.
 # All API route handlers must funnel through it; tests, in-crate integration
 # suites, and internal benchmarking tools may construct directly.
-TimeRange : server/h-api/src/params.rs server/h-storage/src/query.rs server/**/tests/**.rs server/**/concurrent_tests.rs server/**/keepalive_pipeline.rs server/**/keepalive_estimator_integration.rs server/**/duckdb_routes.rs server/**/pipeline_e2e.rs server/**/pcap_extract_route.rs server/h-storage-clickhouse/src/it.rs server/h-storage-sglake/src/it.rs server/app/heron/src/bin/storage_bench.rs
+TimeRange : server/h-api/src/params.rs server/h-storage/src/query.rs server/**/tests/**.rs server/**/concurrent_tests.rs server/**/keepalive_pipeline.rs server/**/keepalive_estimator_integration.rs server/**/duckdb_routes.rs server/**/pipeline_e2e.rs server/**/pcap_extract_route.rs server/h-storage-clickhouse/src/it.rs server/h-storage-aglake/src/it.rs server/app/heron/src/bin/storage_bench.rs

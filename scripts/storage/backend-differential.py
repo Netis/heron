@@ -4,7 +4,7 @@
 A backend test that builds its own fixtures can only check the backend against
 the author's idea of what the pipeline produces. This runs the actual pipeline
 — capture, parse, LLM extraction, turn tracking, aggregation — into DuckDB and
-then into sglake, and compares what the REST API says about the same packets.
+then into aglake, and compares what the REST API says about the same packets.
 That is the claim the pluggable-backend design makes, stated as something that
 can fail.
 
@@ -28,9 +28,9 @@ Two things are deliberately not compared:
   on the last ulp would only teach us to ignore the result.
 
 And one divergence is accepted rather than ignored: services/topology may
-disagree on `app` and `server_header`, because sglake classifies every span at
+disagree on `app` and `server_header`, because aglake classifies every span at
 write time while the SQL backends sample a few bodies at read time. The check
-for that is a real check — sglake may name an app where the others found
+for that is a real check — aglake may name an app where the others found
 nothing, but it must never contradict them, and nothing else may move.
 """
 import json, os, shutil, signal, subprocess, sys, tempfile, time, urllib.error, urllib.request
@@ -41,7 +41,7 @@ ROOT = os.environ.get(
 )
 HERON = os.environ.get("HERON_BIN", f"{ROOT}/server/target/release/heron")
 # sglogd is not part of this repo; point at a build of it. Without this the
-# sglake half is skipped and the run only checks that DuckDB is self-consistent.
+# aglake half is skipped and the run only checks that DuckDB is self-consistent.
 SGLOGD = os.environ.get("SGLOGD_BIN", "")
 # sglogd mounts its index-management REST API only when it finds vendored
 # Splunk frontend assets, which this harness does not need but a retention
@@ -284,8 +284,8 @@ def only_classification_differs(a, b):
     """Services/topology may disagree on `app` and `server_header`, nowhere else.
 
     The SQL backends sample a handful of bodies per endpoint at read time;
-    sglake classifies every span at write time and takes the majority. Same
-    classifier, more input — so sglake may name an app where the others found
+    aglake classifies every span at write time and takes the majority. Same
+    classifier, more input — so aglake may name an app where the others found
     nothing, but it must never contradict them, and nothing else may move.
     """
     rows_a = a["data"].get("services") or a["data"].get("nodes") or []
@@ -300,7 +300,7 @@ def only_classification_differs(a, b):
             if k not in ("app", "server_header"):
                 return False, f"{key(ra)} differs on {k}: {ra.get(k)!r} vs {rb.get(k)!r}"
             if ra.get(k) is not None and ra.get(k) != rb.get(k):
-                return False, (f"{key(ra)} {k}: sglake contradicts rather than "
+                return False, (f"{key(ra)} {k}: aglake contradicts rather than "
                                f"extends: {ra.get(k)!r} vs {rb.get(k)!r}")
     return True, "app/server_header only"
 
@@ -359,10 +359,10 @@ def main():
               "sglogd build to run the differential.")
         return 0
 
-    print("== sglake ==")
+    print("== aglake ==")
     sg = start_sglogd()
     try:
-        sglake, n_sg = run_backend("sglake", extra=f"""[storage.sglake]
+        aglake, n_sg = run_backend("aglake", extra=f"""[storage.aglake]
 url = "http://127.0.0.1:{SG_PORT}"
 hec_token = "heron-e2e"
 index_prefix = "e2e"
@@ -376,15 +376,15 @@ index_prefix = "e2e"
 
     with open(f"{WORK}/duckdb.json", "w") as f:
         json.dump(duck, f, indent=1, sort_keys=True)
-    with open(f"{WORK}/sglake.json", "w") as f:
-        json.dump(sglake, f, indent=1, sort_keys=True)
+    with open(f"{WORK}/aglake.json", "w") as f:
+        json.dump(aglake, f, indent=1, sort_keys=True)
 
-    print(f"\nspans: duckdb={n_duck} sglake={n_sg}")
+    print(f"\nspans: duckdb={n_duck} aglake={n_sg}")
     if n_duck != n_sg:
         print("FAIL: the two runs did not even ingest the same number of spans")
         return 1
 
-    hard, soft = diff(duck, sglake)
+    hard, soft = diff(duck, aglake)
     soft_names = {n for n, _ in soft}
     hard_names = {n for n, _ in hard}
     print(f"\n{'endpoint':22s} {'result':>10s}")
@@ -398,7 +398,7 @@ index_prefix = "e2e"
 
     print(f"\npaging (page_size=5, {n_duck} spans):")
     ok_pages = True
-    for label, snap in (("duckdb", duck), ("sglake", sglake)):
+    for label, snap in (("duckdb", duck), ("aglake", aglake)):
         got = PAGING.get(label)
         if got is None:
             continue
@@ -413,8 +413,8 @@ index_prefix = "e2e"
         for name, why in hard[:4]:
             print(f"\n--- {name}: {why} ---")
             da = json.dumps(duck.get(name), indent=1, sort_keys=True).splitlines()
-            db = json.dumps(sglake.get(name), indent=1, sort_keys=True).splitlines()
-            for line in list(difflib.unified_diff(da, db, "duckdb", "sglake", n=1))[:50]:
+            db = json.dumps(aglake.get(name), indent=1, sort_keys=True).splitlines()
+            for line in list(difflib.unified_diff(da, db, "duckdb", "aglake", n=1))[:50]:
                 print(line.rstrip())
         return 1
     print("\nRESULT: both backends agree on every endpoint, apart from the "
