@@ -12,7 +12,9 @@ renumbered that same line to **1.5** (a version-number unification, not a
 second break: the 1.5 nightly is a descendant of the 0.3 one), so any current
 build qualifies; both were verified against this backend's live suite. Heron's
 own config keeps accepting the old `sglake` spelling, since a config file
-survives a Heron upgrade and a daemon does not.
+survives a Heron upgrade and a daemon does not. Both spellings in one file is a
+`duplicate field` error rather than a precedence rule — an operator halfway
+through the edit is told, instead of finding out later which block was live.
 
 **Operational note on receiver ports.** From `0.3.0.2653` onward — 1.5
 included — aglaked starts dedicated receivers on fixed `0.0.0.0` ports by
@@ -392,7 +394,7 @@ that warning. `hec_token` does **not**: it authenticates ingest only.
 | unit | encoding round-trips, SPL quoting and injection, dimension-tier equivalence against the SQL builder's real output, props generation |
 | `retry_tests` (mock HTTP) | all six retry branches over a real socket — a live server cannot be asked for a 413, or to accept a request and then never answer. Runs in CI with no server. |
 | `auth_tests` (mock HTTP) | session handling and the admin API: expiry-then-retry, a fixed token never refreshed, credentials against a no-auth daemon, one shared login, and the request/response shapes. A session expiring is reached in production by running twelve hours and by nothing a test can ask a daemon for. |
-| `it.rs` (live) | 25 tests against a real aglaked, gated on `AGLAKE_TEST_URL`; self-skip without it. Includes a fault-injection test that SIGKILLs the daemon mid-write. |
+| `it.rs` (live) | The whole `StorageBackend` surface against a real aglaked, gated on `AGLAKE_TEST_URL`; self-skips without it. Includes two tests that own their daemon: one SIGKILLs it mid-write, one gives it a `props.toml`. Deliberately not stated as a count — the last one written here went stale within a release. |
 | `scripts/storage/backend-differential.py` | replays the pcap corpus through DuckDB and aglake and diffs every REST endpoint |
 
 The differential is the one that finds things the others cannot, because it is

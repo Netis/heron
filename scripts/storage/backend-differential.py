@@ -13,9 +13,9 @@ two aggregates reading the wrong column, a topology graph missing a node its
 own edges pointed at, a millisecond truncation in DuckDB, and paginated lists
 in both SQL backends that returned 26 rows as 18 distinct ones.
 
-    SGLOGD_BIN=/path/to/sglogd scripts/storage/backend-differential.py
+    AGLAKE_AGLAKED_BIN=/path/to/aglaked scripts/storage/backend-differential.py
 
-Without `SGLOGD_BIN` there is nothing to compare against and the run stops
+Without `AGLAKE_AGLAKED_BIN` there is nothing to compare against and the run stops
 after the DuckDB half. `HERON_BIN` defaults to the release build in-tree.
 
 Two things are deliberately not compared:
@@ -40,13 +40,15 @@ ROOT = os.environ.get(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
 )
 HERON = os.environ.get("HERON_BIN", f"{ROOT}/server/target/release/heron")
-# sglogd is not part of this repo; point at a build of it. Without this the
+# aglaked is not part of this repo; point at a build of it. Without this the
 # aglake half is skipped and the run only checks that DuckDB is self-consistent.
-SGLOGD = os.environ.get("SGLOGD_BIN", "")
-# sglogd mounts its index-management REST API only when it finds vendored
-# Splunk frontend assets, which this harness does not need but a retention
-# check would. Harmless to leave unset.
-ASSETS = os.environ.get("SGLOGD_WEB_DIR", "")
+# `SGLOGD_BIN` is the pre-rename name, still read so an existing shell profile
+# or note keeps working.
+AGLAKED = os.environ.get("AGLAKE_AGLAKED_BIN") or os.environ.get("SGLOGD_BIN", "")
+# Vendored Splunk frontend assets. No longer needed for the management API —
+# the native admin face is always mounted as of aglake 0.3 — so this is only
+# here for a daemon being run with the compatibility UI. Harmless to leave unset.
+ASSETS = os.environ.get("AGLAKE_SPLUNK_WEB_DIR") or os.environ.get("SGLOGD_WEB_DIR", "")
 CORPUS = os.environ.get("HERON_CORPUS", f"{ROOT}/testdata/pcaps/corpus")
 WORK = os.environ.get("HERON_WORK", tempfile.mkdtemp(prefix="heron-differential-"))
 
@@ -238,18 +240,18 @@ def run_backend(backend, extra=""):
     return snap, last
 
 
-def start_sglogd():
-    d = f"{WORK}/sglogd"
+def start_aglaked():
+    d = f"{WORK}/aglaked"
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d, exist_ok=True)
-    log = open(f"{d}/sglogd.log", "wb")
+    log = open(f"{d}/aglaked.log", "wb")
     p = subprocess.Popen(
-        [SGLOGD, "--data-dir", d, "--listen", f"127.0.0.1:{SG_PORT}",
+        [AGLAKED, "--data-dir", d, "--listen", f"127.0.0.1:{SG_PORT}",
          "--hec-token", "heron-e2e", "--no-self-trace", "--max-hot-raw-mib", "2048"]
         + (["--splunk-web-dir", ASSETS] if ASSETS else []),
         stdout=log, stderr=log)
     if not wait_http(f"http://127.0.0.1:{SG_PORT}/api/v1/indexes"):
-        p.kill(); raise SystemExit("sglogd never came up")
+        p.kill(); raise SystemExit("aglaked never came up")
     return p
 
 
@@ -354,13 +356,13 @@ def main():
     print("== duckdb ==")
     duck, n_duck = run_backend("duckdb")
 
-    if not SGLOGD:
-        print("\nSGLOGD_BIN unset — nothing to compare against. Point it at a "
-              "sglogd build to run the differential.")
+    if not AGLAKED:
+        print("\nAGLAKE_AGLAKED_BIN unset — nothing to compare against. Point it "
+              "at an aglaked build to run the differential.")
         return 0
 
     print("== aglake ==")
-    sg = start_sglogd()
+    sg = start_aglaked()
     try:
         aglake, n_sg = run_backend("aglake", extra=f"""[storage.aglake]
 url = "http://127.0.0.1:{SG_PORT}"

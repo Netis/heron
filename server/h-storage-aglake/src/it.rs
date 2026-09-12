@@ -1822,8 +1822,9 @@ async fn metrics_dedup_collapses_a_duplicated_write() {
 // pid mid-stream, and checks what Heron does about it.
 //
 // Opt-in through `AGLAKE_AGLAKED_BIN`, because unlike the rest of the suite it
-// spawns and kills processes. `AGLAKE_SPLUNK_WEB_DIR` additionally enables the
-// management API so the retention degradation can be checked too.
+// spawns and kills processes. It no longer needs `--splunk-web-dir` to reach
+// the management API: the native admin face is always mounted, which is the
+// point of the 0.3 migration.
 
 /// Flags that switch off one dedicated receiver.
 ///
@@ -1916,13 +1917,44 @@ fn flag_detection_does_not_confuse_a_prefix_for_the_flag() {
     assert!(flags_in_help("      --listen <LISTEN>\n").is_empty());
 }
 
-/// A aglaked this test owns, on its own port and data directory.
+/// A aglaked this test owns, on its own ports and data directory.
+///
+/// Both ports are passed in rather than derived here, because they must not
+/// collide with the *other* self-spawning test's: each caller owns a disjoint
+/// 10k band (see `PORT_BANDS`). Deriving the HEC port as `port + 1` was wrong
+/// for exactly that reason — the top of one band is the bottom of the next.
 struct OwnedAglaked {
     bin: String,
-    web_dir: Option<String>,
     dir: std::path::PathBuf,
+    /// The application port: API, search, and the HEC alias the suite writes
+    /// through.
     port: u16,
+    /// The dedicated HEC listener. Never contacted by these tests; it exists
+    /// only because the daemon insists on binding one, and 8088 is not ours to
+    /// take.
+    hec_port: u16,
     child: Option<std::process::Child>,
+}
+
+/// Disjoint port bands, one pair per self-spawning test.
+///
+/// Four non-overlapping 10k ranges, so two concurrent `cargo test` processes —
+/// or one running both spawn-tests in parallel — cannot have one daemon's HEC
+/// listener land on another daemon's application port. That failure mode is
+/// invisible: the loser reports only "never became ready".
+mod port_bands {
+    /// `(application, dedicated HEC)` base for the fault-injection test.
+    pub(super) const FAULT: (u16, u16) = (20_000, 30_000);
+    /// Same, for the props test.
+    pub(super) const PROPS: (u16, u16) = (40_000, 50_000);
+    /// Width of each band. Keeps every derived port inside its own range.
+    pub(super) const WIDTH: u16 = 10_000;
+
+    /// Derive a port pair from a nonce, inside the given bases.
+    pub(super) fn pick(bases: (u16, u16), nonce: &str) -> (u16, u16) {
+        let offset = u16::from_str_radix(&nonce[..4], 16).unwrap_or(0) % WIDTH;
+        (bases.0 + offset, bases.1 + offset)
+    }
 }
 
 impl OwnedAglaked {
@@ -1949,12 +1981,8 @@ impl OwnedAglaked {
             // Keep the input, move the listener: on loopback, and off the
             // conventional 8088 so two test daemons — or a test daemon and
             // whatever the developer is already running — do not fight for it.
-            // `port + 1` stays inside the caller's 20k-wide band.
             cmd.arg("--hec-http")
-                .arg(format!("127.0.0.1:{}", self.port + 1));
-        }
-        if let Some(w) = &self.web_dir {
-            cmd.arg("--splunk-web-dir").arg(w);
+                .arg(format!("127.0.0.1:{}", self.hec_port));
         }
         self.child = Some(cmd.spawn().expect("spawn aglaked"));
     }
@@ -2040,11 +2068,11 @@ async fn a_write_against_a_dead_aglaked_errors_and_recovers() {
     let nonce = uuid::Uuid::now_v7().simple().to_string();
     let mut sg = OwnedAglaked {
         bin,
-        web_dir: std::env::var("AGLAKE_SPLUNK_WEB_DIR").ok(),
         dir: std::env::temp_dir().join(format!("aglake-fault-{}", &nonce[..12])),
-        // A port nobody else in this suite uses. Derived from the nonce so
-        // two concurrent runs do not collide.
-        port: 20000 + (u16::from_str_radix(&nonce[..4], 16).unwrap_or(0) % 20000),
+        // Ports nobody else in this suite uses, derived from the nonce so two
+        // concurrent runs do not collide either.
+        port: port_bands::pick(port_bands::FAULT, &nonce).0,
+        hec_port: port_bands::pick(port_bands::FAULT, &nonce).1,
         child: None,
     };
     std::fs::create_dir_all(&sg.dir).unwrap();
@@ -2160,9 +2188,9 @@ async fn bodies_are_readable_when_aglaked_has_props() {
     let nonce = uuid::Uuid::now_v7().simple().to_string();
     let mut sg = OwnedAglaked {
         bin,
-        web_dir: None,
         dir: std::env::temp_dir().join(format!("aglake-props-{}", &nonce[..12])),
-        port: 40000 + (u16::from_str_radix(&nonce[..4], 16).unwrap_or(0) % 20000),
+        port: port_bands::pick(port_bands::PROPS, &nonce).0,
+        hec_port: port_bands::pick(port_bands::PROPS, &nonce).1,
         child: None,
     };
     std::fs::create_dir_all(&sg.dir).unwrap();

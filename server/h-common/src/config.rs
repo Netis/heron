@@ -2503,6 +2503,50 @@ mod phase2_tests {
         );
     }
 
+    /// Both table names in one file is an error, not a silent precedence rule.
+    ///
+    /// serde resolves an alias onto the same field, so two tables targeting it
+    /// are a duplicate — and that is the outcome worth having. An operator
+    /// mid-migration who copies the new block in without deleting the old one
+    /// gets told, rather than discovering months later which of the two the
+    /// backend has been reading.
+    #[test]
+    fn both_the_legacy_and_current_table_in_one_file_is_rejected() {
+        let built = Config::builder()
+            .add_source(config::File::from_str(
+                r#"
+                [[pipeline]]
+                name = "p"
+                [[pipeline.sources]]
+                type = "pcap"
+                interface = "eth0"
+
+                [storage]
+                backend = "aglake"
+
+                [storage.sglake]
+                index_prefix = "fromlegacy"
+
+                [storage.aglake]
+                index_prefix = "fromcurrent"
+                "#,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("the TOML itself is valid");
+
+        // `RawAppConfig` is deliberately not `Debug`, so match rather than
+        // `expect_err`.
+        let message = match built.try_deserialize::<RawAppConfig>() {
+            Ok(_) => panic!("two tables on one field must not be accepted"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            message.contains("duplicate field"),
+            "the error should name the collision: {message}"
+        );
+    }
+
     /// The current spelling must not trip the deprecation notice.
     #[test]
     fn current_aglake_name_is_not_flagged_as_legacy() {

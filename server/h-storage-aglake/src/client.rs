@@ -415,10 +415,24 @@ impl Replace<'_> {
     }
 }
 
+/// Ceiling on how long a login may take.
+///
+/// [`AuthState::acquire`] holds the write lock across the request, which is
+/// what makes the re-login single-flight — and also means a wedged daemon
+/// parks every reader behind it. `request_timeout_secs` defaults to 120, which
+/// is a sensible ceiling for a search that may scan a wide window but a
+/// terrible one for the auth round-trip: login is a small, fixed-cost request,
+/// and blocking the read path for two minutes to discover it is unreachable is
+/// strictly worse than failing and letting the next request try again. So the
+/// login client takes the smaller of the two.
+const LOGIN_TIMEOUT_CEILING_SECS: u64 = 30;
+
 impl AuthState {
     pub(crate) fn new(config: &AglakeConfig) -> Result<Self> {
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.request_timeout_secs))
+            .timeout(Duration::from_secs(
+                config.request_timeout_secs.min(LOGIN_TIMEOUT_CEILING_SECS),
+            ))
             .build()
             .map_err(|e| err("client build", e))?;
         // A configured token wins: it is the more specific instruction, and
@@ -445,6 +459,12 @@ impl AuthState {
     /// Whether a fresh session can be obtained without operator action. False
     /// for a fixed token and for the no-auth deployment, in both of which
     /// retrying a 401 would just produce the same 401.
+    ///
+    /// Callers must check this *before* [`AuthState::refresh`] — that is what
+    /// makes the single retry in [`send_authenticated`] conditional rather
+    /// than wasted. `refresh` re-checks and returns `Ok(None)` anyway, so a
+    /// future caller that forgets cannot loop, but it also cannot make
+    /// progress; the guard is the contract.
     pub(crate) fn can_refresh(&self) -> bool {
         matches!(self.source, Some(TokenSource::Login { .. }))
     }

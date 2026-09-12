@@ -136,7 +136,13 @@ fi
 # index tree and adds a bucket count. Unset (the default) measures the DuckDB
 # file, and the bucket invariant simply does not appear in the verdict — see
 # longevity_check.py for why an absent invariant beats a vacuous passing one.
-AGLAKE_DATA_DIR="${AGLAKE_DATA_DIR:-}"
+# The pre-rename name is still honoured: this variable is set in
+# /etc/longevity/env on the staging VM, which is hand-maintained and outside
+# this repo, so a rename with no fallback would silently switch the disk
+# measurement back to the DuckDB file — and `bucket_growth_sane` would simply
+# stop appearing rather than fail. An absent invariant is exactly what the
+# comment above says must not happen by accident.
+AGLAKE_DATA_DIR="${AGLAKE_DATA_DIR:-${SGLAKE_DATA_DIR:-}}"
 : > "$SAMPLES"
 t_end=$(( $(date +%s) + DURATION ))
 while [ "$(date +%s)" -lt "$t_end" ]; do

@@ -25,8 +25,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   Existing config files keep working: `backend = "sglake"` is normalized at
   load, `[storage.sglake]` is accepted as an alias (covering the matching
-  `TS__STORAGE__SGLAKE__*` overrides), and `heron aglake-props` still answers to
-  `sglake-props`. Loading an old spelling raises a warning, not an error.
+  `TS__STORAGE__SGLAKE__*` overrides — note the doubled separator after the
+  prefix), and `heron aglake-props` still answers to `sglake-props`. Loading an
+  old spelling raises a warning, not an error; having *both* table names in one
+  file is a `duplicate field` error rather than a silent precedence rule.
+
+  Two environment variables outside the repo keep their old names for the same
+  reason: `SGLAKE_DATA_DIR` (read by the staging longevity soak from a
+  hand-maintained `/etc/longevity/env`) and `SGLOGD_BIN` (the cross-backend
+  differential harness). Renaming those with no fallback would have silently
+  dropped an invariant rather than failed.
 
 ### Added
 
