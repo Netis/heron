@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-12
+
 ### Changed
 
 - **The aglake storage backend now targets aglake 0.3 and is named for it.**
@@ -56,6 +58,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`/api/runtime-config` was handing out stored credentials.** It returns the
+  whole `AppConfig` to the console, and `heron config validate --json` prints
+  it, so `storage.aglake.hec_token` and `storage.clickhouse.password` were
+  readable by anyone who could reach either — on a default deploy the API
+  listens on `0.0.0.0` with no authentication of its own. All credential
+  fields, including the two added in this release, are now excluded from
+  serialization; loading is unaffected. The console never read them. **Anyone
+  running an earlier version with a HEC token or ClickHouse password
+  configured should treat that credential as disclosed to its network and
+  rotate it.**
+- **Every documented `TS_*` environment override was silently ignored.** The
+  config loader sets `__` as the path separator without setting a prefix
+  separator, and the library defaults the latter to the former — so the real
+  prefix is `TS__`, and the documented `TS_API__PORT=9090` form matched no
+  prefix and was dropped. Only the documentation is corrected here (to
+  `TS__API__PORT`), pinned by a test: changing the separator would alter how
+  every key is read, which does not belong in a release.
 - **The live suite's self-started aglaked could not start against a current
   build.** From `0.3.0.2653` on, aglaked binds six dedicated receivers on fixed
   `0.0.0.0` ports by default (HEC 8088, OTLP 4318/4317, syslog 514, S2S 9997,
