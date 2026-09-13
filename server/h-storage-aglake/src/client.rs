@@ -15,6 +15,7 @@ use std::time::Duration;
 use h_common::config::AglakeConfig;
 use h_common::error::{AppError, Result};
 use serde::Deserialize;
+use tokio::sync::Semaphore;
 
 fn err<E: std::fmt::Display>(ctx: &str, e: E) -> AppError {
     AppError::Storage(format!("aglake {ctx}: {e}"))
@@ -762,6 +763,16 @@ pub(crate) struct SearchClient {
     auth: Arc<AuthState>,
     endpoint: String,
     ping_url: String,
+    /// Global cap on searches in flight, from
+    /// [`AglakeConfig::max_concurrent_searches`].
+    ///
+    /// It lives here, on the one method every read path goes through, rather
+    /// than in each fan-out loop. The loops then need no limit of their own:
+    /// they hand every chunk to `search()` at once and the permits decide how
+    /// many run. That also makes the cap mean what its name says — a bound on
+    /// what Heron asks of the daemon, not a per-query bound that k concurrent
+    /// console requests multiply by k.
+    permits: Arc<Semaphore>,
 }
 
 impl SearchClient {
@@ -776,6 +787,10 @@ impl SearchClient {
             auth,
             endpoint: format!("{base}/api/v1/search"),
             ping_url: format!("{base}/api/v1/indexes"),
+            // `max(1)` because a zero-permit semaphore is not "no limit", it is
+            // a deadlock on the first read. Config validation warns about the
+            // 0 separately; this is the half that keeps the process useful.
+            permits: Arc::new(Semaphore::new(config.max_concurrent_searches.max(1))),
         })
     }
 
@@ -789,6 +804,14 @@ impl SearchClient {
         latest: &str,
     ) -> Result<SearchResult> {
         let body = serde_json::json!({ "q": spl, "earliest": earliest, "latest": latest });
+        // Held across the whole round-trip, response body included: the point
+        // is to bound concurrent work on the daemon, and a search that has
+        // returned headers is still streaming rows out of it.
+        let _permit = self
+            .permits
+            .acquire()
+            .await
+            .map_err(|e| err("search", format!("search permits closed: {e}")))?;
         let resp = send_authenticated(&self.auth, "search", |token| {
             with_token(self.http.post(&self.endpoint).json(&body), token)
         })
@@ -2129,5 +2152,268 @@ mod auth_tests {
         );
         assert_eq!(parse("aglake_session=abc123"), Some("abc123".to_string()));
         assert_eq!(parse("other=abc123; Path=/"), None);
+    }
+}
+
+/// `max_concurrent_searches`, which is the whole reason the id lookups may fan
+/// out freely.
+///
+/// The chunked reads hand every chunk to [`SearchClient::search`] at once and
+/// rely on this budget to decide how many actually run. So the limit is not a
+/// tuning nicety — it is the only thing standing between a 10,000-turn topology
+/// window and 313 simultaneous searches against the daemon. A semaphore that
+/// silently admitted everyone would look identical in every functional test,
+/// and show up in production as a load spike nobody could attribute.
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{SocketAddr, TcpListener};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A mock that answers every search the same way, slowly, while recording
+    /// the high-water mark of requests it was handling at once.
+    ///
+    /// The delay is the measuring instrument: without it each request would be
+    /// served before the next arrived and the gauge would read 1 whatever the
+    /// limit was.
+    struct CountingAglake {
+        addr: SocketAddr,
+        peak: Arc<AtomicUsize>,
+        total: Arc<AtomicUsize>,
+    }
+
+    impl CountingAglake {
+        fn start(hold: Duration) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let addr = listener.local_addr().unwrap();
+            let in_flight = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let total = Arc::new(AtomicUsize::new(0));
+            let (bg_in, bg_peak, bg_total) = (
+                Arc::clone(&in_flight),
+                Arc::clone(&peak),
+                Arc::clone(&total),
+            );
+
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    let (bg_in, bg_peak, bg_total) = (
+                        Arc::clone(&bg_in),
+                        Arc::clone(&bg_peak),
+                        Arc::clone(&bg_total),
+                    );
+                    std::thread::spawn(move || {
+                        // Drain the request first. Counting at accept() time
+                        // would count a connection the client has not yet
+                        // spent a permit on.
+                        let mut reader = BufReader::new(stream.try_clone().unwrap());
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).is_err() {
+                            return;
+                        }
+                        let mut len = 0usize;
+                        loop {
+                            let mut h = String::new();
+                            if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
+                                break;
+                            }
+                            if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                                len = v.trim().parse().unwrap_or(0);
+                            }
+                        }
+                        let mut body = vec![0u8; len];
+                        let _ = reader.read_exact(&mut body);
+
+                        let now = bg_in.fetch_add(1, Ordering::SeqCst) + 1;
+                        bg_peak.fetch_max(now, Ordering::SeqCst);
+                        bg_total.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(hold);
+                        bg_in.fetch_sub(1, Ordering::SeqCst);
+
+                        let payload = r#"{"mode":"results","rows":[]}"#;
+                        let _ = stream.write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                                 Content-Length: {}\r\n\r\n{payload}",
+                                payload.len()
+                            )
+                            .as_bytes(),
+                        );
+                    });
+                }
+            });
+            Self { addr, peak, total }
+        }
+
+        fn config(&self, max_concurrent_searches: usize) -> AglakeConfig {
+            AglakeConfig {
+                url: format!("http://{}", self.addr),
+                request_timeout_secs: 10,
+                search_timeout_secs: 10,
+                max_concurrent_searches,
+                ..Default::default()
+            }
+        }
+
+        fn peak(&self) -> usize {
+            self.peak.load(Ordering::SeqCst)
+        }
+
+        fn total(&self) -> usize {
+            self.total.load(Ordering::SeqCst)
+        }
+    }
+
+    fn searcher(config: &AglakeConfig) -> SearchClient {
+        let auth = Arc::new(AuthState::new(config).unwrap());
+        SearchClient::new(config, auth).unwrap()
+    }
+
+    async fn fire(client: &SearchClient, n: usize) {
+        let queries: Vec<String> = (0..n).map(|i| format!("search index=x | head {i}")).collect();
+        let all = queries.iter().map(|q| client.search(q, "0", "0"));
+        futures::future::try_join_all(all).await.unwrap();
+    }
+
+    /// The budget is honoured, and it is honoured at the configured number
+    /// rather than at some accidental smaller one.
+    #[tokio::test]
+    async fn concurrent_searches_are_capped_at_the_configured_limit() {
+        let mock = CountingAglake::start(Duration::from_millis(120));
+        let config = mock.config(3);
+        let client = searcher(&config);
+
+        fire(&client, 12).await;
+
+        assert_eq!(mock.total(), 12, "every search must still be issued");
+        assert_eq!(
+            mock.peak(),
+            3,
+            "expected exactly the configured 3 in flight, saw {}",
+            mock.peak()
+        );
+    }
+
+    /// A limit of 1 serializes. Worth its own test: it is the shape that proves
+    /// the semaphore is load-bearing, since a no-op semaphore passes every
+    /// assertion about results and fails only this one.
+    #[tokio::test]
+    async fn a_limit_of_one_serializes_the_searches() {
+        let mock = CountingAglake::start(Duration::from_millis(40));
+        let config = mock.config(1);
+        let client = searcher(&config);
+
+        fire(&client, 6).await;
+
+        assert_eq!(mock.total(), 6);
+        assert_eq!(mock.peak(), 1, "one permit means one search at a time");
+    }
+
+    /// `0` is the trap: read as "unlimited" it would be a zero-permit
+    /// semaphore, and the first read would wait forever. It must clamp to 1 and
+    /// come back — the process staying useful matters more than honouring a
+    /// setting that cannot mean what it looks like. `heron config validate`
+    /// reports it separately.
+    #[tokio::test]
+    async fn a_zero_limit_clamps_to_one_instead_of_deadlocking() {
+        let mock = CountingAglake::start(Duration::from_millis(20));
+        let config = mock.config(0);
+        let client = searcher(&config);
+
+        tokio::time::timeout(Duration::from_secs(10), fire(&client, 3))
+            .await
+            .expect("a zero limit must not block forever");
+
+        assert_eq!(mock.total(), 3);
+        assert_eq!(mock.peak(), 1);
+    }
+
+    /// Permits are released on the failure path too. A 500 that leaked its
+    /// permit would degrade the backend one search at a time until it stopped
+    /// reading altogether — a failure that only shows up after the errors have
+    /// stopped, which is the worst time to start diagnosing it.
+    #[tokio::test]
+    async fn a_failed_search_returns_its_permit() {
+        let mock = FailingAglake::start(2);
+        let config = AglakeConfig {
+            url: format!("http://{}", mock.addr),
+            request_timeout_secs: 10,
+            search_timeout_secs: 10,
+            max_concurrent_searches: 1,
+            ..Default::default()
+        };
+        let client = searcher(&config);
+
+        for _ in 0..2 {
+            assert!(
+                client.search("search index=x", "0", "0").await.is_err(),
+                "the mock is scripted to fail"
+            );
+        }
+        // With a single permit, a leak on either failure makes this hang rather
+        // than fail — hence the timeout.
+        let ok = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.search("search index=x", "0", "0"),
+        )
+        .await
+        .expect("permit leaked: the search after two failures never got one");
+        ok.expect("the third response is a success");
+    }
+
+    /// Answers `500` the first `fail` times, then `200`.
+    struct FailingAglake {
+        addr: SocketAddr,
+    }
+
+    impl FailingAglake {
+        fn start(fail: usize) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let addr = listener.local_addr().unwrap();
+            let seen = Arc::new(AtomicUsize::new(0));
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    let seen = Arc::clone(&seen);
+                    std::thread::spawn(move || {
+                        let mut reader = BufReader::new(stream.try_clone().unwrap());
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).is_err() {
+                            return;
+                        }
+                        let mut len = 0usize;
+                        loop {
+                            let mut h = String::new();
+                            if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
+                                break;
+                            }
+                            if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                                len = v.trim().parse().unwrap_or(0);
+                            }
+                        }
+                        let mut body = vec![0u8; len];
+                        let _ = reader.read_exact(&mut body);
+
+                        let n = seen.fetch_add(1, Ordering::SeqCst);
+                        let (code, payload) = if n < fail {
+                            (500, r#"{"error":"boom"}"#)
+                        } else {
+                            (200, r#"{"mode":"results","rows":[]}"#)
+                        };
+                        let _ = stream.write_all(
+                            format!(
+                                "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\n\
+                                 Content-Length: {}\r\n\r\n{payload}",
+                                payload.len()
+                            )
+                            .as_bytes(),
+                        );
+                    });
+                }
+            });
+            Self { addr }
+        }
     }
 }

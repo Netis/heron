@@ -11,7 +11,7 @@ snap = "1"
 bytes = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-futures = "0.3"
+futures.workspace = true
 tracing = { workspace = true }
 thiserror = { workspace = true }
 

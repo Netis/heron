@@ -257,9 +257,44 @@ pub(crate) fn epoch_secs(us: i64) -> String {
     )
 }
 
-/// Chunk size for `id IN (...)` point lookups. Keeps a single query string
-/// bounded while staying far above the common trace size.
-pub(crate) const ID_CHUNK: usize = 512;
+/// Chunk size for `id IN (...)` point lookups.
+///
+/// Not a query-string bound — a cost bound. aglaked charges a **fixed cost per
+/// search-position term**, linear in term count and independent of how many
+/// events match, so an N-id lookup is N probes however it is spelled. One
+/// search carrying every id is therefore the slowest available shape, and
+/// chunking exists to get the probes running concurrently rather than to keep
+/// the request small.
+///
+/// Measured on production (aglaked 1.5.0, 376 span ids, the bodies index, with
+/// [`AglakeConfig::max_concurrent_searches`] = 8):
+///
+/// | chunk | searches | wall |
+/// |---|---|---|
+/// | 512 (one search) | 1 | 14.6 s |
+/// | 64 | 6 | 4.1 s |
+/// | 32 | 12 | 4.7 s |
+/// | 16 | 24 | 4.8 s |
+/// | 8 | 47 | 6.9 s |
+/// | 4 | 94 | 11.2 s |
+///
+/// The curve has a floor, which is why this is 32 and not 1: below ~16 the
+/// per-search overhead aglaked pays regardless of term count (opening the
+/// window, pruning buckets) starts to dominate, and chunking too finely is
+/// slower than not chunking enough. 32 is within noise of the optimum on the
+/// spans and traces indexes too, where 16 measured marginally better.
+pub(crate) const ID_CHUNK: usize = 32;
+
+/// Chunk size for id lookups that fan *out* — many rows per id, not one.
+///
+/// `session_aggregates` is the only one: it matches turn rows by `session_id`,
+/// where a session has tens to thousands of turns. Two reasons it keeps the
+/// large chunk. The per-term cost is amortized against real row volume rather
+/// than being the whole cost (one page of 100 sessions measures 293 ms end to
+/// end), and its `| head max_sessions_scan` row budget is written per search —
+/// so splitting the id set into k chunks would quietly multiply the budget by
+/// k.
+pub(crate) const FANOUT_ID_CHUNK: usize = 512;
 
 /// Build the offset-pagination pipeline.
 ///

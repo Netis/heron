@@ -28,6 +28,9 @@ opt-level = 1
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+# `try_join_all` over a chunked id lookup, and the pcap-extract stream combinators.
+# tokio has no join-all for a runtime-sized set of futures that borrow `&self`.
+futures = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

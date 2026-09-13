@@ -262,7 +262,7 @@ impl AglakeBackend {
         if session_ids.is_empty() {
             return Ok(out);
         }
-        for chunk in session_ids.chunks(spl::ID_CHUNK) {
+        for chunk in session_ids.chunks(spl::FANOUT_ID_CHUNK) {
             let mut s = Search::new(&self.ix.traces, ST_TRACE);
             s.any_of("session_id", chunk);
             if let Some(sid) = source_id {

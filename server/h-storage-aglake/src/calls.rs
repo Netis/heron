@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use futures::future::try_join_all;
 use h_common::error::Result;
 use h_common::process::ProcessInfo;
 use h_llm::model::LlmCall;
@@ -280,26 +281,32 @@ impl AglakeBackend {
         if span_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut events: Vec<SpanEvent> = Vec::with_capacity(span_ids.len());
-        for chunk in span_ids.chunks(ID_CHUNK) {
+        // Chunks run concurrently. The whole point of a small `ID_CHUNK` is
+        // that N id probes overlap instead of queueing; `SearchClient`'s
+        // permits are what bound the fan-out.
+        let window = window.as_ref().map(|(e, l)| (e.as_str(), l.as_str()));
+        let per_chunk = span_ids.chunks(ID_CHUNK).map(|chunk| async move {
             let ix = &self.ix.spans;
             let Some(list) = in_list("id", chunk) else {
-                continue;
+                return Result::<Vec<SpanEvent>>::Ok(Vec::new());
             };
             let search = format!("search index={ix} sourcetype={ST_SPAN} {list}");
-            let found: Vec<SpanEvent> = match &window {
+            match window {
                 Some((earliest, latest)) => {
                     self.fetch_raw("read_spans_by_ids", &search, chunk.len(), earliest, latest)
-                        .await?
+                        .await
                 }
                 // No caller window: bound by the ids themselves, unbounded on
                 // a miss. `chunk[0]` is representative — a trace's calls are
                 // minted within seconds of each other, well inside the skew.
                 None => {
                     self.fetch_raw_by_id("read_spans_by_ids", &search, chunk.len(), &chunk[0])
-                        .await?
+                        .await
                 }
-            };
+            }
+        });
+        let mut events: Vec<SpanEvent> = Vec::with_capacity(span_ids.len());
+        for found in try_join_all(per_chunk).await? {
             events.extend(found);
         }
 
@@ -425,22 +432,32 @@ impl AglakeBackend {
         span_ids: &[String],
         window: (String, String),
     ) -> Result<HashMap<String, BodyEvent>> {
-        let mut out = HashMap::with_capacity(span_ids.len());
         let (earliest, latest) = window;
-        for chunk in span_ids.chunks(ID_CHUNK) {
+        // The dominant cost of opening a large turn, and the reason the chunks
+        // are concurrent: bodies are matched by raw term, one term per span,
+        // over the largest index Heron writes.
+        let (earliest, latest) = (earliest.as_str(), latest.as_str());
+        let per_chunk = span_ids.chunks(ID_CHUNK).map(|chunk| async move {
             let ix = &self.ix.bodies;
             let Some(terms) = spl::body_terms(chunk) else {
-                continue;
+                return Result::<Vec<BodyEvent>>::Ok(Vec::new());
             };
             let search = format!("search index={ix} sourcetype={ST_BODY} {terms}");
-            let wanted: HashSet<&str> = chunk.iter().map(String::as_str).collect();
             let found: Vec<BodyEvent> = self
-                .fetch_raw("fetch_bodies", &search, chunk.len(), &earliest, &latest)
+                .fetch_raw("fetch_bodies", &search, chunk.len(), earliest, latest)
                 .await?;
+            // A raw-term match can land on an event that merely quotes the id,
+            // so the decoded `span_id` is checked against this chunk's set.
+            let wanted: HashSet<&str> = chunk.iter().map(String::as_str).collect();
+            Ok(found
+                .into_iter()
+                .filter(|b| wanted.contains(b.span_id.as_str()))
+                .collect())
+        });
+        let mut out = HashMap::with_capacity(span_ids.len());
+        for found in try_join_all(per_chunk).await? {
             for b in found {
-                if wanted.contains(b.span_id.as_str()) {
-                    out.insert(b.span_id.clone(), b);
-                }
+                out.insert(b.span_id.clone(), b);
             }
         }
         Ok(out)

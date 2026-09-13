@@ -6,6 +6,43 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Performance
+
+- **Opening a large agent turn, and the services topology graph, were spending
+  almost all of their time in one search.** aglake charges a fixed cost per
+  search-position term, linear in the number of terms and independent of how
+  many events match, so the no-JOIN read pattern — fetch the parent, then
+  `id IN (?, ?, …)` for its children — bought nothing from batching the ids into
+  one query and paid for every one of them serially. Measured on a production
+  instance: a 376-call turn took 15.7 s to open, of which 14.1 s was the single
+  bodies lookup; `/api/services/topology` took 6.0–6.5 s on **every** call, all
+  of it one `id IN (…)` carrying one term per turn in the window. The cost is
+  not the payload — the same terms with `| stats count` and no rows returned
+  still took 12.8 s, while a term-free scan of the same window took 302 ms.
+
+  Those lookups now split into much smaller chunks (`ID_CHUNK` 512 → 32) and run
+  the chunks concurrently instead of in a `for` loop, bounded by
+  `storage.aglake.max_concurrent_searches`. On the same production data the
+  bodies lookup goes 14.1 s → 4.7 s at the default limit of 8, and 3.0 s at 16;
+  the topology lookup 7.1 s → 1.2 s. Chunking further is *slower* — at 4 ids per
+  search the per-search overhead dominates and the bodies lookup regresses to
+  11.2 s — so the constant is a measured optimum, not a minimum.
+
+  The `heron_traces` fan-out in the session list keeps the large chunk: it
+  matches many rows per id rather than one, and its `| head max_sessions_scan`
+  budget is written per search, so splitting the id set would have quietly
+  multiplied that budget by the number of chunks.
+
+### Fixed
+
+- **`storage.aglake.max_concurrent_searches` was accepted and ignored.** It is
+  now the real limit on searches Heron has in flight, enforced on the one method
+  every read path goes through — so it bounds the total rather than being a
+  per-query number that k concurrent console requests multiply by k. `0` is
+  clamped to 1 (a zero-permit budget would block the first read forever) and
+  reported by `heron config validate`.
+
+
 ## [0.8.1] — 2026-09-12
 
 `v0.8.0` was tagged from this same content but never released: the

@@ -879,8 +879,18 @@ pub struct AglakeConfig {
     /// session in the window before it can page.
     #[serde(default = "default_aglake_max_sessions_scan")]
     pub max_sessions_scan: u64,
-    /// Concurrency limit for the multi-request read paths (id-chunked point
-    /// lookups, the three-step session list).
+    /// Ceiling on searches Heron has in flight against aglaked at once.
+    ///
+    /// A global cap, not a per-query one: the id-chunked point lookups hand
+    /// every chunk to the search client at once and this decides how many run,
+    /// so k concurrent console requests share the budget instead of
+    /// multiplying it. `0` is treated as `1` — see
+    /// [`ConfigIssue::AglakeZeroConcurrentSearches`].
+    ///
+    /// The default matches aglaked's own default scan pool (`--search-threads
+    /// 0` = half the logical cores, capped at 8). Raising it past that pool
+    /// still measured faster — the per-search work outside the scan path
+    /// overlaps — but it is oversubscription, so it is opt-in.
     #[serde(default = "default_aglake_max_concurrent_searches")]
     pub max_concurrent_searches: usize,
     /// A trace's `_time` is its start; queries that filter on end time widen
@@ -1321,6 +1331,12 @@ pub enum ConfigIssue {
     /// nothing to log in as and the password is dead config. Only emitted when
     /// `storage.backend == "aglake"`.
     AglakePasswordWithoutUsername,
+    /// `storage.aglake.max_concurrent_searches = 0`. Read as "no limit" it
+    /// would be a deadlock on the first query, so the backend clamps it to 1 —
+    /// which is a real setting, just an unusually slow one, and worth saying
+    /// out loud rather than leaving the operator to wonder why reads serialized.
+    /// Only emitted when `storage.backend == "aglake"`.
+    AglakeZeroConcurrentSearches,
 }
 
 impl ConfigIssue {
@@ -1343,6 +1359,8 @@ impl ConfigIssue {
             // that has users — and Heron cannot tell which from here, so it
             // warns rather than blocking `config validate`.
             | Self::AglakePasswordWithoutUsername
+            // Clamped to 1, so reads still work — slowly.
+            | Self::AglakeZeroConcurrentSearches
             | Self::AglakeBodyRetentionExceedsParent { .. } => IssueSeverity::Warn,
             Self::DuplicatePipelineName(_)
             | Self::DuplicateSourceId { .. }
@@ -1483,6 +1501,15 @@ impl std::fmt::Display for ConfigIssue {
                  will then fail with 401; against one without users it works, \
                  but only because the credential is ignored. Set username, or \
                  remove password."
+            ),
+            Self::AglakeZeroConcurrentSearches => write!(
+                f,
+                "storage.aglake.max_concurrent_searches is 0, which is not \
+                 'unlimited' — a zero-permit budget would block the first read \
+                 forever, so it is clamped to 1. Every id-chunked lookup then \
+                 runs its chunks one at a time; opening a large agent turn is \
+                 several times slower. Remove the key to get the default, or \
+                 set the concurrency you want."
             ),
             Self::LegacyBackendName { found, use_instead } => write!(
                 f,
@@ -1714,6 +1741,9 @@ impl AppConfig {
             // typo rather than letting it look like configured auth.
             if !sg.password.is_empty() && sg.username.is_empty() {
                 issues.push(ConfigIssue::AglakePasswordWithoutUsername);
+            }
+            if sg.max_concurrent_searches == 0 {
+                issues.push(ConfigIssue::AglakeZeroConcurrentSearches);
             }
             // Deliberately not `|| !password.is_empty()`: a password with no
             // username establishes no session, so the loopback risk is
@@ -2946,6 +2976,50 @@ mod phase2_tests {
                     .iter()
                     .any(|i| matches!(i, ConfigIssue::AglakePasswordWithoutUsername)),
                 "unexpected finding for {creds:?}"
+            );
+        }
+    }
+
+    /// `max_concurrent_searches = 0` is the setting that reads as "no limit"
+    /// and is not one. The backend clamps it to 1, which keeps reads working,
+    /// so the only way an operator learns their reads are serialized is this
+    /// finding.
+    #[test]
+    fn a_zero_search_concurrency_is_reported() {
+        let cfg = |extra: &str| {
+            AppConfig::from_toml(&format!(
+                r#"
+                [[pipeline]]
+                name = "p"
+                [[pipeline.sources]]
+                type = "pcap"
+                interface = "eth0"
+
+                [storage]
+                backend = "aglake"
+
+                [storage.aglake]
+                {extra}
+                "#
+            ))
+        };
+
+        let issues = cfg("max_concurrent_searches = 0").validate();
+        let found: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i, ConfigIssue::AglakeZeroConcurrentSearches))
+            .collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].severity(), IssueSeverity::Warn);
+
+        // A real limit, and the default, are both silent.
+        for extra in ["max_concurrent_searches = 1", ""] {
+            assert!(
+                !cfg(extra)
+                    .validate()
+                    .iter()
+                    .any(|i| matches!(i, ConfigIssue::AglakeZeroConcurrentSearches)),
+                "unexpected finding for {extra:?}"
             );
         }
     }

@@ -26,6 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use futures::future::try_join_all;
 use h_common::error::{AppError, Result};
 use h_storage::query::*;
 
@@ -455,8 +456,10 @@ impl AglakeBackend {
         ids: &[String],
         range: &TimeRange,
     ) -> Result<HashMap<String, (String, u16, String)>> {
-        let mut out = HashMap::with_capacity(ids.len());
-        for chunk in ids.chunks(spl::ID_CHUNK) {
+        // One `id` term per turn in the window, so on a busy day this is the
+        // widest id lookup Heron issues — it was the whole cost of
+        // `/api/services/topology` before the chunks ran concurrently.
+        let per_chunk = ids.chunks(spl::ID_CHUNK).map(|chunk| async move {
             let mut s = Search::new(&self.ix.spans, ST_SPAN);
             s.any_of("id", chunk);
             let spl_q = format!(
@@ -464,15 +467,17 @@ impl AglakeBackend {
                 s.build(),
                 chunk.len()
             );
-            let rows = self
-                .search
+            self.search
                 .search(
                     &spl_q,
                     &spl::epoch_secs(range.start_us),
                     &spl::epoch_secs(range.end_us),
                 )
-                .await?
-                .rows();
+                .await
+                .map(|r| r.rows())
+        });
+        let mut out = HashMap::with_capacity(ids.len());
+        for rows in try_join_all(per_chunk).await? {
             for r in rows {
                 out.insert(
                     string(&r, "id"),
