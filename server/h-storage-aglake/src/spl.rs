@@ -259,31 +259,42 @@ pub(crate) fn epoch_secs(us: i64) -> String {
 
 /// Chunk size for `id IN (...)` point lookups.
 ///
-/// Not a query-string bound — a cost bound. aglaked charges a **fixed cost per
-/// search-position term**, linear in term count and independent of how many
-/// events match, so an N-id lookup is N probes however it is spelled. One
-/// search carrying every id is therefore the slowest available shape, and
-/// chunking exists to get the probes running concurrently rather than to keep
-/// the request small.
+/// Not a query-string bound — a cost bound. An N-id lookup is N term probes
+/// however it is spelled, and the wall clock is what a user waits on, so the
+/// chunks exist to get those probes running concurrently. One search carrying
+/// every id is the slowest available shape.
 ///
-/// Measured on production (aglaked 1.5.0, 376 span ids, the bodies index, with
-/// [`AglakeConfig::max_concurrent_searches`] = 8):
+/// 64 is a **measured optimum, and a sharp one**. 400 span ids against a hot
+/// bucket, with [`AglakeConfig::max_concurrent_searches`] = 8, five interleaved
+/// reps on one host:
 ///
-/// | chunk | searches | wall |
-/// |---|---|---|
-/// | 512 (one search) | 1 | 14.6 s |
-/// | 64 | 6 | 4.1 s |
-/// | 32 | 12 | 4.7 s |
-/// | 16 | 24 | 4.8 s |
-/// | 8 | 47 | 6.9 s |
-/// | 4 | 94 | 11.2 s |
+/// | chunk | searches | aglaked 1.5.0.2674 | with `sglog-ystd` fixed |
+/// |---|---|---|---|
+/// | 400 (one search) | 1 | 6423 ms | 1596 ms |
+/// | 128 | 4 | 1670 ms | 679 ms |
+/// | 96 | 5 | 1254 ms | 555 ms |
+/// | **64** | **7** | **887 ms** | **455 ms** |
+/// | 48 | 9 | 1047 ms | 655 ms |
+/// | 32 | 13 | 1051 ms | 658 ms |
 ///
-/// The curve has a floor, which is why this is 32 and not 1: below ~16 the
-/// per-search overhead aglaked pays regardless of term count (opening the
-/// window, pruning buckets) starts to dominate, and chunking too finely is
-/// slower than not chunking enough. 32 is within noise of the optimum on the
-/// spans and traces indexes too, where 16 measured marginally better.
-pub(crate) const ID_CHUNK: usize = 32;
+/// Both directions away from 64 are worse, for different reasons: fewer, bigger
+/// searches leave the permits idle, and more, smaller ones pay aglaked's
+/// per-search overhead (opening the window, pruning buckets) more times than the
+/// terms save. Chunking below ~16 is slower than not chunking at all.
+///
+/// Note what the two columns do *not* say. Upstream fixed the per-term cost on
+/// dictionary-less (unsealed) buckets — it was quadratic per event, `sglog-ystd`
+/// — which is the difference between the columns and is worth 4x on its own. It
+/// does not make the chunking redundant: concurrency is still worth **3.5x**
+/// after the fix, and 64 is still the optimum. Per-term cost falls with term
+/// count on a fixed daemon (4.02 ms/term at 400 vs 10.1 at 32), so the marginal
+/// term is cheap — but the total still grows with N, and only the fan-out
+/// shortens the wall clock.
+///
+/// 64 also pairs with the default concurrency: 8 permits x 64 ids means up to
+/// 512 ids resolve in a single wave, which covers every agent turn observed so
+/// far (the largest was 418 calls).
+pub(crate) const ID_CHUNK: usize = 64;
 
 /// Chunk size for id lookups that fan *out* — many rows per id, not one.
 ///

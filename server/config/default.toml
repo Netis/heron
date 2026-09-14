@@ -187,13 +187,14 @@ path = "data/heron.duckdb"
 # max_sessions_scan      = 200000
 # max_concurrent_searches = 8   # searches in flight at once, across ALL read paths
 #   An id lookup (a turn's calls, its bodies, the topology graph) is split into
-#   `ID_CHUNK`-sized searches that run concurrently, because aglaked charges a
-#   fixed cost per search term: one search carrying 376 ids took 14.6 s where
-#   twelve carrying 32 each took 4.7 s. This bounds that fan-out.
-#   The default matches aglaked's own default scan pool (`--search-threads 0` =
-#   half the cores, capped at 8). Raising it measured faster still (16 -> 3.0 s
-#   on the same lookup, with no change in aglaked's RSS), but it oversubscribes
-#   that pool; raise `--search-threads` alongside it on a search-heavy box.
+#   64-id searches that run concurrently, because an N-id lookup costs N term
+#   probes however it is spelled: one search carrying 400 ids took 6.4 s where
+#   seven carrying 64 each took 0.9 s. This bounds that fan-out.
+#   8 x 64 = up to 512 ids in a single wave, which covers any turn seen so far.
+#   The default also matches aglaked's own default scan pool (`--search-threads 0`
+#   = half the cores, capped at 8). Raising it measured faster still, with no
+#   change in aglaked's RSS, but it oversubscribes that pool; raise
+#   `--search-threads` alongside it on a search-heavy box.
 # trace_time_skew_hours  = 24        # widens end-time windows; a trace's _time is its start
 # metrics_dedup          = false     # only needed if duplicate metric rows are observed;
 #                                    #   costs a sort and the columnar fast path

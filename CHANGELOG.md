@@ -20,13 +20,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not the payload — the same terms with `| stats count` and no rows returned
   still took 12.8 s, while a term-free scan of the same window took 302 ms.
 
-  Those lookups now split into much smaller chunks (`ID_CHUNK` 512 → 32) and run
-  the chunks concurrently instead of in a `for` loop, bounded by
+  Those lookups now split into smaller chunks (`ID_CHUNK` 512 → 64) and run the
+  chunks concurrently instead of in a `for` loop, bounded by
   `storage.aglake.max_concurrent_searches`. On the same production data the
-  bodies lookup goes 14.1 s → 4.7 s at the default limit of 8, and 3.0 s at 16;
-  the topology lookup 7.1 s → 1.2 s. Chunking further is *slower* — at 4 ids per
-  search the per-search overhead dominates and the bodies lookup regresses to
-  11.2 s — so the constant is a measured optimum, not a minimum.
+  bodies lookup goes 14.1 s → 4.1 s at the default limit of 8 and the topology
+  lookup 7.1 s → 1.2 s; end to end, a 418-call turn opens in 2.6 s instead of
+  14.6 s and the topology graph answers in 1.7 s instead of 7.5 s.
+
+  64 is a measured optimum in both directions: fewer, bigger searches leave the
+  permits idle, and more, smaller ones pay aglaked's per-search overhead more
+  times than the terms save — chunking below ~16 is slower than not chunking at
+  all. It also pairs with the default concurrency, since 8 × 64 covers any turn
+  observed so far in one wave.
+
+  Upstream has since fixed the per-term cost on unsealed buckets, where it was
+  quadratic per event (`sglog-ystd`, prompted by this investigation). That is
+  worth ~4× on its own and does **not** make the fan-out redundant: measured
+  against a daemon carrying the fix, the concurrent chunks are still 3.5× faster
+  than one search, and 64 is still the optimum.
 
   The `heron_traces` fan-out in the session list keeps the large chunk: it
   matches many rows per id rather than one, and its `| head max_sessions_scan`
