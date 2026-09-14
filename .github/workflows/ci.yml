@@ -139,6 +139,12 @@ jobs:
         # twelve hours or a daemon restart. Getting the retry-after-401 wrong
         # is a backend that reads fine all day and then stops.
         #
+        # The concurrency rules are about load Heron puts on the daemon: the
+        # id-chunked reads fan out and rely on a semaphore to bound it. A
+        # semaphore that admitted everyone would pass every other test and show
+        # up only as an unattributable load spike in production, so the tests
+        # assert the in-flight high-water mark against a mock that measures it.
+        #
         # The live half of the suite self-skips without AGLAKE_TEST_URL and is
         # covered by the staging job instead.
         working-directory: server
@@ -147,6 +153,7 @@ jobs:
         run: |
           cargo test -p h-storage-aglake retry_tests --quiet
           cargo test -p h-storage-aglake auth_tests --quiet
+          cargo test -p h-storage-aglake concurrency_tests --quiet
 
       - name: cargo test (schema-migration golden DBs)
         # Locks in the auto-migration code in h-storage-duckdb/src/schema.rs

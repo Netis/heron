@@ -257,9 +257,55 @@ pub(crate) fn epoch_secs(us: i64) -> String {
     )
 }
 
-/// Chunk size for `id IN (...)` point lookups. Keeps a single query string
-/// bounded while staying far above the common trace size.
-pub(crate) const ID_CHUNK: usize = 512;
+/// Chunk size for `id IN (...)` point lookups.
+///
+/// Not a query-string bound — a cost bound. An N-id lookup is N term probes
+/// however it is spelled, and the wall clock is what a user waits on, so the
+/// chunks exist to get those probes running concurrently. One search carrying
+/// every id is the slowest available shape.
+///
+/// 64 is a **measured optimum, and a sharp one**. 400 span ids against a hot
+/// bucket, with [`AglakeConfig::max_concurrent_searches`] = 8, five interleaved
+/// reps on one host:
+///
+/// | chunk | searches | aglaked 1.5.0.2674 | with `sglog-ystd` fixed |
+/// |---|---|---|---|
+/// | 400 (one search) | 1 | 6423 ms | 1596 ms |
+/// | 128 | 4 | 1670 ms | 679 ms |
+/// | 96 | 5 | 1254 ms | 555 ms |
+/// | **64** | **7** | **887 ms** | **455 ms** |
+/// | 48 | 9 | 1047 ms | 655 ms |
+/// | 32 | 13 | 1051 ms | 658 ms |
+///
+/// Both directions away from 64 are worse, for different reasons: fewer, bigger
+/// searches leave the permits idle, and more, smaller ones pay aglaked's
+/// per-search overhead (opening the window, pruning buckets) more times than the
+/// terms save. Chunking below ~16 is slower than not chunking at all.
+///
+/// Note what the two columns do *not* say. Upstream fixed the per-term cost on
+/// dictionary-less (unsealed) buckets — it was quadratic per event, `sglog-ystd`
+/// — which is the difference between the columns and is worth 4x on its own. It
+/// does not make the chunking redundant: concurrency is still worth **3.5x**
+/// after the fix, and 64 is still the optimum. Per-term cost falls with term
+/// count on a fixed daemon (4.02 ms/term at 400 vs 10.1 at 32), so the marginal
+/// term is cheap — but the total still grows with N, and only the fan-out
+/// shortens the wall clock.
+///
+/// 64 also pairs with the default concurrency: 8 permits x 64 ids means up to
+/// 512 ids resolve in a single wave, which covers every agent turn observed so
+/// far (the largest was 418 calls).
+pub(crate) const ID_CHUNK: usize = 64;
+
+/// Chunk size for id lookups that fan *out* — many rows per id, not one.
+///
+/// `session_aggregates` is the only one: it matches turn rows by `session_id`,
+/// where a session has tens to thousands of turns. Two reasons it keeps the
+/// large chunk. The per-term cost is amortized against real row volume rather
+/// than being the whole cost (one page of 100 sessions measures 293 ms end to
+/// end), and its `| head max_sessions_scan` row budget is written per search —
+/// so splitting the id set into k chunks would quietly multiply the budget by
+/// k.
+pub(crate) const FANOUT_ID_CHUNK: usize = 512;
 
 /// Build the offset-pagination pipeline.
 ///

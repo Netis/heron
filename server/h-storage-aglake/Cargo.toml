@@ -12,6 +12,8 @@ h-protocol.workspace = true
 h-turn.workspace = true
 h-storage.workspace = true
 reqwest.workspace = true
+# `try_join_all`, so the id-chunked point lookups overlap instead of queueing.
+futures.workspace = true
 # Request-body gzip. reqwest's `gzip` feature only covers *response*
 # decompression, so the HEC request bodies are compressed here.
 flate2.workspace = true

@@ -6,6 +6,54 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Performance
+
+- **Opening a large agent turn, and the services topology graph, were spending
+  almost all of their time in one search.** aglake charges a fixed cost per
+  search-position term, linear in the number of terms and independent of how
+  many events match, so the no-JOIN read pattern — fetch the parent, then
+  `id IN (?, ?, …)` for its children — bought nothing from batching the ids into
+  one query and paid for every one of them serially. Measured on a production
+  instance: a 376-call turn took 15.7 s to open, of which 14.1 s was the single
+  bodies lookup; `/api/services/topology` took 6.0–6.5 s on **every** call, all
+  of it one `id IN (…)` carrying one term per turn in the window. The cost is
+  not the payload — the same terms with `| stats count` and no rows returned
+  still took 12.8 s, while a term-free scan of the same window took 302 ms.
+
+  Those lookups now split into smaller chunks (`ID_CHUNK` 512 → 64) and run the
+  chunks concurrently instead of in a `for` loop, bounded by
+  `storage.aglake.max_concurrent_searches`. On the same production data the
+  bodies lookup goes 14.1 s → 4.1 s at the default limit of 8 and the topology
+  lookup 7.1 s → 1.2 s; end to end, a 418-call turn opens in 2.6 s instead of
+  14.6 s and the topology graph answers in 1.7 s instead of 7.5 s.
+
+  64 is a measured optimum in both directions: fewer, bigger searches leave the
+  permits idle, and more, smaller ones pay aglaked's per-search overhead more
+  times than the terms save — chunking below ~16 is slower than not chunking at
+  all. It also pairs with the default concurrency, since 8 × 64 covers any turn
+  observed so far in one wave.
+
+  Upstream has since fixed the per-term cost on unsealed buckets, where it was
+  quadratic per event (`sglog-ystd`, prompted by this investigation). That is
+  worth ~4× on its own and does **not** make the fan-out redundant: measured
+  against a daemon carrying the fix, the concurrent chunks are still 3.5× faster
+  than one search, and 64 is still the optimum.
+
+  The `heron_traces` fan-out in the session list keeps the large chunk: it
+  matches many rows per id rather than one, and its `| head max_sessions_scan`
+  budget is written per search, so splitting the id set would have quietly
+  multiplied that budget by the number of chunks.
+
+### Fixed
+
+- **`storage.aglake.max_concurrent_searches` was accepted and ignored.** It is
+  now the real limit on searches Heron has in flight, enforced on the one method
+  every read path goes through — so it bounds the total rather than being a
+  per-query number that k concurrent console requests multiply by k. `0` is
+  clamped to 1 (a zero-permit budget would block the first read forever) and
+  reported by `heron config validate`.
+
+
 ## [0.8.1] — 2026-09-12
 
 `v0.8.0` was tagged from this same content but never released: the

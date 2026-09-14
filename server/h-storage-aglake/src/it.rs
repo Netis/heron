@@ -268,6 +268,91 @@ async fn unknown_ids_return_none_not_an_error() {
         .is_empty());
 }
 
+/// A turn whose calls do not fit in one `ID_CHUNK`.
+///
+/// `read_spans_by_ids` and `fetch_bodies` split an id set into chunks and run
+/// them concurrently, and every existing test uses three spans — one chunk, so
+/// the split is never taken. The failures this covers are the ones a single
+/// chunk cannot express: a chunk whose rows are dropped on the floor, a body
+/// map keyed from the wrong chunk's ids, and an ordering that only holds within
+/// a chunk because the sort happens before the chunks are merged.
+///
+/// The count is `2 * ID_CHUNK + 1` on purpose: two full chunks plus a remainder
+/// of one, so an off-by-one in the chunking shows up as a missing span rather
+/// than as a rebalanced set that still adds up.
+#[tokio::test]
+async fn a_turn_larger_than_one_id_chunk_comes_back_whole_and_in_order() {
+    let backend = require_backend!();
+    let n = crate::spl::ID_CHUNK * 2 + 1;
+
+    let mut trace = fixtures::full_trace();
+    trace.turn_id = uuid::Uuid::now_v7().to_string();
+    let base = trace.start_time_us;
+
+    // Written in reverse so a correct result cannot be insertion order, and
+    // indexed into the id so the expected order is computable rather than
+    // observed.
+    let mut calls = Vec::new();
+    for i in (0..n).rev() {
+        let mut c = fixtures::full_call();
+        c.id = format!("{}-span-{i:04}", trace.turn_id);
+        c.request_time = base + (i as i64) * 1_000;
+        c.complete_time = Some(c.request_time + 500);
+        calls.push(c);
+    }
+    trace.call_count = n as u32;
+    trace.span_ids = {
+        let mut ids: Vec<String> = calls.iter().map(|c| c.id.clone()).collect();
+        ids.reverse();
+        ids
+    };
+    trace.end_time_us = base + (n as i64) * 1_000;
+
+    backend.write_spans(calls).await.unwrap();
+    backend.write_traces(vec![trace.clone()]).await.unwrap();
+
+    let spans = eventually("all spans of a multi-chunk turn", || async {
+        let s = backend
+            .query_trace_spans(&trace.turn_id, true)
+            .await
+            .unwrap();
+        (s.len() == n).then_some(s)
+    })
+    .await;
+
+    let got: Vec<String> = spans.iter().map(|s| s.id.clone()).collect();
+    assert_eq!(got, trace.span_ids, "every chunk, merged in request order");
+    assert_eq!(
+        got.iter().collect::<std::collections::HashSet<_>>().len(),
+        n,
+        "a chunk fetched twice would duplicate rather than lose"
+    );
+    assert_eq!(
+        spans.iter().map(|s| s.sequence).collect::<Vec<_>>(),
+        (1..=n as u32).collect::<Vec<_>>()
+    );
+    // Bodies are the second, separately-chunked hop over a different index —
+    // the one that dominates a large turn. Each span must get its own.
+    for s in &spans {
+        assert!(
+            s.request_body.is_some(),
+            "span {} came back without its body",
+            s.id
+        );
+    }
+
+    // Same ids by the registry path, which chunks through `read_spans_by_ids`
+    // without a trace to bound the window.
+    let by_ids = backend
+        .query_spans_by_ids(&trace.span_ids, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        by_ids.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+        trace.span_ids
+    );
+}
+
 #[tokio::test]
 async fn trace_round_trips_and_resolves_its_spans() {
     let backend = require_backend!();
