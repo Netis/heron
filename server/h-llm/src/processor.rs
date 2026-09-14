@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
-use serde_json::Value;
+use h_common::attribution::{AttributionConfig, AttributionInfo};
 use h_common::config::BodyCapConfig;
 use h_common::internal_metrics::{Metric, MetricsWorker};
+use h_common::process::ProcessInfo;
 use h_protocol::joiner::HttpJoinerEvent;
 use h_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::agent_classifier::{classify, ClassifierConfig};
@@ -54,6 +56,39 @@ fn cap_body(body: Option<String>, cap: &BodyCapConfig) -> (Option<String>, u64) 
     (Some(out), dropped)
 }
 
+fn derive_attribution(
+    process: Option<&ProcessInfo>,
+    request_headers: &[(String, String)],
+    cfg: &AttributionConfig,
+) -> AttributionInfo {
+    if let Some(process) = process {
+        let label = process
+            .exe
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(process.comm.as_str());
+        return AttributionInfo::high(label.to_string(), "ebpf_process");
+    }
+
+    for configured in &cfg.request_headers {
+        let configured = configured.trim();
+        if configured.is_empty() {
+            continue;
+        }
+        if let Some((name, value)) = request_headers
+            .iter()
+            .find(|(name, value)| name.eq_ignore_ascii_case(configured) && !value.trim().is_empty())
+        {
+            return AttributionInfo::high(
+                value.trim().to_string(),
+                format!("request_header:{}", name.trim()),
+            );
+        }
+    }
+
+    AttributionInfo::ambiguous()
+}
+
 /// Processes `HttpJoinerEvent`s and extracts `LlmCall` records. Stateless —
 /// request/response pairing now lives in `h_protocol::joiner::HttpJoiner`.
 pub struct LlmProcessor {
@@ -70,6 +105,10 @@ pub struct LlmProcessor {
     /// extraction, so it never affects usage/model/agent accuracy — only how
     /// much body is persisted. Wired from `AppConfig.body_cap`.
     body_cap: BodyCapConfig,
+    /// Explicit attribution config. Used only after a wire API is identified so
+    /// raw packet capture can promote trusted gateway identity headers to
+    /// exportable attribution labels.
+    attribution_cfg: AttributionConfig,
 }
 
 impl LlmProcessor {
@@ -100,6 +139,7 @@ impl LlmProcessor {
             estimator,
             classifier_cfg: ClassifierConfig::default(),
             body_cap: BodyCapConfig::default(),
+            attribution_cfg: AttributionConfig::default(),
         }
     }
 
@@ -114,6 +154,12 @@ impl LlmProcessor {
     /// `BodyCapConfig` with the one loaded from `AppConfig.body_cap`.
     pub fn with_body_cap(mut self, cfg: BodyCapConfig) -> Self {
         self.body_cap = cfg;
+        self
+    }
+
+    /// Builder-style override for attribution config.
+    pub fn with_attribution_cfg(mut self, cfg: AttributionConfig) -> Self {
+        self.attribution_cfg = cfg;
         self
     }
 
@@ -307,6 +353,10 @@ impl LlmProcessor {
         let (response_body, resp_body_dropped) = cap_body(resp_info.response_body, &self.body_cap);
         let body_bytes_dropped = req_body_dropped.saturating_add(resp_body_dropped);
 
+        let process = request.process.clone().or_else(|| response.process.clone());
+        let attribution =
+            derive_attribution(process.as_ref(), &request.headers, &self.attribution_cfg);
+
         let call = LlmCall {
             source_id: request.flow_key.source_id.clone(),
             id: Uuid::now_v7().to_string(),
@@ -344,13 +394,11 @@ impl LlmProcessor {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped,
+            attribution,
             // Process attribution rides on the request (the SSL_write side that
             // the eBPF probe sees first); fall back to the response in case the
             // flow only learned it on the inbound direction.
-            process: request
-                .process
-                .clone()
-                .or_else(|| response.process.clone()),
+            process,
         };
 
         let agent = build_agent_call_info_with_parsed(
@@ -475,11 +523,11 @@ mod tests {
     use super::*;
     use crate::wire_apis as wa;
     use bytes::Bytes;
-    use std::net::IpAddr;
-    use std::sync::Arc;
     use h_common::internal_metrics::MetricsSystem;
     use h_protocol::model::{HttpRequestData, HttpResponseData, SseEventData};
     use h_protocol::net::FlowKey;
+    use std::net::IpAddr;
+    use std::sync::Arc;
 
     fn empty_registry() -> Arc<AgentProfileRegistry> {
         Arc::new(AgentProfileRegistry::new())
@@ -585,6 +633,65 @@ mod tests {
             timestamp_us: ts,
             process: None,
         }
+    }
+
+    #[test]
+    fn attribution_prefers_ebpf_process_over_configured_header() {
+        let process =
+            ProcessInfo::new(42, "node").with_exe(Some("/usr/local/bin/node".to_string()));
+        let cfg = AttributionConfig {
+            request_headers: vec!["x-agent-id".to_string()],
+        };
+        let info = derive_attribution(
+            Some(&process),
+            &[("x-agent-id".to_string(), "gateway-agent".to_string())],
+            &cfg,
+        );
+
+        assert_eq!(info.label.as_deref(), Some("/usr/local/bin/node"));
+        assert_eq!(info.source, "ebpf_process");
+        assert_eq!(
+            info.confidence,
+            h_common::attribution::AttributionConfidence::High
+        );
+    }
+
+    #[test]
+    fn attribution_uses_configured_header_case_insensitively() {
+        let cfg = AttributionConfig {
+            request_headers: vec!["x-agent-id".to_string()],
+        };
+        let info = derive_attribution(
+            None,
+            &[("X-Agent-ID".to_string(), "agent-a".to_string())],
+            &cfg,
+        );
+
+        assert_eq!(info.label.as_deref(), Some("agent-a"));
+        assert_eq!(info.source, "request_header:X-Agent-ID");
+        assert_eq!(
+            info.confidence,
+            h_common::attribution::AttributionConfidence::High
+        );
+    }
+
+    #[test]
+    fn attribution_is_ambiguous_without_process_or_configured_header() {
+        let cfg = AttributionConfig {
+            request_headers: vec!["x-agent-id".to_string()],
+        };
+        let info = derive_attribution(
+            None,
+            &[("x-workspace-id".to_string(), "workspace-a".to_string())],
+            &cfg,
+        );
+
+        assert_eq!(info.label, None);
+        assert_eq!(info.source, "unknown");
+        assert_eq!(
+            info.confidence,
+            h_common::attribution::AttributionConfidence::Ambiguous
+        );
     }
 
     #[test]
@@ -735,8 +842,14 @@ mod tests {
         let out = out.unwrap();
         assert!(out.starts_with("HEAD"), "head retained: {out}");
         assert!(out.ends_with("TAIL"), "tail retained: {out}");
-        assert!(out.contains("100 bytes elided"), "elision marker present: {out}");
-        assert!(out.len() < 108, "stored body must be smaller than the original");
+        assert!(
+            out.contains("100 bytes elided"),
+            "elision marker present: {out}"
+        );
+        assert!(
+            out.len() < 108,
+            "stored body must be smaller than the original"
+        );
     }
 
     #[test]
@@ -812,20 +925,33 @@ mod tests {
             LlmEvent::Complete { call, .. } => {
                 // Wire usage extracted exactly (estimator did NOT run, and the
                 // cap did not corrupt extraction).
-                assert_eq!(call.input_tokens, Some(1234), "usage survives request-body cap");
+                assert_eq!(
+                    call.input_tokens,
+                    Some(1234),
+                    "usage survives request-body cap"
+                );
                 assert_eq!(call.output_tokens, Some(56));
                 assert_eq!(call.total_tokens, Some(1290));
                 // Request body was sampled.
-                assert!(call.body_bytes_dropped > 0, "huge request body must be capped");
+                assert!(
+                    call.body_bytes_dropped > 0,
+                    "huge request body must be capped"
+                );
                 let stored = call.request_body.as_ref().expect("request_body stored");
                 assert!(
                     stored.len() < original_len,
                     "stored body ({}) must be smaller than original ({original_len})",
                     stored.len()
                 );
-                assert!(stored.contains("bytes elided"), "stored body carries the cap marker");
+                assert!(
+                    stored.contains("bytes elided"),
+                    "stored body carries the cap marker"
+                );
                 // Small response stayed verbatim → all dropped bytes are the request's.
-                assert_eq!(call.response_body.as_deref(), Some(resp_body.to_string().as_str()));
+                assert_eq!(
+                    call.response_body.as_deref(),
+                    Some(resp_body.to_string().as_str())
+                );
             }
             _ => panic!("expected Complete"),
         }
@@ -1182,6 +1308,7 @@ mod tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            attribution: h_common::attribution::AttributionInfo::ambiguous(),
             process: None,
         }
     }

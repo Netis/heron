@@ -107,6 +107,7 @@ async fn run_pcap_full_sharded(
         &mut metrics_sys,
         h_llm::agent_classifier::ClassifierConfig::default(),
         h_common::config::BodyCapConfig::default(),
+        h_common::attribution::AttributionConfig::default(),
     );
 
     h_turn::spawn_turn_stage(
@@ -238,6 +239,7 @@ async fn run_pcap_collecting_calls(
         &mut metrics_sys,
         h_llm::agent_classifier::ClassifierConfig::default(),
         h_common::config::BodyCapConfig::default(),
+        h_common::attribution::AttributionConfig::default(),
     );
 
     h_turn::spawn_turn_stage(
@@ -813,7 +815,7 @@ async fn generic_profile_anthropic_two_call_session() {
     use h_llm::build_agent_call_info;
     use h_llm::model::{AgentCall, ApiType, LlmCall};
     use h_turn::tracker::{TrackerConfig, TurnTracker};
-    use h_turn::{TurnEvent, TraceStatus};
+    use h_turn::{TraceStatus, TurnEvent};
 
     fn make_call(req: &str, resp: &str, ts_us: i64, finish: Option<&str>) -> LlmCall {
         LlmCall {
@@ -852,6 +854,7 @@ async fn generic_profile_anthropic_two_call_session() {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            attribution: h_common::attribution::AttributionInfo::ambiguous(),
             process: None,
         }
     }

@@ -156,6 +156,7 @@ pub(crate) fn extract_full_text(
         tool_call_count: 0,
         tool_names: vec![],
         body_bytes_dropped: 0,
+        attribution: h_common::attribution::AttributionInfo::ambiguous(),
         process: None,
     };
     let (req, resp) = parse_bodies(&call);
@@ -268,6 +269,7 @@ pub(crate) fn extract_full_text_batch(
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            attribution: h_common::attribution::AttributionInfo::ambiguous(),
             process: None,
         };
         let (req, resp) = parse_bodies(&call);

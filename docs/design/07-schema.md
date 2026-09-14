@@ -62,10 +62,18 @@ spans
 │   ├── request_body: string?        # Complete request JSON
 │   ├── response_body: string?       # Complete response JSON
 │   ├── request_headers: string?     # JSON array of [key, value] pairs
-│   └── response_headers: string?    # JSON array of [key, value] pairs
+│   ├── response_headers: string?    # JSON array of [key, value] pairs
+│   └── body_bytes_dropped: u64      # Bytes elided by the stored-body cap
 │
 └── Metadata
-    └── server_ip: string
+    ├── kind: string                 # llm today; reserved for future span kinds
+    ├── server_ip: string
+    ├── process_pid: u32?            # eBPF process attribution
+    ├── process_comm: string?
+    ├── process_exe: string?
+    ├── attribution_label: string?   # eBPF process or configured gateway identity
+    ├── attribution_source: string   # ebpf_process / request_header:<name> / unknown
+    └── attribution_confidence: string # high / medium / ambiguous
 
 Indexes:
   - request_time
@@ -79,6 +87,12 @@ Indexes:
 - **Full body storage**: `request_body` and `response_body` store complete JSON. For streaming responses, `response_body` contains the concatenated final content.
 - **Headers storage**: `request_headers` and `response_headers` store complete HTTP headers as JSON arrays of `[key, value]` pairs, preserving order and allowing duplicate keys. Rate limit info, request IDs, processing time, etc. can be queried from stored headers without top-level extraction.
 - **`response_id`**: Wire API's response/message ID (e.g., OpenAI `chatcmpl-xxx`, Anthropic `msg_xxx`). Promoted to top-level for fast cross-referencing with vendor logs.
+- **Attribution fields**: `process_*` is native OS process attribution from the
+  eBPF capture path. `attribution_*` is the export-facing identity label and
+  provenance: eBPF process attribution wins when available; otherwise a
+  configured trusted request header may supply a high-confidence gateway
+  identity. Passive capture without visible identity remains
+  `attribution_confidence='ambiguous'`.
 
 ### `finish_reason` vocabulary
 
@@ -325,6 +339,15 @@ traces).
   working as deprecated aliases (RFC 8594 `Deprecation` header) for the
   canonical `/api/traces*` and `/api/spans*`. Retention config keys
   `calls`/`turns` remain accepted as serde aliases for `spans`/`traces`.
+
+### Attribution metadata columns
+
+DuckDB and ClickHouse add `spans.attribution_label`,
+`spans.attribution_source`, and `spans.attribution_confidence`
+idempotently on init. Existing rows default to no label,
+`source='unknown'`, and `confidence='ambiguous'`, so historical exports
+can be filtered conservatively with
+`min_attribution_confidence=high`.
 
 ### `AgentTurn` rename (`LlmTurn` → `AgentTurn`)
 

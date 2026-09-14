@@ -8,12 +8,12 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
-use serde_json::Value;
-use tower::ServiceExt;
 use h_api::{router, ApiHealthContext, ApiMetricsContext, ApiRuntimeConfigContext};
 use h_metrics::model::LlmFinishMetric;
 use h_storage_duckdb::DuckDbBackend;
+use http_body_util::BodyExt;
+use serde_json::Value;
+use tower::ServiceExt;
 
 fn test_metrics_context() -> ApiMetricsContext {
     let sys = h_common::internal_metrics::MetricsSystem::new();
@@ -32,6 +32,7 @@ fn test_runtime_config_context() -> ApiRuntimeConfigContext {
             internal_metrics: h_common::config::InternalMetricsConfig::default(),
             api: h_common::config::ApiConfig::default(),
             agent_classifier: h_common::config::ClassifierConfigToml::default(),
+            attribution: h_common::attribution::AttributionConfig::default(),
             body_cap: h_common::config::BodyCapConfig::default(),
         }),
         config_path: "test".to_string(),
@@ -579,9 +580,15 @@ async fn deprecated_aliases_work_and_carry_deprecation_header() {
             .oneshot(Request::builder().uri(alias).body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "alias {alias} must still serve");
         assert_eq!(
-            resp.headers().get("deprecation").map(|v| v.to_str().unwrap()),
+            resp.status(),
+            StatusCode::OK,
+            "alias {alias} must still serve"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("deprecation")
+                .map(|v| v.to_str().unwrap()),
             Some("true"),
             "alias {alias} must carry Deprecation: true",
         );

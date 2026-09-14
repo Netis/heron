@@ -133,12 +133,12 @@ pub fn spawn_turn_stage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::IpAddr;
-    use std::sync::Arc;
     use h_llm::agents::build_default_registry;
     use h_llm::model::{AgentCall, AgentCallInfo, ApiType, LlmCall};
     use h_llm::wire_apis as wa;
     use h_llm::wire_apis::build_default_wire_api_registry;
+    use std::net::IpAddr;
+    use std::sync::Arc;
 
     fn llm_test_metrics() -> h_common::internal_metrics::MetricsWorker {
         let mut sys = MetricsSystem::new();
@@ -216,6 +216,7 @@ mod tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            attribution: h_common::attribution::AttributionInfo::ambiguous(),
             process: None,
         }
     }

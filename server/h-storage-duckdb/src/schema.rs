@@ -1,8 +1,8 @@
 //! DDL constants for the DuckDB-backed schema, plus the `init()` bootstrap
 //! that creates every table and runs forward-compatible migrations.
 
-use tracing::info;
 use h_common::error::{AppError, Result};
+use tracing::info;
 
 use crate::DuckDbBackend;
 
@@ -45,7 +45,10 @@ CREATE TABLE IF NOT EXISTS spans (
     process_pid       UINTEGER,
     process_comm      VARCHAR,
     process_exe       VARCHAR,
-    kind              VARCHAR NOT NULL DEFAULT 'llm'
+    kind              VARCHAR NOT NULL DEFAULT 'llm',
+    attribution_label VARCHAR,
+    attribution_source VARCHAR NOT NULL DEFAULT 'unknown',
+    attribution_confidence VARCHAR NOT NULL DEFAULT 'ambiguous'
 );
 ";
 
@@ -462,6 +465,26 @@ pub(crate) async fn init(backend: &DuckDbBackend) -> Result<()> {
         match conn.execute_batch("ALTER TABLE spans ADD COLUMN IF NOT EXISTS kind VARCHAR DEFAULT 'llm';") {
             Ok(()) => tracing::debug!("phase8 migration: spans.kind added (or already present)"),
             Err(e) => tracing::info!("phase8 migration: spans.kind add skipped: {e}"),
+        }
+
+        // Phase 9: explicit attribution labels and confidence for SFT/export
+        // consumers. Appended after `kind` in both fresh CREATE and ALTER
+        // migrations so positional appender writes stay aligned.
+        let attribution_columns = [
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS attribution_label VARCHAR;",
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS attribution_source VARCHAR DEFAULT 'unknown';",
+            "ALTER TABLE spans ADD COLUMN IF NOT EXISTS attribution_confidence VARCHAR DEFAULT 'ambiguous';",
+        ];
+        for stmt in attribution_columns {
+            match conn.execute_batch(stmt) {
+                Ok(()) => tracing::debug!(
+                    sql = stmt,
+                    "phase9 migration: spans attribution column added (or already present)"
+                ),
+                Err(e) => tracing::info!(
+                    "phase9 migration: spans attribution column add skipped: {e} (sql: {stmt})"
+                ),
+            }
         }
 
         info!("storage tables initialized");

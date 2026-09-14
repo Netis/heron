@@ -45,6 +45,7 @@ use tokio::sync::mpsc::{self, WeakSender};
 use tokio::task::{JoinHandle, JoinSet};
 
 use h_capture::{RawPacket, RoutingSender};
+use h_common::attribution::AttributionConfig;
 use h_common::config::{CaptureSourceConfig, PipelineDef};
 use h_common::internal_metrics::{Metric, MetricsSystem};
 use h_llm::agent_classifier::ClassifierConfig;
@@ -130,6 +131,7 @@ impl Pipeline {
         active_turns: h_turn::ActiveTraceRegistry,
         classifier_cfg: ClassifierConfig,
         body_cap: h_common::config::BodyCapConfig,
+        attribution_cfg: AttributionConfig,
     ) -> Self {
         // ---- Shared sinks (fan-in across every pipeline) ----
         // Each shared channel takes the max of its dedicated config across
@@ -342,6 +344,7 @@ impl Pipeline {
                 metrics_sys,
                 classifier_cfg.clone(),
                 body_cap,
+                attribution_cfg.clone(),
             );
             debug_assert_eq!(llm_handles.len(), flow_shards);
             for (j, h) in llm_handles.into_iter().enumerate() {

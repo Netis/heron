@@ -313,6 +313,10 @@ pub struct SpanListItem {
     /// Owning process (eBPF attribution), or `None` for passive-tap sources.
     #[serde(default)]
     pub process: Option<ProcessInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution_label: Option<String>,
+    pub attribution_source: String,
+    pub attribution_confidence: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -564,6 +568,10 @@ pub struct TraceSpanItem {
     /// the Raw HTTP drawer — no extra fetch needed.
     pub request_headers: Option<String>,
     pub response_headers: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution_label: Option<String>,
+    pub attribution_source: String,
+    pub attribution_confidence: String,
 }
 
 /// Detail view of an `http_exchanges` row — used by `GET /api/http-exchanges/:id`
@@ -927,6 +935,10 @@ pub struct SpanDetail {
     /// Owning process (eBPF attribution), or `None` for passive-tap sources.
     #[serde(default)]
     pub process: Option<ProcessInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution_label: Option<String>,
+    pub attribution_source: String,
+    pub attribution_confidence: String,
 }
 
 #[cfg(test)]

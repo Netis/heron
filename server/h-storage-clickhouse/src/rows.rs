@@ -61,6 +61,9 @@ pub(crate) struct CallRow {
     /// column is forward-looking for wire-visible tool spans. Tail field to
     /// match the `spans` table column order (and the DuckDB layout).
     pub kind: String,
+    pub attribution_label: Option<String>,
+    pub attribution_source: String,
+    pub attribution_confidence: String,
 }
 
 impl From<LlmCall> for CallRow {
@@ -106,6 +109,9 @@ impl From<LlmCall> for CallRow {
             process_comm: c.process.as_ref().map(|p| p.comm.clone()),
             process_exe: c.process.as_ref().and_then(|p| p.exe.clone()),
             kind: "llm".into(),
+            attribution_label: c.attribution.label,
+            attribution_source: c.attribution.source,
+            attribution_confidence: c.attribution.confidence.to_string(),
         }
     }
 }
