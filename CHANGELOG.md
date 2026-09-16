@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-09-16
+
 ### Performance
 
 - **Opening a large agent turn, and the services topology graph, were spending
@@ -14,9 +16,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   many events match, so the no-JOIN read pattern — fetch the parent, then
   `id IN (?, ?, …)` for its children — bought nothing from batching the ids into
   one query and paid for every one of them serially. Measured on a production
-  instance: a 376-call turn took 15.7 s to open, of which 14.1 s was the single
-  bodies lookup; `/api/services/topology` took 6.0–6.5 s on **every** call, all
-  of it one `id IN (…)` carrying one term per turn in the window. The cost is
+  instance: opening an agent turn cost about 35 ms per call it contained, so the
+  largest turns of the day took 15 s, almost all of it the single bodies lookup;
+  `/api/services/topology` took 6.0–7.5 s on **every** call, all of it one
+  `id IN (…)` carrying one term per turn in the window. The cost is
   not the payload — the same terms with `| stats count` and no rows returned
   still took 12.8 s, while a term-free scan of the same window took 302 ms.
 
