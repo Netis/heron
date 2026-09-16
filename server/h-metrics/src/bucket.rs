@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use tdigest::TDigest;
 use h_llm::model::LlmCall;
+use tdigest::TDigest;
 
 use crate::model::{LlmFinishMetric, LlmMetric, LlmMetricsBatch};
 
@@ -319,9 +319,9 @@ impl WindowBucket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::IpAddr;
     use h_llm::model::{ApiType, LlmCall};
     use h_llm::wire_apis as wa;
+    use std::net::IpAddr;
 
     #[test]
     fn digest_empty() {
@@ -401,6 +401,7 @@ mod tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            attribution: h_common::attribution::AttributionInfo::ambiguous(),
             process: None,
         }
     }

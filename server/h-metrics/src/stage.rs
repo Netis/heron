@@ -108,9 +108,9 @@ pub fn spawn_metrics_stage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::IpAddr;
     use h_llm::model::{AgentCallInfo, ApiType, LlmCall, LlmCallStart};
     use h_llm::wire_apis as wa;
+    use std::net::IpAddr;
 
     fn start_event(ts_us: i64, model: &str) -> LlmEvent {
         LlmEvent::Start(LlmCallStart {
@@ -160,6 +160,7 @@ mod tests {
                 tool_call_count: 0,
                 tool_names: vec![],
                 body_bytes_dropped: 0,
+                attribution: h_common::attribution::AttributionInfo::ambiguous(),
                 process: None,
             }),
             agent: Some(AgentCallInfo {

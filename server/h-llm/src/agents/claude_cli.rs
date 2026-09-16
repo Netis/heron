@@ -15,7 +15,8 @@ const UA_PREFIX: &str = "claude-cli/";
 /// background `/v1/messages` call that feeds the running transcript to a
 /// supervisor prompt and returns a tiny `<block>yes/no` verdict (no `tools`
 /// field, `stop_sequences=["</block>"]`). It is housekeeping, not conversation.
-const SECURITY_MONITOR_SYSTEM_SIG: &str = "You are a security monitor for autonomous AI coding agents";
+const SECURITY_MONITOR_SYSTEM_SIG: &str =
+    "You are a security monitor for autonomous AI coding agents";
 
 /// Tool-call anchor for session synthesis when the legacy
 /// `x-claude-code-session-id` header is absent (Claude Code stopped sending it
@@ -380,6 +381,7 @@ mod tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            attribution: h_common::attribution::AttributionInfo::ambiguous(),
             process: None,
         })
     }

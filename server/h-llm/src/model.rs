@@ -75,6 +75,10 @@ pub struct LlmCall {
     /// Extraction (usage/model) always runs on the full body upstream, so a
     /// non-zero value never implies lost metrics — only a truncated stored body.
     pub body_bytes_dropped: u64,
+    /// Explicit attribution label and confidence for training/export consumers.
+    /// eBPF process attribution and configured gateway headers can set this to
+    /// high confidence; packet-tap rows without such identity remain ambiguous.
+    pub attribution: h_common::attribution::AttributionInfo,
     /// Owning process (pid / comm / exe), when the capture source attributes it
     /// (eBPF). `None` for passive taps (pcap / cloud-probe). Copied from the
     /// request's process attribution (falling back to the response's) in the
@@ -399,6 +403,7 @@ mod extension_tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            attribution: h_common::attribution::AttributionInfo::ambiguous(),
             process: None,
         };
         let arc = Arc::new(call);
@@ -464,6 +469,7 @@ mod extension_tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            attribution: h_common::attribution::AttributionInfo::ambiguous(),
             process: None,
         };
         assert!(call.finish_reason.is_none());

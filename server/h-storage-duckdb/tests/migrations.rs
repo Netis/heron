@@ -71,6 +71,7 @@ fn sample_call(id: &str, tool_call_count: u32, body_bytes_dropped: u64) -> LlmCa
         tool_call_count,
         tool_names: vec![],
         body_bytes_dropped,
+        attribution: h_common::attribution::AttributionInfo::ambiguous(),
         process: None,
     }
 }
@@ -718,6 +719,9 @@ async fn phase8_otel_rename_migrates_tables_columns_and_backfills_kind() {
     // (3) `kind` column added and backfilled to 'llm' on the pre-existing row.
     let span_cols = column_names(&conn, "spans");
     assert!(span_cols.iter().any(|c| c == "kind"), "spans must have kind, got: {span_cols:?}");
+    assert!(span_cols.iter().any(|c| c == "attribution_label"), "spans must have attribution_label, got: {span_cols:?}");
+    assert!(span_cols.iter().any(|c| c == "attribution_source"), "spans must have attribution_source, got: {span_cols:?}");
+    assert!(span_cols.iter().any(|c| c == "attribution_confidence"), "spans must have attribution_confidence, got: {span_cols:?}");
     let kind: String = conn
         .query_row("SELECT kind FROM spans WHERE id = 'call-1'", [], |r| r.get(0))
         .expect("migrated span row must be present");

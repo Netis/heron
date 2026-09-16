@@ -81,6 +81,7 @@ pub fn make_call(
         tool_call_count,
         tool_names: tool_names.iter().map(|s| s.to_string()).collect(),
         body_bytes_dropped: 0,
+        attribution: h_common::attribution::AttributionInfo::ambiguous(),
         process: None,
     };
     let agent = AgentCallInfo {

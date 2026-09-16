@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use h_common::attribution::AttributionConfig;
 use h_common::config::BodyCapConfig;
 use h_common::internal_metrics::{Metric, MetricsSystem};
 
@@ -73,6 +74,7 @@ pub fn spawn_llm_stage(
     metrics_sys: &mut MetricsSystem,
     classifier_cfg: ClassifierConfig,
     body_cap: BodyCapConfig,
+    attribution_cfg: AttributionConfig,
 ) -> Vec<JoinHandle<()>> {
     assert!(
         !metrics_shard_txs.is_empty(),
@@ -93,12 +95,14 @@ pub fn spawn_llm_stage(
         let metrics_txs = metrics_shard_txs.clone();
         let calls_tx = calls_tx.clone();
         let classifier_cfg = classifier_cfg.clone();
+        let attribution_cfg = attribution_cfg.clone();
         let worker_metrics = metrics_sys.register_worker(&format!("llm.{i}"), LLM_WORKER_METRICS);
         handles.push(tokio::spawn(async move {
             let shard = i;
             let mut processor = LlmProcessor::new(wire_apis, reg, worker_metrics.clone())
                 .with_classifier_cfg(classifier_cfg)
-                .with_body_cap(body_cap);
+                .with_body_cap(body_cap)
+                .with_attribution_cfg(attribution_cfg);
             let reason = 'main: loop {
                 let event = match rx.recv().await {
                     Some(e) => e,
@@ -216,11 +220,11 @@ fn metrics_shard_index(event: &LlmEvent, n: usize) -> usize {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use std::net::IpAddr;
-    use std::sync::Arc;
     use h_protocol::joiner::HttpJoiner;
     use h_protocol::model::{HttpParseEvent, HttpRequestData, HttpResponseData};
     use h_protocol::net::FlowKey;
+    use std::net::IpAddr;
+    use std::sync::Arc;
 
     use crate::agents::build_default_registry;
     use crate::model::{LlmCall, TurnShardInput};
@@ -367,6 +371,7 @@ mod tests {
             &mut metrics_sys,
             ClassifierConfig::default(),
             BodyCapConfig::default(),
+            AttributionConfig::default(),
         );
         let _svc = metrics_sys.start();
 
@@ -427,6 +432,7 @@ mod tests {
             &mut metrics_sys,
             ClassifierConfig::default(),
             BodyCapConfig::default(),
+            AttributionConfig::default(),
         );
         let _svc = metrics_sys.start();
 
@@ -482,6 +488,7 @@ mod tests {
             &mut metrics_sys,
             ClassifierConfig::default(),
             BodyCapConfig::default(),
+            AttributionConfig::default(),
         );
         let _svc = metrics_sys.start();
 

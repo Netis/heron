@@ -12,6 +12,7 @@
 //! compile-time coupling surface small.
 
 pub mod agent;
+pub mod attribution;
 pub mod config;
 pub mod config_edit;
 pub mod error;

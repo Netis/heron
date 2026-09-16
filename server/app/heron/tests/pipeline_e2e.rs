@@ -15,8 +15,6 @@ use duckdb::Connection;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
-use heron::create_backend;
-use heron::Pipeline;
 use h_capture::{CaptureSource, PcapFileSource};
 use h_common::config::{
     CaptureSourceConfig, DuckDbConfig, PipelineDef, RetentionConfig, StorageConfig,
@@ -24,6 +22,8 @@ use h_common::config::{
 };
 use h_common::internal_metrics::{Metric, MetricsSystem};
 use h_llm::wire_apis as wa;
+use heron::create_backend;
+use heron::Pipeline;
 
 fn fixture(name: &str) -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -128,6 +128,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
         h_turn::new_active_trace_registry(),
         h_llm::agent_classifier::ClassifierConfig::default(),
         h_common::config::BodyCapConfig::default(),
+        h_common::attribution::AttributionConfig::default(),
     );
     let _metrics_svcs: Vec<_> = per_pipeline_metrics
         .into_iter()
