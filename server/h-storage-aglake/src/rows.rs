@@ -320,6 +320,20 @@ pub(crate) fn span_events(call: &LlmCall, store_bodies: bool) -> (SpanEvent, Opt
 // traces
 // ---------------------------------------------------------------------------
 
+/// The search-time name of [`TraceEvent::models_used`].
+///
+/// aglake's `auto_json` names an array path with a `{}` suffix, as Splunk does
+/// (`{"tags":["a"]}` extracts as `tags{}`). The bare name is not an error — it
+/// matches nothing, so a filter on it returns zero rows and looks like an
+/// empty result. Every search term and `props.toml` entry for an array field
+/// has to use the suffixed name; [`ARRAY_FIELDS`] is the one place it lives.
+pub(crate) const MODELS_USED: &str = "models_used{}";
+
+/// Every event field written as a native JSON array, paired with the name
+/// aglake searches it by. `array_fields_are_all_registered` fails if an event
+/// grows an array that is not listed here.
+pub(crate) const ARRAY_FIELDS: &[(&str, &str)] = &[("models_used", MODELS_USED)];
+
 /// One agent turn.
 #[derive(Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -336,9 +350,10 @@ pub(crate) struct TraceEvent {
     pub end_us: i64,
     pub duration_ms: u64,
     pub call_count: u32,
-    /// Native array so `models_used="gpt-4"` matches. Order is not guaranteed
-    /// to survive as a multivalue field, which is why the `_json` twin below
-    /// is what gets read back.
+    /// Native array so the traces filter can match any element — searched as
+    /// [`MODELS_USED`], not by this name. Order is not guaranteed to survive
+    /// as a multivalue field, which is why the `_json` twin below is what gets
+    /// read back.
     pub models_used: Vec<String>,
     pub models_used_json: String,
     pub subagents_used_json: String,
@@ -1168,6 +1183,31 @@ mod tests {
         let e = trace_event(&t);
         assert_eq!(e.proxy_role, None);
         assert_eq!(e.proxy_pair_id, None);
+    }
+
+    /// A field serialized as a JSON array is searched under a different name
+    /// than it is written with. An unregistered one would get a filter on the
+    /// bare name — which matches nothing and reports nothing.
+    #[test]
+    fn array_fields_are_all_registered() {
+        let (span, _) = span_events(&fixtures::full_call(), true);
+        let events = [
+            serde_json::to_value(span).unwrap(),
+            serde_json::to_value(trace_event(&fixtures::full_trace())).unwrap(),
+        ];
+        for ev in events {
+            for (k, v) in ev.as_object().unwrap() {
+                if v.is_array() {
+                    assert!(
+                        ARRAY_FIELDS.iter().any(|(f, _)| f == k),
+                        "`{k}` is written as an array; add it to ARRAY_FIELDS"
+                    );
+                }
+            }
+        }
+        for (f, searched) in ARRAY_FIELDS {
+            assert_eq!(*searched, format!("{f}{{}}"));
+        }
     }
 
     #[test]

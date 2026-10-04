@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Filtering agent turns by model returned almost nothing on the aglake
+  backend.** aglake names an array field with a `{}` suffix at search time
+  (`models_used` is searched as `models_used{}`, as Splunk does), and a search
+  term on the bare name is not an error — it matches nothing. So the traces
+  list filtered by model, and the agent-kind dropdown narrowed by model, came
+  back empty or nearly so: one turn in seven days on a deployment where the
+  model appeared in hundreds. The filters now use the suffixed name, and a live
+  test filters by model — every earlier trace test passed an empty filter,
+  which is how this got through.
+- **`heron aglake-props` listed `models_used` under its bare name**, which
+  aglake does not extract, so the field never reached the columnar store. It
+  now prints `models_used{}`. Deployments that merged the earlier output
+  should change that one line in `props.toml` and restart aglaked; as with any
+  `indexed` change it applies to newly written buckets only.
+
 ## [0.8.2] — 2026-09-16
 
 ### Performance
