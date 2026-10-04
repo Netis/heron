@@ -39,6 +39,7 @@ fn flow() -> (FlowKey, (IpAddr, u16), (IpAddr, u16)) {
 }
 
 #[test]
+// @scenario PROTO-SSE-001 integration
 fn keepalive_two_sse_chunked_responses_real_bytes_one_shot() {
     let (fk, ca, sa) = flow();
     let mut parser = HttpParser::new();

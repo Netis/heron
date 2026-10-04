@@ -69,6 +69,7 @@ fn completed_calls(events: &[LlmEvent]) -> Vec<Arc<LlmCall>> {
 }
 
 #[test]
+// @scenario LLM-WIREAPI-001 integration
 fn synthesized_anthropic_call_extracts_llmcall() {
     let mut s = FlowSynthesizer::new(SynthConfig::default());
     let tuple = ConnTuple {
