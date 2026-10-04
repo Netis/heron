@@ -69,6 +69,7 @@ fn make_completed_call(request_time: i64, tool_surface: Option<ToolSurface>) -> 
 }
 
 #[test]
+// @scenario METRICS-WINDOW-001 integration
 fn distinct_surfaces_produce_distinct_metric_rows() {
     let mut agg = MetricsAggregator::new(metrics());
     let t0 = 1_700_000_000_000_000i64;

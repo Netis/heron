@@ -272,6 +272,7 @@ fn column_names(conn: &Connection, table: &str) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// @scenario MIGRATE-LEGACY-001 integration
 async fn phase5_adds_nullable_agent_columns_to_llm_calls_on_legacy_db() {
     let tmp = TempDir::new().unwrap();
     let path = synth_db(&tmp, &[LEGACY_LLM_CALLS_PRE_PHASE5]);

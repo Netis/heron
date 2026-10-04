@@ -50,6 +50,7 @@ fn test_health_context() -> ApiHealthContext {
 }
 
 #[tokio::test]
+// @scenario API-ROUTES-001 integration
 async fn finish_reasons_endpoint_returns_one_series_per_raw_value() {
     let backend = DuckDbBackend::open(":memory:").unwrap();
     <DuckDbBackend as h_storage::StorageBackend>::init(&backend)
@@ -751,4 +752,98 @@ async fn metrics_filters_by_tool_surface() {
         .await
         .unwrap();
     assert_eq!(resp_bad.status(), StatusCode::BAD_REQUEST);
+}
+
+// Whole-router smoke: every GET endpoint must answer without a 500.
+//
+// The targeted tests above prove shapes for a few endpoints; this proves the
+// router + handler + param-parsing + storage-query path of *every* route
+// answers cleanly against an empty database (200 / 400 / 404, never 500). It
+// is the in-process analogue of deploy-prod's read-path smoke, and it is where
+// an unhandled `?`/unwrap in a rarely-hit route shows up.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn all_get_routes_answer_without_500() {
+    let backend = DuckDbBackend::open(":memory:").unwrap();
+    <DuckDbBackend as h_storage::StorageBackend>::init(&backend)
+        .await
+        .unwrap();
+    let storage: std::sync::Arc<dyn h_storage::StorageBackend> = std::sync::Arc::new(backend);
+    let app = router(
+        storage,
+        test_metrics_context(),
+        test_runtime_config_context(),
+        test_health_context(),
+        std::sync::Arc::new(vec![]),
+        h_turn::new_active_trace_registry(),
+    );
+
+    // Wide window, so every list route has data to (not) find.
+    let w = "start=0&end=4102444800";
+    let uris: Vec<String> = vec![
+        // meta / config
+        "/api/health".into(),
+        "/api/runtime-config".into(),
+        "/api/internal-metrics".into(),
+        "/api/internal-metrics/series".into(),
+        "/api/capture/interfaces".into(),
+        // filters
+        "/api/filters/wire-apis".into(),
+        "/api/filters/models".into(),
+        "/api/filters/server-ips".into(),
+        "/api/filters/finish-reasons".into(),
+        format!("/api/filters/agent-kinds?{w}"),
+        // metrics
+        format!("/api/metrics/timeseries?{w}&granularity=1m"),
+        format!("/api/metrics/summary?{w}"),
+        format!("/api/metrics/models?{w}"),
+        format!("/api/metrics/finish-reasons?{w}&granularity=1m"),
+        // services
+        format!("/api/services?{w}"),
+        format!("/api/services/topology?{w}"),
+        // spans (+ deprecated alias)
+        format!("/api/spans?{w}"),
+        "/api/spans/nope".into(),
+        format!("/api/llm-calls?{w}"),
+        "/api/llm-calls/nope".into(),
+        // exchanges
+        format!("/api/http-exchanges?{w}"),
+        "/api/http-exchanges/nope".into(),
+        // sessions
+        format!("/api/agent-sessions?{w}"),
+        "/api/agent-sessions/s/s".into(),
+        "/api/agent-sessions/s/s/turns".into(),
+        // traces (+ deprecated alias)
+        format!("/api/traces?{w}"),
+        format!("/api/traces/summary?{w}"),
+        format!("/api/traces/activity?{w}"),
+        "/api/traces/nope".into(),
+        "/api/traces/nope/spans".into(),
+        "/api/traces/nope/proxy-view".into(),
+        format!("/api/agent-turns?{w}"),
+        "/api/agent-turns/nope".into(),
+        // export
+        "/api/export/trajectory?scope=turn&turn_id=nope".into(),
+        format!("/api/export/trajectories?{w}"),
+        // pcap extract
+        "/api/pcap/extract?source_id=en0&start=0&end=30000000".into(),
+    ];
+
+    for uri in &uris {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "GET {uri} returned 500"
+        );
+    }
 }

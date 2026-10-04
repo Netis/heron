@@ -114,3 +114,58 @@ mod derive_tokens_estimated_tests {
         assert!(derive_tokens_estimated(Some(5), Some(2), Some(body)));
     }
 }
+
+#[cfg(test)]
+mod json_list_and_headers_tests {
+    use super::{headers_to_json, parse_json_string_list};
+
+    #[test]
+    fn headers_to_json_empty_is_an_empty_array() {
+        assert_eq!(headers_to_json(&[]), "[]");
+    }
+
+    #[test]
+    fn headers_to_json_preserves_order_and_duplicates() {
+        let h = vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("set-cookie".to_string(), "a=1".to_string()),
+            ("set-cookie".to_string(), "b=2".to_string()),
+        ];
+        assert_eq!(
+            headers_to_json(&h),
+            r#"[["content-type","application/json"],["set-cookie","a=1"],["set-cookie","b=2"]]"#
+        );
+    }
+
+    #[test]
+    fn headers_to_json_escapes_payloads() {
+        let h = vec![("x-q".to_string(), "a\"b\\c".to_string())];
+        let json = headers_to_json(&h);
+        // Must round-trip through a real parser rather than corrupt the value.
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0][1], "a\"b\\c");
+    }
+
+    #[test]
+    fn parse_json_string_list_missing_or_empty_is_empty() {
+        assert!(parse_json_string_list(None).is_empty());
+        assert!(parse_json_string_list(Some("")).is_empty());
+        assert!(parse_json_string_list(Some("[]")).is_empty());
+    }
+
+    #[test]
+    fn parse_json_string_list_roundtrips() {
+        assert_eq!(
+            parse_json_string_list(Some(r#"["gpt-4","claude-3"]"#)),
+            vec!["gpt-4".to_string(), "claude-3".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_json_string_list_malformed_or_wrong_shape_degrades_to_empty() {
+        // A turn payload must still be returnable even if one column is junk.
+        assert!(parse_json_string_list(Some("not json")).is_empty());
+        assert!(parse_json_string_list(Some(r#"{"a":1}"#)).is_empty());
+        assert!(parse_json_string_list(Some(r#"[1,2,3]"#)).is_empty());
+    }
+}

@@ -309,6 +309,7 @@ mod tests {
     }
 
     #[tokio::test]
+    // @scenario STORAGE-DURABILITY-001 unit
     async fn test_flush_failure_does_not_stop_loop() {
         // First flush returns Err; second flush must still get driven and
         // the shutdown flush must still run.

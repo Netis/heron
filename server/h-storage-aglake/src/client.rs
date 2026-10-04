@@ -1133,6 +1133,7 @@ mod tests {
 
 #[cfg(test)]
 mod retry_tests {
+    // @scenario AGLAKE-RETRY-413-001 integration
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{SocketAddr, TcpListener};
@@ -1465,6 +1466,7 @@ mod retry_tests {
 
 #[cfg(test)]
 mod auth_tests {
+    // @scenario AGLAKE-AUTH-401-001 integration
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{SocketAddr, TcpListener};
@@ -2166,6 +2168,7 @@ mod auth_tests {
 /// and show up in production as a load spike nobody could attribute.
 #[cfg(test)]
 mod concurrency_tests {
+    // @scenario AGLAKE-CONCURRENCY-001 integration
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{SocketAddr, TcpListener};

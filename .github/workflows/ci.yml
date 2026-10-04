@@ -106,6 +106,27 @@ jobs:
         # a throwaway git repo, so it never touches the working tree.
         run: bash scripts/lint/test-check-leakage.sh
 
+      - name: lint — coverage policy + waivers
+        # Static half of the verification-coverage gate (docs/design/11-verification.md):
+        # every workspace crate is classified, every override/tier is well-formed,
+        # and every waiver carries reason + owner + expiry and has not expired.
+        # Cheap and offline — deliberately not in the instrumented coverage job.
+        run: python3 scripts/ci/check_coverage_policy.py --static
+
+      - name: lint — coverage scenario matrix
+        # Every Tier 0/1 module has a scenario; every scenario is verified at
+        # each kind it declares; no orphan @scenario tags.
+        run: python3 scripts/ci/check_scenarios.py
+
+      - name: lint — verification checkers self-test
+        # Guards the policy/scenario/diff checkers the same way the leakage
+        # self-test guards check-leakage.sh: a broken checker would otherwise
+        # weaken the gate silently. Stdlib-only, hermetic.
+        run: |
+          python3 scripts/ci/tests/test_check_coverage_policy.py
+          python3 scripts/ci/tests/test_check_scenarios.py
+          python3 scripts/ci/tests/test_diff_coverage.py
+
       - name: cargo test
         working-directory: server
         env:
