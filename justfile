@@ -36,6 +36,7 @@ help:
     @echo "   just test all          Run cargo test (all crates)"
     @echo "   just test crate <name> Test a single workspace crate"
     @echo "   just coverage all      Verification coverage gate (Rust + TS)"
+    @echo "   just mutation diff     Tier 0 mutation on the current diff"
     @echo ""
     @echo "🌲 Worktrees"
     @echo "   just wt add <name>     Create worktree + feature branch"
@@ -83,6 +84,12 @@ test *args:
 #   just coverage all [base]    the full PR gate
 coverage *args:
     @bash scripts/ci/coverage.sh {{args}}
+
+# Mutation testing — Tier 0 only (requires cargo-mutants)
+#   just mutation diff [base]   mutate the PR's changed Tier 0 lines
+#   just mutation full          full run over every Tier 0 crate
+mutation *args:
+    @bash scripts/ci/mutation.sh {{args}}
 
 # Benchmarking (criterion hot-path micro-benches — h-protocol/benches/hot_paths.rs)
 #   just bench                 run all hot-path benches

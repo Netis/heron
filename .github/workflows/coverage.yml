@@ -92,6 +92,20 @@ jobs:
           path: /tmp/changed-code-coverage.md
           retention-days: 7
 
+      # Mutation on the PR's changed Tier 0 lines. Advisory for now: it proves
+      # the tests would notice a wrong implementation on the lines this PR
+      # touched. Promote to blocking once the false-positive rate is measured on
+      # real diffs. `mutation.sh diff` needs workspace-relative patch paths and
+      # runs single-threaded in-place (see the script).
+      - name: Install cargo-mutants (guarded)
+        if: github.event_name == 'pull_request'
+        run: command -v cargo-mutants >/dev/null 2>&1 || cargo install cargo-mutants --locked
+
+      - name: Mutation — changed Tier 0 lines (advisory)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: bash scripts/ci/mutation.sh diff origin/${{ github.base_ref }}
+
       # Branch coverage is authoritative for Tier 0 edges but the flag is
       # unstable and needs nightly + -Z coverage-options=branch, so it runs on
       # the schedule only and never blocks a PR.
