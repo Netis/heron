@@ -35,6 +35,7 @@ help:
     @echo "🧪 Testing"
     @echo "   just test all          Run cargo test (all crates)"
     @echo "   just test crate <name> Test a single workspace crate"
+    @echo "   just coverage all      Verification coverage gate (Rust + TS)"
     @echo ""
     @echo "🌲 Worktrees"
     @echo "   just wt add <name>     Create worktree + feature branch"
@@ -73,6 +74,15 @@ quality *args:
 # Testing (cargo test, bun test, per-crate)
 test *args:
     @bash scripts/routers/shared/test.sh {{args}}
+
+# Verification coverage (docs/design/11-verification.md)
+#   just coverage rust          instrument + run the Rust workspace
+#   just coverage ts            instrument + run the console tests
+#   just coverage report        enforce floors / no-decrease
+#   just coverage diff [base]   enforce changed-code coverage
+#   just coverage all [base]    the full PR gate
+coverage *args:
+    @bash scripts/ci/coverage.sh {{args}}
 
 # Benchmarking (criterion hot-path micro-benches — h-protocol/benches/hot_paths.rs)
 #   just bench                 run all hot-path benches

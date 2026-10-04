@@ -1,0 +1,156 @@
+name: coverage
+
+# Verification coverage — see docs/design/11-verification.md.
+#
+# Separate from `ci` on purpose: instrumentation rebuilds the whole workspace
+# (bundled DuckDB dominates) and must not hold the required `ci` check hostage
+# on the single ci-pool runner. The cheap static gates (policy classification,
+# waiver expiry, scenario completeness) stay in `ci.yml`; this workflow owns the
+# heavy measurement, the changed-code gate, and the nightly branch report.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'console/src/**'
+      - 'verification/**'
+      - 'scripts/ci/**'
+      - '.github/workflows/coverage.yml'
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    # Fork-PR safety: this runs on a self-hosted runner, so never execute code
+    # from a forked pull request (same rationale as ci.yml).
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, ci-pool]
+    timeout-minutes: 90
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history is required for `git merge-base origin/main HEAD`,
+          # which the changed-code gate uses to compute the PR's added lines.
+          fetch-depth: 0
+          # Pull the git-LFS pcap corpus so the coverage run exercises the
+          # corpus-golden path instead of skipping it.
+          lfs: true
+
+      - name: Toolchain versions
+        run: |
+          cargo --version
+          rustc --version
+          cargo llvm-cov --version || cargo install cargo-llvm-cov --locked
+
+      - name: Cache cargo + instrumented target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            server/target
+          key: coverage-${{ runner.os }}-${{ hashFiles('server/Cargo.lock') }}
+          restore-keys: coverage-${{ runner.os }}-
+
+      - name: Instrument + run workspace
+        run: bash scripts/ci/coverage.sh rust
+
+      - name: Metric — per-tier floors + no-decrease
+        # --enforce-tiers is ON: crates that meet their tier floor may not
+        # regress below it, and crates still ratcheting carry an expiring
+        # crate-level waiver in verification/waivers.json.
+        run: python3 scripts/ci/check_coverage_policy.py --report server/target/coverage/llvm-cov.json --repo-root . --enforce-tiers
+
+      - name: Changed-code coverage (PR gate)
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/ci/diff_coverage.py \
+            --lcov server/target/coverage/lcov.info \
+            --cov-json server/target/coverage/llvm-cov.json \
+            --base origin/${{ github.base_ref }} \
+            --repo-root . \
+            --markdown /tmp/changed-code-coverage.md
+
+      - name: Publish changed-code summary
+        if: github.event_name == 'pull_request' && hashFiles('/tmp/changed-code-coverage.md') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: changed-code-coverage
+          path: /tmp/changed-code-coverage.md
+          retention-days: 7
+
+      # Branch coverage is authoritative for Tier 0 edges but the flag is
+      # unstable and needs nightly + -Z coverage-options=branch, so it runs on
+      # the schedule only and never blocks a PR.
+      - name: Provision nightly (branch coverage)
+        if: github.event_name == 'schedule'
+        run: |
+          if ! rustup toolchain list | grep -q '^nightly'; then
+            rustup toolchain install nightly --profile minimal
+          fi
+
+      - name: Branch coverage report (nightly, advisory)
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        run: |
+          cargo +nightly llvm-cov --version || cargo +nightly install cargo-llvm-cov --locked
+          (cd server && cargo +nightly llvm-cov report --branch --json \
+            --output-path target/coverage/llvm-cov-branch.json)
+          (cd server && cargo +nightly llvm-cov report --branch --lcov \
+            --output-path target/coverage/lcov-branch.info)
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-rust
+          path: |
+            server/target/coverage/llvm-cov.json
+            server/target/coverage/lcov.info
+            /tmp/changed-code-coverage.md
+          retention-days: 14
+          if-no-files-found: warn
+
+  console:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, ci-pool]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: bun install
+        working-directory: console
+        run: bun install --frozen-lockfile
+      - name: Instrument + run console tests
+        run: bash scripts/ci/coverage.sh ts
+      - name: Changed-code coverage (console)
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/ci/diff_coverage.py \
+            --lcov console/coverage/lcov.info \
+            --base origin/${{ github.base_ref }} \
+            --paths console \
+            --repo-root .
+      - name: Upload console lcov
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-console
+          path: console/coverage/lcov.info
+          if-no-files-found: warn

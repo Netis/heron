@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "_comment": "Risk-driven verification coverage policy. See docs/design/11-verification.md. Floors are targets; day-one blocking is (a) no decrease vs coverage-baseline.json and (b) changed-code coverage. Flip --enforce-tiers once ratcheted.",
+  "baseline_file": "verification/coverage-baseline.json",
+  "waivers_file": "verification/waivers.json",
+  "scenarios_file": "verification/scenarios.json",
+  "slack": 0.5,
+  "tiers": {
+    "0": { "name": "safety-integrity", "line": 95, "region": 90, "function": 90, "mutation": 85, "scenario": 100, "requires": ["boundary", "negative", "fault", "concurrency"] },
+    "1": { "name": "core-product", "line": 90, "region": 85, "function": 85, "mutation": 70, "scenario": 100 },
+    "2": { "name": "normal-app", "line": 80, "region": 75, "function": 80, "mutation": 0, "scenario": 0 },
+    "3": { "name": "glue-ui", "line": 60, "region": 0, "function": 0, "mutation": 0, "scenario": 0 }
+  },
+  "changed_code": {
+    "0": { "line": 90, "region": 85, "branch": 85 },
+    "1": { "line": 90, "region": 85, "branch": 85 },
+    "2": { "line": 85, "region": 75 },
+    "3": {}
+  },
+  "modules": {
+    "h-storage":                 { "tier": 0, "path": "server/h-storage" },
+    "h-storage-duckdb":          { "tier": 0, "path": "server/h-storage-duckdb" },
+    "h-storage-clickhouse":      { "tier": 0, "path": "server/h-storage-clickhouse" },
+    "h-storage-aglake":          { "tier": 0, "path": "server/h-storage-aglake" },
+    "h-protocol":                { "tier": 0, "path": "server/h-protocol" },
+    "h-llm":                     { "tier": 1, "path": "server/h-llm" },
+    "h-turn":                    { "tier": 1, "path": "server/h-turn" },
+    "h-metrics":                 { "tier": 1, "path": "server/h-metrics" },
+    "h-capture":                 { "tier": 1, "path": "server/h-capture" },
+    "h-api":                     { "tier": 1, "path": "server/h-api" },
+    "heron":                     { "tier": 1, "path": "server/app/heron" },
+    "h-pcap-extract":            { "tier": 2, "path": "server/h-pcap-extract" },
+    "h-common":                  { "tier": 2, "path": "server/h-common" },
+    "h-export":                  { "tier": 2, "path": "server/h-export" },
+    "console":                   { "tier": 3, "path": "console/src" }
+  },
+  "overrides": [
+    { "path": "server/h-capture/src/ebpf", "tier": 0, "why": "uprobe capture + unsafe TLS framing" },
+    { "path": "console/src/lib/wire-apis", "tier": 2, "why": "classification logic mirrored from the backend" },
+    { "path": "console/src/lib/call-pair.ts", "tier": 2, "why": "exchange pairing logic, not presentation" }
+  ],
+  "exclusions": {
+    "h-ebpf-prog": "BPF program; builds for bpfel-unknown-none with a pinned nightly toolchain, never a host test target",
+    "h-ebpf-common": "types shared into the BPF program; no host runtime behavior to test"
+  }
+}

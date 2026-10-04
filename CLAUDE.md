@@ -138,6 +138,20 @@ class of past failure has a deterministic gate before it can ship.
 - Stdlib unit tests for the staging-soak and longevity judges.
 - An automated PR-review agent reviews the diff.
 
+**Verification coverage** — risk-driven, not a single repo-wide line number
+(see [docs/design/11-verification.md](docs/design/11-verification.md)):
+- `ci.yml` runs the cheap static gates: every workspace crate is classified in
+  `verification/coverage-policy.json`, every waiver is unexpired and owned, and
+  every Tier 0/1 module has a verified scenario in `verification/scenarios.json`
+  (`scripts/ci/check_scenarios.py`).
+- The separate `coverage.yml` measures with `cargo-llvm-cov` + `bun test
+  --coverage` and enforces **changed-code coverage** (the primary gate) plus
+  no-decrease vs `verification/coverage-baseline.json`. Tier target floors are
+  advisory until the ratchet is flipped with `--enforce-tiers`.
+- `mutation.yml` (nightly) runs `cargo-mutants` over Tier 0 only; PRs use the
+  cheaper `--in-diff` variant. Waivers live in `verification/waivers.json` and
+  expire — they are not permanent exclusions.
+
 **On merge to `main`** — `ci → deploy-staging → staging-soak`:
 - **staging-soak** replays a known pcap corpus through the freshly deployed
   binary on the staging VM and asserts parse/pairing/turn/persistence
