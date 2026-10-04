@@ -53,6 +53,10 @@ mod dims;
 mod distincts;
 mod exchanges;
 mod it;
+#[cfg(test)]
+mod query_tests;
+#[cfg(test)]
+mod search_mock;
 mod metrics;
 mod props;
 mod read;

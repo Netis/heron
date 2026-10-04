@@ -138,3 +138,27 @@ impl ClickHouseBackend {
         Ok(report)
     }
 }
+
+#[cfg(test)]
+mod cutoff_tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn epoch_is_zero_micros() {
+        assert_eq!(cutoff_micros(SystemTime::UNIX_EPOCH).unwrap(), 0);
+    }
+
+    #[test]
+    fn sub_second_precision_is_kept() {
+        let t = SystemTime::UNIX_EPOCH + Duration::from_micros(1_500_001);
+        assert_eq!(cutoff_micros(t).unwrap(), 1_500_001);
+    }
+
+    #[test]
+    fn pre_epoch_cutoff_is_an_error() {
+        let t = SystemTime::UNIX_EPOCH - Duration::from_secs(1);
+        assert!(cutoff_micros(t).is_err());
+    }
+}
