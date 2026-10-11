@@ -19,6 +19,7 @@ fn metrics() -> MetricsWorker {
             Metric::MetricsLlmEventsComplete,
             Metric::MetricsHeartbeatsReceived,
             Metric::MetricsWindowsEmitted,
+            Metric::MetricsActiveCallsExpired,
         ],
     );
     let _svc = sys.start();

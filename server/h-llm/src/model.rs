@@ -184,16 +184,48 @@ pub enum LlmEvent {
 }
 
 /// Emitted when an LLM API request is first detected (headers parsed).
-/// Used by MetricsAggregator to track concurrency (+1 on start, -1 on complete).
+/// Used by MetricsAggregator to track concurrency: a Start opens a call, the
+/// Complete with the same [`CallKey`] closes it.
 #[derive(Debug, Clone)]
 pub struct LlmCallStart {
     pub source_id: String,
     /// Stable wire-API identifier (see `LlmCall::wire_api`).
     pub wire_api: &'static str,
+    /// The model the *request* named. The Complete reports the model the
+    /// *response* named, which a server is free to spell differently — so
+    /// nothing may pair a Start with its Complete by model.
     pub model: String,
     pub is_stream: bool,
+    pub client_ip: IpAddr,
+    pub client_port: u16,
     pub server_ip: IpAddr,
+    pub server_port: u16,
     pub timestamp_us: i64,
+}
+
+impl LlmCallStart {
+    pub fn call_key(&self) -> CallKey {
+        CallKey {
+            source_id: self.source_id.clone(),
+            client: (self.client_ip, self.client_port),
+            server: (self.server_ip, self.server_port),
+            request_time_us: self.timestamp_us,
+        }
+    }
+}
+
+/// Identity of one call, computable from its Start and from its Complete.
+///
+/// Both events are built from the same parsed request, so its connection
+/// 4-tuple and arrival time agree exactly. Everything else on the two events
+/// can differ — the model above all — which is why concurrency is tracked by
+/// this key and not by dimension.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CallKey {
+    pub source_id: String,
+    pub client: (IpAddr, u16),
+    pub server: (IpAddr, u16),
+    pub request_time_us: i64,
 }
 
 impl fmt::Display for LlmCallStart {
@@ -467,6 +499,18 @@ mod extension_tests {
             process: None,
         };
         assert!(call.finish_reason.is_none());
+    }
+}
+
+impl LlmCall {
+    /// The [`CallKey`] its Start carried.
+    pub fn call_key(&self) -> CallKey {
+        CallKey {
+            source_id: self.source_id.clone(),
+            client: (self.client_ip, self.client_port),
+            server: (self.server_ip, self.server_port),
+            request_time_us: self.request_time,
+        }
     }
 }
 
