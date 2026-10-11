@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Performance page: token throughput instead of token totals.** "Cache
+  Token Usage" and "Token Averages" are replaced by **Prefill (Input) Tokens
+  / s** and **Decode (Output) Tokens / s**, across all calls. The old charts
+  plotted per-bucket totals, whose height changed with the zoom level (a 5m
+  bucket is five 1m buckets stacked); a rate reads the same at any
+  granularity. The prefill chart draws cache reads and writes beside input
+  rather than stacked under it, because whether a server's input count
+  already includes cache reads varies — Anthropic's API excludes them,
+  OpenAI's includes them. The bucket still in progress is left off, since its
+  total is incomplete and would chart as a drop at the live edge. Per-stream
+  generation speed remains the TPOT chart and the Overview's "Avg TPS".
+
 ## [0.8.2] — 2026-09-16
 
 ### Performance
