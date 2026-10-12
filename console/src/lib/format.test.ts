@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { formatAxisTime } from "./format"
+import { formatAxisTime, formatRate } from "./format"
 
 // Note: formatAxisTime renders in the local timezone (via Date.getHours()
 // / getMonth() etc.). Tests assert the *shape* (number of segments,
@@ -44,5 +44,16 @@ describe("formatAxisTime", () => {
 
   it("treats the 7d boundary inclusively as date-only", () => {
     expect(formatAxisTime(EPOCH, 7 * DAY)).toMatch(/^\d{2}-\d{2}$/)
+  })
+})
+
+describe("formatRate", () => {
+  it("rounds to what an axis tick can show", () => {
+    expect(formatRate(1665.4)).toBe("1.7K")
+    expect(formatRate(85.6)).toBe("86")
+    expect(formatRate(0.42)).toBe("0.4")
+    expect(formatRate(2)).toBe("2")
+    expect(formatRate(0)).toBe("0")
+    expect(formatRate(null)).toBe("—")
   })
 })
