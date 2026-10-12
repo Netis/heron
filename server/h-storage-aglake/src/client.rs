@@ -1213,7 +1213,7 @@ mod retry_tests {
                             let body = r#"{"acks":{"0":false}}"#;
                             let _ = stream.write_all(
                                 format!(
-                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\
                                  Content-Length: {}\r\n\r\n{body}",
                                     body.len()
                                 )
@@ -1236,7 +1236,7 @@ mod retry_tests {
                             Reply::Status(code, body) => {
                                 let _ = stream.write_all(
                                     format!(
-                                        "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\n\
+                                        "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nConnection: close\r\n\
                                      Content-Length: {}\r\n\r\n{body}",
                                         body.len()
                                     )
@@ -1556,6 +1556,11 @@ mod auth_tests {
             })
         }
 
+        // Every mock in this file answers one request per connection and then
+        // drops the socket, so each reply says `Connection: close`. Without it
+        // reqwest pools the connection as keep-alive and may send the next
+        // request down it just as the mock closes it, failing the call with
+        // "error sending request" — rarely on a fast machine, sometimes in CI.
         fn with_spec(spec: MockSpec) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
             let addr = listener.local_addr().unwrap();
@@ -1665,7 +1670,7 @@ mod auth_tests {
                             .unwrap_or_default();
                         let _ = stream.write_all(
                             format!(
-                                "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\n\
+                                "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nConnection: close\r\n\
                                  {cookie_header}Content-Length: {}\r\n\r\n{payload}",
                                 payload.len()
                             )
@@ -2235,7 +2240,7 @@ mod concurrency_tests {
                         let payload = r#"{"mode":"results","rows":[]}"#;
                         let _ = stream.write_all(
                             format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\
                                  Content-Length: {}\r\n\r\n{payload}",
                                 payload.len()
                             )
@@ -2404,7 +2409,7 @@ mod concurrency_tests {
                         };
                         let _ = stream.write_all(
                             format!(
-                                "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\n\
+                                "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nConnection: close\r\n\
                                  Content-Length: {}\r\n\r\n{payload}",
                                 payload.len()
                             )

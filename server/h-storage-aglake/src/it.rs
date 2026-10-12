@@ -801,6 +801,90 @@ async fn traces_list_hides_folded_proxy_hops_unless_asked() {
     assert!(visible.items.iter().any(|i| i.proxy_role.is_none()));
 }
 
+/// The model filter matches any element of a turn's `models_used`, and a
+/// turn whose models do not include the filter stays out.
+///
+/// The case that went unnoticed: aglake names an array path with a `{}`
+/// suffix, so a filter on the bare `models_used` returned zero rows instead of
+/// an error — on a real deployment, one turn in seven days where there were
+/// hundreds. Every other trace test passes an empty filter, so nothing failed.
+#[tokio::test]
+async fn traces_filter_by_any_model_the_turn_used() {
+    let backend = require_backend!();
+    let base = 1_785_643_000_000_000_i64;
+    let session = format!("models-{}", uuid::Uuid::now_v7());
+    let mut traces = Vec::new();
+    for (i, models) in [vec!["m-alpha", "m-beta"], vec!["m-gamma"]]
+        .into_iter()
+        .enumerate()
+    {
+        let mut t = fixtures::full_trace();
+        t.turn_id = format!("{session}-{i}");
+        t.session_id = session.clone();
+        t.start_time_us = base + i as i64 * 1_000_000;
+        t.end_time_us = t.start_time_us + 500_000;
+        t.models_used = models.into_iter().map(String::from).collect();
+        traces.push(t);
+    }
+    backend.write_traces(traces.clone()).await.unwrap();
+
+    let range = TimeRange {
+        start_us: base - 1_000_000,
+        end_us: base + 60_000_000,
+    };
+    let q = |models: &[&str]| TracesQuery {
+        time_range: range.clone(),
+        filter: DimensionFilter {
+            models: models.iter().map(|m| m.to_string()).collect(),
+            ..Default::default()
+        },
+        client_ips: vec![],
+        server_ports: vec![],
+        statuses: vec![],
+        agent_kinds: vec![],
+        sort_by: "start_time".into(),
+        sort_order: "ASC".into(),
+        page: 1,
+        page_size: 50,
+        include_proxy_hops: true,
+    };
+    let ids = |p: &h_storage::query::TracesPage| -> Vec<String> {
+        p.items.iter().map(|i| i.turn_id.clone()).collect()
+    };
+
+    eventually("traces", || async {
+        let p = backend.query_traces(&q(&[])).await.unwrap();
+        (p.total == 2).then_some(())
+    })
+    .await;
+
+    // The second element of a two-model turn, not just the first.
+    let beta = backend.query_traces(&q(&["m-beta"])).await.unwrap();
+    assert_eq!(ids(&beta), vec![traces[0].turn_id.clone()]);
+    // Any of several requested models.
+    let either = backend
+        .query_traces(&q(&["nope", "m-gamma"]))
+        .await
+        .unwrap();
+    assert_eq!(ids(&either), vec![traces[1].turn_id.clone()]);
+    let none = backend.query_traces(&q(&["nope"])).await.unwrap();
+    assert_eq!(none.total, 0);
+
+    // The agent-kind dropdown narrows by the same filter.
+    let kinds = backend
+        .query_distinct_agent_kinds(&DistinctAgentKindsQuery {
+            time_range: range.clone(),
+            filter: DimensionFilter {
+                models: vec!["m-gamma".into()],
+                ..Default::default()
+            },
+            include_proxy_hops: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(kinds, vec![traces[1].agent_kind.clone()]);
+}
+
 #[tokio::test]
 async fn exchanges_list_paginates_and_reports_duration() {
     let backend = require_backend!();
