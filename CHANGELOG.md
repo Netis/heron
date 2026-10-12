@@ -6,6 +6,57 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-10-12
+
+### Fixed
+
+- **Active calls climbed without bound and never came back down.** A
+  deployment whose real concurrency peaked at 28 reported a near-constant
+  16,600 globally and 48,878 for one model. Concurrency was tracked as +1 per
+  Start and −1 per Complete *by dimension*, and the two events name the model
+  from different places: the Start from the request, the Complete from the
+  response. A server that answers a request for one name with another — an
+  alias, a canonical id — left every such call counted forever, and because
+  the metrics shard is picked by a hash that includes the model, the Start and
+  the Complete could also land on different shards, leaking the global count
+  too. In-flight calls are now tracked by the call's own identity (connection
+  4-tuple and request time, identical on both events) in one table shared by
+  every shard, so the Complete closes exactly what its Start opened, and the
+  global count is no longer split per shard. A Start whose Complete never
+  arrives is closed after an hour of event time instead of lingering.
+  New internal metrics: `active_calls_open` (calls in flight right now, which
+  should track real concurrency) and `active_calls_expired`; they replace
+  `aggregator_concurrency_table`. Metric rows already written keep their
+  inflated values — only windows after the upgrade are correct.
+- **Filtering agent turns by model returned almost nothing on the aglake
+  backend.** aglake names an array field with a `{}` suffix at search time
+  (`models_used` is searched as `models_used{}`, as Splunk does), and a search
+  term on the bare name is not an error — it matches nothing. So the traces
+  list filtered by model, and the agent-kind dropdown narrowed by model, came
+  back empty or nearly so: one turn in seven days on a deployment where the
+  model appeared in hundreds. The filters now use the suffixed name, and a live
+  test filters by model — every earlier trace test passed an empty filter,
+  which is how this got through.
+- **`heron aglake-props` listed `models_used` under its bare name**, which
+  aglake does not extract, so the field never reached the columnar store. It
+  now prints `models_used{}`. Deployments that merged the earlier output
+  should change that one line in `props.toml` and restart aglaked; as with any
+  `indexed` change it applies to newly written buckets only.
+
+### Changed
+
+- **Performance page: token throughput instead of token totals.** "Cache
+  Token Usage" and "Token Averages" are replaced by **Prefill (Input) Tokens
+  / s** and **Decode (Output) Tokens / s**, across all calls. The old charts
+  plotted per-bucket totals, whose height changed with the zoom level (a 5m
+  bucket is five 1m buckets stacked); a rate reads the same at any
+  granularity. The prefill chart draws cache reads and writes beside input
+  rather than stacked under it, because whether a server's input count
+  already includes cache reads varies — Anthropic's API excludes them,
+  OpenAI's includes them. The bucket still in progress is left off, since its
+  total is incomplete and would chart as a drop at the live edge. Per-stream
+  generation speed remains the TPOT chart and the Overview's "Avg TPS".
+
 ## [0.8.2] — 2026-09-16
 
 ### Performance
