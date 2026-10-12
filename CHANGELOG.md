@@ -6,27 +6,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-- **Active calls climbed without bound and never came back down.** A
-  deployment whose real concurrency peaked at 28 reported a near-constant
-  16,600 globally and 48,878 for one model. Concurrency was tracked as +1 per
-  Start and −1 per Complete *by dimension*, and the two events name the model
-  from different places: the Start from the request, the Complete from the
-  response. A server that answers a request for one name with another — an
-  alias, a canonical id — left every such call counted forever, and because
-  the metrics shard is picked by a hash that includes the model, the Start and
-  the Complete could also land on different shards, leaking the global count
-  too. In-flight calls are now tracked by the call's own identity (connection
-  4-tuple and request time, identical on both events) in one table shared by
-  every shard, so the Complete closes exactly what its Start opened, and the
-  global count is no longer split per shard. A Start whose Complete never
-  arrives is closed after an hour of event time instead of lingering.
-  New internal metrics: `active_calls_open` (calls in flight right now, which
-  should track real concurrency) and `active_calls_expired`; they replace
-  `aggregator_concurrency_table`. Metric rows already written keep their
-  inflated values — only windows after the upgrade are correct.
-
 ## [0.8.2] — 2026-09-16
 
 ### Performance
