@@ -1,3 +1,4 @@
+pub mod active;
 pub mod aggregator;
 pub mod bucket;
 pub mod model;

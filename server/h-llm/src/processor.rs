@@ -150,7 +150,10 @@ impl LlmProcessor {
             wire_api: outcome.wire_api.name(),
             model: outcome.request_info.model,
             is_stream: outcome.request_info.is_stream,
+            client_ip: req.client_addr.0,
+            client_port: req.client_addr.1,
             server_ip: req.server_addr.0,
+            server_port: req.server_addr.1,
             timestamp_us: req.timestamp_us,
         })]
     }

@@ -241,11 +241,13 @@ define_metrics! {
     MetricsHeartbeatsDropped    => { kind: Counter, group: Metrics, short: "metrics_heartbeats_dropped"  },
     MetricsWindowsEmitted       => { kind: Counter, group: Metrics, short: "windows_emitted"             },
     // open_buckets: in-window aggregation slots awaiting drain (sawtooth).
-    // concurrency_table: size of the per-dim active-call counter map; entries
-    // are never removed (aggregator.rs clamps to 0, doesn't .remove()), so
-    // the gauge is a cardinality canary for OOM diagnosis.
-    MetricsAggregatorOpenBuckets      => { kind: Gauge, group: Metrics, short: "aggregator_open_buckets"      },
-    MetricsAggregatorConcurrencyTable => { kind: Gauge, group: Metrics, short: "aggregator_concurrency_table" },
+    // active_calls_open: calls with a Start and no Complete yet, across every
+    // shard — what `active_calls_*` reports, so a value far above the real
+    // concurrency means Completes are being lost. active_calls_expired counts
+    // the ones closed by the one-hour bound instead of by their Complete.
+    MetricsAggregatorOpenBuckets => { kind: Gauge,   group: Metrics, short: "aggregator_open_buckets" },
+    MetricsActiveCallsOpen       => { kind: Gauge,   group: Metrics, short: "active_calls_open"       },
+    MetricsActiveCallsExpired    => { kind: Counter, group: Metrics, short: "active_calls_expired"    },
 
     // -- Storage --
     // buffered/flushed split per entity so the line tells you which stream

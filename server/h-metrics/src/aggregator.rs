@@ -4,6 +4,7 @@ use h_common::agent::ToolSurface;
 use h_common::internal_metrics::{Metric, MetricsWorker};
 use h_llm::model::{LlmCall, LlmCallStart, LlmEvent};
 
+use crate::active::ActiveCalls;
 use crate::bucket::WindowBucket;
 use crate::model::LlmMetricsBatch;
 
@@ -53,7 +54,7 @@ struct BucketKey {
 
 /// Dimension key for active-calls tracking (no window or granularity).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct DimensionKey {
+pub(crate) struct DimensionKey {
     source_id: String,
     wire_api: String,
     model: String,
@@ -77,7 +78,9 @@ struct DimensionKey {
 /// Heartbeat: `ts`). Pcap replay therefore produces deterministic output.
 pub struct MetricsAggregator {
     buckets: HashMap<BucketKey, WindowBucket>,
-    active_calls: HashMap<DimensionKey, i64>,
+    /// In-flight calls. Shared with the pipeline's other metrics shards when
+    /// built through [`Self::with_active_calls`]; see [`crate::active`].
+    active_calls: ActiveCalls,
     /// Per-source event-time watermark, advanced by every event.
     latest_ts: HashMap<String, i64>,
     /// Per-(source, granularity_idx) cadence anchor for bucket drain.
@@ -89,10 +92,17 @@ pub struct MetricsAggregator {
 }
 
 impl MetricsAggregator {
+    /// An aggregator with an in-flight table of its own — correct only when
+    /// it is the pipeline's single metrics shard. A multi-shard stage must
+    /// hand every shard the same table via [`Self::with_active_calls`].
     pub fn new(metrics: MetricsWorker) -> Self {
+        Self::with_active_calls(metrics, ActiveCalls::new())
+    }
+
+    pub fn with_active_calls(metrics: MetricsWorker, active_calls: ActiveCalls) -> Self {
         Self {
             buckets: HashMap::new(),
-            active_calls: HashMap::new(),
+            active_calls,
             latest_ts: HashMap::new(),
             last_flush_ts: HashMap::new(),
             metrics,
@@ -104,15 +114,6 @@ impl MetricsAggregator {
     /// keys whose window boundary has been crossed.
     pub fn open_bucket_count(&self) -> usize {
         self.buckets.len()
-    }
-
-    /// Size of the per-dimension active-call counter map. Entries are never
-    /// removed (only clamped to 0 on Complete), so this gauge monotonically
-    /// reflects the cumulative cardinality of distinct
-    /// `(source_id, wire_api, model, server_ip)` combinations seen — a leak
-    /// canary for runaway dimension cardinality.
-    pub fn concurrency_table_size(&self) -> usize {
-        self.active_calls.len()
     }
 
     /// Process an LlmEvent. Returns any metric batches emitted by cadence
@@ -142,6 +143,13 @@ impl MetricsAggregator {
             *entry = (*entry).max(ts);
             *entry
         };
+
+        let expired = self.active_calls.expire(&source_id, watermark);
+        if expired > 0 {
+            self.metrics
+                .counter(Metric::MetricsActiveCallsExpired)
+                .add(expired as u64);
+        }
 
         self.maybe_drain(&source_id, watermark)
     }
@@ -187,12 +195,9 @@ impl MetricsAggregator {
             &start.server_ip.to_string(),
         );
 
-        let mut active_calls_values = [0u32; 4];
-        for (i, dk) in dim_keys.iter().enumerate() {
-            let entry = self.active_calls.entry(dk.clone()).or_insert(0);
-            *entry += 1;
-            active_calls_values[i] = (*entry).max(0) as u32;
-        }
+        let active_calls_values =
+            self.active_calls
+                .start(start.call_key(), dim_keys.clone(), start.timestamp_us);
 
         for (gi, gran) in GRANULARITIES.iter().enumerate() {
             let ws = window_start(start.timestamp_us, gran.window_secs);
@@ -226,10 +231,9 @@ impl MetricsAggregator {
             &call.server_ip.to_string(),
         );
 
-        for dk in &dim_keys {
-            let entry = self.active_calls.entry(dk.clone()).or_insert(0);
-            *entry = (*entry - 1).max(0);
-        }
+        // By identity, not by `dim_keys`: those carry the model the response
+        // named, and the Start counted the one the request named.
+        self.active_calls.complete(&call.call_key());
 
         for (gi, gran) in GRANULARITIES.iter().enumerate() {
             let ws = window_start(call.request_time, gran.window_secs);
@@ -325,7 +329,7 @@ fn window_start(timestamp_us: i64, window_secs: i64) -> i64 {
 }
 
 /// Generate the 4 dimension keys for a single event.
-fn dimension_keys(
+pub(crate) fn dimension_keys(
     source_id: &str,
     wire_api: &str,
     model: &str,
@@ -377,6 +381,7 @@ mod tests {
                 Metric::MetricsLlmEventsComplete,
                 Metric::MetricsHeartbeatsReceived,
                 Metric::MetricsWindowsEmitted,
+                Metric::MetricsActiveCallsExpired,
             ],
         );
         let _svc = sys.start();
@@ -393,7 +398,12 @@ mod tests {
             wire_api: wa::OPENAI_CHAT,
             model: model.to_string(),
             is_stream,
+            // Same connection as the Complete helpers below, so a Start and a
+            // Complete with the same timestamp are one call.
+            client_ip: IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)),
+            client_port: 12345,
             server_ip: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+            server_port: 443,
             timestamp_us: ts_us,
         })
     }
@@ -725,6 +735,93 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    /// Rows of the 1-minute global tier, oldest first.
+    fn global_1m(batches: &[LlmMetricsBatch]) -> Vec<&crate::model::LlmMetric> {
+        let mut rows: Vec<_> = batches
+            .iter()
+            .map(|b| &b.metric)
+            .filter(|m| {
+                m.granularity == "1m" && m.wire_api == "*" && m.model == "*" && m.server_ip == "*"
+            })
+            .collect();
+        rows.sort_by_key(|m| m.timestamp_us);
+        rows
+    }
+
+    /// The production failure: the request names one model, the response
+    /// another. Strictly sequential calls — never more than one in flight —
+    /// used to read back as an ever-growing count, because each Complete
+    /// decremented a counter its Start had never touched.
+    #[test]
+    fn calls_whose_response_renames_the_model_still_close() {
+        let mut agg = MetricsAggregator::new(test_metrics());
+        let t0 = 1_700_000_000_000_000i64;
+        let mut all = Vec::new();
+        for i in 0..100 {
+            let t = t0 + i * 1_000_000;
+            all.extend(agg.process(&make_start(t, "DeepSeek-V4.1-Flash", true)));
+            all.extend(agg.process(&make_complete(t, t + 500_000, "dsv4.1-flash")));
+        }
+        all.extend(agg.flush_all());
+        let rows = global_1m(&all);
+        assert!(!rows.is_empty());
+        for m in rows {
+            assert!(
+                m.active_calls_max <= 1,
+                "one call at a time, but active_calls_max = {} at {}",
+                m.active_calls_max,
+                m.timestamp_us
+            );
+        }
+    }
+
+    /// Start on one shard, Complete on another — what the model-keyed shard
+    /// hash does to the same renamed call — and a global count that covers
+    /// both shards' models.
+    #[test]
+    fn shards_sharing_one_table_agree_on_the_global_count() {
+        let shared = ActiveCalls::new();
+        let mut a = MetricsAggregator::with_active_calls(test_metrics(), shared.clone());
+        let mut b = MetricsAggregator::with_active_calls(test_metrics(), shared.clone());
+        let t0 = 1_700_000_000_000_000i64;
+
+        a.process(&make_start(t0, "requested-name", true));
+        b.process(&make_complete(t0, t0 + 1_000, "served-name"));
+        assert_eq!(
+            shared.open_count(),
+            0,
+            "the Complete on the other shard closed it"
+        );
+
+        // One call open on each shard: each shard's global row must say 2.
+        let mut all = a.process(&make_start(t0 + 2_000, "model-on-a", true));
+        all.extend(b.process(&make_start(t0 + 3_000, "model-on-b", true)));
+        all.extend(a.flush_all());
+        all.extend(b.flush_all());
+        let maxes: Vec<u32> = global_1m(&all).iter().map(|m| m.active_calls_max).collect();
+        assert!(maxes.contains(&2), "{maxes:?}");
+        assert!(maxes.iter().all(|&m| m <= 2), "{maxes:?}");
+    }
+
+    /// A Start whose Complete never comes is closed after `MAX_OPEN_US` of
+    /// event time instead of being counted forever.
+    #[test]
+    fn a_call_that_never_completes_stops_counting() {
+        let mut agg = MetricsAggregator::new(test_metrics());
+        let t0 = 1_700_000_000_000_000i64;
+        agg.process(&make_start(t0, "gpt-4", true));
+        agg.process(&make_start(t0 + 1_000, "gpt-4", true));
+        agg.process(&make_complete(t0 + 1_000, t0 + 2_000, "gpt-4"));
+        assert_eq!(agg.active_calls.open_count(), 1);
+
+        let later = t0 + crate::active::MAX_OPEN_US + 1;
+        agg.process(&LlmEvent::Heartbeat {
+            ts: later,
+            source_id: String::new(),
+        });
+        assert_eq!(agg.active_calls.open_count(), 0);
     }
 
     #[test]
