@@ -141,6 +141,7 @@ async fn run_pcap_collecting_calls(
         &mut metrics_sys,
         h_llm::agent_classifier::ClassifierConfig::default(),
         h_common::config::BodyCapConfig::default(),
+        h_common::attribution::AttributionConfig::default(),
     );
 
     h_turn::spawn_turn_stage(

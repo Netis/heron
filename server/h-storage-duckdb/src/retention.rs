@@ -106,14 +106,14 @@ impl DuckDbBackend {
 #[cfg(test)]
 mod tests {
     use crate::DuckDbBackend;
-    use std::net::IpAddr;
-    use std::time::{Duration, SystemTime};
     use h_llm::model::{ApiType, LlmCall};
     use h_llm::wire_apis as wa;
     use h_metrics::model::{LlmFinishMetric, LlmMetric};
     use h_storage::retention::RetentionPolicy;
     use h_storage::StorageBackend;
     use h_turn::{Trace, TraceStatus};
+    use std::net::IpAddr;
+    use std::time::{Duration, SystemTime};
 
     fn mk_call(id: &str, request_time_us: i64) -> LlmCall {
         LlmCall {
@@ -151,6 +151,7 @@ mod tests {
             tool_call_count: 0,
             tool_names: vec![],
             body_bytes_dropped: 0,
+            attribution: h_common::attribution::AttributionInfo::ambiguous(),
             process: None,
         }
     }

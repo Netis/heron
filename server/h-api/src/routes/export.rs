@@ -44,6 +44,9 @@ pub struct ExportTrajectoryParams {
     pub source_id: Option<String>,
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Optional filter: high | medium | ambiguous.
+    #[serde(default)]
+    pub min_attribution_confidence: Option<String>,
 }
 
 /// Mirrors `traces::TracesParams` (the list filters) so a batch export
@@ -71,6 +74,9 @@ pub struct ExportBatchParams {
     /// Max turns to export (default 1000, capped at `MAX_BATCH_TURNS`).
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional filter: high | medium | ambiguous.
+    #[serde(default)]
+    pub min_attribution_confidence: Option<String>,
 }
 
 /// Export a single turn or session as one JSONL line.
@@ -78,6 +84,7 @@ pub async fn single(
     State(storage): State<Arc<dyn StorageBackend>>,
     Query(p): Query<ExportTrajectoryParams>,
 ) -> Result<Response<Body>, ApiError> {
+    let min_confidence = parse_min_attribution_confidence(p.min_attribution_confidence.as_deref())?;
     let (detail, scope_label, filename) = match p.scope.as_str() {
         "turn" => {
             let turn_id = p
@@ -110,7 +117,7 @@ pub async fn single(
         other => return Err(ApiError::InvalidParam(format!("invalid scope: {other}"))),
     };
 
-    match line_from_turn_detail(&storage, &detail, scope_label).await? {
+    match line_from_turn_detail(&storage, &detail, scope_label, min_confidence).await? {
         Ok(line) => ndjson_response(line, &filename, None),
         Err(reason) => Err(ApiError::InvalidParam(reason)),
     }
@@ -121,6 +128,7 @@ pub async fn batch(
     State(storage): State<Arc<dyn StorageBackend>>,
     Query(p): Query<ExportBatchParams>,
 ) -> Result<Response<Body>, ApiError> {
+    let min_confidence = parse_min_attribution_confidence(p.min_attribution_confidence.as_deref())?;
     let server_ports = parse_csv(&p.server_port)
         .iter()
         .map(|s| {
@@ -152,7 +160,7 @@ pub async fn batch(
         let Some(detail) = storage.query_trace_by_id(&item.turn_id).await? else {
             continue;
         };
-        match line_from_turn_detail(&storage, &detail, "turn").await {
+        match line_from_turn_detail(&storage, &detail, "turn", min_confidence).await {
             Ok(Ok(line)) => lines.push(line),
             // skip unsupported wire / unavailable body — don't fail the batch
             Ok(Err(_reason)) => {}
@@ -199,10 +207,24 @@ async fn line_from_turn_detail(
     storage: &Arc<dyn StorageBackend>,
     detail: &TraceDetail,
     scope_label: &str,
+    min_confidence: Option<u8>,
 ) -> Result<Result<String, String>, ApiError> {
     let Some(final_call_id) = detail.final_call_id.clone() else {
         return Ok(Err("turn has no terminal call".to_string()));
     };
+
+    if let Some(min) = min_confidence {
+        let calls = storage.query_spans_by_ids(&detail.span_ids, false).await?;
+        if let Some(call) = calls.iter().find(|call| {
+            attribution_confidence_rank(&call.attribution_confidence).unwrap_or(0) < min
+        }) {
+            return Ok(Err(format!(
+                "span {} attribution confidence '{}' is below requested minimum",
+                call.id, call.attribution_confidence
+            )));
+        }
+    }
+
     let calls = storage
         .query_spans_by_ids(&[final_call_id.clone()], true)
         .await?;
@@ -240,12 +262,37 @@ async fn line_from_turn_detail(
         "final_finish_reason": detail.final_finish_reason,
         "total_input_tokens": detail.total_input_tokens,
         "total_output_tokens": detail.total_output_tokens,
+        "attribution": {
+            "label": call.attribution_label,
+            "source": call.attribution_source,
+            "confidence": call.attribution_confidence,
+        },
         "captured_at_ms": detail.end_time,
     });
 
     let line = serde_json::to_string(&traj.with_meta(meta))
         .map_err(|e| ApiError::Internal(format!("serialize trajectory: {e}")))?;
     Ok(Ok(format!("{line}\n")))
+}
+
+fn parse_min_attribution_confidence(value: Option<&str>) -> Result<Option<u8>, ApiError> {
+    let Some(value) = value.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    attribution_confidence_rank(value).map(Some).ok_or_else(|| {
+        ApiError::InvalidParam(format!(
+            "invalid min_attribution_confidence: {value} (expected high, medium, ambiguous)"
+        ))
+    })
+}
+
+fn attribution_confidence_rank(value: &str) -> Option<u8> {
+    match value {
+        v if v.eq_ignore_ascii_case("high") => Some(3),
+        v if v.eq_ignore_ascii_case("medium") => Some(2),
+        v if v.eq_ignore_ascii_case("ambiguous") => Some(1),
+        _ => None,
+    }
 }
 
 /// Build a raw NDJSON attachment response. `counts = (total, written, skipped)`
@@ -326,6 +373,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn parses_min_attribution_confidence_filter() {
+        assert_eq!(super::parse_min_attribution_confidence(None).unwrap(), None);
+        assert_eq!(
+            super::parse_min_attribution_confidence(Some("HIGH")).unwrap(),
+            Some(3)
+        );
+        assert_eq!(
+            super::parse_min_attribution_confidence(Some("medium")).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            super::parse_min_attribution_confidence(Some("ambiguous")).unwrap(),
+            Some(1)
+        );
+        assert!(super::parse_min_attribution_confidence(Some("low")).is_err());
     }
 
     #[tokio::test]

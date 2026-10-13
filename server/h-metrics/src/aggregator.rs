@@ -366,10 +366,10 @@ pub(crate) fn dimension_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::IpAddr;
-    use std::sync::Arc;
     use h_llm::model::{ApiType, LlmCall, LlmCallStart};
     use h_llm::wire_apis as wa;
+    use std::net::IpAddr;
+    use std::sync::Arc;
 
     fn test_metrics() -> MetricsWorker {
         use h_common::internal_metrics::MetricsSystem;
@@ -454,6 +454,7 @@ mod tests {
                 tool_call_count: 0,
                 tool_names: vec![],
                 body_bytes_dropped: 0,
+                attribution: h_common::attribution::AttributionInfo::ambiguous(),
                 process: None,
             }),
             agent: None,
