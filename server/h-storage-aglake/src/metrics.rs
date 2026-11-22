@@ -170,12 +170,14 @@ impl AglakeBackend {
         &self,
         query: &MetricsSummaryQuery,
     ) -> Result<MetricsSummaryRow> {
-        // Fixed 10s granularity, matching both SQL backends: the summary is an
-        // exact total, so it reads the finest tier rather than a rollup.
+        // Read the finest granularity whose retention still covers the window
+        // (10s→1d, 1m→7d, 5m→30d, 1h→365d). Pinning 10s made any range longer
+        // than a day silently read only the first day.
+        let gran = metrics_granularity_for_range(&query.time_range);
         let index = self
             .ix
-            .metrics_for("10s")
-            .ok_or_else(|| AppError::Storage("no 10s metrics index".into()))?;
+            .metrics_for(gran)
+            .ok_or_else(|| AppError::Storage(format!("no {gran} metrics index")))?;
         let mut s = Search::new(index, ST_METRIC);
         dims::apply(&mut s, &query.filter);
         self.dedup_metrics(&mut s);
@@ -247,10 +249,11 @@ impl AglakeBackend {
             )));
         }
 
+        let gran = metrics_granularity_for_range(&query.time_range);
         let index = self
             .ix
-            .metrics_for("10s")
-            .ok_or_else(|| AppError::Storage("no 10s metrics index".into()))?;
+            .metrics_for(gran)
+            .ok_or_else(|| AppError::Storage(format!("no {gran} metrics index")))?;
         let mut s = Search::new(index, ST_METRIC);
         // Grouping by (wire_api, model) forces the detail tier for both, even
         // when neither is filtered.
