@@ -61,3 +61,11 @@ __pycache__/
 /_agentops
 
 /logs/
+
+# Verification coverage artifacts (docs/design/11-verification.md)
+server/target/coverage/
+console/coverage/
+mutants.out/
+mutants.out.old/
+server/mutants.out/
+server/mutants.out.old/

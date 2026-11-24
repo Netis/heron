@@ -10,7 +10,7 @@ use h_common::error::Result;
 use h_storage::query::*;
 
 use crate::client::Row;
-use crate::rows::{ST_SPAN, ST_TRACE};
+use crate::rows::{MODELS_USED, ST_SPAN, ST_TRACE};
 use crate::spl::{self, Search};
 use crate::AglakeBackend;
 
@@ -104,7 +104,7 @@ impl AglakeBackend {
     ) -> Result<Vec<String>> {
         let mut s = Search::new(&self.ix.traces, ST_TRACE);
         s.any_of("wire_api", &query.filter.wire_apis);
-        s.any_of("models_used", &query.filter.models);
+        s.any_of(MODELS_USED, &query.filter.models);
         s.any_of("server_ip", &query.filter.server_ips);
         if !query.include_proxy_hops {
             s.eq_num("proxy_hidden", 0);

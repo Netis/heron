@@ -1,0 +1,15 @@
+# cargo-mutants config for the Heron workspace.
+#
+# These three `match guard ... with true` mutants in h-storage/src/convert.rs
+# are EQUIVALENT: removing the guard routes through the fall-through arm, which
+# returns the same value in every case the guard can change.
+#   * `Some("")` body  → parse of "" fails → estimated=true
+#   * non-object usage → no canonical numeric key → estimated=true
+#   * `Some("")` json list → parse of "" fails → unwrap_or_default() == vec![]
+# Verified by hand while calibrating Tier 0 mutation (docs/design/11-verification.md).
+# A widened guard is not a behavior change here, so no test can kill it.
+exclude_re = [
+  'replace match guard !s\.is_empty\(\) with true in derive_tokens_estimated',
+  'replace match guard u\.is_object\(\) with true in derive_tokens_estimated',
+  'replace match guard !s\.is_empty\(\) with true in parse_json_string_list',
+]

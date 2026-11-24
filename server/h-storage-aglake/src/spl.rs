@@ -132,9 +132,10 @@ impl Search {
     /// `field` matches any of `values`. An empty list is *no filter at all* —
     /// never "match nothing".
     ///
-    /// On a field holding an array (`models_used`), this is an any-element
-    /// match, which is what the SQL backends express as `hasAny` /
-    /// `list_has_any`.
+    /// On a field holding an array this is an any-element match, which is
+    /// what the SQL backends express as `hasAny` / `list_has_any` — provided
+    /// `field` is the array's search-time name (`models_used{}`, see
+    /// [`crate::rows::ARRAY_FIELDS`]). The bare name matches nothing.
     pub(crate) fn any_of(&mut self, field: &str, values: &[String]) {
         if values.is_empty() {
             return;

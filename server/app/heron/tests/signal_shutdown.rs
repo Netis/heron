@@ -1,3 +1,4 @@
+// @scenario SHUTDOWN-001 e2e
 #[cfg(unix)]
 mod unix_only {
     use std::fs;

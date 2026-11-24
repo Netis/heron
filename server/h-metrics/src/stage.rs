@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 use h_common::internal_metrics::{Metric, MetricsSystem};
 use h_llm::model::LlmEvent;
 
+use crate::active::ActiveCalls;
 use crate::aggregator::MetricsAggregator;
 use crate::model::LlmMetricsBatch;
 
@@ -30,32 +31,32 @@ pub fn spawn_metrics_stage(
         "spawn_metrics_stage: shard_rxs must be non-empty"
     );
 
-    // Per-shard gauges for aggregator internal state. Probe sums across shards.
-    // - open_buckets: in-window slots awaiting drain (sawtooth)
-    // - concurrency_table: per-dim active-call counter map size; only grows,
-    //   so it doubles as a cardinality-leak canary.
+    // Per-shard open-bucket gauges (sawtooth: in-window slots awaiting
+    // drain); the probe sums across shards.
     let bucket_gauges: Vec<Arc<AtomicU64>> = (0..shard_rxs.len())
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
-    let conc_gauges: Vec<Arc<AtomicU64>> = (0..shard_rxs.len())
         .map(|_| Arc::new(AtomicU64::new(0)))
         .collect();
     let bucket_probe = bucket_gauges.clone();
     metrics_sys.register_queue_probe(Metric::MetricsAggregatorOpenBuckets, move || {
         bucket_probe.iter().map(|g| g.load(Ordering::Relaxed)).sum()
     });
-    let conc_probe = conc_gauges.clone();
-    metrics_sys.register_queue_probe(Metric::MetricsAggregatorConcurrencyTable, move || {
-        conc_probe.iter().map(|g| g.load(Ordering::Relaxed)).sum()
+
+    // One in-flight table for every shard. Shards are chosen by a hash that
+    // includes the model, and a call's Start and Complete can name different
+    // models — so they can land on different shards. See `crate::active`.
+    let active_calls = ActiveCalls::new();
+    let open_probe = active_calls.clone();
+    metrics_sys.register_queue_probe(Metric::MetricsActiveCallsOpen, move || {
+        open_probe.open_count() as u64
     });
 
     let mut handles = Vec::with_capacity(shard_rxs.len());
-    for (i, ((mut rx, bucket_gauge), conc_gauge)) in shard_rxs
+    for (i, (mut rx, bucket_gauge)) in shard_rxs
         .into_iter()
         .zip(bucket_gauges.into_iter())
-        .zip(conc_gauges.into_iter())
         .enumerate()
     {
+        let active_calls = active_calls.clone();
         let metrics_tx = metrics_tx.clone();
         let worker_metrics = metrics_sys.register_worker(
             &format!("metrics.{i}"),
@@ -64,11 +65,12 @@ pub fn spawn_metrics_stage(
                 Metric::MetricsLlmEventsComplete,
                 Metric::MetricsHeartbeatsReceived,
                 Metric::MetricsWindowsEmitted,
+                Metric::MetricsActiveCallsExpired,
             ],
         );
         handles.push(tokio::spawn(async move {
             let shard = i;
-            let mut agg = MetricsAggregator::new(worker_metrics);
+            let mut agg = MetricsAggregator::with_active_calls(worker_metrics, active_calls);
             let reason = 'main: loop {
                 let event = match rx.recv().await {
                     Some(e) => e,
@@ -80,7 +82,6 @@ pub fn spawn_metrics_stage(
                     }
                 }
                 bucket_gauge.store(agg.open_bucket_count() as u64, Ordering::Relaxed);
-                conc_gauge.store(agg.concurrency_table_size() as u64, Ordering::Relaxed);
             };
             match reason {
                 "upstream_eof" => {
@@ -89,7 +90,6 @@ pub fn spawn_metrics_stage(
                         let _ = metrics_tx.send(m).await;
                     }
                     bucket_gauge.store(agg.open_bucket_count() as u64, Ordering::Relaxed);
-                    conc_gauge.store(agg.concurrency_table_size() as u64, Ordering::Relaxed);
                     tracing::debug!(shard, "metrics worker stopping: upstream EOF");
                 }
                 r => {
@@ -118,7 +118,12 @@ mod tests {
             wire_api: wa::OPENAI_CHAT,
             model: model.into(),
             is_stream: true,
+            // Same connection as the Complete helpers below, so a Start and a
+            // Complete with the same timestamp are one call.
+            client_ip: IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)),
+            client_port: 12345,
             server_ip: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+            server_port: 443,
             timestamp_us: ts_us,
         })
     }

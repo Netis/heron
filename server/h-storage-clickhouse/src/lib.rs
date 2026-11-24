@@ -18,7 +18,14 @@ mod client;
 mod distincts;
 mod exchanges;
 #[cfg(test)]
+#[cfg(test)]
 mod it;
+#[cfg(test)]
+mod query_tests;
+#[cfg(test)]
+mod retention_tests;
+#[cfg(test)]
+mod test_mock;
 mod metrics;
 mod retention;
 mod rows;

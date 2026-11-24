@@ -303,3 +303,42 @@ mod escaper_tests {
         assert_eq!(escape_standard("o'brien"), "o''brien");
     }
 }
+
+#[cfg(test)]
+mod in_list_and_tool_surface_tests {
+    use super::*;
+
+    #[test]
+    fn sql_in_list_uses_standard_escaping() {
+        assert_eq!(
+            sql_in_list(&["a".to_string(), "b'c".to_string()]),
+            "'a', 'b''c'"
+        );
+    }
+
+    #[test]
+    fn tool_surface_clause_is_appended_when_set() {
+        let f = DimensionFilter {
+            tool_surfaces: vec!["function_call".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_dimension_where(&f, escape_standard),
+            "wire_api = '*' AND model = '*' AND server_ip = '*' AND tool_surface IN \
+             ('function_call')"
+        );
+        assert_eq!(
+            build_dimension_where_for_group(&f, "wire_api", escape_standard),
+            "wire_api != '*' AND model != '*' AND server_ip = '*' AND tool_surface IN \
+             ('function_call')"
+        );
+    }
+
+    #[test]
+    fn tool_surface_clause_is_absent_when_empty() {
+        assert!(
+            !build_dimension_where(&DimensionFilter::default(), escape_standard)
+                .contains("tool_surface")
+        );
+    }
+}

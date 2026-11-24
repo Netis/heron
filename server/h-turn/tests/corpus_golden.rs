@@ -341,6 +341,7 @@ fn golden_path(id: &str) -> PathBuf {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// @scenario PARSE-CORPUS-001 integration
 async fn corpus_goldens_match() {
     let bless = std::env::var("HERON_BLESS_GOLDENS").is_ok();
 

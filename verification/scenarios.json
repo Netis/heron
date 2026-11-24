@@ -1,0 +1,212 @@
+{
+  "version": 1,
+  "_comment": "Tier 0/1 scenario matrix. Tests declare coverage with an in-code tag: `// @scenario <ID> <kind>` where kind in {unit,integration,e2e,fault}. check-scenarios.py enforces that every scenario is verified at each kind it declares, every P0/P1 is fully covered, and no orphan tags exist. See docs/design/11-verification.md.",
+  "kinds": [
+    "unit",
+    "integration",
+    "e2e",
+    "fault"
+  ],
+  "scenarios": [
+    {
+      "id": "DUCKDB-RECOVER-001",
+      "tier": 0,
+      "priority": "P0",
+      "module": "h-storage-duckdb",
+      "requirement": "A DuckDB FATAL/invalidate is followed by reopen_all_connections.",
+      "invariant": "Every committed row is preserved and all read/write surfaces work after reopen.",
+      "verification": [
+        "fault",
+        "integration"
+      ]
+    },
+    {
+      "id": "DUCKDB-DISKFULL-001",
+      "tier": 0,
+      "priority": "P0",
+      "module": "h-storage-duckdb",
+      "requirement": "A write during ENOSPC returns Err, never a partial row.",
+      "invariant": "After recovery, no partial/torn row is visible and the buffer keeps draining.",
+      "verification": [
+        "fault"
+      ]
+    },
+    {
+      "id": "MIGRATE-LEGACY-001",
+      "tier": 0,
+      "priority": "P0",
+      "module": "h-storage-duckdb",
+      "requirement": "init() migrates every recorded legacy DB shape to the canonical schema.",
+      "invariant": "Migration is idempotent and the appender column layout stays aligned.",
+      "verification": [
+        "integration"
+      ]
+    },
+    {
+      "id": "STORAGE-DURABILITY-001",
+      "tier": 0,
+      "priority": "P0",
+      "module": "h-storage",
+      "requirement": "The write buffer flushes on size/interval/shutdown and survives flush failure.",
+      "invariant": "A flush that returns Err discards the batch exactly once and the loop keeps running.",
+      "verification": [
+        "unit",
+        "fault"
+      ]
+    },
+    {
+      "id": "CLICKHOUSE-DELETE-001",
+      "tier": 0,
+      "priority": "P0",
+      "module": "h-storage-clickhouse",
+      "requirement": "The retention sweep deletes exactly the expired range.",
+      "invariant": "Rows outside the retention window are untouched; the sweep is idempotent.",
+      "verification": [
+        "integration"
+      ]
+    },
+    {
+      "id": "AGLAKE-RETRY-413-001",
+      "tier": 0,
+      "priority": "P0",
+      "module": "h-storage-aglake",
+      "requirement": "HEC 413 is split/retried and partial-success 400 retries the invalid events.",
+      "invariant": "No event is silently lost or duplicated across the retry state machine.",
+      "verification": [
+        "integration"
+      ]
+    },
+    {
+      "id": "AGLAKE-AUTH-401-001",
+      "tier": 0,
+      "priority": "P0",
+      "module": "h-storage-aglake",
+      "requirement": "An expired session (401) is re-authenticated before the next write.",
+      "invariant": "The write after re-auth succeeds; a single 401 does not wedge the pipeline.",
+      "verification": [
+        "integration"
+      ]
+    },
+    {
+      "id": "AGLAKE-CONCURRENCY-001",
+      "tier": 0,
+      "priority": "P0",
+      "module": "h-storage-aglake",
+      "requirement": "Id-chunked reads bound in-flight requests with a semaphore.",
+      "invariant": "The in-flight high-water mark never exceeds the configured limit.",
+      "verification": [
+        "integration"
+      ]
+    },
+    {
+      "id": "PARSE-CORPUS-001",
+      "tier": 0,
+      "priority": "P0",
+      "module": "h-protocol",
+      "requirement": "A known pcap corpus replays to invariant parse/pair/turn/persist results.",
+      "invariant": "Golden output matches; no malformed packet crashes the decoder.",
+      "verification": [
+        "integration"
+      ]
+    },
+    {
+      "id": "PROTO-SSE-001",
+      "tier": 0,
+      "priority": "P0",
+      "module": "h-protocol",
+      "requirement": "Chunked/SSE responses reassemble across TCP segments and keepalive exchanges pair.",
+      "invariant": "Mid-stream sync recovers without a handshake; SSE events are emitted once.",
+      "verification": [
+        "integration"
+      ]
+    },
+    {
+      "id": "CAPTURE-RETENTION-001",
+      "tier": 1,
+      "priority": "P1",
+      "module": "h-capture",
+      "requirement": "pcap dump retention applies age then size rules with race protection.",
+      "invariant": "Current/previous minute files are never deleted; foreign files are left alone.",
+      "verification": [
+        "unit"
+      ]
+    },
+    {
+      "id": "LLM-WIREAPI-001",
+      "tier": 1,
+      "priority": "P0",
+      "module": "h-llm",
+      "requirement": "Each supported wire API is detected and extracted into a complete LlmCall.",
+      "invariant": "Detection is by wire signature, not host; process attribution is carried.",
+      "verification": [
+        "integration"
+      ]
+    },
+    {
+      "id": "LLM-BODYCAP-001",
+      "tier": 1,
+      "priority": "P1",
+      "module": "h-llm",
+      "requirement": "Oversized bodies are sampled head+tail and the dropped-byte count is recorded.",
+      "invariant": "Small bodies are untouched; the stored body stays within the cap.",
+      "verification": [
+        "unit"
+      ]
+    },
+    {
+      "id": "TURN-GROUP-001",
+      "tier": 1,
+      "priority": "P0",
+      "module": "h-turn",
+      "requirement": "Agent turns are grouped per profile across sessions and shards.",
+      "invariant": "Shard/reorder parity holds; turn boundaries match the profile.",
+      "verification": [
+        "integration"
+      ]
+    },
+    {
+      "id": "METRICS-WINDOW-001",
+      "tier": 1,
+      "priority": "P1",
+      "module": "h-metrics",
+      "requirement": "Sliding-window aggregation produces distinct rows per dimension.",
+      "invariant": "A missing dimension stays None rather than being coalesced.",
+      "verification": [
+        "integration"
+      ]
+    },
+    {
+      "id": "API-ROUTES-001",
+      "tier": 1,
+      "priority": "P0",
+      "module": "h-api",
+      "requirement": "Every console-facing route returns the expected shape and error envelope.",
+      "invariant": "Invalid input returns a JSON error, not a 500 or a panic.",
+      "verification": [
+        "integration"
+      ]
+    },
+    {
+      "id": "PIPELINE-E2E-001",
+      "tier": 1,
+      "priority": "P0",
+      "module": "heron",
+      "requirement": "capture \u2192 parse \u2192 llm \u2192 turn \u2192 metrics \u2192 storage runs end to end.",
+      "invariant": "A synthesized input produces the expected stored rows.",
+      "verification": [
+        "e2e"
+      ]
+    },
+    {
+      "id": "SHUTDOWN-001",
+      "tier": 1,
+      "priority": "P0",
+      "module": "heron",
+      "requirement": "SIGINT/SIGTERM drains in-flight work before exit.",
+      "invariant": "No write is lost on graceful shutdown; the process exits cleanly.",
+      "verification": [
+        "e2e"
+      ]
+    }
+  ]
+}

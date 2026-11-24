@@ -418,6 +418,7 @@ mod tests {
     }
 
     #[test]
+    // @scenario CAPTURE-RETENTION-001 unit
     fn age_sweep_deletes_files_older_than_cutoff() {
         let dir = tempfile::tempdir().unwrap();
         // current = 1000 minutes; max_age = 1h = 60 minutes; cutoff = 940.
