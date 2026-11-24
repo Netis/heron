@@ -9,6 +9,7 @@
 //!
 //! Skips gracefully when the pcap fixture is absent (fixtures are gitignored).
 
+// @scenario PIPELINE-E2E-001 e2e
 use std::path::PathBuf;
 
 use duckdb::Connection;
@@ -26,10 +27,26 @@ use h_common::internal_metrics::{Metric, MetricsSystem};
 use h_llm::wire_apis as wa;
 
 fn fixture(name: &str) -> Option<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../testdata/pcaps")
-        .join(name);
-    root.exists().then_some(root)
+    // Corpus first (the committed, git-LFS fixtures CI pulls), then the legacy
+    // gitignored path. LFS-aware: an unsmudged pointer is treated as absent so
+    // the test skips rather than parsing the pointer header as a pcap.
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/pcaps");
+    for cand in [base.join("corpus").join(name), base.join(name)] {
+        if let Ok(meta) = std::fs::metadata(&cand) {
+            if !meta.is_file() {
+                continue;
+            }
+            if meta.len() < 1024 {
+                if let Ok(head) = std::fs::read(&cand) {
+                    if head.starts_with(b"version https://git-lfs") {
+                        continue;
+                    }
+                }
+            }
+            return Some(cand);
+        }
+    }
+    None
 }
 
 fn build_storage_config(db_path: &str) -> StorageConfig {
@@ -162,15 +179,28 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
     // Pcap EOFs cascade down every pipeline; once all senders are dropped,
     // the shared sink observes EOF. Awaiting every handle guarantees all
     // batches have been flushed.
+    // The pair sweeper is an intentional forever-task (sleep → sweep → loop),
+    // so it must not gate drain. The finite stages (everything else, including
+    // the storage sink) exit on EOF; once they have, abort the sweeper and
+    // await it so its Arc<dyn StorageBackend> is released before we reopen the
+    // DuckDB file. Without this the drain await blocks forever — the reason
+    // this suite silently hung once its fixtures were finally present.
+    let mut pair_sweeper = None;
     for (task, h) in stage_handles {
+        if task.stage == "pair_sweeper" {
+            pair_sweeper = Some(h);
+            continue;
+        }
         h.await
             .unwrap_or_else(|e| panic!("stage '{task}' panicked: {e}"));
     }
 
-    // Release the pipeline's Arc<dyn StorageBackend> so DuckDB's connection
-    // is dropped before we open a verification connection against the same
-    // file.
     drop(storage);
+
+    if let Some(h) = pair_sweeper {
+        h.abort();
+        let _ = h.await;
+    }
 
     Some((tmp, db_path))
 }
@@ -182,8 +212,8 @@ fn count(conn: &Connection, table: &str) -> i64 {
 
 #[tokio::test]
 async fn claude_cli_pcap_populates_all_three_tables() {
-    let Some((_tmp, db_path)) = run_pipeline("claude-cli-messages.pcap").await else {
-        eprintln!("skip: claude-cli-messages.pcap fixture not present");
+    let Some((_tmp, db_path)) = run_pipeline("claude-cli-anthropic-stream.pcap").await else {
+        eprintln!("skip: claude-cli-anthropic-stream.pcap fixture not present");
         return;
     };
 
@@ -288,7 +318,7 @@ async fn claude_cli_pcap_populates_all_three_tables() {
 #[tokio::test]
 async fn two_pcaps_isolated_but_metrics_merged() {
     let Some((_tmp, db_path)) =
-        run_pipeline_multi(&["claude-cli-messages.pcap", "codex-cli-messages-multi.pcap"]).await
+        run_pipeline_multi(&["claude-cli-anthropic-stream.pcap", "codex-responses.pcap"]).await
     else {
         eprintln!("skip: one or both two-pcap fixtures not present");
         return;
@@ -375,11 +405,63 @@ async fn two_pcaps_isolated_but_metrics_merged() {
         "expected 2 distinct source_ids in llm_metrics, got {source_ids:?}"
     );
     assert!(
-        source_ids.iter().any(|s| s == "claude-cli-messages"),
-        "expected 'claude-cli-messages' source_id, got {source_ids:?}"
+        source_ids.iter().any(|s| s == "claude-cli-anthropic-stream"),
+        "expected 'claude-cli-anthropic-stream' source_id, got {source_ids:?}"
     );
     assert!(
-        source_ids.iter().any(|s| s == "codex-cli-messages-multi"),
-        "expected 'codex-cli-messages-multi' source_id, got {source_ids:?}"
+        source_ids.iter().any(|s| s == "codex-responses"),
+        "expected 'codex-responses' source_id, got {source_ids:?}"
     );
+}
+
+/// Replays every active corpus fixture (the committed git-LFS set) through the
+/// pipeline at once and asserts each one reaches storage. Broad wire-API
+/// coverage: anthropic, openai-chat, openai-responses across claude-cli,
+/// openclaw, hermes, opencode, codex and generic profiles.
+#[tokio::test]
+async fn all_corpus_fixtures_reach_storage() {
+    let fixtures = [
+        "claude-cli-anthropic-stream.pcap",
+        "claude-cli-anthropic-nonstream.pcap",
+        "openclaw-anthropic-parallel.pcap",
+        "hermes-anthropic.pcap",
+        "generic-anthropic.pcap",
+        "opencode-openai-chat.pcap",
+        "openclaw-openai-chat.pcap",
+        "hermes-openai-chat.pcap",
+        "generic-openai-chat.pcap",
+        "codex-responses.pcap",
+        "generic-openai-responses.pcap",
+    ];
+    let Some((_tmp, db_path)) = run_pipeline_multi(&fixtures).await else {
+        eprintln!("skip: corpus fixtures not present");
+        return;
+    };
+
+    let conn = Connection::open(&db_path).expect("reopen duckdb for verify");
+    let calls = count(&conn, "spans");
+    let turns = count(&conn, "traces");
+    let metrics = count(&conn, "llm_metrics");
+    eprintln!("all-corpus rows: calls={calls} turns={turns} metrics={metrics}");
+
+    assert!(calls >= fixtures.len() as i64, "expected >=1 span per fixture, got {calls}");
+    assert!(turns >= 1, "expected >=1 trace, got {turns}");
+
+    // Every fixture is a distinct source_id, and each must land in llm_metrics
+    // (proves per-pipeline metrics stages all drain into the shared sink).
+    let mut source_ids: Vec<String> = conn
+        .prepare("SELECT DISTINCT source_id FROM llm_metrics ORDER BY 1")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    source_ids.sort();
+    for f in fixtures {
+        let stem = f.trim_end_matches(".pcap");
+        assert!(
+            source_ids.iter().any(|s| s == stem),
+            "fixture {stem} missing from llm_metrics source_ids: {source_ids:?}"
+        );
+    }
 }

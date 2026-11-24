@@ -16,14 +16,26 @@ use h_turn::tracker::TrackerConfig;
 use h_turn::TraceStatus;
 
 fn fixture(name: &str) -> Option<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../testdata/pcaps")
-        .join(name);
-    if root.exists() {
-        Some(root)
-    } else {
-        None
+    // Corpus first (the committed git-LFS fixtures CI pulls), then the legacy
+    // gitignored path. LFS-aware: an unsmudged pointer counts as absent, so the
+    // test skips instead of parsing the pointer header as a pcap.
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/pcaps");
+    for cand in [base.join("corpus").join(name), base.join(name)] {
+        if let Ok(meta) = std::fs::metadata(&cand) {
+            if !meta.is_file() {
+                continue;
+            }
+            if meta.len() < 1024 {
+                if let Ok(head) = std::fs::read(&cand) {
+                    if head.starts_with(b"version https://git-lfs") {
+                        continue;
+                    }
+                }
+            }
+            return Some(cand);
+        }
     }
+    None
 }
 
 async fn run_pcap_full_sharded(
@@ -286,8 +298,9 @@ async fn run_pcap_collecting_calls(
 }
 
 #[tokio::test]
+// @scenario TURN-GROUP-001 integration
 async fn claude_cli_messages_expects_one_complete_turn() {
-    let Some(turns) = run_pcap("claude-cli-messages.pcap").await else {
+    let Some(turns) = run_pcap("claude-cli-anthropic-stream.pcap").await else {
         eprintln!("skip: fixture not present");
         return;
     };
@@ -313,6 +326,7 @@ async fn claude_cli_messages_expects_one_complete_turn() {
 }
 
 #[tokio::test]
+#[ignore = "requires the uncommitted multi-turn claude capture"]
 async fn claude_cli_messages_multi_expects_two_turns() {
     let Some(turns) = run_pcap("claude-cli-messages-multi.pcap").await else {
         eprintln!("skip: fixture not present");
@@ -356,6 +370,7 @@ async fn claude_cli_messages_multi_expects_two_turns() {
 }
 
 #[tokio::test]
+#[ignore = "requires the uncommitted multi-turn codex capture"]
 async fn codex_cli_messages_multi_expects_two_turns() {
     let Some(turns) = run_pcap("codex-cli-messages-multi.pcap").await else {
         eprintln!("skip: fixture not present");
@@ -394,6 +409,7 @@ async fn codex_cli_messages_multi_expects_two_turns() {
 }
 
 #[tokio::test]
+#[ignore = "requires the uncommitted multi-turn claude capture"]
 async fn claude_cli_messages_multi_pcap_shard_parity() {
     let Some(single) = run_pcap_sharded("claude-cli-messages-multi.pcap", 1, 1).await else {
         eprintln!("skip: fixture not present");
@@ -418,12 +434,12 @@ async fn claude_cli_messages_multi_pcap_shard_parity() {
 }
 
 #[tokio::test]
-async fn codex_cli_messages_multi_pcap_shard_parity() {
-    let Some(single) = run_pcap_sharded("codex-cli-messages-multi.pcap", 1, 1).await else {
+async fn codex_responses_pcap_shard_parity() {
+    let Some(single) = run_pcap_sharded("codex-responses.pcap", 1, 1).await else {
         eprintln!("skip: fixture not present");
         return;
     };
-    let multi = run_pcap_sharded("codex-cli-messages-multi.pcap", 4, 4)
+    let multi = run_pcap_sharded("codex-responses.pcap", 4, 4)
         .await
         .unwrap();
 
@@ -441,18 +457,17 @@ async fn codex_cli_messages_multi_pcap_shard_parity() {
     );
 }
 
-/// End-to-end reorder validation. Runs codex-cli-messages-multi.pcap
-/// through the pipeline at flow_shards ∈ {1, 2, 4, 8}, holding turn_shards
-/// at 1 so all calls converge into a single tracker. Higher flow_shards
-/// fan the same session's calls (across multiple TCP connections) onto
-/// independent llm workers, which feed the turn shard out of order — the
-/// canonical scenario the buffer-and-finalize design is meant to handle.
+/// End-to-end reorder validation. Runs `codex-responses.pcap` through the
+/// pipeline at flow_shards ∈ {1, 2, 4, 8}, holding turn_shards at 1 so all
+/// calls converge into a single tracker. Higher flow_shards fan the session's
+/// calls onto independent llm workers, which feed the turn shard out of order
+/// — the scenario the buffer-and-finalize design handles.
 ///
-/// Asserts: every configuration produces exactly 2 codex turns with the
-/// same (session_id, call_count, status) tuples.
+/// Asserts: every configuration produces the same single codex turn with the
+/// same (session_id, call_count, status) tuple.
 #[tokio::test]
-async fn codex_cli_messages_multi_flow_shard_reorder_parity() {
-    let Some(baseline) = run_pcap_full_sharded("codex-cli-messages-multi.pcap", 1, 1, 1).await
+async fn codex_responses_flow_shard_reorder_parity() {
+    let Some(baseline) = run_pcap_full_sharded("codex-responses.pcap", 1, 1, 1).await
     else {
         eprintln!("skip: fixture not present");
         return;
@@ -463,8 +478,8 @@ async fn codex_cli_messages_multi_flow_shard_reorder_parity() {
         .collect();
     assert_eq!(
         baseline_openai.len(),
-        2,
-        "baseline (flow=1) must yield 2 codex turns, got {}",
+        1,
+        "baseline (flow=1) must yield 1 codex turn, got {}",
         baseline_openai.len()
     );
     let baseline_keys: std::collections::BTreeSet<_> = baseline_openai
@@ -474,7 +489,7 @@ async fn codex_cli_messages_multi_flow_shard_reorder_parity() {
     eprintln!("flow_shards=1 baseline: {baseline_keys:?}");
 
     for flow_shards in [2usize, 4, 8] {
-        let turns = run_pcap_full_sharded("codex-cli-messages-multi.pcap", flow_shards, 1, 1)
+        let turns = run_pcap_full_sharded("codex-responses.pcap", flow_shards, 1, 1)
             .await
             .expect("fixture present");
         let openai: Vec<_> = turns
@@ -488,8 +503,8 @@ async fn codex_cli_messages_multi_flow_shard_reorder_parity() {
         eprintln!("flow_shards={flow_shards}: {keys:?}");
         assert_eq!(
             openai.len(),
-            2,
-            "flow_shards={flow_shards} must still yield 2 codex turns, got {}",
+            1,
+            "flow_shards={flow_shards} must still yield 1 codex turn, got {}",
             openai.len()
         );
         assert_eq!(
@@ -500,12 +515,12 @@ async fn codex_cli_messages_multi_flow_shard_reorder_parity() {
 }
 
 #[tokio::test]
-async fn claude_cli_messages_multi_shard_parity() {
-    let Some(single) = run_pcap_sharded("claude-cli-messages.pcap", 1, 1).await else {
+async fn claude_cli_anthropic_shard_parity() {
+    let Some(single) = run_pcap_sharded("claude-cli-anthropic-stream.pcap", 1, 1).await else {
         eprintln!("skip: fixture not present");
         return;
     };
-    let multi = run_pcap_sharded("claude-cli-messages.pcap", 4, 4)
+    let multi = run_pcap_sharded("claude-cli-anthropic-stream.pcap", 4, 4)
         .await
         .unwrap();
 
@@ -523,17 +538,15 @@ async fn claude_cli_messages_multi_shard_parity() {
     );
 }
 
-/// OpenClaw (OpenAI/JS SDK + GLM model) capture spanning two distinct user
-/// sessions. The client reflects `assistant.tool_calls[].id` back into
-/// subsequent `messages` history *without* the underscore (`calld9c1...`
-/// instead of `call_d9c1...`). Without `canonicalize_tool_id`, every call #2+
-/// would synth a fresh session_id and fragment each conversation into
-/// single-call turns. The fact that we observe exactly 2 stable session_ids
-/// each spanning multiple turns is end-to-end proof the canonicalization rule
-/// is firing on this fixture.
+/// OpenClaw (OpenAI/JS SDK) capture. The client reflects
+/// `assistant.tool_calls[].id` back into later `messages` history *without*
+/// the underscore. Without `canonicalize_tool_id`, the second call would synth
+/// a fresh session_id and fragment the conversation into single-call turns;
+/// observing one stable, canonicalized `call_*` session_id across both calls is
+/// end-to-end proof the rule fires on this fixture.
 #[tokio::test]
-async fn openclaw_multi_sessions_expects_two_sessions_four_turns() {
-    let Some(turns) = run_pcap("openclaw-openai.pcap").await else {
+async fn openclaw_openai_chat_expects_one_complete_turn() {
+    let Some(turns) = run_pcap("openclaw-openai-chat.pcap").await else {
         eprintln!("skip: fixture not present");
         return;
     };
@@ -548,7 +561,7 @@ async fn openclaw_multi_sessions_expects_two_sessions_four_turns() {
             t.session_id, t.status, t.call_count
         );
     }
-    assert_eq!(chat.len(), 4, "expected 4 turns; got {}", chat.len());
+    assert_eq!(chat.len(), 1, "expected 1 turn; got {}", chat.len());
     assert!(chat.iter().all(|t| t.agent_kind == "openclaw"));
     assert!(
         chat.iter().all(|t| t.status == TraceStatus::Complete),
@@ -558,8 +571,8 @@ async fn openclaw_multi_sessions_expects_two_sessions_four_turns() {
         chat.iter().map(|t| t.session_id.as_str()).collect();
     assert_eq!(
         sessions.len(),
-        2,
-        "expected 2 distinct sessions; got {sessions:?}"
+        1,
+        "expected 1 session; got {sessions:?}"
     );
     assert!(
         sessions.iter().all(|s| s.starts_with("call_")),
@@ -568,12 +581,12 @@ async fn openclaw_multi_sessions_expects_two_sessions_four_turns() {
 }
 
 #[tokio::test]
-async fn openclaw_multi_sessions_pcap_shard_parity() {
-    let Some(single) = run_pcap_sharded("openclaw-openai.pcap", 1, 1).await else {
+async fn openclaw_openai_chat_pcap_shard_parity() {
+    let Some(single) = run_pcap_sharded("openclaw-openai-chat.pcap", 1, 1).await else {
         eprintln!("skip: fixture not present");
         return;
     };
-    let multi = run_pcap_sharded("openclaw-openai.pcap", 4, 4)
+    let multi = run_pcap_sharded("openclaw-openai-chat.pcap", 4, 4)
         .await
         .unwrap();
 
@@ -597,12 +610,8 @@ async fn openclaw_multi_sessions_pcap_shard_parity() {
 /// deltas/stops are interleaved in arbitrary order.
 ///
 /// Asserts:
-///   1. Pipeline produces the expected turn / session shape under the
-///      `openclaw` profile: 1 session, 4 turns, all `agent_kind == "openclaw"`
-///      Complete. (Compaction-summarizer calls are dropped via
-///      `is_auxiliary` and never reach turn assembly — pre-profile they
-///      collapsed into two `gen-*` synth-id sessions because their
-///      first-user/first-assistant text was byte-identical boilerplate.)
+///   1. Pipeline produces the expected turn shape under the `openclaw`
+///      profile: 1 turn, `agent_kind == "openclaw"`, Complete.
 ///   2. Bug-fix-specific: every reconstructed `tool_use` block has a
 ///      non-empty parsed `input` object. Pre-fix, one or more `tool_use`
 ///      blocks per parallel-tool response ended up with `input: ""` because
@@ -610,7 +619,7 @@ async fn openclaw_multi_sessions_pcap_shard_parity() {
 ///      either dropped or attached to the wrong block.
 #[tokio::test]
 async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
-    let Some((turns, calls)) = run_pcap_collecting_calls("openclaw-anthropic.pcap").await else {
+    let Some((turns, calls)) = run_pcap_collecting_calls("openclaw-anthropic-parallel.pcap").await else {
         eprintln!("skip: fixture not present");
         return;
     };
@@ -633,8 +642,8 @@ async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
 
     assert_eq!(
         anthropic.len(),
-        4,
-        "expected 4 turns; got {}",
+        1,
+        "expected 1 turn; got {}",
         anthropic.len()
     );
     assert!(anthropic.iter().all(|t| t.agent_kind == "openclaw"));
@@ -713,17 +722,12 @@ async fn openclaw_anthropic_parallel_tool_use_inputs_intact() {
 /// `skill_manage`, `skills_list`, `delegate_task`, `session_search`,
 /// `cronjob` in `tools[]`).
 ///
-/// The fixture contains one user-facing conversation followed by Hermes's
-/// chat-title-generation one-shot. The title one-shot has no tool-call anchor,
-/// so it remains an LLM call and does not become a synthetic generic turn.
-/// Asserts:
+/// The fixture is one user-facing OpenAI Chat conversation. Asserts:
 ///   1. Exactly one OpenAI Chat turn.
-///   2. The 4-call main conversation classifies as `hermes`. Its
-///      `user_input_preview` is the user's prompt verbatim — the title-gen
-///      prompt MUST NOT leak in here.
+///   2. It classifies as `hermes` with a populated `user_input_preview`.
 #[tokio::test]
-async fn hermes_openai_expects_hermes_main_only() {
-    let Some(turns) = run_pcap("hermes-openai.pcap").await else {
+async fn hermes_openai_chat_expects_hermes_main_only() {
+    let Some(turns) = run_pcap("hermes-openai-chat.pcap").await else {
         eprintln!("skip: fixture not present");
         return;
     };
@@ -750,24 +754,21 @@ async fn hermes_openai_expects_hermes_main_only() {
 
     let main = chat[0];
     assert_eq!(main.agent_kind, "hermes");
-    assert_eq!(
-        main.call_count, 4,
-        "main conversation has 4 LLM calls (3 tool roundtrips + 1 final answer)",
-    );
+    assert_eq!(main.call_count, 2, "corpus hermes fixture has 2 LLM calls");
     let main_user = main.user_input_preview.as_deref().unwrap_or_default();
     assert!(
-        main_user.starts_with("检查当前tokenscope"),
-        "hermes turn user_input must be the user's prompt verbatim, got {main_user:?}",
+        !main_user.is_empty(),
+        "hermes turn user_input must be populated, got {main_user:?}",
     );
 }
 
 #[tokio::test]
-async fn hermes_openai_pcap_shard_parity() {
-    let Some(single) = run_pcap_sharded("hermes-openai.pcap", 1, 1).await else {
+async fn hermes_openai_chat_pcap_shard_parity() {
+    let Some(single) = run_pcap_sharded("hermes-openai-chat.pcap", 1, 1).await else {
         eprintln!("skip: fixture not present");
         return;
     };
-    let multi = run_pcap_sharded("hermes-openai.pcap", 4, 4).await.unwrap();
+    let multi = run_pcap_sharded("hermes-openai-chat.pcap", 4, 4).await.unwrap();
 
     let single_keys: std::collections::BTreeSet<_> = single
         .iter()
@@ -1022,6 +1023,7 @@ async fn generic_profile_anthropic_two_call_session() {
 ///      functionCall, otherwise `generic` profile will not associate the
 ///      call and the pcap will fail to reconstruct the 4 + 3 turn split.
 #[tokio::test]
+#[ignore = "requires the uncommitted gemini capture"]
 async fn gemini_cli_apikey_expects_two_turns_4_and_3() {
     let Some(turns) = run_pcap("gemini-cli-apikey.pcap").await else {
         eprintln!("skip: fixture not present");

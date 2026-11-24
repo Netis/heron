@@ -725,6 +725,7 @@ mod tests {
     }
 
     #[test]
+    // @scenario LLM-BODYCAP-001 unit
     fn cap_body_samples_head_and_tail_of_oversized_body() {
         let cap = BodyCapConfig {
             enabled: true,

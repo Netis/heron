@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "_comment": "Expiring coverage/scenario waivers. Every entry needs reason + owner + expires (ISO date). check_coverage_policy.py fails on missing/expired fields. A waiver is not a permanent exclusion; a `metric: \"tier\"` entry excuses every floor metric for that module at once.",
+  "waivers": [
+    {
+      "module": "h-storage",
+      "metric": "tier",
+      "reason": "Tier 0 floor not yet met: the backend trait / write-buffer / retention paths are tested; the residual is untested error branches and function-count noise from closures in sink/pair_sweeper.",
+      "owner": "platform",
+      "expires": "2026-12-31",
+      "tracking": "docs/superpowers/plans/2026-09-29-verification-coverage.md"
+    },
+    {
+      "module": "h-storage-duckdb",
+      "metric": "tier",
+      "reason": "Core migration/recovery/retention/queries have tests; the residual is query-variant branches and monomorphization-deflated function coverage.",
+      "owner": "platform",
+      "expires": "2026-12-31",
+      "tracking": "docs/superpowers/plans/2026-09-29-verification-coverage.md"
+    },
+    {
+      "module": "h-storage-clickhouse",
+      "metric": "tier",
+      "reason": "SQL construction, row-decode mappings, retention, DDL and writes are covered via a scripted HTTP mock; the residual is live-server row round-trips (it.rs self-skips without a server).",
+      "owner": "platform",
+      "expires": "2026-12-31",
+      "tracking": "docs/superpowers/plans/2026-09-29-verification-coverage.md"
+    },
+    {
+      "module": "h-storage-aglake",
+      "metric": "tier",
+      "reason": "Read-path SPL construction and the retry/auth/concurrency durability machines are covered via a scripted search mock; the residual is HEC write paths and live decode.",
+      "owner": "platform",
+      "expires": "2026-12-31",
+      "tracking": "docs/superpowers/plans/2026-09-29-verification-coverage.md"
+    },
+    {
+      "module": "h-protocol",
+      "metric": "tier",
+      "reason": "Close to target; the residual is uncommon parser/HTTP error branches.",
+      "owner": "platform",
+      "expires": "2026-12-31",
+      "tracking": "docs/superpowers/plans/2026-09-29-verification-coverage.md"
+    },
+    {
+      "module": "h-api",
+      "metric": "tier",
+      "reason": "The whole-router smoke covers every endpoint (no 500s); the residual is deep per-route assertions.",
+      "owner": "platform",
+      "expires": "2026-12-31",
+      "tracking": "docs/superpowers/plans/2026-09-29-verification-coverage.md"
+    },
+    {
+      "module": "h-capture",
+      "metric": "tier",
+      "reason": "Close to target; the residual is platform-specific capture paths.",
+      "owner": "platform",
+      "expires": "2026-12-31",
+      "tracking": "docs/superpowers/plans/2026-09-29-verification-coverage.md"
+    },
+    {
+      "module": "h-export",
+      "metric": "tier",
+      "reason": "One metric sits just under the tier-2 floor.",
+      "owner": "platform",
+      "expires": "2026-12-31",
+      "tracking": "docs/superpowers/plans/2026-09-29-verification-coverage.md"
+    },
+    {
+      "module": "heron",
+      "metric": "tier",
+      "reason": "The composition root (pipeline.rs) and CLI subcommands are covered; the residual is the run_pipeline/main.rs path, which needs a real config + capture.",
+      "owner": "platform",
+      "expires": "2026-12-31",
+      "tracking": "docs/superpowers/plans/2026-09-29-verification-coverage.md"
+    }
+  ]
+}

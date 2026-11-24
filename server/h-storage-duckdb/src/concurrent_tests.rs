@@ -247,6 +247,7 @@ async fn llm_call_round_trip_with_agent_fields() {
 // assert that every downstream surface (writes, table-scoped reads,
 // pool-backed reads) keeps working across the reopen.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// @scenario DUCKDB-RECOVER-001 integration
 async fn reopen_all_connections_keeps_reads_and_writes_alive() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("reopen.duckdb");
@@ -330,6 +331,7 @@ async fn reopen_all_connections_keeps_reads_and_writes_alive() {
 // the real FATAL from the recovery code's perspective.
 #[cfg(feature = "fault-injection")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// @scenario DUCKDB-RECOVER-001 fault
 async fn reopen_recovers_from_injected_duckdb_invalidate() {
     use crate::fault_injection::{FaultGuard, FaultPoint};
 
@@ -611,6 +613,8 @@ async fn duckdb_invalidate_mid_load_recovers_with_no_silent_loss() {
 /// defined-but-never-triggered. Writes fail gracefully and recovery is clean.
 #[cfg(feature = "fault-injection")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// @scenario DUCKDB-DISKFULL-001 fault
+// @scenario STORAGE-DURABILITY-001 fault
 async fn disk_full_mid_load_is_graceful_and_recovers() {
     chaos_under_load(crate::fault_injection::FaultPoint::DiskFull).await;
 }

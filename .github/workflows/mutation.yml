@@ -1,0 +1,62 @@
+name: mutation
+
+# Full Tier 0 mutation testing — see docs/design/11-verification.md §5.
+#
+# Coverage proves code ran; mutation proves the tests would notice if it were
+# wrong. Scoped to Tier 0 because the bundled-DuckDB build makes repo-wide
+# mutation prohibitive. PRs run the cheaper `--in-diff` variant inside the
+# coverage workflow once calibrated (scripts/ci/mutation.sh diff).
+#
+# This is a scheduled judge, not a PR gate. A drop below the floor fails the
+# workflow and uploads mutants.out for triage. Follow-up: convert the failure
+# into a scrubbed, deduplicated issue like the longevity-soak flow.
+
+on:
+  schedule:
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: mutation
+  cancel-in-progress: false
+
+jobs:
+  tier0:
+    runs-on: [self-hosted, ci-pool]
+    timeout-minutes: 240
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install cargo-mutants (guarded)
+        run: |
+          if ! command -v cargo-mutants >/dev/null 2>&1; then
+            cargo install cargo-mutants --locked
+          fi
+          cargo-mutants --version
+      - name: Cache cargo + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            server/target
+          key: mutation-${{ runner.os }}-${{ hashFiles('server/Cargo.lock') }}
+          restore-keys: mutation-${{ runner.os }}-
+      - name: Full Tier 0 mutation run
+        # Scoped to the non-DuckDB Tier 0 crates: mutating the DuckDB-backed
+        # crates in full is single-threaded/in-place and re-links DuckDB per
+        # mutant, which does not fit a nightly budget. Those crates are covered
+        # by `mutation.sh diff` on PRs instead.
+        run: bash scripts/ci/mutation.sh full h-storage h-protocol
+      - name: Upload mutants.out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-tier0
+          path: server/mutants.out
+          retention-days: 14
+          if-no-files-found: warn

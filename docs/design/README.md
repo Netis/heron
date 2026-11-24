@@ -17,6 +17,7 @@ For cross-cutting terminology (TTFT/E2E/TPOT, wire_api, agent_kind, HttpExchange
 | 08 | [Internal Metrics](08-internal-metrics.md) | `ts-common` | Operational self-monitoring (counters, gauges) |
 | 09 | [Body cap](09-body-cap.md) | `h-llm` / `h-common` | Stored-body head+tail sampling for 1M-token contexts |
 | 10 | [Aglake backend](10-aglake.md) | `h-storage-aglake` | Append-only log-platform backend: index layout, wildcard tiers, retry/ack, measured costs |
+| 11 | [Verification coverage](11-verification.md) | — | Risk-driven test-coverage policy: tiers, changed-code gate, scenario matrix, mutation, waivers |
 
 ## Pipeline Flow
 
