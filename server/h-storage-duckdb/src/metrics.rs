@@ -491,6 +491,7 @@ impl DuckDbBackend {
             let end_ts = us_to_timestamp(query.time_range.end_us);
 
             let dim_where = build_dimension_where(&query.filter, escape_standard);
+            let gran = metrics_granularity_for_range(&query.time_range);
             let sql = format!(
                 "
                 SELECT
@@ -509,7 +510,7 @@ impl DuckDbBackend {
                          THEN SUM(tpot_sum) / SUM(tpot_count) ELSE NULL END
                 FROM llm_metrics
                 WHERE {dim_where}
-                  AND granularity = '10s'
+                  AND granularity = '{gran}'
                   AND timestamp >= ? AND timestamp < ?
             "
             );
@@ -582,6 +583,7 @@ impl DuckDbBackend {
             // Per-(wire_api, model) breakdown shares the grouped-tier logic:
             // both dimensions are always specific, server_ip follows filter.
             let dim_where = build_dimension_where_for_group(&query.filter, "wire_api", escape_standard);
+            let gran = metrics_granularity_for_range(&query.time_range);
 
             let sql = format!(
                 "
@@ -613,7 +615,7 @@ impl DuckDbBackend {
                              ELSE NULL END AS tpot_avg
                     FROM llm_metrics
                     WHERE {dim_where}
-                      AND granularity = '10s'
+                      AND granularity = '{gran}'
                       AND timestamp >= ? AND timestamp < ?
                     GROUP BY wire_api, model
                 ) sub
@@ -2682,6 +2684,80 @@ mod tests {
         assert_eq!(rows[1].wire_api, wa::OPENAI_CHAT);
         assert_eq!(rows[1].model, "gpt-4");
         assert_eq!(rows[1].call_count, 100);
+    }
+
+    /// Regression: summary/models used to pin the `10s` tier, which is retained
+    /// for ~1 day, so any longer window silently read only the first day.
+    ///
+    /// `llm_metrics` keeps per-dimension tiers in one table: an unfiltered
+    /// summary reads the `(*,*,*)` rollup, while the model breakdown reads the
+    /// `(wire_api, model, *)` tier. Seed an old `1h` row in each tier plus a
+    /// current `10s` row, then assert the reads use `1h` (the tier whose
+    /// retention covers the window) and never add the `10s` row on top.
+    #[tokio::test]
+    async fn metrics_reads_a_granularity_whose_retention_covers_the_window() {
+        let backend = in_memory();
+        backend.init().await.unwrap();
+
+        let now = 1_700_000_000_000_000i64;
+        // Ten days back: outside the 10s TTL, inside the 1h TTL.
+        let old_ts = now - 10 * 86_400 * 1_000_000;
+
+        let row = |ts: i64, gran: &'static str, wire: &str, model: &str, calls: u64| {
+            let mut m = sample_metric();
+            m.timestamp_us = ts;
+            m.granularity = gran;
+            m.wire_api = wire.to_string();
+            m.model = model.to_string();
+            m.server_ip = "*".to_string();
+            m.call_count = calls;
+            m
+        };
+
+        backend
+            .write_metrics(vec![
+                // Total tier — what an unfiltered summary reads.
+                row(old_ts, "1h", "*", "*", 1000),
+                row(now, "10s", "*", "*", 7),
+                // (wire_api, model) tier — what the model breakdown reads.
+                row(old_ts, "1h", wa::OPENAI_CHAT, "gpt-4", 1000),
+                row(now, "10s", wa::OPENAI_CHAT, "gpt-4", 7),
+            ])
+            .await
+            .unwrap();
+
+        let range = TimeRange {
+            start_us: old_ts - 1_000_000,
+            end_us: now + 1_000_000,
+        };
+
+        let summary = backend
+            .query_metrics_summary(&MetricsSummaryQuery {
+                time_range: range.clone(),
+                filter: DimensionFilter::default(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            summary.call_count, 1000,
+            "summary must read the 1h tier for a 10-day window, not 10s"
+        );
+
+        let models = backend
+            .query_metrics_models(&MetricsModelsQuery {
+                time_range: range,
+                filter: DimensionFilter::default(),
+                sort_by: "call_count".into(),
+                sort_order: "DESC".into(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0].call_count, 1000,
+            "models must read the 1h tier, not 10s"
+        );
     }
 
     #[tokio::test]

@@ -7,6 +7,29 @@ pub struct TimeRange {
     pub end_us: i64,
 }
 
+/// Pick the `llm_metrics` granularity to read for a query window.
+///
+/// The same counters are stored at several granularities with different
+/// retention (default: `10s`→1d, `1m`→7d, `5m`→30d, `1h`→365d). A read must
+/// use **exactly one** of them — summing across granularities double-counts —
+/// and the chosen one must still have rows across the whole window. Reading the
+/// finest tier unconditionally therefore silently truncates any range longer
+/// than that tier's retention (a 30-day summary read from `10s` only sees the
+/// last day).
+///
+/// This mirrors the console's `useTimeseries` mapping so the models/summary
+/// reads and the charts agree on which tier they are describing.
+pub fn metrics_granularity_for_range(range: &TimeRange) -> &'static str {
+    const US_PER_SEC: i64 = 1_000_000;
+    let secs = range.end_us.saturating_sub(range.start_us) / US_PER_SEC;
+    match secs {
+        0..=900 => "10s",
+        901..=7_200 => "1m",
+        7_201..=86_400 => "5m",
+        _ => "1h",
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DimensionFilter {
     pub wire_apis: Vec<String>,
@@ -950,5 +973,52 @@ mod session_turns_cursor_tests {
         assert!(decode_session_turns_cursor("abc").is_none()); // odd length
         assert!(decode_session_turns_cursor("not-hex!").is_none());
         assert!(decode_session_turns_cursor("00").is_none()); // valid hex, invalid JSON
+    }
+}
+
+#[cfg(test)]
+mod metrics_granularity_tests {
+    use super::*;
+
+    fn window_secs(secs: i64) -> TimeRange {
+        let at = 1_700_000_000_000_000;
+        TimeRange {
+            start_us: at,
+            end_us: at + secs * 1_000_000,
+        }
+    }
+
+    #[test]
+    fn picks_the_finest_tier_that_still_covers_the_window() {
+        assert_eq!(metrics_granularity_for_range(&window_secs(60)), "10s");
+        assert_eq!(metrics_granularity_for_range(&window_secs(900)), "10s");
+        assert_eq!(metrics_granularity_for_range(&window_secs(901)), "1m");
+        assert_eq!(metrics_granularity_for_range(&window_secs(7_200)), "1m");
+        assert_eq!(metrics_granularity_for_range(&window_secs(7_201)), "5m");
+        assert_eq!(metrics_granularity_for_range(&window_secs(86_400)), "5m");
+        assert_eq!(metrics_granularity_for_range(&window_secs(86_401)), "1h");
+        assert_eq!(
+            metrics_granularity_for_range(&window_secs(30 * 86_400)),
+            "1h"
+        );
+    }
+
+    #[test]
+    fn empty_or_inverted_window_falls_back_to_the_finest_tier() {
+        let at = 1_700_000_000_000_000;
+        assert_eq!(
+            metrics_granularity_for_range(&TimeRange {
+                start_us: at,
+                end_us: at
+            }),
+            "10s"
+        );
+        assert_eq!(
+            metrics_granularity_for_range(&TimeRange {
+                start_us: at,
+                end_us: at - 1
+            }),
+            "10s"
+        );
     }
 }

@@ -324,6 +324,7 @@ impl ClickHouseBackend {
     ) -> Result<MetricsSummaryRow> {
         let dim_where = build_dimension_where(&query.filter, escape_clickhouse);
         let ts_pred = ts_where(query.time_range.start_us, query.time_range.end_us);
+        let gran = metrics_granularity_for_range(&query.time_range);
         let sql = format!(
             "SELECT \
                 sum(call_count) AS call_count, \
@@ -337,7 +338,7 @@ impl ClickHouseBackend {
                 if(sum(e2e_count) > 0, sum(e2e_sum) / sum(e2e_count), NULL) AS e2e_avg, \
                 if(sum(tpot_count) > 0, sum(tpot_sum) / sum(tpot_count), NULL) AS tpot_avg \
              FROM llm_metrics \
-             WHERE {dim_where} AND granularity = '10s' AND {ts_pred}"
+             WHERE {dim_where} AND granularity = '{gran}' AND {ts_pred}"
         );
         let r = self
             .client
@@ -387,6 +388,7 @@ impl ClickHouseBackend {
         };
         let dim_where = build_dimension_where_for_group(&query.filter, "wire_api", escape_clickhouse);
         let ts_pred = ts_where(query.time_range.start_us, query.time_range.end_us);
+        let gran = metrics_granularity_for_range(&query.time_range);
         let sql = format!(
             "SELECT * FROM ( \
                 SELECT wire_api, model, \
@@ -403,7 +405,7 @@ impl ClickHouseBackend {
                     if(sum(e2e_count) > 0, sum(e2e_p95 * e2e_count) / sum(e2e_count), NULL) AS e2e_p95, \
                     if(sum(tpot_count) > 0, sum(tpot_sum) / sum(tpot_count), NULL) AS tpot_avg \
                 FROM llm_metrics \
-                WHERE {dim_where} AND granularity = '10s' AND {ts_pred} \
+                WHERE {dim_where} AND granularity = '{gran}' AND {ts_pred} \
                 GROUP BY wire_api, model \
              ) sub \
              ORDER BY {} {sort_order} LIMIT {}",
