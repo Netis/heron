@@ -1,7 +1,7 @@
 import { Filter } from "lucide-react"
 import { useTimeseries } from "@/hooks/use-metrics"
 import { useSearchParamState } from "@/hooks/use-search-param-state"
-import { formatMs, formatNumber } from "@/lib/format"
+import { formatMs, formatRate } from "@/lib/format"
 import { TimeseriesLineChart } from "@/components/charts/timeseries-line-chart"
 import { FilterDropdown } from "@/components/ui/filter-dropdown"
 import type { ToolSurface } from "@/types/api"
@@ -35,15 +35,15 @@ const ACTIVE_CALLS_SERIES = [
   { key: "active_calls_max", label: "max", color: "#ef4444" },
 ]
 
-const CACHE_TOKEN_SERIES = [
-  { key: "total_cache_read_input_tokens", label: "Cache Read", color: "#3b82f6" },
-  { key: "total_cache_creation_input_tokens", label: "Cache Creation", color: "#10b981" },
+// Lines, not stacked areas: whether `input` already includes the cache reads
+// depends on the server, so stacking them could count the same tokens twice.
+const PREFILL_SERIES = [
+  { key: "total_input_tokens", label: "Input", color: "#3b82f6" },
+  { key: "total_cache_read_input_tokens", label: "Cache read", color: "#8b5cf6", dash: "5 3" },
+  { key: "total_cache_creation_input_tokens", label: "Cache write", color: "#f59e0b", dash: "5 3" },
 ]
 
-const TOKEN_AVG_SERIES = [
-  { key: "input_tokens_avg", label: "Avg Input", color: "#3b82f6" },
-  { key: "output_tokens_avg", label: "Avg Output", color: "#10b981" },
-]
+const DECODE_SERIES = [{ key: "total_output_tokens", label: "Output", color: "#10b981" }]
 
 function formatActiveCalls(v: number): string {
   return v.toFixed(1)
@@ -82,11 +82,11 @@ export function PerformancePage() {
   const { data: e2eData } = useTimeseries("e2e_p50,e2e_p95,e2e_p99", { toolSurface })
   const { data: tpotData } = useTimeseries("tpot_p50,tpot_p95", { toolSurface })
   const { data: activeCallsData } = useTimeseries("active_calls_avg,active_calls_max", { toolSurface })
-  const { data: cacheTokenData } = useTimeseries(
-    "total_cache_read_input_tokens,total_cache_creation_input_tokens",
-    { toolSurface },
+  const { data: prefillData } = useTimeseries(
+    "total_input_tokens,total_cache_read_input_tokens,total_cache_creation_input_tokens",
+    { toolSurface, perSecond: true },
   )
-  const { data: tokenAvgData } = useTimeseries("input_tokens_avg,output_tokens_avg", { toolSurface })
+  const { data: decodeData } = useTimeseries("total_output_tokens", { toolSurface, perSecond: true })
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -136,21 +136,27 @@ export function PerformancePage() {
         </ChartCard>
       </div>
 
-      {/* Bottom row: Cache + Token averages */}
+      {/* Bottom row: token throughput, prefill + decode */}
       <div className="grid grid-cols-2 gap-4">
-        <ChartCard title="Cache Token Usage">
+        <ChartCard
+          title="Prefill (Input) Tokens / s"
+          subtitle="Across all calls, counted at each call's start. Whether input includes cache reads is up to the server — Anthropic's API excludes them, OpenAI's includes them."
+        >
           <TimeseriesLineChart
-            data={cacheTokenData ?? null}
-            series={CACHE_TOKEN_SERIES}
-            yFormatter={(v) => formatNumber(v)}
-            variant="area"
+            data={prefillData ?? null}
+            series={PREFILL_SERIES}
+            yFormatter={formatRate}
           />
         </ChartCard>
-        <ChartCard title="Token Averages">
+        <ChartCard
+          title="Decode (Output) Tokens / s"
+          subtitle="Across all calls, counted at each call's start. Per-stream speed is the TPOT chart."
+        >
           <TimeseriesLineChart
-            data={tokenAvgData ?? null}
-            series={TOKEN_AVG_SERIES}
-            yFormatter={(v) => formatNumber(v)}
+            data={decodeData ?? null}
+            series={DECODE_SERIES}
+            yFormatter={formatRate}
+            variant="area"
           />
         </ChartCard>
       </div>

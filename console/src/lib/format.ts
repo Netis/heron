@@ -88,6 +88,13 @@ export function formatNumber(n: number | null | undefined): string {
   return String(n)
 }
 
+/** A per-second rate, compact enough for an axis tick: "1.7K", "86", "0.4". */
+export function formatRate(v: number | null | undefined): string {
+  if (v == null) return "—"
+  if (v >= 1_000) return formatNumber(v)
+  return String(v >= 10 || v === 0 ? Math.round(v) : Number(v.toFixed(1)))
+}
+
 /** ms-since-epoch → "16:30", "yesterday", "3d ago" */
 export function formatRelativeTime(ms: number): string {
   const now = Date.now()

@@ -13,7 +13,7 @@ use h_turn::Trace;
 
 use crate::calls::ms;
 use crate::read::Sort;
-use crate::rows::{trace_event, Envelope, TraceEvent, ST_TRACE};
+use crate::rows::{trace_event, Envelope, TraceEvent, MODELS_USED, ST_TRACE};
 use crate::spl::{match_term, Search};
 use crate::AglakeBackend;
 
@@ -60,7 +60,7 @@ impl AglakeBackend {
         // `models_used` is stored as an array, and a match against an array
         // field is an any-element match — the same semantics as the SQL
         // backends' `hasAny` / `list_has_any`.
-        s.any_of("models_used", &query.filter.models);
+        s.any_of(MODELS_USED, &query.filter.models);
         s.any_of("server_ip", &query.filter.server_ips);
         s.any_of("client_ip", &query.client_ips);
         s.any_of("status", &query.statuses);

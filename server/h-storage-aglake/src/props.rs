@@ -36,8 +36,8 @@
 use serde::de::{DeserializeOwned, Error as _};
 
 use crate::rows::{
-    FinishEvent, HttpEvent, MetricEvent, SpanEvent, TraceEvent, ST_BODY, ST_FINISH, ST_HTTP,
-    ST_HTTP_BODY, ST_METRIC, ST_SPAN, ST_TRACE,
+    FinishEvent, HttpEvent, MetricEvent, SpanEvent, TraceEvent, ARRAY_FIELDS, MODELS_USED, ST_BODY,
+    ST_FINISH, ST_HTTP, ST_HTTP_BODY, ST_METRIC, ST_SPAN, ST_TRACE,
 };
 
 /// Fields excluded from extraction even though they are part of the event.
@@ -120,11 +120,19 @@ impl<'de> serde::Deserializer<'de> for Sniffer {
     }
 }
 
-/// The fields one sourcetype should extract at index time.
+/// The fields one sourcetype should extract at index time, by the name aglake
+/// extracts them under — an array field is listed with its `{}` suffix, or it
+/// is not extracted at all.
 fn indexed_for<T: DeserializeOwned>() -> Vec<&'static str> {
     field_names::<T>()
         .into_iter()
         .filter(|f| !is_blob(f))
+        .map(|f| {
+            ARRAY_FIELDS
+                .iter()
+                .find(|(name, _)| *name == f)
+                .map_or(f, |(_, searched)| *searched)
+        })
         .collect()
 }
 
@@ -332,10 +340,13 @@ mod tests {
 
     /// `models_used` is a multivalue field the traces filter matches against,
     /// which is exactly why it is written alongside its `_json` twin. The
-    /// blob rule must not sweep it up with the twin.
+    /// blob rule must not sweep it up with the twin — and it has to be listed
+    /// under its array name, because aglake does not extract the bare one.
     #[test]
     fn models_used_stays_indexed() {
-        assert!(indexed_for::<TraceEvent>().contains(&"models_used"));
+        let trace = indexed_for::<TraceEvent>();
+        assert!(trace.contains(&MODELS_USED), "{trace:?}");
+        assert!(!trace.contains(&"models_used"), "{trace:?}");
     }
 
     #[test]
