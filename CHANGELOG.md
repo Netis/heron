@@ -6,6 +6,45 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.4] — 2026-11-24
+
+### Added
+
+- **Risk-driven verification coverage.** A six-dimension policy (code, change,
+  behavior, risk, effectiveness, system) replaces the single "line coverage"
+  target. Crates are classified into tiers with line/region/function floors;
+  critical behaviors are declared in `verification/scenarios.json` and matched
+  to in-code `@scenario` tags; departures are recorded as expiring, owned
+  waivers. The blocking gates are changed-code coverage and a no-decrease ratchet
+  against a measured `coverage-baseline.json`, with tier floors enforced for
+  crates that have earned them. The expensive instrumented run lives in its own
+  `coverage` workflow so it cannot hold the required `ci` check hostage; the
+  static checks (classification, waiver expiry, scenario completeness) stay in
+  `ci`. A weekly mutation run and an advisory per-PR `cargo-mutants --in-diff`
+  check cover the Tier 0 crates.
+
+### Fixed
+
+- **Summary cards and the Models page silently truncated long time ranges.**
+  Both reads pinned the `10s` metrics tier, which is retained for about a day,
+  so a 30-day query reported only the latest day's calls and models while
+  appearing to succeed. They now select the finest granularity whose retention
+  covers the window (`10s`/`1m`/`5m`/`1h`), reading exactly one tier so totals
+  are not double-counted. Applied to the DuckDB, ClickHouse, and Aglake
+  backends.
+
+### Tests
+
+- Fixed the `pipeline_e2e` and turn-integration suites, which referenced legacy
+  fixtures that do not exist and therefore skipped silently (and hung once
+  fixtures were present because the pair sweeper is an infinite task). Fixture
+  resolution is now corpus-first and git-LFS-aware, the sweeper is aborted after
+  the finite stages drain, and the four genuinely unreproducible tests are
+  marked `#[ignore]` instead of skipping.
+- Added scripted backend mocks and query/retention tests for the ClickHouse and
+  Aglake storage layers, storage dialect/convert unit tests, CLI smoke coverage,
+  and a whole-router smoke test over the console-facing API.
+
 ## [0.8.3] — 2026-10-12
 
 ### Fixed
