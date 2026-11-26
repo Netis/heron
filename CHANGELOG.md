@@ -6,7 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.8.4] — 2026-11-24
+## [0.8.5] — 2026-11-25
+
+0.8.4 was tagged but never published: its release run failed before building
+macOS binaries, so no release and no deployment followed. Everything listed
+under 0.8.4 ships in this release.
+
+### Fixed
+
+- **Releases could not be published.** GitHub no longer runs jobs on the
+  `macos-14` image — they are cancelled within a second of starting — and a
+  release is only published when every target builds. The macOS targets now
+  build on `macos-15`.
+
+## [0.8.4] — 2026-11-24 (not published)
 
 ### Added
 
