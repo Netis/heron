@@ -26,32 +26,15 @@ fn cap_body(body: Option<String>, cap: &BodyCapConfig) -> (Option<String>, u64) 
     let Some(body) = body else {
         return (None, 0);
     };
-    if !cap.enabled || body.len() <= cap.budget() {
-        return (Some(body), 0);
+    match cap.sample(body.as_bytes()) {
+        // `sample` cuts only at UTF-8 sequence boundaries and the marker is
+        // ASCII, so a sample of a valid String is itself valid.
+        Some((out, dropped)) => (
+            Some(String::from_utf8(out).expect("body cap cut inside a UTF-8 sequence")),
+            dropped,
+        ),
+        None => (Some(body), 0),
     }
-    // Snap the head end down and the tail start up to char boundaries so a
-    // multi-byte UTF-8 sequence is never split (which would corrupt the
-    // String and panic byte-index slicing).
-    let mut head_end = cap.head_bytes.min(body.len());
-    while head_end > 0 && !body.is_char_boundary(head_end) {
-        head_end -= 1;
-    }
-    let mut tail_start = body.len().saturating_sub(cap.tail_bytes);
-    while tail_start < body.len() && !body.is_char_boundary(tail_start) {
-        tail_start += 1;
-    }
-    // After snapping the windows could meet/overlap on a tiny overflow; then
-    // there is nothing worth eliding — keep the body verbatim.
-    if tail_start <= head_end {
-        return (Some(body), 0);
-    }
-    let dropped = (tail_start - head_end) as u64;
-    let marker = format!("\n...[heron body cap: {dropped} bytes elided]...\n");
-    let mut out = String::with_capacity(head_end + marker.len() + (body.len() - tail_start));
-    out.push_str(&body[..head_end]);
-    out.push_str(&marker);
-    out.push_str(&body[tail_start..]);
-    (Some(out), dropped)
 }
 
 /// Processes `HttpJoinerEvent`s and extracts `LlmCall` records. Stateless —

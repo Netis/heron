@@ -85,6 +85,22 @@ requires capping in `BodyReader` *and* a tail-aware usage parser that can read
 `usage` from a sampled body — H007's deferred item, tracked for a future
 iteration.
 
+## Raw HTTP exchanges
+
+`http_exchanges` stores every paired exchange, LLM or not, with its bodies. Those
+bodies never pass through `cap_body`, so until 0.8.6 they were stored whole: one
+large upload reached the write buffer and the backend in full, and on Aglake a
+body past `max_event_bytes` (8 MiB) was refused outright — the exchange kept its
+metadata and lost its body.
+
+The storage sink now applies the same `[body_cap]` to exchange bodies before any
+backend sees them (`h_storage::sink::cap_exchange`). The cut is the same function
+as for calls — `BodyCapConfig::sample`, which works on bytes, snaps to UTF-8
+sequence boundaries, and so is also safe for binary bodies. Exchanges have no
+`body_bytes_dropped` column; the elision marker in the stored body is the record
+that it was sampled. An exchange within budget keeps sharing the joiner's `Arc`s
+— nothing is copied.
+
 ## Storage
 
 `llm_calls.body_bytes_dropped UBIGINT NOT NULL DEFAULT 0`, at the table tail.
