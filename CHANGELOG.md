@@ -17,6 +17,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   receive queue filled, the probe dropped batches, and Heron logged nothing.
   zeromq is now 0.7, which keeps polling the remaining ready peers. A regression
   test reproduces the stall on every run with the old version.
+- **Raw HTTP exchange bodies were stored without `[body_cap]`.** The cap only
+  covered LLM call bodies; exchanges reached the backend whole, so one large
+  upload sat in the write buffer at full size and, on Aglake, a body over the
+  8 MiB event ceiling was refused — the exchange lost its body. Exchange bodies
+  are now sampled with the same head+tail cap before any backend sees them.
 
 ## [0.8.5] — 2026-11-25
 
