@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.6] — 2026-11-28
+
+### Fixed
+
+- **A busy cloud-probe stopped being read when another probe shared its
+  endpoint.** With two probes pushing to one `cloud-probe` source, zeromq 0.4's
+  PULL socket lost the wake-up for a peer whenever the stream it polled first had
+  nothing to read; a nearly idle probe was enough to strand a busy one. Its TCP
+  receive queue filled, the probe dropped batches, and Heron logged nothing.
+  zeromq is now 0.7, which keeps polling the remaining ready peers. A regression
+  test reproduces the stall on every run with the old version.
+- **Raw HTTP exchange bodies were stored without `[body_cap]`.** The cap only
+  covered LLM call bodies; exchanges reached the backend whole, so one large
+  upload sat in the write buffer at full size and, on Aglake, a body over the
+  8 MiB event ceiling was refused — the exchange lost its body. Exchange bodies
+  are now sampled with the same head+tail cap before any backend sees them.
+
 ## [0.8.5] — 2026-11-25
 
 0.8.4 was tagged but never published: its release run failed before building
