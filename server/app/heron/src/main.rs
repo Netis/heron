@@ -585,6 +585,7 @@ async fn run_pipeline(cli: Cli) {
             &h_storage::StorageSinkConfig {
                 batch_size: config.storage.sink.batch_size,
                 flush_interval_ms: config.storage.sink.flush_interval_ms,
+                body_cap: config.body_cap,
             },
             storage.clone(),
             &mut per_pipeline_metrics,

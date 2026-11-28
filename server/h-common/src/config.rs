@@ -111,6 +111,42 @@ impl BodyCapConfig {
     pub fn budget(&self) -> usize {
         self.head_bytes.saturating_add(self.tail_bytes)
     }
+
+    /// Head+tail sample of `body` for storage, or `None` when it is kept
+    /// verbatim (cap disabled, or the body fits the budget).
+    ///
+    /// Returns the sampled bytes with an elision marker between head and
+    /// tail, and the number of bytes elided. The cut points never split a
+    /// UTF-8 sequence: the head end moves back and the tail start moves
+    /// forward past continuation bytes, so a UTF-8 body stays valid UTF-8
+    /// and a binary body is cut at nearby offsets. The single source for
+    /// every stored body — LLM calls and raw HTTP exchanges alike.
+    pub fn sample(&self, body: &[u8]) -> Option<(Vec<u8>, u64)> {
+        if !self.enabled || body.len() <= self.budget() {
+            return None;
+        }
+        let is_continuation = |b: u8| b & 0b1100_0000 == 0b1000_0000;
+        let mut head_end = self.head_bytes.min(body.len());
+        while head_end > 0 && head_end < body.len() && is_continuation(body[head_end]) {
+            head_end -= 1;
+        }
+        let mut tail_start = body.len().saturating_sub(self.tail_bytes);
+        while tail_start < body.len() && is_continuation(body[tail_start]) {
+            tail_start += 1;
+        }
+        // After snapping the windows can meet on a tiny overflow; then there
+        // is nothing worth eliding.
+        if tail_start <= head_end {
+            return None;
+        }
+        let dropped = (tail_start - head_end) as u64;
+        let marker = format!("\n...[heron body cap: {dropped} bytes elided]...\n");
+        let mut out = Vec::with_capacity(head_end + marker.len() + (body.len() - tail_start));
+        out.extend_from_slice(&body[..head_end]);
+        out.extend_from_slice(marker.as_bytes());
+        out.extend_from_slice(&body[tail_start..]);
+        Some((out, dropped))
+    }
 }
 
 /// Top-level application configuration.
@@ -1815,6 +1851,38 @@ impl AppConfig {
             .try_deserialize()
             .expect("failed to deserialize RawAppConfig");
         raw.resolve()
+    }
+}
+
+#[cfg(test)]
+mod body_cap_tests {
+    use super::BodyCapConfig;
+
+    #[test]
+    fn a_binary_body_is_sampled_within_budget_without_panicking() {
+        // Every byte looks like a UTF-8 continuation byte: the head end walks
+        // back to 0 and the tail start forward to the end. The sample must
+        // still be produced, bounded, and never index out of range.
+        let cap = BodyCapConfig {
+            enabled: true,
+            head_bytes: 8,
+            tail_bytes: 8,
+        };
+        let body = vec![0x80_u8; 1_000];
+        let (out, dropped) = cap.sample(&body).expect("oversized body is sampled");
+        assert_eq!(dropped, 1_000);
+        assert!(out.len() < 100);
+    }
+
+    #[test]
+    fn a_body_at_the_budget_is_not_sampled() {
+        let cap = BodyCapConfig {
+            enabled: true,
+            head_bytes: 8,
+            tail_bytes: 8,
+        };
+        assert!(cap.sample(&[b'x'; 16]).is_none());
+        assert!(cap.sample(&[b'x'; 17]).is_some());
     }
 }
 

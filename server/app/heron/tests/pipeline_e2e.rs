@@ -130,6 +130,7 @@ async fn run_pipeline_multi(fixture_names: &[&str]) -> Option<(TempDir, PathBuf)
     let sink_config = h_storage::StorageSinkConfig {
         batch_size: storage_config.sink.batch_size,
         flush_interval_ms: storage_config.sink.flush_interval_ms,
+        ..Default::default()
     };
 
     let Pipeline {

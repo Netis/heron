@@ -13,6 +13,7 @@ use h_metrics::model::{LlmFinishMetric, LlmMetric, LlmMetricsBatch};
 use h_protocol::HttpExchange;
 use h_turn::Trace;
 
+use h_common::config::BodyCapConfig;
 use h_common::internal_metrics::{Metric, MetricsWorker};
 
 use crate::backend::StorageBackend;
@@ -22,6 +23,10 @@ use crate::buffer::{BufferMetrics, WriteBuffer};
 pub struct StorageSinkConfig {
     pub batch_size: usize,
     pub flush_interval_ms: u64,
+    /// Applied to raw HTTP exchange bodies before they reach any backend.
+    /// LLM call bodies are capped earlier, in the call extractor, with the
+    /// same config.
+    pub body_cap: BodyCapConfig,
 }
 
 impl Default for StorageSinkConfig {
@@ -29,8 +34,29 @@ impl Default for StorageSinkConfig {
         Self {
             batch_size: 1000,
             flush_interval_ms: 1000,
+            body_cap: BodyCapConfig::default(),
         }
     }
+}
+
+/// Apply the stored-body cap to an exchange's request and response bodies.
+///
+/// Exchanges carry every captured body verbatim, so without this one large
+/// upload or download is stored whole — and on Aglake a body past the event
+/// ceiling is refused outright, losing it entirely. Only an oversized side is
+/// copied; everything else keeps sharing the joiner's `Arc`s.
+fn cap_exchange(mut x: HttpExchange, cap: &BodyCapConfig) -> HttpExchange {
+    if let Some((body, _)) = cap.sample(&x.request.body) {
+        let mut req = (*x.request).clone();
+        req.body = body.into();
+        x.request = Arc::new(req);
+    }
+    if let Some((body, _)) = cap.sample(&x.response.body) {
+        let mut resp = (*x.response).clone();
+        resp.body = body.into();
+        x.response = Arc::new(resp);
+    }
+    x
 }
 
 /// Spawn the storage sink. Returns a JoinHandle that completes once every
@@ -172,6 +198,7 @@ pub fn spawn_storage_sink_stage(
     });
 
     let exch_storage = backend.clone();
+    let body_cap = config.body_cap;
     let exch_buffer = WriteBuffer::new(
         "http_exchanges",
         http_exchanges_rx,
@@ -183,6 +210,7 @@ pub fn spawn_storage_sink_stage(
         exch_buffer
             .run(move |batch| {
                 let b = exch_storage.clone();
+                let batch = batch.into_iter().map(|x| cap_exchange(x, &body_cap)).collect();
                 async move { b.write_exchanges(batch).await }
             })
             .await;
@@ -434,6 +462,7 @@ mod tests {
         let cfg = StorageSinkConfig {
             batch_size: 2,
             flush_interval_ms: 50,
+            ..Default::default()
         };
         let mut metrics_sys = MetricsSystem::new();
         let storage_metrics = metrics_sys.register_worker(
@@ -477,6 +506,54 @@ mod tests {
         assert_eq!(turns_count.load(Ordering::SeqCst), 3);
         assert_eq!(metrics_count.load(Ordering::SeqCst), 3);
         assert_eq!(exchanges_count.load(Ordering::SeqCst), 3);
+    }
+
+    fn small_cap() -> BodyCapConfig {
+        BodyCapConfig {
+            enabled: true,
+            head_bytes: 8,
+            tail_bytes: 8,
+        }
+    }
+
+    #[test]
+    fn an_oversized_exchange_body_is_sampled_before_storage() {
+        // Exchanges bypass the call extractor's cap; without this a 20 MB
+        // upload reached the backend whole and Aglake refused the event.
+        let mut x = dummy_exchange(0);
+        let mut req = (*x.request).clone();
+        req.body = bytes::Bytes::from(format!("REQHEAD-{}-REQTAIL", "a".repeat(10_000)));
+        x.request = Arc::new(req);
+
+        let capped = cap_exchange(x, &small_cap());
+        let body = std::str::from_utf8(&capped.request.body).unwrap();
+        assert!(body.starts_with("REQHEAD-"), "head kept: {body}");
+        assert!(body.ends_with("-REQTAIL"), "tail kept: {body}");
+        assert!(body.contains("bytes elided"), "marker present: {body}");
+        assert!(capped.request.body.len() < 100);
+    }
+
+    #[test]
+    fn an_exchange_within_budget_is_stored_verbatim_and_not_copied() {
+        let x = dummy_exchange(0);
+        let (req, resp) = (x.request.clone(), x.response.clone());
+        let kept = cap_exchange(x, &small_cap());
+        assert!(Arc::ptr_eq(&kept.request, &req), "request Arc reused");
+        assert!(Arc::ptr_eq(&kept.response, &resp), "response Arc reused");
+        assert_eq!(&kept.response.body[..], b"ok");
+    }
+
+    #[test]
+    fn a_disabled_cap_stores_exchange_bodies_verbatim() {
+        let mut x = dummy_exchange(0);
+        let mut resp = (*x.response).clone();
+        resp.body = bytes::Bytes::from(vec![b'z'; 10_000]);
+        x.response = Arc::new(resp);
+        let off = BodyCapConfig {
+            enabled: false,
+            ..small_cap()
+        };
+        assert_eq!(cap_exchange(x, &off).response.body.len(), 10_000);
     }
 
     fn dummy_exchange(i: usize) -> HttpExchange {
