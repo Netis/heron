@@ -31,8 +31,9 @@ Receives batched packets from [cloud-probe](https://github.com/Netis/cloud-probe
 
 - Rust crate: `zeromq` ([zmq.rs](https://github.com/zeromq/zmq.rs)) — pure Rust ZMQ implementation, native Tokio async, no libzmq dependency
 - Uses ZMQ `PULL` socket bound to the configured endpoint (cloud-probe sends via `PUSH` and connects to us)
-- `recv_hwm` is a configurable knob (default 1000). zmq.rs 0.4 does not currently expose an RCVHWM option, so the value is accepted and logged but not applied at the socket level. Backpressure flows through the downstream mpsc channel; cloud-probe's own drop statistics cover sender-side loss.
+- `recv_hwm` is a configurable knob (default 1000). zmq.rs (0.7) does not expose an RCVHWM option, so the value is accepted and logged but not applied at the socket level. Backpressure flows through the downstream mpsc channel; cloud-probe's own drop statistics cover sender-side loss.
 - Runs as a Tokio task (native async, no spawn_blocking needed)
+- **zmq.rs must be 0.7 or later when several probes share one endpoint.** 0.4's PULL fair queue returned `Pending` as soon as the stream it popped had nothing to read, leaving another peer's ready event queued with no wake-up: a busy probe stalled behind a nearly idle one, its TCP receive queue filled, the probe dropped batches, and Heron logged nothing. `integration_busy_peer_is_not_starved_by_a_quiet_one` reproduces it (fails every run on 0.4.1).
 - Extracts individual packets from the ZMQ batch format, outputs raw `pkt_data` bytes as-is (including Ethernet + VLAN + MPLS headers)
 - The `version` field in the batch header is **not** validated; any parseable batch is accepted. A malformed batch (length arithmetic inconsistent) is dropped whole and counted in the `CaptureBatchesDropped` internal metric.
 - Batch-level metadata (`uuid`, `service_tag`, `keybit`) is currently discarded. If per-probe attribution becomes a requirement, add fields to `RawPacket` and plumb downstream.

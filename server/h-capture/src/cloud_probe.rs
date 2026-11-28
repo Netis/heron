@@ -172,7 +172,7 @@ impl CaptureSource for CloudProbeSource {
                     }
                 });
 
-        // zmq.rs 0.4 does not expose RCVHWM as a socket option; backpressure
+        // zmq.rs does not expose RCVHWM as a socket option; backpressure
         // flows naturally through the downstream mpsc channel instead. We
         // still surface the configured value in logs so operators can see it.
         let mut socket = PullSocket::new();
@@ -592,6 +592,99 @@ mod tests {
                 .expect("source task did not exit")
                 .expect("join error");
             assert!(result.is_ok());
+        }
+
+        /// Two probes on one endpoint, one nearly idle and one streaming:
+        /// every batch of the busy one must arrive.
+        ///
+        /// zeromq 0.4's PULL fair queue returned `Pending` as soon as the
+        /// stream it popped had nothing to read, leaving the other peer's
+        /// ready event queued with nobody to wake the reader. In production a
+        /// busy gateway probe stalled behind a nearly idle standby one: its
+        /// TCP receive queue filled, the probe dropped batches, and Heron
+        /// logged nothing. The quiet peer trickles small batches and the
+        /// consumer pauses now and then, as the pipeline's backpressure does.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn integration_busy_peer_is_not_starved_by_a_quiet_one() {
+            const BATCHES: usize = 2000;
+            const PER_BATCH: usize = 64;
+            const BUSY_SEC: i64 = 2;
+
+            let port = pick_free_port();
+            let endpoint = format!("tcp://127.0.0.1:{port}");
+            let (tx, mut rx) = mpsc::channel(256);
+            let cancel = CancellationToken::new();
+            let source = Box::new(CloudProbeSource::new(endpoint.clone(), 100, None));
+            let metrics = test_metrics();
+            let cancel_clone = cancel.clone();
+            let handle = tokio::spawn(async move {
+                source
+                    .run(RoutingSender::single(tx), metrics, cancel_clone)
+                    .await
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let quiet_stop = CancellationToken::new();
+            let quiet = tokio::spawn({
+                let endpoint = endpoint.clone();
+                let stop = quiet_stop.clone();
+                async move {
+                    let mut quiet = PushSocket::new();
+                    quiet.connect(&endpoint).await.unwrap();
+                    while !stop.is_cancelled() {
+                        let batch = build_sample_batch(&[(1, 0, &[0x01][..])]);
+                        quiet.send(ZmqMessage::from(batch)).await.unwrap();
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                    quiet
+                }
+            });
+
+            let payload = vec![0x5a_u8; 1400];
+            let busy = tokio::spawn({
+                let endpoint = endpoint.clone();
+                async move {
+                    let mut busy = PushSocket::new();
+                    busy.connect(&endpoint).await.unwrap();
+                    let packets: Vec<(u32, u32, &[u8])> = (0..PER_BATCH)
+                        .map(|i| (BUSY_SEC as u32, i as u32, &payload[..]))
+                        .collect();
+                    for _ in 0..BATCHES {
+                        busy.send(ZmqMessage::from(build_sample_batch(&packets)))
+                            .await
+                            .unwrap();
+                    }
+                    busy
+                }
+            });
+
+            let want = BATCHES * PER_BATCH;
+            let mut got = 0;
+            let mut seen = 0usize;
+            let deadline = std::time::Duration::from_secs(30);
+            let received = tokio::time::timeout(deadline, async {
+                while got < want {
+                    let Some(pkt) = rx.recv().await else { break };
+                    if pkt.timestamp_us / 1_000_000 == BUSY_SEC {
+                        got += 1;
+                    }
+                    seen += 1;
+                    if seen.is_multiple_of(2048) {
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    }
+                }
+            })
+            .await;
+            quiet_stop.cancel();
+            assert!(
+                received.is_ok(),
+                "received {got} of {want} packets: the busy peer stalled behind the quiet one"
+            );
+
+            let _ = busy.await.unwrap();
+            let _ = quiet.await.unwrap();
+            cancel.cancel();
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
         }
 
         #[tokio::test]
